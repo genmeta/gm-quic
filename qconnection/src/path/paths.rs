@@ -8,7 +8,7 @@ use qbase::{
     net::{route::Pathway, tx::ArcSendWakers},
 };
 use qcongestion::Transport;
-use qlog::telemetry::Instrument;
+use qevent::telemetry::Instrument;
 use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 

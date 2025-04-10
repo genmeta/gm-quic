@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use clap::Parser;
 use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
 use http::uri::Authority;
-use qlog::telemetry::handy::DefaultSeqLogger;
+use qevent::telemetry::handy::DefaultSeqLogger;
 use rustls::RootCertStore;
 use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tracing::info;

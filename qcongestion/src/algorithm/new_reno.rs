@@ -1,13 +1,11 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU16, Ordering},
-    },
-    time::Instant,
+use std::sync::{
+    Arc,
+    atomic::{AtomicU16, Ordering},
 };
 
 use qbase::{Epoch, frame::AckFrame};
-use qlog::quic::recovery::RecoveryMetricsUpdated;
+use qevent::quic::recovery::RecoveryMetricsUpdated;
+use tokio::time::Instant;
 
 use crate::{
     algorithm::Control,
@@ -27,7 +25,7 @@ pub(crate) struct NewReno {
 
 impl From<&NewReno> for RecoveryMetricsUpdated {
     fn from(reno: &NewReno) -> Self {
-        qlog::build!(RecoveryMetricsUpdated {
+        qevent::build!(RecoveryMetricsUpdated {
             congestion_window: reno.congestion_window as u64,
             ssthresh: reno.ssthresh as u64,
         })
@@ -124,7 +122,7 @@ impl NewReno {
             return;
         }
 
-        let now = tokio::time::Instant::now().into_std();
+        let now = tokio::time::Instant::now();
         self.congestion_recovery_start_time = Some(now);
         // WARN: will be zero
         self.ssthresh = self.congestion_window - self.max_datagram_size();

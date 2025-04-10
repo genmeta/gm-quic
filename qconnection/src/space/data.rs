@@ -29,8 +29,7 @@ use qbase::{
     sid::{ControlStreamsConcurrency, Role},
 };
 use qcongestion::{Feedback, Transport};
-use qinterface::packet::{CipherPacket, PlainPacket};
-use qlog::{
+use qevent::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -38,6 +37,7 @@ use qlog::{
     },
     telemetry::Instrument,
 };
+use qinterface::packet::{CipherPacket, PlainPacket};
 use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
@@ -604,7 +604,7 @@ impl Feedback for DataSpace {
                     }
                 };
             }
-            qlog::event!(PacketLost {
+            qevent::event!(PacketLost {
                 header: PacketHeader {
                     // TOOD: 如果只有支持0rtt，这里就不一定是1rtt了
                     packet_type: PacketType::OneRTT,

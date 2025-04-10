@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     ops::DerefMut,
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use derive_more::{Deref, DerefMut};
@@ -13,6 +13,7 @@ use qbase::{
     util::IndexDeque,
     varint::VARINT_MAX,
 };
+use tokio::time::Instant;
 
 /// 记录发送的数据包的状态，包括
 /// - Flighting: 数据包正在传输中
@@ -205,7 +206,7 @@ impl<T: Clone> SentJournal<T> {
         tracing::debug!("fast retransmit");
         self.resize();
 
-        let now = tokio::time::Instant::now().into_std();
+        let now = tokio::time::Instant::now();
         self.sent_packets
             .enumerate_mut()
             .take_while(|(pn, _)| *pn < self.largest_acked_pktno)
@@ -230,7 +231,7 @@ impl<T> SentJournal<T> {
     }
 
     fn resize(&mut self) {
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         let (n, f) = self
             .sent_packets
             .enumerate()
@@ -394,7 +395,7 @@ impl<T> NewPacketGuard<'_, T> {
     pub fn build_with_time(mut self, retran_timeout: Duration, expire_timeout: Duration) {
         let nframes = self.inner.queue.len() - self.origin_len;
         if self.necessary || nframes > 0 {
-            let sent_time = tokio::time::Instant::now().into_std();
+            let sent_time = tokio::time::Instant::now();
             self.inner
                 .sent_packets
                 .push_back(SentPktState::new(

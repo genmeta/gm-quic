@@ -10,7 +10,7 @@ use qbase::{
     util::DescribeData,
     varint::{VARINT_MAX, VarInt},
 };
-use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
 use super::sender::{ArcSender, Sender, SendingSender};
 
@@ -134,7 +134,7 @@ impl<TX> Outgoing<TX> {
                 Sender::DataSent(s) => {
                     s.on_data_acked(&frame.range(), frame.is_fin());
                     if s.is_all_rcvd() {
-                        qlog::event!(StreamStateUpdated {
+                        qevent::event!(StreamStateUpdated {
                             stream_id: frame.stream_id(),
                             stream_type: frame.stream_id().dir(),
                             old: GranularStreamStates::DataSent,
@@ -226,7 +226,7 @@ impl<TX> Outgoing<TX> {
         if let Ok(sending_state) = inner {
             match sending_state {
                 Sender::ResetSent(r) => {
-                    qlog::event!(StreamStateUpdated {
+                    qevent::event!(StreamStateUpdated {
                         stream_id: sid,
                         stream_type: sid.dir(),
                         old: GranularStreamStates::ResetSent,

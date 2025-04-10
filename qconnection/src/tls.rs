@@ -12,7 +12,7 @@ use qbase::{
     error::{Error, ErrorKind},
     param::ArcParameters,
 };
-use qlog::telemetry::Instrument;
+use qevent::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
 use rustls::quic::KeyChange;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

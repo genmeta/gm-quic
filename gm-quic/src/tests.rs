@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use qlog::telemetry::{Log, handy::*};
+use qevent::telemetry::{Log, handy::*};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     runtime::Runtime,

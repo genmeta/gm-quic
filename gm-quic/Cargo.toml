@@ -1,6 +1,6 @@
 [package]
 name = "gm-quic"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 description = "An IETF quic transport protocol implemented natively using async Rust"
 readme.workspace = true
@@ -20,7 +20,7 @@ qbase = { workspace = true }
 qcongestion = { workspace = true }
 qconnection = { workspace = true }
 qinterface = { workspace = true, features = ["qudp"] }
-qlog = { workspace = true }
+qevent = { workspace = true }
 qrecovery = { workspace = true }
 qunreliable = { workspace = true }
 rustls = { workspace = true }
@@ -31,7 +31,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 clap = { workspace = true }
 http = { workspace = true }
-qlog = { workspace = true, features = ["enabled"] }
+qevent = { workspace = true, features = ["enabled"] }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }

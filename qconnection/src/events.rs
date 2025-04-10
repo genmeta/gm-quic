@@ -5,7 +5,7 @@ use qbase::{
     frame::ConnectionCloseFrame,
     net::route::{Link, Pathway},
 };
-use qlog::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
+use qevent::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
 use tokio::sync::mpsc;
 
 use crate::state::ConnState;

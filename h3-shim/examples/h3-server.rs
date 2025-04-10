@@ -5,7 +5,7 @@ use clap::Parser;
 use gm_quic::handy::server_parameters;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
-use qlog::telemetry::handy::{DefaultSeqLogger, NullLogger};
+use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
 
@@ -83,7 +83,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         return Err(format!("{}: is not a readable directory", root.display()).into());
     }
 
-    let qlogger: Arc<dyn qlog::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
         None => Arc::new(NullLogger),
     };

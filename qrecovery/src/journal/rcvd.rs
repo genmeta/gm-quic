@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
 };
 
 use qbase::{
@@ -11,6 +10,7 @@ use qbase::{
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
 };
+use tokio::time::{Duration, Instant};
 
 /// 收包记录有以下几种状态
 /// - Empty：收包记录为空，未收到该包
@@ -102,7 +102,7 @@ impl RcvdJournal {
     }
 
     fn on_rcvd_pn(&mut self, pn: u64, is_ack_eliciting: bool, pto: Duration) {
-        let now = tokio::time::Instant::now().into_std();
+        let now = tokio::time::Instant::now();
         let ack_time = if is_ack_eliciting {
             Some(now + self.max_ack_delay.unwrap_or_default())
         } else {
@@ -142,7 +142,7 @@ impl RcvdJournal {
     }
 
     fn rotate_queue(&mut self) {
-        let now = tokio::time::Instant::now().into_std();
+        let now = tokio::time::Instant::now();
         while self
             .queue
             .front()
@@ -261,7 +261,7 @@ impl RcvdJournal {
     }
 
     fn trigger_ack_frame(&self) -> Option<(u64, Instant)> {
-        let now = tokio::time::Instant::now().into_std();
+        let now = tokio::time::Instant::now();
         let (_, earliest_not_ack_time) = self.earliest_not_ack_time?;
         let max_ack_delay = self.max_ack_delay.unwrap_or_default();
         if earliest_not_ack_time + max_ack_delay >= now {

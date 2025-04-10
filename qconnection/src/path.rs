@@ -5,7 +5,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, Ordering},
     },
-    time::{Duration, Instant},
 };
 
 use qbase::{
@@ -21,7 +20,10 @@ use qbase::{
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qinterface::{QuicInterface, router::QuicProto};
-use tokio::task::AbortHandle;
+use tokio::{
+    task::AbortHandle,
+    time::{Duration, Instant},
+};
 
 mod aa;
 mod paths;
@@ -76,7 +78,7 @@ impl Path {
             cc: (cc, handle),
             validated: AtomicBool::new(false),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
-            last_active_time: tokio::time::Instant::now().into_std().into(),
+            last_active_time: tokio::time::Instant::now().into(),
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
@@ -129,7 +131,7 @@ impl Path {
     ) {
         self.anti_amplifier.on_rcvd(size);
         if packet_contains == PacketContains::EffectivePayload {
-            *self.last_active_time.lock().unwrap() = tokio::time::Instant::now().into_std();
+            *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
         }
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());

@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use tokio::time::{Duration, Instant};
 
 //  The burst  interval in milliseconds
 const BURST_INTERVAL: Duration = Duration::from_millis(10);
@@ -98,8 +98,6 @@ impl Pacer {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
     use super::*;
 
     #[test]

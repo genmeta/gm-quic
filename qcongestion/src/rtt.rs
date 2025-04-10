@@ -1,9 +1,7 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
 
-use qlog::quic::recovery::RecoveryMetricsUpdated;
+use qevent::quic::recovery::RecoveryMetricsUpdated;
+use tokio::time::{Duration, Instant};
 
 pub const INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
@@ -21,7 +19,7 @@ pub struct Rtt {
 
 impl From<&Rtt> for RecoveryMetricsUpdated {
     fn from(rtt: &Rtt) -> Self {
-        qlog::build!(RecoveryMetricsUpdated {
+        qevent::build!(RecoveryMetricsUpdated {
             smoothed_rtt: rtt.smoothed_rtt.as_secs_f32() * 1000.0,
             min_rtt: rtt.min_rtt.as_secs_f32() * 1000.0,
             latest_rtt: rtt.latest_rtt.as_secs_f32() * 1000.0,
@@ -55,7 +53,7 @@ impl Rtt {
             self.min_rtt = latest_rtt;
             self.smoothed_rtt = latest_rtt;
             self.rttvar = latest_rtt / 2;
-            self.first_rtt_sample = Some(tokio::time::Instant::now().into_std());
+            self.first_rtt_sample = Some(tokio::time::Instant::now());
         } else {
             // min_rtt ignores acknowledgment delay.
             self.min_rtt = std::cmp::min(self.min_rtt, latest_rtt);
@@ -81,7 +79,7 @@ impl Rtt {
         }
 
         let event = RecoveryMetricsUpdated::from(&*self);
-        qlog::event!(event);
+        qevent::event!(event);
     }
 
     fn loss_delay(&self) -> Duration {

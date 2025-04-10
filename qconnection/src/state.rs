@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use qbase::{error::Error, net::route::Link};
-use qlog::quic::{
+use qevent::quic::{
     Owner,
     connectivity::{
         BaseConnectionStates, ConnectionStarted, ConnectionState as QlogConnectionState,
@@ -52,21 +52,21 @@ impl ConnState {
 
         if success {
             // same as Self::update
-            qlog::event!(ConnectionStateUpdated {
+            qevent::event!(ConnectionStateUpdated {
                 new: BaseConnectionStates::Attempted,
             });
-            qlog::event!(ConnectionStarted {
+            qevent::event!(ConnectionStarted {
                 socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
             match components.handshake.role() {
                 qbase::sid::Role::Client => components.parameters.map_client_parameters(|p| {
-                    qlog::event!(ParametersSet {
+                    qevent::event!(ParametersSet {
                         owner: Owner::Local,
                         client_parameters: p,
                     })
                 }),
                 qbase::sid::Role::Server => components.parameters.map_server_parameters(|p| {
-                    qlog::event!(ParametersSet {
+                    qevent::event!(ParametersSet {
                         owner: Owner::Local,
                         server_parameters: p,
                     })
@@ -106,7 +106,7 @@ impl ConnState {
                         }
                         _ => {}
                     }
-                    qlog::event!(ConnectionStateUpdated {
+                    qevent::event!(ConnectionStateUpdated {
                         new: state,
                         old: old_state
                     });

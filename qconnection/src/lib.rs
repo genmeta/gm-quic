@@ -202,7 +202,7 @@ type ConnectionState = RwLock<Result<Components, Termination>>;
 
 pub struct Connection {
     state: ConnectionState,
-    qlog_span: qlog::telemetry::Span,
+    qlog_span: qevent::telemetry::Span,
     tracing_span: tracing::Span,
 }
 

@@ -1,6 +1,5 @@
-use std::time::Instant;
-
 use qbase::{Epoch, frame::AckFrame};
+use tokio::time::Instant;
 
 use crate::packets::SentPacket;
 
