@@ -14,7 +14,7 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
 qbase = { workspace = true }
-qlog = { workspace = true }
+qevent = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "sync"] }

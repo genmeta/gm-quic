@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "qbase",
-    "qlog",
+    "qevent",
     "qrecovery",
     "qcongestion",
     "qudp",
@@ -14,7 +14,7 @@ members = [
 ]
 default-members = [
     "qbase",
-    "qlog",
+    "qevent",
     "qrecovery",
     "qcongestion",
     "qinterface",
@@ -24,7 +24,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 readme = "README.md"
 repository = "https://github.com/genmeta/gm-quic"
@@ -70,16 +70,16 @@ rustls-native-certs = "0.8"
 tracing-subscriber = "0.3"
 
 # members
-qbase = { path = "./qbase", version = "0.1.0" }
-qlog = { path = "./qlog", version = "0.1.0" }
-qrecovery = { path = "./qrecovery", version = "0.1.0" }
-qconnection = { path = "./qconnection", version = "0.1.0" }
-qcongestion = { path = "./qcongestion", version = "0.1.0" }
-qudp = { path = "./qudp", version = "0.1.0" }
-qinterface = { path = "./qinterface", version = "0.1.0" }
-qunreliable = { path = "./qunreliable", version = "0.1.0" }
-gm-quic = { path = "./gm-quic", version = "0.1.0" }
-h3-shim = { path = "./h3-shim", version = "0.1.0" }
+qbase = { path = "./qbase", version = "0.2.0" }
+qevent = { path = "./qevent", version = "0.2.0" }
+qrecovery = { path = "./qrecovery", version = "0.2.0" }
+qconnection = { path = "./qconnection", version = "0.2.0" }
+qcongestion = { path = "./qcongestion", version = "0.2.0" }
+qudp = { path = "./qudp", version = "0.2.0" }
+qinterface = { path = "./qinterface", version = "0.2.0" }
+qunreliable = { path = "./qunreliable", version = "0.2.0" }
+gm-quic = { path = "./gm-quic", version = "0.2.0" }
+h3-shim = { path = "./h3-shim", version = "0.2.0" }
 
 
 [profile.bench]

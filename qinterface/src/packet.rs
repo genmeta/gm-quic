@@ -11,7 +11,7 @@ use qbase::{
         number::{InvalidPacketNumber, PacketNumber},
     },
 };
-use qlog::quic::{
+use qevent::quic::{
     PacketHeader, PacketHeaderBuilder, QuicFrame,
     transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
 };
@@ -42,7 +42,7 @@ where
     }
 
     pub fn drop_on_key_unavailable(self) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.payload.freeze(),
             trigger: PacketDroppedTrigger::KeyUnavailable
@@ -50,7 +50,7 @@ where
     }
 
     fn drop_on_remove_header_protection_failure(self) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.payload.freeze(),
             details: Map {
@@ -61,7 +61,7 @@ where
     }
 
     fn drop_on_decryption_failure(self, error: qbase::packet::error::Error, pn: u64) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: {
                 PacketHeaderBuilder::from(&self.header)
                     .packet_number(pn)
@@ -77,7 +77,7 @@ where
     }
 
     fn drop_on_reverse_bit_error(self, error: &qbase::packet::error::Error) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.payload.freeze(),
             details: Map {
@@ -89,7 +89,7 @@ where
     }
 
     fn drop_on_invalid_pn(self, invalid_pn: InvalidPacketNumber) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.payload.freeze(),
             details: Map {
@@ -199,7 +199,7 @@ where
 
 impl CipherPacket<InitialHeader> {
     pub fn drop_on_scid_unmatch(self) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.payload.freeze(),
             details: Map {
@@ -240,8 +240,8 @@ impl<H> PlainPacket<H> {
             .slice(packet_offset..packet_offset + self.body_len)
     }
 
-    pub fn raw_info(&self) -> qlog::RawInfo {
-        qlog::build!(qlog::RawInfo {
+    pub fn raw_info(&self) -> qevent::RawInfo {
+        qevent::build!(qevent::RawInfo {
             length: self.plain.len() as u64,
             payload_length: self.payload_len() as u64,
             data: &self.plain,
@@ -255,7 +255,7 @@ where
 {
     pub fn qlog_header(&self) -> PacketHeader {
         let mut builder = PacketHeaderBuilder::from(&self.header);
-        qlog::build! {@field builder,
+        qevent::build! {@field builder,
             packet_number: self.decoded_pn,
             length: self.payload_len() as u16
         };
@@ -263,7 +263,7 @@ where
     }
 
     pub fn drop_on_conenction_closed(self) {
-        qlog::event!(PacketDropped {
+        qevent::event!(PacketDropped {
             header: self.qlog_header(),
             raw: self.raw_info(),
             details: Map {
@@ -274,7 +274,7 @@ where
     }
 
     pub fn log_received(&self, frames: impl Into<Vec<QuicFrame>>) {
-        qlog::event!(PacketReceived {
+        qevent::event!(PacketReceived {
             header: self.qlog_header(),
             frames,
             raw: self.raw_info(),

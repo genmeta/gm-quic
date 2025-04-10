@@ -1,10 +1,7 @@
-use std::{
-    cmp::Ordering,
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::{cmp::Ordering, collections::VecDeque, time::Duration};
 
 use qbase::{Epoch, frame::AckFrame};
+use tokio::time::Instant;
 
 use crate::algorithm::Control;
 
@@ -96,7 +93,7 @@ impl RcvdRecords {
         // 1. When the received packet has a packet number less than another ack-eliciting packet that has been received
         // 2. when the packet has a packet number larger than the highest-numbered ack-eliciting packet that has been
         // received and there are missing packets between that packet and this packet.
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         if self.latest_rcvd_time.is_none() {
             self.latest_rcvd_time = Some(now);
         }
@@ -118,7 +115,7 @@ impl RcvdRecords {
     /// Checks whether an ACK frame needs to be sent.
     /// Returns [`Some`] if it's time to send an ACK based on the maximum delay.
     pub(crate) fn need_ack(&self) -> Option<(u64, Instant)> {
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         if self.ack_immedietly {
             return self.largest_rcvd_packet;
         }
@@ -238,7 +235,7 @@ impl PacketSpace {
         assert!(self.largest_acked_packet.is_some());
         self.loss_time = None;
 
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         let lost_sent_time = now - loss_delay;
         let largest_acked = self.largest_acked_packet.unwrap_or(0);
         let largest_index = self
@@ -320,7 +317,7 @@ mod tests {
     #[test]
     fn test_packet_space() {
         let mut packet_space = PacketSpace::with_epoch(Epoch::Initial, Duration::from_millis(100));
-        // let now = tokio::time::Instant::now().into_std();
+        // let now = Instant::now();
 
         for i in 0..10 {
             packet_space.sent_packets.push_back(SentPacket::new(

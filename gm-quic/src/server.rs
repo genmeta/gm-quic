@@ -8,11 +8,11 @@ use std::{
 use dashmap::DashMap;
 use handy::UdpSocketController;
 use qconnection::builder::*;
-use qinterface::util::Channel;
-use qlog::{
+use qevent::{
     quic::connectivity::ServerListening,
     telemetry::{Log, handy::NullLogger},
 };
+use qinterface::util::Channel;
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
     server::{NoClientAuth, ResolvesServerCert, WantsServerCert, danger::ClientCertVerifier},
@@ -70,7 +70,7 @@ impl QuicServer {
         let local_addr = iface.local_addr()?;
         Interfaces::add(iface.clone())?;
         self.bind_interfaces.insert(local_addr, iface);
-        qlog::event!(
+        qevent::event!(
             ServerListening {
                 socket_addr: local_addr,
             },
@@ -582,7 +582,7 @@ impl QuicServerBuilder<TlsServerConfig> {
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
                     bind_interfaces.insert(local_addr, interface);
-                    qlog::event!(
+                    qevent::event!(
                         ServerListening {
                             socket_addr: local_addr,
                         },
@@ -699,7 +699,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
                     bind_interfaces.insert(local_addr, interface);
-                    qlog::event!(
+                    qevent::event!(
                         ServerListening {
                             socket_addr: local_addr,
                         },

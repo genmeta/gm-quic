@@ -22,8 +22,7 @@ use qbase::{
     },
 };
 use qcongestion::{Feedback, Transport};
-use qinterface::packet::{CipherPacket, PlainPacket};
-use qlog::{
+use qevent::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -31,6 +30,7 @@ use qlog::{
     },
     telemetry::Instrument,
 };
+use qinterface::packet::{CipherPacket, PlainPacket};
 use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 use rustls::quic::Keys;
 use tokio::sync::mpsc;
@@ -276,7 +276,7 @@ impl Feedback for HandshakeSpace {
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
             }
-            qlog::event!(PacketLost {
+            qevent::event!(PacketLost {
                 header: PacketHeader {
                     packet_type: PacketType::Handshake,
                     packet_number: pn

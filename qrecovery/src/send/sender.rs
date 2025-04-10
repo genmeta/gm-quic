@@ -13,12 +13,12 @@ use qbase::{
     util::DescribeData,
     varint::VarInt,
 };
-use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
 use super::sndbuf::SendBuf;
 
 fn log_reset_event(sid: StreamId, from_state: GranularStreamStates) {
-    qlog::event!(StreamStateUpdated {
+    qevent::event!(StreamStateUpdated {
         stream_id: sid,
         stream_type: sid.dir(),
         old: from_state,
@@ -145,7 +145,7 @@ impl<TX> ReadySender<TX> {
 /// 状态升级，ReaderSender => SendingSender
 impl<TX: Clone> ReadySender<TX> {
     pub(super) fn upgrade(&mut self) -> SendingSender<TX> {
-        qlog::event!(StreamStateUpdated {
+        qevent::event!(StreamStateUpdated {
             stream_id: self.stream_id,
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Ready,
@@ -324,7 +324,7 @@ impl<TX> SendingSender<TX> {
 
 impl<TX: Clone> SendingSender<TX> {
     pub(super) fn upgrade(&mut self) -> DataSentSender<TX> {
-        qlog::event!(StreamStateUpdated {
+        qevent::event!(StreamStateUpdated {
             stream_id: self.stream_id,
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Send,

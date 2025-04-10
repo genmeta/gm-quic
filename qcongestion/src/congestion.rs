@@ -1,15 +1,15 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
 
 use qbase::{
     Epoch,
     frame::AckFrame,
     net::tx::{ArcSendWaker, Signals},
 };
-use qlog::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
-use tokio::task::AbortHandle;
+use qevent::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
+use tokio::{
+    task::AbortHandle,
+    time::{Duration, Instant},
+};
 use tracing::Instrument as _;
 
 use crate::{
@@ -61,7 +61,7 @@ impl CongestionController {
             Algorithm::NewReno => Box::new(NewReno::new(path_status.pmtu.clone())),
         };
 
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         CongestionController {
             algorithm,
             rtt: ArcRtt::new(),
@@ -105,7 +105,7 @@ impl CongestionController {
         in_flight: bool,
         sent_bytes: usize,
     ) {
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         let sent = SentPacket::new(packet_number, now, ack_eliciting, in_flight, sent_bytes);
         if in_flight {
             if ack_eliciting {
@@ -133,7 +133,7 @@ impl CongestionController {
     pub fn on_datagram_rcvd(&mut self) {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
         if self.path_status.is_at_anti_amplification_limit() {
-            let now = tokio::time::Instant::now().into_std();
+            let now = Instant::now();
             self.set_loss_detection_timer();
             if self.loss_detection_timer.is_some_and(|t| t < now) {
                 // Execute PTO if it would have expired while the amplification limit applied.
@@ -371,7 +371,7 @@ impl CongestionController {
     //   return pto_timeout, pto_space
     fn get_pto_time_and_epoch(&self) -> Option<(Instant, Epoch)> {
         let mut duration = self.rtt.base_pto(self.pto_count);
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         if self.no_ack_eliciting_in_flight() {
             assert!(!self.peer_completed_address_validation());
             if self.path_status.has_handshake_key() {
@@ -439,7 +439,7 @@ impl CongestionController {
 
     #[inline]
     fn send_quota(&mut self) -> usize {
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         self.pacer.schedule(
             self.rtt.smoothed_rtt(),
             self.algorithm.congestion_window(),
@@ -504,7 +504,7 @@ impl super::Transport for ArcCC {
                 let mut interval = tokio::time::interval(Duration::from_millis(10));
                 loop {
                     interval.tick().await;
-                    let now = tokio::time::Instant::now().into_std();
+                    let now = Instant::now();
                     let mut guard = cc.0.lock().unwrap();
                     if guard.loss_detection_timer.is_some_and(|t| t <= now) {
                         guard.on_loss_detection_timeout();
@@ -574,7 +574,7 @@ impl super::Transport for ArcCC {
 
     fn on_ack_rcvd(&self, epoch: Epoch, ack_frame: &AckFrame) {
         let mut guard = self.0.lock().unwrap();
-        let now = tokio::time::Instant::now().into_std();
+        let now = Instant::now();
         guard.on_ack_rcvd(epoch, ack_frame, now);
 
         // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)

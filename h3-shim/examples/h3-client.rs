@@ -7,7 +7,7 @@ use http::{
     uri::{Authority, Parts, Scheme},
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use qlog::telemetry::handy::{DefaultSeqLogger, NullLogger};
+use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{
     fs,
     io::{AsyncWrite, AsyncWriteExt},
@@ -96,7 +96,7 @@ async fn main() {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
-    let qlogger: Arc<dyn qlog::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
         None => Arc::new(NullLogger),
     };

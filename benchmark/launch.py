@@ -279,7 +279,6 @@ class H3Client:
                          "--roots", ecc_certs.root_cert,
                          "--progress", "true" if self.progress else "false",
                          "--ansi", "false",
-                         "--qlog", "/tmp/qlog",
                          f'https://localhost:{server_runner.listen_port}/{rand_files.gen(file_size)}'
         ]
 

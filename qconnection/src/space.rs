@@ -12,8 +12,8 @@ use qbase::{
         StreamFrame,
     },
 };
+use qevent::{quic::transport::PacketsAcked, telemetry::Instrument};
 use qinterface::queue::RcvdPacketQueue;
-use qlog::{quic::transport::PacketsAcked, telemetry::Instrument};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
@@ -248,7 +248,7 @@ impl ReceiveFrame<AckFrame> for AckInitialSpace {
         rotate_guard.update_largest(ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
-        qlog::event!(PacketsAcked {
+        qevent::event!(PacketsAcked {
             packet_number_space: qbase::Epoch::Initial,
             packet_nubers: acked.clone(),
         });
@@ -284,7 +284,7 @@ impl ReceiveFrame<AckFrame> for AckHandshakeSpace {
         rotate_guard.update_largest(ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
-        qlog::event!(PacketsAcked {
+        qevent::event!(PacketsAcked {
             packet_number_space: qbase::Epoch::Handshake,
             packet_nubers: acked.clone(),
         });
@@ -326,7 +326,7 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
         rotate_guard.update_largest(ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
-        qlog::event!(PacketsAcked {
+        qevent::event!(PacketsAcked {
             packet_number_space: qbase::Epoch::Data,
             packet_nubers: acked.clone(),
         });

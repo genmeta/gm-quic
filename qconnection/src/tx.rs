@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use bytes::BufMut;
 use derive_more::Deref;
@@ -26,8 +23,9 @@ use qbase::{
     util::{DescribeData, WriteData},
 };
 use qcongestion::{ArcCC, Transport};
-use qlog::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
+use qevent::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
 use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
+use tokio::time::{Duration, Instant};
 
 use crate::{
     ArcDcidCell, ArcReliableFrameDeque, Credit, GuaranteedFrame,
@@ -36,7 +34,7 @@ use crate::{
 };
 
 pub struct PacketLogger {
-    header: qlog::quic::PacketHeaderBuilder,
+    header: qevent::quic::PacketHeaderBuilder,
     frames: QuicFramesCollector<PacketSent>,
 }
 
@@ -52,10 +50,10 @@ impl PacketLogger {
                 .length((packet.payload_len() + packet.tag_len()) as u16);
         }
 
-        qlog::event!(PacketSent {
+        qevent::event!(PacketSent {
             header: self.header.build(),
             frames: self.frames,
-            raw: qlog::RawInfo {
+            raw: qevent::RawInfo {
                 length: packet.packet_len() as u64,
                 payload_length: { packet.packet_len() + packet.tag_len() } as u64,
                 data: packet.buffer(),
@@ -93,7 +91,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
             writer: PacketWriter::new_long(&header, buffer, pn, keys)?,
             logger: PacketLogger {
                 header: {
-                    let mut builder = qlog::quic::PacketHeader::builder();
+                    let mut builder = qevent::quic::PacketHeader::builder();
                     builder.packet_type(header.get_type());
                     builder.packet_number(pn.0);
                     builder.scil(header.scid().len() as u8);
@@ -123,7 +121,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
             writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
             logger: PacketLogger {
                 header: {
-                    let mut builder = qlog::quic::PacketHeader::builder();
+                    let mut builder = qevent::quic::PacketHeader::builder();
                     builder.packet_type(header.get_type());
                     builder.packet_number(pn.0);
                     builder.dcil(header.dcid().len() as u8);

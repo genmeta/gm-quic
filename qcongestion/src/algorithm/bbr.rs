@@ -5,7 +5,7 @@ use std::{
 
 use delivery_rate::Rate;
 use min_max::MinMax;
-use qlog::quic::recovery::RecoveryMetricsUpdated;
+use qevent::quic::recovery::RecoveryMetricsUpdated;
 
 use super::Control;
 use crate::packets::AckedPackets;
@@ -146,7 +146,7 @@ pub(crate) struct Bbr {
 
 impl From<&Bbr> for RecoveryMetricsUpdated {
     fn from(value: &Bbr) -> Self {
-        qlog::build!(RecoveryMetricsUpdated {
+        qevent::build!(RecoveryMetricsUpdated {
             congestion_window: value.cwnd,
             bytes_in_flight: value.bytes_in_flight,
             pacing_rate: value.pacing_rate,

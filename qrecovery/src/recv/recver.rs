@@ -14,7 +14,7 @@ use qbase::{
     sid::StreamId,
     varint::{VARINT_MAX, VarInt},
 };
-use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
 use super::rcvbuf;
 
@@ -104,7 +104,7 @@ impl<TX: Clone> Recv<TX> {
             ));
         }
 
-        qlog::event!(StreamStateUpdated {
+        qevent::event!(StreamStateUpdated {
             stream_id: self.stream_id,
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Receive,
@@ -330,7 +330,7 @@ where
     TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
 {
     pub(super) fn upgrade(&mut self) -> DataRcvd {
-        qlog::event!(StreamStateUpdated {
+        qevent::event!(StreamStateUpdated {
             stream_id: self.stream_id,
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::SizeKnown,
@@ -396,7 +396,7 @@ impl DataRcvd {
 }
 
 fn log_reset_event(stream_id: StreamId, old: GranularStreamStates) {
-    qlog::event!(StreamStateUpdated {
+    qevent::event!(StreamStateUpdated {
         stream_id,
         stream_type: stream_id.dir(),
         old,
@@ -407,7 +407,7 @@ fn log_reset_event(stream_id: StreamId, old: GranularStreamStates) {
 
 impl DataRcvd {
     pub(super) fn upgrade(&self) {
-        qlog::event!(StreamStateUpdated {
+        qevent::event!(StreamStateUpdated {
             stream_id: self.stream_id,
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::DataReceived,

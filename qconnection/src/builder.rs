@@ -26,8 +26,7 @@ use qbase::{
     varint::VarInt,
 };
 use qcongestion::HandshakeStatus;
-use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
-use qlog::{
+use qevent::{
     GroupID, VantagePointType,
     quic::{
         Owner,
@@ -36,6 +35,7 @@ use qlog::{
     },
     telemetry::{Instrument, Log, Span},
 };
+use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 pub use rustls::crypto::CryptoProvider;
 use tracing::Instrument as _;
 
@@ -431,7 +431,7 @@ impl ComponentsReady {
         let tracing_span = tracing::info_span!("connection",%role, odcid = %group_id);
         let qlog_span = self
             .qlog_span
-            .unwrap_or_else(|| qlog::span!(@current, group_id));
+            .unwrap_or_else(|| qevent::span!(@current, group_id));
 
         let is_server = role == sid::Role::Server;
         let inform_cc = Arc::new(HandshakeStatus::new(is_server));
@@ -481,13 +481,13 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 
         match role {
             sid::Role::Client => params.map_server_parameters(|p| {
-                qlog::event!(ParametersSet {
+                qevent::event!(ParametersSet {
                     owner: Owner::Remote,
                     server_parameters: p,
                 })
             }),
             sid::Role::Server => params.map_client_parameters(|p| {
-                qlog::event!(ParametersSet {
+                qevent::event!(ParametersSet {
                     owner: Owner::Remote,
                     client_parameters: p,
                 })
@@ -541,7 +541,7 @@ impl Components {
     ) -> io::Result<Arc<Path>> {
         self.paths.get_or_try_create_with (pathway,||{
                 let do_validate = !self.state.try_entry_attempted(self, link)?;
-                qlog::event!(PathAssigned {
+                qevent::event!(PathAssigned {
                     path_id: pathway.to_string(),
                     path_local: link.src(),
                     path_remote: link.dst(),
@@ -585,7 +585,7 @@ impl Components {
                 };
 
                 let task =
-                    Instrument::instrument(task, qlog::span!(@current, path=pathway.to_string()))
+                    Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
                         .instrument_in_current();
 
                 tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
@@ -597,7 +597,7 @@ impl Components {
 impl Components {
     // 对于server，第一条路径也通过add_path添加
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
-        qlog::event!(ConnectionClosed {
+        qevent::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
         });
@@ -639,7 +639,7 @@ impl Components {
     }
 
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
-        qlog::event!(ConnectionClosed {
+        qevent::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
         });

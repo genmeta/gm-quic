@@ -9,7 +9,7 @@ use futures::{FutureExt, StreamExt};
 use handy::UdpSocketController;
 use qbase::param::RememberedParameters;
 use qconnection::builder::*;
-use qlog::telemetry::{Log, handy::NullLogger};
+use qevent::telemetry::{Log, handy::NullLogger};
 use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},

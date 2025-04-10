@@ -6,7 +6,7 @@ use http::{
     Uri,
     uri::{Authority, Parts},
 };
-use qlog::telemetry::handy::{DefaultSeqLogger, NullLogger};
+use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{
     fs,
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -68,7 +68,7 @@ async fn run(options: Options) -> Result<(), Error> {
         return Err("no uri specified".into());
     }
 
-    let qlogger: Arc<dyn qlog::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
         None => Arc::new(NullLogger),
     };

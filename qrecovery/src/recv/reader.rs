@@ -9,7 +9,7 @@ use qbase::{
     frame::{MaxStreamDataFrame, SendFrame, StopSendingFrame},
     varint::VARINT_MAX,
 };
-use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
@@ -123,7 +123,7 @@ where
             }
             Recver::DataRead => Poll::Ready(Ok(())),
             Recver::ResetRcvd(r) => {
-                qlog::event!(StreamStateUpdated {
+                qevent::event!(StreamStateUpdated {
                     stream_id: r.stream_id(),
                     stream_type: r.stream_id().dir(),
                     old: GranularStreamStates::ResetReceived,
