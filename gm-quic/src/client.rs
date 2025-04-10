@@ -302,7 +302,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
     /// and the factory is [`UdpSocketController::bind`].
-    pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
+    pub fn with_iface_factory(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Box::new(factory),
             ..self
