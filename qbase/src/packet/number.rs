@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 use bytes::BufMut;
 use thiserror::Error;
 
@@ -86,7 +88,8 @@ impl PacketNumber {
     /// [Appendix A.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.2)
     /// for more details.
     pub fn encode(pn: u64, largest_acked: u64) -> Self {
-        let range = (pn - largest_acked) * 2;
+        // Minimum 16-bit PN encoding ensures delayed packets on slower paths remain decodable
+        let range = max((pn - largest_acked) * 2, (1 << 16) - 1);
         if range < 1 << 8 {
             Self::U8(pn as u8)
         } else if range < 1 << 16 {
@@ -192,7 +195,8 @@ mod tests {
     fn test_write_packet_number() {
         let mut buf = vec![];
         buf.put_packet_number(PacketNumber::encode(0, 0));
-        assert_eq!(buf, [0x00]);
+        // Minimum 16-bit PN encoding ensures delayed packets on slower paths remain decodable
+        assert_eq!(buf, [0x00, 0x00]);
 
         buf.clear();
         buf.put_packet_number(PacketNumber::encode(1 << 8, 0));
