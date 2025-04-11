@@ -9,7 +9,7 @@
 [English](README.md) | 中文
 
 QUIC协议是下一代互联网重要的基础设施，而`gm-quic`则是一个原生异步Rust的QUIC协议实现，一个高效的、可扩展的[RFC 9000][1]实现，同时工程质量优良。
-`qm-quic`gm-quic不仅实现了标准QUIC协议，还额外实现了[RFC 9221 (Unreliable Datagram Extension)][3]、[qlog (QUIC event logging)][2]等扩展，另外还有纯碎基于quic进行密钥交换的[ssh样例[4]。
+`qm-quic`gm-quic不仅实现了标准QUIC协议，还额外实现了[RFC 9221 (Unreliable Datagram Extension)][3]、[qlog (QUIC event logging)][2]等扩展，另外还有纯碎基于quic进行密钥交换的[ssh样例][4]。
 
 众所周知，QUIC拥有许多优良特性，以及极致的安全性，十分适合在高性能传输、数据隐私安全、物联网领域推广使用:
 
