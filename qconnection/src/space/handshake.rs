@@ -198,7 +198,8 @@ pub fn spawn_deliver_and_parse(
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    let parse = async move |packet: CipherHanshakePacket, pathway, link| {
+    let parse = async move |packet: CipherHanshakePacket, pathway: Pathway, link| {
+        let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
             let path = match components.get_or_try_create_path(link, pathway, true) {
                 Ok(path) => path,

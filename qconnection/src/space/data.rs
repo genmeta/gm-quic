@@ -485,7 +485,8 @@ pub fn spawn_deliver_and_parse(
             let components = components.clone();
             let space = space.clone();
             let dispatch_data_frame = dispatch_data_frame.clone();
-            async move |packet: CipherZeroRttPacket, pathway, link| {
+            async move |packet: CipherZeroRttPacket, pathway: Pathway, link| {
+                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                     let path = match components.get_or_try_create_path(link, pathway, true) {
                         Ok(path) => path,
@@ -520,7 +521,8 @@ pub fn spawn_deliver_and_parse(
     let parse_one_rtt =
         {
             let components = components.clone();
-            async move |packet: CipherOneRttPacket, pathway, link| {
+            async move |packet: CipherOneRttPacket, pathway: Pathway, link| {
+                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
                     let path = match components.get_or_try_create_path(link, pathway, true) {
                         Ok(path) => path,
