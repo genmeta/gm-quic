@@ -138,3 +138,6 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 - 聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
 
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html
+[2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
+[3]: https://datatracker.ietf.org/doc/html/rfc9221
+[4]: https://github.com/genmeta/gm-quic/blob/main/h3-shim/examples/
