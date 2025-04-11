@@ -230,7 +230,8 @@ pub fn spawn_deliver_and_parse(
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let remote_cids = components.cid_registry.remote.clone();
-    let parse = async move |packet: CipherInitialPacket, pathway, link| {
+    let parse = async move |packet: CipherInitialPacket, pathway: Pathway, link| {
+        let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
         // rfc9000 7.2:
         // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
         // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
