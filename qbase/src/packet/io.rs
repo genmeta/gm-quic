@@ -478,7 +478,7 @@ mod tests {
         let final_packet_layout = writer.encrypt_and_protect();
         assert!(final_packet_layout.is_ack_eliciting());
         assert!(final_packet_layout.in_flight());
-        assert_eq!(final_packet_layout.sent_bytes(), 68);
+        assert_eq!(final_packet_layout.sent_bytes(), 69);
         assert_eq!(
             &buffer[..final_packet_layout.sent_bytes()],
             [
@@ -488,7 +488,7 @@ mod tests {
                 // long packet type (2) = 0, initial packet
                 // reserved bits (2) = 0,
                 // packet number length (2) = 0, 1 byte
-                192, // first byte
+                193, // first byte
                 0, 0, 0, 1, // quic version
                 // destination connection id, "testdcid"
                 8, // dcid length
@@ -498,8 +498,8 @@ mod tests {
                 b't', b'e', b's', b't', b's', b'c', b'i', b'd', // scid bytes
                 10,   // token length, no token
                 b't', b'e', b's', b't', b'_', b't', b'o', b'k', b'e', b'n', // token bytes
-                64, 32, // payload length, 2 bytes encoded varint
-                0,  // encoded packet number
+                64, 33, // payload length, 2 bytes encoded varint
+                0, 0, // encoded packet number
                 // crypto frame header
                 6,  // crypto frame type
                 0,  // crypto frame offset
