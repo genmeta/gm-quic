@@ -13,10 +13,13 @@ run_client() {
     binary="/http-client"
 
     case "$TESTCASE" in
-        "handshake" | "transfer" )
+        "handshake" | "transfer" | "rebind-port" | "rebind-addr" )
             # do nothing
             ;;
-        "h3" )
+        "multiconnect" )
+            CLIENT_PARAMS="$CLIENT_PARAMS --reuse-connection=false"
+            ;;
+        "http3" )
             binary="/h3-client"
             ;;
         *)
@@ -27,7 +30,7 @@ run_client() {
 
     # Start the client
     echo "Starting client with parameters: $CLIENT_PARAMS"
-    $binary --alpns hq-interop --qlog $QLOGDIR \
+    RUST_LOG=debug $binary --alpns hq-interop --qlog $QLOGDIR \
         --skip-verify --save /downloads $CLIENT_PARAMS $REQUESTS
 }
 
@@ -35,10 +38,10 @@ run_server() {
     binary="/http-server"
 
     case "$TESTCASE" in
-        "handshake" | "transfer" )
+        "handshake" | "transfer" | "multiconnect" | "rebind-port" | "rebind-addr" )
             # do nothing
             ;;
-        "h3" )
+        "http3" )
             binary="/h3-server"
             ;;
         *)
@@ -48,7 +51,7 @@ run_server() {
     esac
     # Start the server
     echo "Starting server with parameters: $SERVER_PARAMS"
-    $binary --alpns hq-interop --qlog $QLOGDIR \
+    RUST_LOG=debug $binary --alpns hq-interop --qlog $QLOGDIR \
         -c /certs/cert.pem -k /certs/server.key -d /www $SERVER_PARAMS
 }
 

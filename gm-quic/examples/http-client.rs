@@ -25,12 +25,10 @@ struct Options {
         help = "Certificates of CA who issues the server certificate"
     )]
     roots: Vec<PathBuf>,
-    #[arg(
-        long,
-        default_value = "false",
-        help = "Skip verification of server certificate"
-    )]
+    #[arg(long, help = "Skip verification of server certificate")]
     skip_verify: bool,
+    #[arg(long,action = clap::ArgAction::Set, help = "Reuse connection",default_value = "true")]
+    reuse_connection: bool,
     #[arg(
         long,
         short,
@@ -85,29 +83,53 @@ async fn run(options: Options) -> Result<(), Error> {
         QuicClient::builder().with_root_certificates(roots)
     };
 
+    let client_builder = if options.reuse_connection {
+        client_builder.reuse_connection()
+    } else {
+        client_builder
+    };
+
     let client = client_builder
         .with_qlog(qlogger)
         .without_cert()
         .with_parameters(client_parameters())
         .with_alpns(options.alpns)
         .enable_sslkeylog()
-        .reuse_connection()
         .build();
 
     if options.uris.len() == 1 && options.uris[0].path() == "/" {
-        tracing::warn!("process mode");
-        return process(&client, &options.uris[0], options.save).await;
-    }
-
-    for uri in options.uris {
-        download(&client, uri, options.save.as_ref()).await?;
+        return process(
+            &client,
+            &options.uris[0],
+            options.save,
+            options.reuse_connection,
+        )
+        .await;
+    } else {
+        for uri in options.uris {
+            download(
+                &client,
+                uri,
+                options.save.as_ref(),
+                options.reuse_connection,
+            )
+            .await?;
+        }
     }
 
     Ok(())
 }
 
-async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> Result<(), Error> {
+async fn process(
+    client: &QuicClient,
+    base_uri: &Uri,
+    save: Option<PathBuf>,
+    reuse: bool,
+) -> Result<(), Error> {
     let mut stdin = BufReader::new(io::stdin());
+    tracing::warn!(
+        "enter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quic` to quit"
+    );
     loop {
         let mut input = String::new();
         _ = stdin.read_line(&mut input).await?;
@@ -125,11 +147,16 @@ async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> 
         uri_parts.scheme = base_uri.scheme().cloned();
         uri_parts.authority = base_uri.authority().cloned();
         uri_parts.path_and_query = Some(format!("/{content}").parse()?);
-        download(client, Uri::from_parts(uri_parts)?, save.as_ref()).await?;
+        download(client, Uri::from_parts(uri_parts)?, save.as_ref(), reuse).await?;
     }
 }
 
-async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Result<(), Error> {
+async fn download(
+    client: &QuicClient,
+    uri: Uri,
+    save: Option<&PathBuf>,
+    reuse: bool,
+) -> Result<(), Error> {
     let (server_name, server_addr) =
         lookup(uri.authority().ok_or("authority must be present in uri")?).await?;
 
@@ -150,6 +177,10 @@ async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Resu
         Some(path) => io::copy(&mut response, &mut fs::File::create(path).await?).await?,
         None => io::copy(&mut response, &mut io::stdout()).await?,
     };
+
+    if !reuse {
+        connection.close("done".into(), 0);
+    }
 
     tracing::info!("saved to file {file_path}");
     Ok(())
