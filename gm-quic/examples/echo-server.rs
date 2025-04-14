@@ -2,13 +2,15 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::{handy::*, *};
-use qevent::telemetry::handy::DefaultSeqLogger;
+use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
 struct Options {
+    #[arg(long, help = "Save the qlog to a dir", value_name = "PATH")]
+    qlog: Option<PathBuf>,
     #[arg(
         short,
         long,
@@ -54,11 +56,16 @@ async fn main() {
 }
 
 async fn run(options: Options) -> io::Result<()> {
+    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        None => Arc::new(NullLogger),
+    };
+
     let server = QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(options.certs.cert.as_path(), options.certs.key.as_path())
         .with_parameters(server_parameters())
-        .with_qlog(Arc::new(DefaultSeqLogger::new(PathBuf::from("/tmp/sqlog"))))
+        .with_qlog(qlogger)
         .listen(options.listen.as_slice())?;
 
     info!("listen on {:?}", server.addresses());

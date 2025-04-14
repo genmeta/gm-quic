@@ -89,10 +89,12 @@ impl ArcPathContexts {
         if let Some((_, path)) = self.paths.remove(pathway) {
             self.broker
                 .emit(Event::PathInactivated(path.pathway, path.link));
-            tracing::warn!(%pathway, reason, "removed");
+            tracing::warn!(%pathway, reason, "path removed");
             if self.is_empty() {
-                let error =
-                    Error::with_default_fty(ErrorKind::NoViablePath, "no viable path exist");
+                let error = Error::with_default_fty(
+                    ErrorKind::NoViablePath,
+                    format!("no viable path exist, last path removed because: {reason}"),
+                );
                 self.broker.emit(Event::Failed(error));
             }
         }

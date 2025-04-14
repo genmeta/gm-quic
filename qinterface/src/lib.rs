@@ -25,7 +25,7 @@ pub trait QuicInterface: Send + Sync {
     fn poll_send(
         &self,
         cx: &mut Context,
-        ptks: &[io::IoSlice],
+        pkts: &[io::IoSlice],
         hdr: PacketHeader,
     ) -> Poll<io::Result<usize>>;
 

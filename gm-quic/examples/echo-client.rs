@@ -3,14 +3,16 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use clap::Parser;
 use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
 use http::uri::Authority;
-use qevent::telemetry::handy::DefaultSeqLogger;
+use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use rustls::RootCertStore;
-use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
 struct Options {
+    #[arg(long, help = "Save the qlog to a dir", value_name = "PATH")]
+    qlog: Option<PathBuf>,
     #[arg(
         long,
         short,
@@ -39,6 +41,11 @@ async fn main() {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
+    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        None => Arc::new(NullLogger),
+    };
+
     let (server_name, server_addr) = lookup(&options.uri).await?;
 
     let mut roots = RootCertStore::empty();
@@ -49,7 +56,7 @@ async fn run(options: Options) -> Result<(), Error> {
         .with_root_certificates(roots)
         .without_cert()
         .with_parameters(client_parameters())
-        .with_qlog(Arc::new(DefaultSeqLogger::new(PathBuf::from("/tmp/sqlog"))))
+        .with_qlog(qlogger)
         .build();
 
     let connection = client.connect(server_name, server_addr)?;
@@ -68,8 +75,6 @@ async fn run(options: Options) -> Result<(), Error> {
         stdin.read_line(&mut line).await?;
         let line = line.trim();
 
-        let mut echo = String::new();
-
         tokio::try_join!(
             async {
                 tracing::debug!("client begin sending");
@@ -80,8 +85,8 @@ async fn run(options: Options) -> Result<(), Error> {
                 Result::<_, Error>::Ok(())
             },
             async {
-                reader.read_to_string(&mut echo).await?;
-                info!("server echoed: `{echo}`");
+                io::copy(&mut reader, &mut io::stdout()).await?;
+                io::stdout().write_all(b"\n").await?;
                 Result::<_, Error>::Ok(())
             }
         )?;
