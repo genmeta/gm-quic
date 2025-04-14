@@ -28,7 +28,7 @@ mod qudp {
         fn poll_send(
             &self,
             cx: &mut Context,
-            ptks: &[io::IoSlice],
+            pkts: &[io::IoSlice],
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
             debug_assert_eq!(hdr.ecn(), None);
@@ -40,7 +40,7 @@ mod qudp {
                 hdr.ecn(),
                 hdr.seg_size(),
             );
-            UdpSocketController::poll_send(self, cx, ptks, &hdr)
+            UdpSocketController::poll_send(self, cx, pkts, &hdr)
         }
 
         fn poll_recv(

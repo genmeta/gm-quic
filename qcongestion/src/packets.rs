@@ -257,14 +257,13 @@ impl PacketSpace {
                     Err(unacked.time_sent + loss_delay)
                 }
             })
-            .filter(|result| match result {
-                Ok(_) => true,
+            .filter_map(|result| match result {
+                Ok(t) => Some(t),
                 Err(time) => {
-                    self.loss_time = self.loss_time.map_or(Some(*time), |t| Some(t.min(*time)));
-                    false
+                    self.loss_time = self.loss_time.map_or(Some(time), |t| Some(t.min(time)));
+                    None
                 }
             })
-            .map(|result| result.unwrap())
             .collect();
 
         const PERSISTENT_LOSS_THRESHOLD: usize = 3;

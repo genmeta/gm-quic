@@ -106,9 +106,14 @@ impl TelemetryStorage for PathBuf {
                 .create(true)
                 .truncate(true)
                 .write(true)
-                .open(file_path)
+                .open(&file_path)
                 .await
-                .unwrap()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "failed to create sqlog file {}: {e:?}, qlogs to this connection will be ignored.",
+                        file_path.display()
+                    )
+                })
         }
     }
 }
