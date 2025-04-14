@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use bytes::BufMut;
 use derive_more::Deref;
@@ -454,8 +454,10 @@ impl<'a> Transaction<'a> {
 
 struct LevelState {
     epoch: Epoch,
-    pkt: PaddablePacket,
+    packet: PaddablePacket,
+    fresh_len: usize,
     ack: Option<u64>,
+    buf_range: Range<usize>,
 }
 
 impl Transaction<'_> {
@@ -467,133 +469,131 @@ impl Transaction<'_> {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
     ) -> Result<usize, Signals> {
+        // how many bytes are used (constrains packets that encrypted and protected)
         let mut written = 0;
+        // last written but unencrypted packet, may be pad before encrypt and protect
         let mut last_level: Option<LevelState> = None;
-        let mut last_level_size = 0;
         let mut containing_initial = false;
         let mut signals = Signals::empty();
 
-        if let Ok((mid_pkt, ack)) = spaces
-            .initial()
-            .try_assemble_initial_packet(self, &mut buf[written..])
-            .inspect_err(|s| signals |= *s)
-        {
-            self.constraints
-                .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
-            last_level_size = mid_pkt.packet_len();
-            containing_initial = true;
-            last_level = Some(LevelState {
-                epoch: Epoch::Initial,
-                pkt: mid_pkt,
-                ack,
-            });
-        }
+        let load_initial = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+            spaces
+                .initial()
+                .try_assemble_initial_packet(tx, &mut buf[buf_range.clone()])
+                .map(|(packet, ack)| LevelState {
+                    epoch: Epoch::Initial,
+                    packet,
+                    fresh_len: 0,
+                    ack,
+                    buf_range,
+                })
+        };
 
-        let is_one_rtt_ready = spaces.data().is_one_rtt_ready();
-        if !is_one_rtt_ready {
-            if let Ok((mid_pkt, fresh_data)) = spaces
+        let load_0rtt = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+            spaces
                 .data()
-                .try_assemble_0rtt_packet(
-                    self,
-                    path_challenge_frames,
-                    &mut buf[written + last_level_size..],
-                )
-                .inspect_err(|s| signals |= *s)
-            {
-                if let Some(last_level) = last_level.take() {
-                    let final_layout = last_level.pkt.complete(&mut buf[written..]);
-                    written += final_layout.sent_bytes();
-                    self.cc.on_pkt_sent(
-                        last_level.epoch,
-                        final_layout.pn(),
-                        final_layout.is_ack_eliciting(),
-                        final_layout.sent_bytes(),
-                        final_layout.in_flight(),
-                        last_level.ack,
-                    );
-                }
-
-                self.constraints
-                    .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
-                self.flow_limit.post_sent(fresh_data);
-                last_level_size = mid_pkt.packet_len();
-                last_level = Some(LevelState {
+                .try_assemble_0rtt_packet(tx, path_challenge_frames, &mut buf[buf_range.clone()])
+                .map(|(packet, fresh_len)| LevelState {
                     epoch: Epoch::Data,
-                    pkt: mid_pkt,
+                    packet,
+                    fresh_len,
                     ack: None,
-                });
-            }
-        }
+                    buf_range,
+                })
+        };
 
-        if let Ok((mid_pkt, ack)) = spaces
-            .handshake()
-            .try_assemble_packet(self, &mut buf[written + last_level_size..])
-            .inspect_err(|s| signals |= *s)
-        {
-            if let Some(last_level) = last_level.take() {
-                let final_layout = last_level.pkt.complete(&mut buf[written..]);
-                written += final_layout.sent_bytes();
-                self.cc.on_pkt_sent(
-                    last_level.epoch,
-                    final_layout.pn(),
-                    final_layout.is_ack_eliciting(),
-                    final_layout.sent_bytes(),
-                    final_layout.in_flight(),
-                    last_level.ack,
-                );
-            }
+        let load_handshake = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+            spaces
+                .handshake()
+                .try_assemble_packet(tx, &mut buf[buf_range.clone()])
+                .map(|(packet, ack)| LevelState {
+                    epoch: Epoch::Handshake,
+                    packet,
+                    fresh_len: 0,
+                    ack,
+                    buf_range,
+                })
+        };
 
-            self.constraints
-                .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
-            last_level_size = mid_pkt.packet_len();
-            last_level = Some(LevelState {
-                epoch: Epoch::Handshake,
-                pkt: mid_pkt,
-                ack,
-            });
-        }
-
-        if is_one_rtt_ready {
-            if let Ok((mid_pkt, ack, fresh_data)) = spaces
+        let load_data = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+            spaces
                 .data()
                 .try_assemble_1rtt_packet(
-                    self,
+                    tx,
                     spin,
                     path_challenge_frames,
                     path_response_frames,
-                    &mut buf[written + last_level_size..],
+                    &mut buf[buf_range.clone()],
                 )
-                .inspect_err(|s| signals |= *s)
-            {
-                if let Some(last_level) = last_level.take() {
-                    let final_layout = last_level.pkt.complete(&mut buf[written..]);
-                    written += final_layout.sent_bytes();
-                    self.cc.on_pkt_sent(
-                        last_level.epoch,
-                        final_layout.pn(),
-                        final_layout.is_ack_eliciting(),
-                        final_layout.sent_bytes(),
-                        final_layout.in_flight(),
-                        last_level.ack,
-                    );
-                }
-
-                self.constraints
-                    .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
-                self.flow_limit.post_sent(fresh_data);
-                last_level = Some(LevelState {
+                .map(|(packet, ack, fresh_len)| LevelState {
                     epoch: Epoch::Data,
-                    pkt: mid_pkt,
+                    packet,
+                    fresh_len,
                     ack,
-                });
+                    buf_range,
+                })
+        };
+
+        #[allow(clippy::complexity)]
+        let loads: &[&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _] =
+            if spaces.data().is_one_rtt_ready() {
+                &[&load_initial, &load_handshake, &load_data]
+            } else {
+                &[&load_initial, &load_0rtt, &load_handshake]
+            };
+
+        for load in loads {
+            // calculate the buffer size of this data packet
+            let last_level_size = last_level
+                .as_ref()
+                .map(|last_level| last_level.packet.packet_len())
+                .unwrap_or_default();
+            let this_level_start = written + last_level_size;
+            let this_level_end = (this_level_start + self.constraints.available()).min(buf.len());
+            match (load)(self, buf, this_level_start..this_level_end) {
+                Ok(this_level) => {
+                    if this_level.epoch == Epoch::Initial {
+                        containing_initial = true;
+                    }
+                    // commit constraints and flow_limit
+                    self.constraints.commit(
+                        this_level.packet.packet_len(),
+                        this_level.packet.in_flight(),
+                    );
+                    self.flow_limit.post_sent(this_level.fresh_len);
+                    // replace last level, complete and commit last level to cc
+                    if let Some(last_level) = last_level.replace(this_level) {
+                        let final_layout =
+                            last_level.packet.complete(&mut buf[last_level.buf_range]);
+                        written += final_layout.sent_bytes();
+                        self.cc.on_pkt_sent(
+                            last_level.epoch,
+                            final_layout.pn(),
+                            final_layout.is_ack_eliciting(),
+                            final_layout.sent_bytes(),
+                            final_layout.in_flight(),
+                            last_level.ack,
+                        );
+                    }
+                }
+                Err(s) => signals |= s,
             }
         }
 
         if let Some(final_level) = last_level {
-            let final_layout = if containing_initial || final_level.pkt.probe_new_path() {
-                final_level.pkt.fill_and_complete(&mut buf[written..])
+            // if the datagram contains initial packet or probe new path frames, it should be padded
+            let final_layout = if containing_initial || final_level.packet.probe_new_path() {
+                let origin_len = final_level.packet.packet_len();
+                let final_layout = final_level
+                    .packet
+                    .fill_and_complete(&mut buf[final_level.buf_range]);
+                self.constraints.commit(
+                    final_layout.sent_bytes() - origin_len,
+                    final_layout.in_flight(),
+                );
+                final_layout
             } else {
-                final_level.pkt.complete(&mut buf[written..])
+                final_level.packet.complete(&mut buf[final_level.buf_range])
             };
 
             written += final_layout.sent_bytes();
@@ -622,20 +622,14 @@ impl Transaction<'_> {
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
     ) -> Result<usize, Signals> {
-        let buffer = self.constraints.constrain(buf);
+        let buf = self.constraints.constrain(buf);
         data_space
-            .try_assemble_1rtt_packet(
-                self,
-                spin,
-                path_challenge_frames,
-                path_response_frames,
-                buffer,
-            )
+            .try_assemble_1rtt_packet(self, spin, path_challenge_frames, path_response_frames, buf)
             .map(|(packet, ack, fresh_bytes)| {
                 let final_layout = if packet.probe_new_path() {
-                    packet.complete(buffer)
+                    packet.complete(buf)
                 } else {
-                    packet.fill_and_complete(buffer)
+                    packet.fill_and_complete(buf)
                 };
                 self.constraints
                     .commit(final_layout.sent_bytes(), final_layout.in_flight());
@@ -660,17 +654,13 @@ impl Transaction<'_> {
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
     ) -> Result<usize, Signals> {
-        let buffer = self.constraints.constrain(buf);
+        let buf = self.constraints.constrain(buf);
         data_space
-            .try_assemble_probe_packet(
-                self,
-                spin,
-                path_challenge_frames,
-                path_response_frames,
-                buffer,
-            )
+            .try_assemble_probe_packet(self, spin, path_challenge_frames, path_response_frames, buf)
             .map(|packet| {
-                let final_layout = packet.fill_and_complete(buffer);
+                let final_layout = packet.fill_and_complete(buf);
+                self.constraints
+                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
                 self.cc.on_pkt_sent(
                     Epoch::Data,
                     final_layout.pn(),
@@ -689,6 +679,7 @@ impl Transaction<'_> {
         spin: SpinBit,
         spaces: &Spaces,
     ) -> Result<usize, Signals> {
+        let buf = self.constraints.constrain(buf);
         for epoch in [Epoch::Data, Epoch::Handshake, Epoch::Initial] {
             if self.cc.need_send_ack_eliciting(epoch) == 0 {
                 continue;
@@ -704,6 +695,8 @@ impl Transaction<'_> {
                 } else {
                     packet.complete(buf)
                 };
+                self.constraints
+                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
                 self.cc.on_pkt_sent(
                     epoch,
                     final_layout.pn(),
