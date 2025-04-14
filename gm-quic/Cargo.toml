@@ -32,6 +32,7 @@ tracing = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
 qevent = { workspace = true, features = ["enabled"] }
+rand = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }
