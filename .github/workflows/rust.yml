@@ -14,11 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - name: Install latest rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -28,11 +25,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - name: Install latest rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -42,11 +36,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - name: Install latest rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -62,11 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
+      - name: Install latest rust nightly toolchain and rustfmt
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
-          override: true
           components: rustfmt
       - name: Run rustfmt
         run: cargo +nightly fmt --all -- --check
@@ -74,11 +64,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
+      - name: Install latest rust nightly toolchain with clippy
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
-          override: true
           components: clippy
       - name: Run clippy
         run: cargo +nightly clippy --all-targets --all-features -- -Dwarnings
@@ -86,10 +75,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
+      - name: Install latest rust nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
-          override: true
       - name: Run doc
         run: RUSTDOCFLAGS="-D warnings" cargo +nightly doc --no-deps

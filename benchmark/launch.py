@@ -137,7 +137,8 @@ def git_clone(owner: str, repo: str, branch: str) -> None:
         subprocess.run(
             ["git", "clone", "--recursive", "--branch", branch,
              f"https://github.com/{owner}/{repo}"],
-            cwd=root
+            cwd=root,
+            check=True
         )
 
 
@@ -149,11 +150,13 @@ def go_quic_runner() -> ServerRunner:
     # 编译
     subprocess.run(
         ["go", "get", "example/quic-server",],
-        cwd=go_quic_dir
+        cwd=go_quic_dir,
+        check=True
     )
     subprocess.run(
         ["go", "build", "-ldflags=-s -w", "-trimpath", "-o", "quic_server"],
-        cwd=go_quic_dir
+        cwd=go_quic_dir,
+        check=True
     )
 
     binary = os.path.join(go_quic_dir, "quic_server")
@@ -176,7 +179,8 @@ def gm_quic_runner() -> ServerRunner:
     subprocess.run(
         ["cargo", "build", "--release", "--package",
             "h3-shim", "--example", "h3-server"],
-        cwd=gm_quic_dir
+        cwd=gm_quic_dir,
+        check=True
     )
 
     launch = [
@@ -198,7 +202,8 @@ def tquic_runner() -> ServerRunner:
     subprocess.run(
         ["cargo", "build", "--release", "--package",
             "tquic_tools", "--bin", "tquic_server"],
-        cwd=tquic_dir
+        cwd=tquic_dir,
+        check=True
     )
 
     launch = [
@@ -219,7 +224,8 @@ def quinn_runner() -> ServerRunner:
 
     subprocess.run(
         ["cargo", "build", "--release", "--example", "server"],
-        cwd=quinn_dir
+        cwd=quinn_dir,
+        check=True
     )
 
     launch = [
@@ -241,7 +247,8 @@ def cf_quiche_runner() -> ServerRunner:
 
     subprocess.run(
         ["cargo", "build", "--release", "--bin", "quiche-server"],
-        cwd=quiche_dir
+        cwd=quiche_dir,
+        check=True
     )
 
     launch = [
