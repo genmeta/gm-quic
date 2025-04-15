@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::BufMut;
-use futures::{Stream, StreamExt};
 use qbase::{
     Epoch,
     cid::ConnectionId,
@@ -20,6 +19,7 @@ use qbase::{
         keys::ArcKeys,
         number::PacketNumber,
     },
+    util::bound_deque::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -158,7 +158,7 @@ impl HandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut bundles: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
+    packets: BoundQueue<ReceivedFrom>,
     space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -197,7 +197,7 @@ pub fn spawn_deliver_and_parse(
 
     let components = components.clone();
     let role = components.handshake.role();
-    let parameters = components.parameters.clone();
+    let conn_state = components.conn_state.clone();
     let parse = async move |packet: CipherHanshakePacket, pathway: Pathway, link| {
         let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
@@ -242,7 +242,7 @@ pub fn spawn_deliver_and_parse(
             // negotiating done.
             // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
             if role == qbase::sid::Role::Server {
-                let origin_dcid = parameters.get_origin_dcid()?;
+                let origin_dcid = components.parameters.get_origin_dcid()?;
                 if origin_dcid != *packet.dcid() {
                     components.proto.del_router_entry(&origin_dcid.into());
                 }
@@ -254,11 +254,17 @@ pub fn spawn_deliver_and_parse(
 
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, link)) = bundles.next().await {
-                if let Err(error) = parse(packet, pathway, link).await {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
+            let deliver_and_parse = async move {
+                while let Some((packet, pathway, socket)) = packets.recv().await {
+                    if let Err(error) = parse(packet, pathway, socket).await {
+                        event_broker.emit(Event::Failed(error));
+                    };
+                }
+            };
+            tokio::select! {
+                _ = deliver_and_parse => {},
+                _ = conn_state.terminated() => {}
+            };
         }
         .instrument_in_current()
         .in_current_span(),
@@ -360,14 +366,14 @@ impl ClosingHandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut bundles: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
+    bundles: BoundQueue<ReceivedFrom>,
     space: ClosingHandshakeSpace,
     terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = bundles.next().await {
+            while let Some((packet, pathway, _socket)) = bundles.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

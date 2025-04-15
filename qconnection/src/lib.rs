@@ -117,7 +117,7 @@ pub struct Components {
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
-    state: ConnState,
+    conn_state: ConnState,
 }
 
 impl Components {
@@ -300,13 +300,13 @@ impl Connection {
     }
 
     pub async fn handshaked(&self) {
-        if let Ok(f) = self.try_map_components(|core_conn| core_conn.state.handshaked()) {
+        if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.handshaked()) {
             f.await
         }
     }
 
     pub async fn terminated(&self) {
-        if let Ok(f) = self.try_map_components(|core_conn| core_conn.state.terminated()) {
+        if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.terminated()) {
             f.await
         }
     }

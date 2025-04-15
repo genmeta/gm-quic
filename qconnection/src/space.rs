@@ -76,7 +76,7 @@ impl Spaces {
                     })
                     .await;
                 initial::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.initial().receiver(),
+                    rcvd_pkt_q.initial().clone(),
                     space,
                     terminator.clone(),
                     event_broker.clone(),
@@ -97,7 +97,7 @@ impl Spaces {
                     })
                     .await;
                 handshake::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.handshake().receiver(),
+                    rcvd_pkt_q.handshake().clone(),
                     space,
                     terminator.clone(),
                     event_broker.clone(),
@@ -116,7 +116,7 @@ impl Spaces {
                     })
                     .await;
                 data::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.one_rtt().receiver(),
+                    rcvd_pkt_q.one_rtt().clone(),
                     space,
                     terminator.clone(),
                     event_broker.clone(),
@@ -353,20 +353,20 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
 pub fn spawn_deliver_and_parse(components: &Components) {
     let received_packets_queue = &components.rcvd_pkt_q;
     initial::spawn_deliver_and_parse(
-        received_packets_queue.initial().receiver(),
+        received_packets_queue.initial().clone(),
         components.spaces.initial.clone(),
         components,
         components.event_broker.clone(),
     );
     handshake::spawn_deliver_and_parse(
-        received_packets_queue.handshake().receiver(),
+        received_packets_queue.handshake().clone(),
         components.spaces.handshake.clone(),
         components,
         components.event_broker.clone(),
     );
     data::spawn_deliver_and_parse(
-        received_packets_queue.zero_rtt().receiver(),
-        received_packets_queue.one_rtt().receiver(),
+        received_packets_queue.zero_rtt().clone(),
+        received_packets_queue.one_rtt().clone(),
         components.spaces.data.clone(),
         components,
         components.event_broker.clone(),

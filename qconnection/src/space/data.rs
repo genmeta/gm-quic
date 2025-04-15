@@ -1,7 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
 use bytes::BufMut;
-use futures::{Stream, StreamExt};
 use qbase::{
     Epoch,
     cid::ConnectionId,
@@ -27,6 +26,7 @@ use qbase::{
     },
     param::StoreParameter,
     sid::{ControlStreamsConcurrency, Role},
+    util::bound_deque::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -364,8 +364,8 @@ impl DataSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttFrom> + Unpin + Send + 'static,
-    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttFrom> + Unpin + Send + 'static,
+    zeor_rtt_packets: BoundQueue<ReceivedZeroRttFrom>,
+    one_rtt_packets: BoundQueue<ReceivedOneRttFrom>,
     space: Arc<DataSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -558,24 +558,38 @@ pub fn spawn_deliver_and_parse(
 
     tokio::spawn({
         let event_broker = event_broker.clone();
+        let conn_state = components.conn_state.clone();
         async move {
-            while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
-                if let Err(error) = parse_zero_rtt(packet, pathway, socket).await {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
+            let deliver_and_parse = async move {
+                while let Some((packet, pathway, socket)) = zeor_rtt_packets.recv().await {
+                    if let Err(error) = parse_zero_rtt(packet, pathway, socket).await {
+                        event_broker.emit(Event::Failed(error));
+                    };
+                }
+            };
+            tokio::select! {
+                _ = deliver_and_parse => {},
+                _ = conn_state.terminated() => {}
+            };
         }
         .instrument_in_current()
         .in_current_span()
     });
     tokio::spawn({
         let event_broker = event_broker.clone();
+        let conn_state = components.conn_state.clone();
         async move {
-            while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
-                if let Err(error) = parse_one_rtt(packet, pathway, socket).await {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
+            let deliver_and_parse = async move {
+                while let Some((packet, pathway, socket)) = one_rtt_packets.recv().await {
+                    if let Err(error) = parse_one_rtt(packet, pathway, socket).await {
+                        event_broker.emit(Event::Failed(error));
+                    };
+                }
+            };
+            tokio::select! {
+                _ = deliver_and_parse => {},
+                _ = conn_state.terminated() => {}
+            };
         }
         .instrument_in_current()
         .in_current_span()
@@ -683,14 +697,14 @@ impl ClosingDataSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedOneRttFrom> + Unpin + Send + 'static,
+    packets: BoundQueue<ReceivedOneRttFrom>,
     space: ClosingDataSpace,
     terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = packets.next().await {
+            while let Some((packet, pathway, _socket)) = packets.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

@@ -4,7 +4,6 @@ use std::{
 };
 
 use bytes::BufMut;
-use futures::{Stream, StreamExt};
 use qbase::{
     Epoch,
     cid::ConnectionId,
@@ -24,6 +23,7 @@ use qbase::{
         number::PacketNumber,
     },
     token::TokenRegistry,
+    util::bound_deque::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -177,7 +177,7 @@ impl InitialSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut packets: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
+    packets: BoundQueue<ReceivedFrom>,
     space: Arc<InitialSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -228,7 +228,7 @@ pub fn spawn_deliver_and_parse(
 
     let components = components.clone();
     let role = components.handshake.role();
-    let parameters = components.parameters.clone();
+    let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let parse = async move |packet: CipherInitialPacket, pathway: Pathway, link| {
         let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
@@ -236,7 +236,8 @@ pub fn spawn_deliver_and_parse(
         // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
         // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
         // with different Source Connection IDs.
-        if parameters
+        if components
+            .parameters
             .initial_scid_from_peer()?
             .is_some_and(|scid| scid != *packet.scid())
         {
@@ -271,9 +272,11 @@ pub fn spawn_deliver_and_parse(
                 path.cc().get_pto(Epoch::Initial),
             );
             path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_contains);
-            if parameters.initial_scid_from_peer()?.is_none() {
+            if components.parameters.initial_scid_from_peer()?.is_none() {
                 remote_cids.revise_initial_dcid(*packet.scid());
-                parameters.initial_scid_from_peer_need_equal(*packet.scid())?;
+                components
+                    .parameters
+                    .initial_scid_from_peer_need_equal(*packet.scid())?;
             }
             // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
             // A server might wish to validate the client address before starting the cryptographic handshake.
@@ -288,7 +291,7 @@ pub fn spawn_deliver_and_parse(
             // negotiating done.
             // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
             if role == qbase::sid::Role::Server {
-                let origin_dcid = parameters.get_origin_dcid()?;
+                let origin_dcid = components.parameters.get_origin_dcid()?;
                 if origin_dcid != *packet.dcid() {
                     components.proto.del_router_entry(&origin_dcid.into());
                 }
@@ -299,11 +302,17 @@ pub fn spawn_deliver_and_parse(
 
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, link)) = packets.next().await {
-                if let Err(error) = parse(packet, pathway, link).await {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
+            let deliver_and_parse = async move {
+                while let Some((packet, pathway, socket)) = packets.recv().await {
+                    if let Err(error) = parse(packet, pathway, socket).await {
+                        event_broker.emit(Event::Failed(error));
+                    };
+                }
+            };
+            tokio::select! {
+                _ = deliver_and_parse => {},
+                _ = conn_state.terminated() => {}
+            };
         }
         .instrument_in_current()
         .in_current_span(),
@@ -405,14 +414,14 @@ impl ClosingInitialSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
+    packets: BoundQueue<ReceivedFrom>,
     space: ClosingInitialSpace,
     terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = packets.next().await {
+            while let Some((packet, pathway, _socket)) = packets.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

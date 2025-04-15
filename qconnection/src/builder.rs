@@ -450,7 +450,7 @@ impl ComponentsReady {
             paths: ArcPathContexts::new(self.tx_wakers, event_broker.clone()),
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
-            state: conn_state,
+            conn_state,
         };
 
         tracing_span.in_scope(|| {
@@ -540,7 +540,7 @@ impl Components {
         is_probed: bool,
     ) -> io::Result<Arc<Path>> {
         self.paths.get_or_try_create_with (pathway,||{
-                let do_validate = !self.state.try_entry_attempted(self, link)?;
+                let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
                 qevent::event!(PathAssigned {
                     path_id: pathway.to_string(),
                     path_local: link.src(),
