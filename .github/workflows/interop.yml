@@ -1,55 +1,119 @@
 name: QUIC Interop 
 
 on:
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *'  # UTC 2:00 AM = Beijing 10:00 AM
+    - cron: '0 2 * * *'
 
 jobs:
-  interop-test:
+  setup-interop-runner:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup interop runner
+        run: |
+          git clone https://github.com/quic-interop/quic-interop-runner.git
+          cd quic-interop-runner
+          python3 -m venv venv
+          source venv/bin/activate
+          pip3 install -r requirements.txt
+          jq '. + {
+            "gm-quic": {
+              "image": "gm-quic:test",
+              "url": "https://github.com/genmeta/gm-quic",
+              "role": "both"
+            }
+          }' implementations.json > implementations.json.new && mv implementations.json.new implementations.json
+      - name: Create tar archive
+        run: tar -czf quic-interop-runner.tar.gz quic-interop-runner/
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-interop-runner
+          path: quic-interop-runner.tar.gz
 
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build docker image
+      run: docker build -t gm-quic:test -f interop/Dockerfile .
+    - name: Save docker image
+      run: docker save gm-quic:test -o gm-quic-image.tar
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: gm-quic-image
+        path: gm-quic-image.tar
+
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    needs: [setup-interop-runner]
+    outputs: 
+      matrix: ${{ steps.prepare-matrix.outputs.matrix }}
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+    - name: Extract interop runner
+      run: tar -xzf quic-interop-runner/quic-interop-runner.tar.gz
+    - name: Prepare matrix
+      id: prepare-matrix
+      run: |
+        content=$(cat quic-interop-runner/implementations.json)
+        matrix='{"include":['
+
+        for impl in $(echo "$content" | jq -r 'keys[]'); do
+          role=$(echo "$content" | jq -r --arg impl "$impl" '.[$impl].role')
+          
+          # Skip gm-quic as we don't want to test it against itself
+          if [ "$impl" = "gm-quic" ]; then
+            continue
+          fi
+          
+          # If implementation can be a client (role=both or client), test against gm-quic server
+          if [ "$role" = "both" ] || [ "$role" = "client" ]; then
+            matrix="$matrix{\"client\":\"$impl\",\"server\":\"gm-quic\"},"
+          fi
+          
+          # If implementation can be a server (role=both or server), test with gm-quic client
+          if [ "$role" = "both" ] || [ "$role" = "server" ]; then
+            matrix="$matrix{\"client\":\"gm-quic\",\"server\":\"$impl\"},"
+          fi
+        done
+
+        matrix="${matrix%,}]}"
+        echo "matrix=$matrix" >> $GITHUB_OUTPUT
+  
+  run-interop:
+    needs: [build-image, setup-interop-runner, prepare-matrix]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # use matrix to test all combinations of client and server in parallel
-      matrix:
-        client: [quic-go, ngtcp2, mvfst, quiche, kwik, picoquic, aioquic, neqo, nginx, msquic, chrome, xquic, lsquic, haproxy, quinn, s2n-quic, go-x-net, gm-quic]
-        server: [quic-go, ngtcp2, mvfst, quiche, kwik, picoquic, aioquic, neqo, nginx, msquic, chrome, xquic, lsquic, haproxy, quinn, s2n-quic, go-x-net, gm-quic]
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: Build docker image
-      run: docker build -t gm-quic:test -f interop/Dockerfile .
-
-    - name: Install and config quic-interop-runner
-      run: |
-        git clone https://github.com/quic-interop/quic-interop-runner.git
-        cd quic-interop-runner
-        jq '. + {
-          "gm-quic": {
-            "image": "localhost/gm-quic:test",
-            "url": "https://github.com/genmeta/gm-quic",
-            "role": "both"
-          }
-        }' implementations.json > implementations.json
-        pip3 install -r requirements.txt
-
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+    - name: Load gm-quic docker image
+      run: docker load -i gm-quic-image/gm-quic-image.tar
+    - name: Extract interop runner
+      run: tar -xzf quic-interop-runner/quic-interop-runner.tar.gz
     - name: Install dependencies
       run: |
         sudo modprobe ip6table_filter
         sudo add-apt-repository -y ppa:wireshark-dev/stable
         sudo apt install -y tshark
-
-    - name: Run the interop tests
+    - name: Run interop
       run: |
         cd quic-interop-runner
+        source venv/bin/activate
         python3 run.py -d -c ${{ matrix.client }} -s ${{ matrix.server }} \
-          -l -${{ matrix.client }}-${{ matrix.server }}-logs -j ${{ matrix.client }}-${{ matrix.server }}-logs/interop.json
-
+          -j ${{ matrix.client }}-${{ matrix.server }}-logs/interop.json \
+          -l ${{ matrix.client }}-${{ matrix.server }}-logs || true
     - name: Upload logs
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.server }}-${{ matrix.client }}
+        name: ${{ matrix.client }}-${{ matrix.server }}
         path: |
           quic-interop-runner/*logs/*
