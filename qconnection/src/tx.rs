@@ -535,11 +535,11 @@ impl Transaction<'_> {
         };
 
         #[allow(clippy::complexity)]
-        let loads: &[&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _] =
+        let loads: [&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _; 3] =
             if spaces.data().is_one_rtt_ready() {
-                &[&load_initial, &load_handshake, &load_data]
+                [&load_initial, &load_handshake, &load_data]
             } else {
-                &[&load_initial, &load_0rtt, &load_handshake]
+                [&load_initial, &load_0rtt, &load_handshake]
             };
 
         for load in loads {

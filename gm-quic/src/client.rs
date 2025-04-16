@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
 
 use dashmap::DashMap;
@@ -41,10 +41,12 @@ pub struct QuicClient {
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
-static REUSEABLE_CONNECTIONS: LazyLock<DashMap<String, Arc<Connection>>> =
-    LazyLock::new(DashMap::new);
-
 impl QuicClient {
+    fn reuseable_connections() -> &'static DashMap<String, Arc<Connection>> {
+        static REUSEABLE_CONNECTIONS: OnceLock<DashMap<String, Arc<Connection>>> = OnceLock::new();
+        REUSEABLE_CONNECTIONS.get_or_init(Default::default)
+    }
+
     /// Start to build a QuicClient.
     ///
     /// Make sure that you have installed the rustls crypto provider before calling this method. If you dont want to use
@@ -179,7 +181,7 @@ impl QuicClient {
                 .with_parameters(self.parameters.clone(), None)
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_proto(PROTO.clone())
+                .with_proto(crate::proto().clone())
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
                 .with_qlog(self.logger.as_ref())
@@ -197,13 +199,13 @@ impl QuicClient {
                             _ = Interfaces::try_free_interface(socket.src())
                         }
                         Event::Failed(error) => {
-                            REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)
                             });
                             connection.enter_closing(error.into())
                         }
                         Event::Closed(ccf) => {
-                            REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)
                             });
                             connection.enter_draining(ccf)
@@ -257,7 +259,7 @@ impl QuicClient {
         let server_name = server_name.into();
         let server_ep = server_ep.to_endpoint_addr();
         if self.reuse_connection {
-            REUSEABLE_CONNECTIONS
+            Self::reuseable_connections()
                 .entry(server_name.clone())
                 .or_try_insert_with(|| self.new_connection(server_name, server_ep))
                 .map(|entry| entry.clone())

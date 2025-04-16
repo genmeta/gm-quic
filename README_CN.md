@@ -145,6 +145,11 @@ github action会定期运行[基准测试][6]，效果如下。go-quic和quiche�
 - [用户论坛](https://github.com/genmeta/gm-quic/discussions)
 - 聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
 
+## Rust版本要求（MSRV）
+gm-quic支持的Rust版本为`1.75`及以上版本。
+
+目前的策略是在主要版本更新时改变它。
+
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html
 [2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
 [3]: https://datatracker.ietf.org/doc/html/rfc9221

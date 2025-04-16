@@ -163,6 +163,11 @@ This ensures the feature is reasonable and has a solid implementation plan.
 - chat group：[send email](mailto:quic_team@genmeta.net) to introduce your contribution, 
 and we will reply to your email with an invitation link and QR code to join the group.
 
+## Rust version requirements (MSRV)
+The gm-quic supports **Rustc version 1.75 or greater**.
+
+The current policy is that this will only be updated in the next major gm-quic release.  
+
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html
 [2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
 [3]: https://datatracker.ietf.org/doc/html/rfc9221

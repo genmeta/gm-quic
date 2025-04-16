@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     io::{self},
     net::{SocketAddr, ToSocketAddrs},
-    sync::{Arc, LazyLock, RwLock, Weak},
+    sync::{Arc, RwLock, Weak},
 };
 
 use dashmap::DashMap;
@@ -22,9 +22,6 @@ use tokio::sync::mpsc;
 use crate::*;
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
-
-// 理应全局只有一个server
-static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
 
 #[derive(Debug, Default)]
 pub struct VirtualHosts(Arc<DashMap<String, Host>>);
@@ -160,8 +157,13 @@ impl QuicServer {
 
 // internal methods
 impl QuicServer {
+    fn global() -> &'static RwLock<Weak<QuicServer>> {
+        static SERVER: OnceLock<RwLock<Weak<QuicServer>>> = OnceLock::new();
+        SERVER.get_or_init(Default::default)
+    }
+
     pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, link: Link) {
-        let Some(server) = SERVER.read().unwrap().upgrade() else {
+        let Some(server) = Self::global().read().unwrap().upgrade() else {
             return;
         };
 
@@ -190,13 +192,13 @@ impl QuicServer {
                 .with_parameters(server.parameters.clone())
                 .with_tls_config(server.tls_config.clone())
                 .with_streams_concurrency_strategy(server.stream_strategy_factory.as_ref())
-                .with_proto(PROTO.clone())
+                .with_proto(crate::proto().clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
                 .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
-        PROTO.deliver(packet, pathway, link).await;
+        crate::proto().deliver(packet, pathway, link).await;
         _ = server.listener.send((connection.clone(), pathway));
 
         tokio::spawn(async move {
@@ -558,7 +560,7 @@ impl QuicServerBuilder<TlsServerConfig> {
     ///
     /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        let mut server = SERVER.write().unwrap();
+        let mut server = QuicServer::global().write().unwrap();
         if let Some(server) = server.upgrade() {
             if !server.listener.is_closed() {
                 tracing::error!("There is already a active server running");
@@ -676,7 +678,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     ///
     /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        let mut server = SERVER.write().unwrap();
+        let mut server = QuicServer::global().write().unwrap();
         if let Some(server) = server.upgrade() {
             if !server.listener.is_closed() {
                 return Err(io::Error::new(

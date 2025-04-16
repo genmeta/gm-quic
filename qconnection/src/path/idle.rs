@@ -20,7 +20,7 @@ pub struct HeartbeatConfig {
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
-        const { Self::ZERO }
+        Self::ZERO
     }
 }
 

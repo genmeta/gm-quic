@@ -158,54 +158,73 @@ where
         let mut guard = self.output.streams();
         let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
 
+        fn try_load_data_into_once<'s, P, TX: 's + Clone>(
+            streams: impl Iterator<Item = (StreamId, &'s (Outgoing<TX>, IOState), usize)>,
+            packet: &mut P,
+            flow_limit: usize,
+        ) -> Result<(StreamId, usize, usize), Signals>
+        where
+            P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        {
+            let mut signals = Signals::TRANSPORT;
+            for (sid, (outgoing, _s), tokens) in streams {
+                match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
+                    Ok((data_len, is_fresh)) => {
+                        let remain_tokens = tokens - data_len;
+                        let fresh_bytes = if is_fresh { data_len } else { 0 };
+                        return Ok((sid, remain_tokens, fresh_bytes));
+                    }
+                    Err(s) => signals |= s,
+                }
+            }
+            Err(signals)
+        }
+
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
         const DEFAULT_TOKENS: usize = 4096;
-        let streams: &mut dyn Iterator<Item = _> = match &output.cursor {
+        let (sid, remain_tokens, fresh_bytes) = match &output.cursor {
             // [sid+1..] + [..=sid]
-            Some((sid, tokens)) if *tokens == 0 => &mut output
-                .outgoings
-                .range((Excluded(sid), Unbounded))
-                .chain(output.outgoings.range(..=sid))
-                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-            // [sid] + [sid+1..] + [..sid]
-            Some((sid, tokens)) => &mut Option::into_iter(
-                output
-                    .outgoings
-                    .get(sid)
-                    .map(|outgoing| (*sid, outgoing, *tokens)),
-            )
-            .chain(
+            Some((sid, tokens)) if *tokens == 0 => try_load_data_into_once(
                 output
                     .outgoings
                     .range((Excluded(sid), Unbounded))
-                    .chain(output.outgoings.range(..sid))
+                    .chain(output.outgoings.range(..=sid))
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                packet,
+                flow_limit,
+            ),
+            // [sid] + [sid+1..] + [..sid]
+            Some((sid, tokens)) => try_load_data_into_once(
+                Option::into_iter(
+                    output
+                        .outgoings
+                        .get(sid)
+                        .map(|outgoing| (*sid, outgoing, *tokens)),
+                )
+                .chain(
+                    output
+                        .outgoings
+                        .range((Excluded(sid), Unbounded))
+                        .chain(output.outgoings.range(..sid))
+                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                ),
+                packet,
+                flow_limit,
             ),
             // [..]
-            None => &mut output
-                .outgoings
-                .range(..)
-                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-        };
-        // dyn Iterator: ?Sized..., 不能直接调用find_map
-        // streams.by_ref().find_map(|(sid, (outgoing, _s), tokens)| {
-        //     let (data_len, is_fresh) =
-        //         outgoing.try_load_data_into(packet, sid, flow_limit, tokens)?;
-        //     output.cursor = Some((sid, tokens - data_len));
-        //     Some(if is_fresh { data_len } else { 0 })
-        // })
-        let mut signals = Signals::TRANSPORT;
-        for (sid, (outgoing, _s), tokens) in streams {
-            match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
-                Ok((data_len, is_fresh)) => {
-                    output.cursor = Some((sid, tokens - data_len));
-                    return Ok(if is_fresh { data_len } else { 0 });
-                }
-                Err(s) => signals |= s,
-            }
-        }
-        Err(signals)
+            None => try_load_data_into_once(
+                output
+                    .outgoings
+                    .range(..)
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                packet,
+                flow_limit,
+            ),
+        }?;
+
+        output.cursor = Some((sid, remain_tokens));
+        Ok(fresh_bytes)
     }
 
     /// Try to load data from streams into the packet.
@@ -255,7 +274,7 @@ where
         let (Continue(result) | Break(result)) = core::iter::from_fn(|| {
             Some(
                 self.try_load_data_into_once(packet, flow_limit)
-                    .inspect(|fresh| flow_limit -= *fresh),
+                    .map(|fresh| (flow_limit -= fresh, fresh).1),
             )
         })
         .try_fold(Err(Signals::empty()), |result, once| match (result, once) {

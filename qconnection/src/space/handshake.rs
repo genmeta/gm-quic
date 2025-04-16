@@ -121,14 +121,14 @@ impl HandshakeSpace {
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
-            .inspect_err(|s| signals |= *s)
+            .map_err(|s| signals |= s)
             .ok();
 
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
 
         Ok((
             packet

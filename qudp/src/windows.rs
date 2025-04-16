@@ -185,7 +185,7 @@ impl Io for UdpSocketController {
         bufs: &mut [std::io::IoSliceMut<'_>],
         hdr: &mut [crate::DatagramHeader],
     ) -> std::io::Result<usize> {
-        let wsa_recvmsg_ptr = WSARECVMSG_PTR.expect("valid function pointer for WSARecvMsg");
+        let wsa_recvmsg_ptr = wsarecvmsg_ptr().expect("valid function pointer for WSARecvMsg");
 
         let mut ctrl_buf = Aligned([0; CMSG_LEN]);
         let mut source: WinSock::SOCKADDR_INET = unsafe { mem::zeroed() };
@@ -348,8 +348,10 @@ fn setsockopt(io: SOCKET, level: libc::c_int, name: libc::c_int, value: libc::c_
     };
 }
 
-static WSARECVMSG_PTR: std::sync::LazyLock<WinSock::LPFN_WSARECVMSG> =
-    std::sync::LazyLock::new(|| {
+fn wsarecvmsg_ptr() -> &'static WinSock::LPFN_WSARECVMSG {
+    static WSARECVMSG_PTR: std::sync::OnceLock<WinSock::LPFN_WSARECVMSG> =
+        std::sync::OnceLock::new();
+    WSARECVMSG_PTR.get_or_init(|| {
         let s = unsafe { WinSock::socket(WinSock::AF_INET as _, WinSock::SOCK_DGRAM as _, 0) };
         if s == WinSock::INVALID_SOCKET {
             tracing::warn!(
@@ -398,4 +400,5 @@ static WSARECVMSG_PTR: std::sync::LazyLock<WinSock::LPFN_WSARECVMSG> =
         }
 
         wsa_recvmsg_ptr
-    });
+    })
+}

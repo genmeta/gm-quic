@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     net::SocketAddr,
-    sync::{Arc, LazyLock, Once},
+    sync::{Arc, Once, OnceLock},
     time::Duration,
 };
 
@@ -27,16 +27,18 @@ where
             .init()
     });
 
-    static RT: LazyLock<Runtime> = LazyLock::new(|| {
+    static RT: OnceLock<Runtime> = OnceLock::new();
+
+    let rt = RT.get_or_init(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to create runtime")
     });
 
-    RT.block_on(async move {
-        static LOCK: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::default);
-        let _lock = LOCK.lock().await;
+    rt.block_on(async move {
+        static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+        let _lock = LOCK.get_or_init(Default::default).lock().await;
 
         let (server, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
