@@ -63,17 +63,23 @@ struct Certs {
     key: PathBuf,
 }
 
-#[cfg_attr(test, allow(unused))]
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .with_ansi(true)
         .init();
-    // console_subscriber::init();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        // default value 512 out of macos ulimit
+        .max_blocking_threads(256)
+        .build()
+        .expect("failed to build tokio runtime");
 
-    run(Options::parse()).await
+    if let Err(error) = rt.block_on(run(Options::parse())) {
+        tracing::info!(?error, "server error");
+        std::process::exit(1);
+    }
 }
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
