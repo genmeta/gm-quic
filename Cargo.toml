@@ -1,5 +1,5 @@
 [workspace]
-resolver = "3"
+resolver = "2"
 members = [
     "qbase",
     "qevent",
@@ -25,12 +25,13 @@ default-members = [
 
 [workspace.package]
 version = "0.2.0"
-edition = "2024"
+edition = "2021"
 readme = "README.md"
 repository = "https://github.com/genmeta/gm-quic"
 license = "Apache-2.0"
 keywords = ["async", "quic", "http3"]
 categories = ["network-programming", "asynchronous"]
+rust-version = "1.80.0"
 
 [workspace.dependencies]
 bitflags = "2"

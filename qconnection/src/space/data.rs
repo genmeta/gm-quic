@@ -26,7 +26,7 @@ use qbase::{
     },
     param::StoreParameter,
     sid::{ControlStreamsConcurrency, Role},
-    util::bound_deque::BoundQueue,
+    util::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -480,95 +480,113 @@ pub fn spawn_deliver_and_parse(
         }
     };
 
-    let parse_zero_rtt =
-        {
-            let components = components.clone();
-            let space = space.clone();
-            let dispatch_data_frame = dispatch_data_frame.clone();
-            async move |packet: CipherZeroRttPacket, pathway: Pathway, link| {
-                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-                if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
-                    let path = match components.get_or_try_create_path(link, pathway, true) {
-                        Ok(path) => path,
-                        Err(_) => {
-                            packet.drop_on_conenction_closed();
-                            return Ok(());
-                        }
+    let deliver_and_parse_0rtt = {
+        let components = components.clone();
+        let space = space.clone();
+        let dispatch_data_frame = dispatch_data_frame.clone();
+        let event_broker = event_broker.clone();
+        async move {
+            while let Some((packet, pathway, link)) = zeor_rtt_packets.recv().await {
+                let parse = async {
+                    let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
+                    if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
+                        let path = match components.get_or_try_create_path(link, pathway, true) {
+                            Ok(path) => path,
+                            Err(_) => {
+                                packet.drop_on_conenction_closed();
+                                return Ok(());
+                            }
+                        };
+
+                        let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                        let packet_contains = FrameReader::new(packet.body(), packet.get_type())
+                            .try_fold(PacketContains::default(), |packet_contains, frame| {
+                                let (frame, frame_type) = frame?;
+                                frames.extend(Some(&frame));
+                                dispatch_data_frame(frame, packet.get_type(), &path);
+                                Result::<_, Error>::Ok(packet_contains.include(frame_type))
+                            })?;
+                        packet.log_received(frames);
+
+                        space.journal.of_rcvd_packets().register_pn(
+                            packet.pn(),
+                            packet_contains.ack_eliciting(),
+                            path.cc().get_pto(Epoch::Data),
+                        );
+                        path.on_packet_rcvd(
+                            Epoch::Data,
+                            packet.pn(),
+                            packet.size(),
+                            packet_contains,
+                        );
                     };
 
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, Error>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
-
-                    space.journal.of_rcvd_packets().register_pn(
-                        packet.pn(),
-                        packet_contains.ack_eliciting(),
-                        path.cc().get_pto(Epoch::Data),
-                    );
-                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
+                    Result::<(), Error>::Ok(())
                 };
-
-                Result::<(), Error>::Ok(())
+                if let Err(error) = parse.await {
+                    event_broker.emit(Event::Failed(error));
+                };
             }
-        };
+        }
+    };
 
-    let parse_one_rtt =
-        {
-            let components = components.clone();
-            async move |packet: CipherOneRttPacket, pathway: Pathway, link| {
-                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-                if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
-                    let path = match components.get_or_try_create_path(link, pathway, true) {
-                        Ok(path) => path,
-                        Err(_) => {
-                            packet.drop_on_conenction_closed();
-                            return Ok(());
-                        }
-                    };
-                    components
-                        .handshake
-                        .discard_spaces_on_server_handshake_done(&components.paths);
+    let deliver_and_parse_1rtt = {
+        let components = components.clone();
+        let space = space.clone();
+        let dispatch_data_frame = dispatch_data_frame.clone();
+        let event_broker = event_broker.clone();
+        async move {
+            while let Some((packet, pathway, link)) = one_rtt_packets.recv().await {
+                let parse = async {
+                    let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
+                    if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
+                        let path = match components.get_or_try_create_path(link, pathway, true) {
+                            Ok(path) => path,
+                            Err(_) => {
+                                packet.drop_on_conenction_closed();
+                                return Ok(());
+                            }
+                        };
+                        components
+                            .handshake
+                            .discard_spaces_on_server_handshake_done(&components.paths);
 
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, Error>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
+                        let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                        let packet_contains = FrameReader::new(packet.body(), packet.get_type())
+                            .try_fold(PacketContains::default(), |packet_contains, frame| {
+                                let (frame, frame_type) = frame?;
+                                frames.extend(Some(&frame));
+                                dispatch_data_frame(frame, packet.get_type(), &path);
+                                Result::<_, Error>::Ok(packet_contains.include(frame_type))
+                            })?;
+                        packet.log_received(frames);
 
-                    space.journal.of_rcvd_packets().register_pn(
-                        packet.pn(),
-                        packet_contains.ack_eliciting(),
-                        path.cc().get_pto(Epoch::Data),
-                    );
-                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
-                }
-                Result::<(), Error>::Ok(())
+                        space.journal.of_rcvd_packets().register_pn(
+                            packet.pn(),
+                            packet_contains.ack_eliciting(),
+                            path.cc().get_pto(Epoch::Data),
+                        );
+                        path.on_packet_rcvd(
+                            Epoch::Data,
+                            packet.pn(),
+                            packet.size(),
+                            packet_contains,
+                        );
+                    }
+                    Result::<(), Error>::Ok(())
+                };
+                if let Err(error) = parse.await {
+                    event_broker.emit(Event::Failed(error));
+                };
             }
-        };
+        }
+    };
 
     tokio::spawn({
-        let event_broker = event_broker.clone();
         let conn_state = components.conn_state.clone();
         async move {
-            let deliver_and_parse = async move {
-                while let Some((packet, pathway, socket)) = zeor_rtt_packets.recv().await {
-                    if let Err(error) = parse_zero_rtt(packet, pathway, socket).await {
-                        event_broker.emit(Event::Failed(error));
-                    };
-                }
-            };
             tokio::select! {
-                _ = deliver_and_parse => {},
+                _ = deliver_and_parse_0rtt => {},
                 _ = conn_state.terminated() => {}
             };
         }
@@ -576,18 +594,10 @@ pub fn spawn_deliver_and_parse(
         .in_current_span()
     });
     tokio::spawn({
-        let event_broker = event_broker.clone();
         let conn_state = components.conn_state.clone();
         async move {
-            let deliver_and_parse = async move {
-                while let Some((packet, pathway, socket)) = one_rtt_packets.recv().await {
-                    if let Err(error) = parse_one_rtt(packet, pathway, socket).await {
-                        event_broker.emit(Event::Failed(error));
-                    };
-                }
-            };
             tokio::select! {
-                _ = deliver_and_parse => {},
+                _ = deliver_and_parse_1rtt => {},
                 _ = conn_state.terminated() => {}
             };
         }

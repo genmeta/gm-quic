@@ -4,7 +4,7 @@ use qbase::{
         DataHeader, Packet,
         header::{long, short},
     },
-    util::bound_deque::BoundQueue,
+    util::BoundQueue,
 };
 
 use crate::packet::CipherPacket;

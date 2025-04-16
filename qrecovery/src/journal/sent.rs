@@ -323,16 +323,16 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     }
 
     /// Called when the packet sent is acked by peer, return the frames in that packet.
-    pub fn on_packet_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
+    pub fn on_packet_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         self.inner.on_packet_acked(pn)
     }
 
     /// Called when the packet sent may lost, reutrn the frames in that packet.
-    pub fn may_loss_packet(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
+    pub fn may_loss_packet(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         self.inner.may_loss_packet(pn)
     }
 
-    pub fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ + use<'_, T> {
+    pub fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ {
         self.inner.fast_retransmit()
     }
 }

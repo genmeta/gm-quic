@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use qbase::{error::Error, net::route::Link};
@@ -117,12 +120,12 @@ impl ConnState {
         }
     }
 
-    pub fn handshaked(&self) -> impl Future<Output = ()> + Send + use<> {
+    pub fn handshaked(&self) -> impl Future<Output = ()> + Send {
         let handshaked = self.handshaked.clone();
         async move { _ = handshaked.acquire().await }
     }
 
-    pub fn terminated(&self) -> impl Future<Output = ()> + Send + use<> {
+    pub fn terminated(&self) -> impl Future<Output = ()> + Send {
         let terminated = self.terminated.clone();
         async move {
             _ = terminated

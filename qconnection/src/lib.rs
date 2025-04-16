@@ -123,7 +123,7 @@ pub struct Components {
 impl Components {
     pub fn open_bi_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send + use<>
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
     {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
@@ -137,7 +137,7 @@ impl Components {
 
     pub fn open_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send + use<> {
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
         async move {
@@ -150,7 +150,7 @@ impl Components {
 
     pub fn accept_bi_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send + use<>
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
     {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
@@ -164,7 +164,7 @@ impl Components {
 
     pub fn accept_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send + use<> {
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send {
         let streams = self.spaces.data().streams().clone();
         async move { Ok(Some(streams.accept_uni().await?)) }
     }
@@ -175,9 +175,7 @@ impl Components {
     }
 
     #[cfg(feature = "unreliable")]
-    pub fn unreliable_writer(
-        &self,
-    ) -> impl Future<Output = io::Result<DatagramWriter>> + Send + use<> {
+    pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<DatagramWriter>> + Send {
         let params = self.parameters.clone();
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
