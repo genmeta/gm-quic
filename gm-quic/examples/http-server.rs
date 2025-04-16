@@ -64,12 +64,18 @@ struct Certs {
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    if let Err(error) = run(Options::parse()).await {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        // default value 512 out of macos ulimit
+        .max_blocking_threads(256)
+        .build()
+        .expect("failed to build tokio runtime");
+
+    if let Err(error) = rt.block_on(run(Options::parse())) {
         tracing::info!(?error, "server error");
         std::process::exit(1);
     }

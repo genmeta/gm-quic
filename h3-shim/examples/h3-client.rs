@@ -175,11 +175,12 @@ async fn run(options: Options) -> Result<(), Error> {
     while let Some(res) = connections.join_next().await {
         match res {
             Ok(Ok(queries)) => {
+                tracing::info!(target: "counting", queries, "connection finished");
                 success_queries += queries;
                 conns_pb.inc(1);
             }
             Ok(Err(err)) => {
-                tracing::error!(target: "counting",error = ?err,"conenction failed");
+                tracing::error!(target: "counting", error=?err, "conenction failed");
                 conns_pb.dec_length(1);
             }
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
@@ -266,6 +267,7 @@ async fn download_files_with_progress(
                 total_pb.inc(1);
             }
             Ok(Err(err)) => {
+                tracing::warn!(target: "counting" ,?err,"request failed");
                 total_pb.dec_length(1);
                 error = Some(err);
             }

@@ -6,7 +6,6 @@ import subprocess
 import re
 import json
 import sys
-import matplotlib.pyplot as plt
 import logging
 import shutil
 import argparse
@@ -22,13 +21,13 @@ class ServerRunner:
         self.listen_port = listen_port
         self.launch_server = launch_server
 
-    def run(self) -> subprocess.Popen:
+    def run(self, log) -> subprocess.Popen:
         # 在后台运行server
         return subprocess.Popen(
             self.launch_server,
             cwd=rand_files.path,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
             env={**os.environ, "RUST_LOG": "off"}
         )
 
@@ -84,6 +83,7 @@ class Certs:
     server_cert = os.path.join(path, "server_cert.pem")
     server_key = os.path.join(path, "server_key.pem")
     server_csr = os.path.join(path, "server_csr.pem")
+    server_ext = os.path.join(path, "server.ext")
     server_cert_der = os.path.join(path, "server_cert.der")
     server_key_der = os.path.join(path, "server_key.der")
 
@@ -98,33 +98,38 @@ class Certs:
             # CA
             subprocess.run(
                 ["openssl", "ecparam", "-name", "prime256v1",
-                    "-genkey", "-out", self.root_key])
+                    "-genkey", "-out", self.root_key], check=True)
             subprocess.run(
                 ["openssl", "req", "-new", "-x509", "-key", self.root_key, "-out", self.root_cert,
-                 "-days", "3650", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"])
+                 "-days", "3650", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], check=True)
             # Server
+
             subprocess.run(
-                ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-out", self.server_key])
+                ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-out", self.server_key], check=True)
             subprocess.run(
                 ["openssl", "req", "-new", "-key", self.server_key, "-out",
-                 self.server_csr,  "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"])
+                 self.server_csr,  "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], check=True)
+            # use server ext to add subjectAltName, openssl binary on macos CI doesnot support `-copy-extensions copy` parameter
+            with open(self.server_ext, "w") as f:
+                f.write("subjectAltName=DNS:localhost\n")
+                f.flush()
             subprocess.run(
                 ["openssl", "x509", "-req", "-in", self.server_csr, "-CA", self.root_cert,
                  "-CAkey", self.root_key, "-CAcreateserial", "-out", self.server_cert,
-                 "-days", "365", "-copy_extensions", "copy"])
+                 "-days", "365", "-extfile", self.server_ext], check=True)
             # Convert pem to der
             subprocess.run(
                 ["openssl", "x509", "-in", self.server_cert, "-outform", "der",
-                 "-out", self.server_cert_der])
+                 "-out", self.server_cert_der], check=True)
             subprocess.run(
                 ["openssl", "ec", "-in", self.server_key, "-outform", "der",
-                 "-out", self.server_key_der])
+                 "-out", self.server_key_der], check=True)
 
 
 rand_files = RandomFiles()
 ecc_certs = Certs()
 
-go_quic_dir = os.path.join(root, "go-quic-demo")
+quic_go_dir = os.path.join(root, "go-quic-demo")
 gm_quic_dir = os.path.join(root, "..")
 tquic_dir = os.path.join(root, "tquic")
 quinn_dir = os.path.join(root, "h3")
@@ -138,28 +143,27 @@ def git_clone(owner: str, repo: str, branch: str) -> None:
             ["git", "clone", "--recursive", "--branch", branch,
              f"https://github.com/{owner}/{repo}"],
             cwd=root,
-            check=True
         )
 
 
 def go_quic_runner() -> ServerRunner:
-    logging.info("Building go-quic server...")
+    logging.info("Building quic-go server...")
 
     git_clone("eareimu", "go-quic-demo", "main")
 
     # 编译
     subprocess.run(
         ["go", "get", "example/quic-server",],
-        cwd=go_quic_dir,
+        cwd=quic_go_dir,
         check=True
     )
     subprocess.run(
         ["go", "build", "-ldflags=-s -w", "-trimpath", "-o", "quic_server"],
-        cwd=go_quic_dir,
+        cwd=quic_go_dir,
         check=True
     )
 
-    binary = os.path.join(go_quic_dir, "quic_server")
+    binary = os.path.join(quic_go_dir, "quic_server")
     launch = [
         binary,
         "-c", ecc_certs.server_cert,
@@ -167,7 +171,7 @@ def go_quic_runner() -> ServerRunner:
         "-a", "[::1]:4430",
     ]
 
-    return ServerRunner('go-quic', launch, 4430)
+    return ServerRunner('quic-go', launch, 4430)
 
 
 def gm_quic_runner() -> ServerRunner:
@@ -270,14 +274,31 @@ class H3Client:
     progress: bool
 
     def __init__(self, stress: int = 1024*30, requests: int = 8, progress: bool = False):
+        logging.info("Building gm-quic client")
+        subprocess.run(
+            [
+                "cargo", "build", "--package", "h3-shim",
+                "--release", "--example", "h3-client",
+            ],
+            check=True
+        )
         self.stress = stress
         self.requests = requests
         self.progress = progress
 
     def run_once(self, server_runner: ServerRunner, file_size: int, seq: int = 0) -> Result:
+        logging.info("Launch server and client")
         # 在后台启动server
-        server = server_runner.run()
+        log_dir = os.path.join(output_dir, "logs")
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
 
+        client_log = f"client_{server_runner.name}_{file_size}KB_{seq}.log"
+        client_log = open(os.path.join(log_dir, client_log), "w+")
+        server_log = f"server_{server_runner.name}_{file_size}KB_{seq}.log"
+        server_log = open(os.path.join(log_dir, server_log), "w+")
+
+        server = server_runner.run(server_log)
         launch_client = [
             "cargo", "run", "--package", "h3-shim",
             "--release", "--example", "h3-client", "--",
@@ -289,18 +310,12 @@ class H3Client:
                          f'https://localhost:{server_runner.listen_port}/{rand_files.gen(file_size)}'
         ]
 
-        log_dir = os.path.join(output_dir, "client_log")
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        f = open(
-            os.path.join(log_dir, f"{server_runner.name}_{file_size}KB_{seq}.log"), "w+")
-
         try:
-            cr = subprocess.run(
+            subprocess.run(
                 launch_client,
                 cwd=gm_quic_dir,
-                env={**os.environ, "RUST_LOG": "counting"},
-                stdout=f,
+                env={**os.environ, "RUST_LOG": "debug"},
+                stdout=client_log,
                 text=True,
                 timeout=15
             )
@@ -309,14 +324,16 @@ class H3Client:
             server.wait()
             logging.warning(
                 f"Timeout expired for running {server_runner.name} {file_size}KB")
-            f.close()
+            client_log.close()
+            server_log.close()
             return Result(success=0, duration=0)
 
         server.kill()
         server.wait()
-        f.seek(0)
-        output = f.read()
-        f.close()
+        client_log.seek(0)
+        output = client_log.read()
+        client_log.close()
+        server_log.close()
 
         # Extract total_time and success_queries using regex
         match = re.search(
@@ -339,19 +356,9 @@ class H3Client:
         return results
 
 
-def run() -> dict[dict[str, list[Result]]]:
+def run(*runners: ServerRunner) -> dict[dict[str, list[Result]]]:
     ecc_certs.gen()
-    runners = [
-        go_quic_runner(),
-        gm_quic_runner(),
-        tquic_runner(),
-        quinn_runner(),
-        cf_quiche_runner()
-    ]
-
     client = H3Client(stress=2048*15, requests=8, progress=True)
-
-    results = {}
 
     return {
         runner.name: {
@@ -366,6 +373,7 @@ output_dir = os.path.join(root, "output")
 
 
 def plot_results(results: dict[str, dict[str, list[Result]]]):
+    import matplotlib.pyplot as plt
     # [实现名, [文件大小, 多次运行的结果]]
     plot_out_dir = os.path.join(output_dir, "plots")
     if not os.path.exists(plot_out_dir):
@@ -434,16 +442,26 @@ def save_results(results: dict[str, dict[str, list[Result]]]):
         }, f, indent=2)
 
 
-def load_results(path: str = os.path.join(output_dir, "results.json")) -> dict[str, dict[str, list[Result]]]:
-    """load results from json file"""
-    with open(path, "r") as f:
-        return {
-            impl: {
-                size: [Result(r["success"], r["duration"]) for r in runs]
-                for size, runs in sizes_results.items()
+def load_results(*paths: str) -> dict[str, dict[str, list[Result]]]:
+    """load and merge results from multiple json files"""
+    merged = {}
+    for path in paths:
+        with open(path, "r") as f:
+            results = {
+                impl: {
+                    size: [Result(r["success"], r["duration"]) for r in runs]
+                    for size, runs in sizes_results.items()
+                }
+                for impl, sizes_results in json.load(f).items()
             }
-            for impl, sizes_results in json.load(f).items()
-        }
+            for impl, sizes in results.items():
+                if impl not in merged:
+                    merged[impl] = {}
+                for size, runs in sizes.items():
+                    if size not in merged[impl]:
+                        merged[impl][size] = []
+                    merged[impl][size].extend(runs)
+    return merged
 
 
 if __name__ == "__main__":
@@ -453,15 +471,34 @@ if __name__ == "__main__":
         description='QUIC implementation benchmark')
     subparsers = parser.add_subparsers(dest='command', required=True)
 
+    runners = {
+        'quic-go': go_quic_runner,
+        'gm-quic': gm_quic_runner,
+        'tquic': tquic_runner,
+        'quinn': quinn_runner,
+        'cf-quiche': cf_quiche_runner,
+    }
+
+    # Diaplay runners
+    runners_parser = subparsers.add_parser(
+        'runners', help='List available implementations')
+    runners_parser.add_argument('-q', '--quiet', action='store_true',
+                                help='Only display implementation names')
+
     # Run command
     run_parser = subparsers.add_parser(
         'run', help='Run benchmark and save results')
+    run_parser.add_argument('implementations', nargs='*',
+                            choices=list(runners.keys()),
+                            help='Implementations to benchmark')
+    run_parser.add_argument('--no-plot', action='store_true',
+                            help='Skip plotting results')
 
-    # Load command
-    load_parser = subparsers.add_parser(
-        'load', help='Load and plot results from file')
-    load_parser.add_argument('file', nargs='?', default=os.path.join(output_dir, "results.json"),
-                             help='Results JSON file path')
+    # plot command
+    plot_parser = subparsers.add_parser(
+        'plot', help='Load and plot results from files')
+    plot_parser.add_argument('files', nargs='+', default=[os.path.join(output_dir, "results.json")],
+                             help='Results JSON file paths')
 
     # Clean command
     clean_parser = subparsers.add_parser('clean', help='Clean generated files')
@@ -470,15 +507,29 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.command == 'run':
-        results = run()
+    if args.command == 'runners':
+        if not args.quiet:
+            print("Available implementations:")
+            for impl in runners.keys():
+                print(f"- {impl}")
+        else:
+            print(
+                '[' + ', '.join(f'"{impl}"' for impl in runners.keys()) + ']'
+            )
+        exit(0)
+    elif args.command == 'run':
+        selected_runners = [
+            runners[impl]() for impl in args.implementations] if args.implementations else [r() for r in runners.values()]
+        results = run(*selected_runners)
         save_results(results)
-    elif args.command == 'load':
-        results = load_results(args.file)
+        if args.no_plot:
+            exit(0)
+    elif args.command == 'plot':
+        results = load_results(*args.files)
     elif args.command == 'clean':
         paths = [rand_files.path, ecc_certs.path, output_dir]
         if args.all:
-            paths.extend([go_quic_dir, tquic_dir, quinn_dir, quiche_dir])
+            paths.extend([quic_go_dir, tquic_dir, quinn_dir, quiche_dir])
         for path in paths:
             if os.path.exists(path):
                 shutil.rmtree(path)
