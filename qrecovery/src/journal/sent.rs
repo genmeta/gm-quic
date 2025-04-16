@@ -289,7 +289,7 @@ impl<T> ArcSentJournal<T> {
         let inner = self.0.lock().unwrap();
         let origin_len = inner.queue.len();
         NewPacketGuard {
-            necessary: false,
+            trivial: false,
             origin_len,
             inner,
         }
@@ -358,7 +358,7 @@ impl<T> Drop for SentRotateGuard<'_, T> {
 /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
 #[derive(Debug)]
 pub struct NewPacketGuard<'a, T> {
-    necessary: bool,
+    trivial: bool,
     origin_len: usize,
     inner: MutexGuard<'a, SentJournal<T>>,
 }
@@ -379,7 +379,7 @@ impl<T> NewPacketGuard<'_, T> {
     /// However, this packet does occupy a packet number. Even if no other reliable frames are sent,
     /// it still needs to be recorded, with the number of reliable frames in this packet being 0.
     pub fn record_trivial(&mut self) {
-        self.necessary = true;
+        self.trivial = true;
     }
 
     /// Records a frame in the packet being sent.
@@ -394,8 +394,17 @@ impl<T> NewPacketGuard<'_, T> {
 
     pub fn build_with_time(mut self, retran_timeout: Duration, expire_timeout: Duration) {
         let nframes = self.inner.queue.len() - self.origin_len;
-        if self.necessary || nframes > 0 {
-            let sent_time = tokio::time::Instant::now();
+        let sent_time = tokio::time::Instant::now();
+        if self.trivial && nframes == 0 {
+            self.inner
+                .sent_packets
+                .push_back(SentPktState::Acked {
+                    nframes,
+                    sent_time,
+                    expire_time: sent_time,
+                })
+                .expect("packet number never overflow");
+        } else if nframes > 0 {
             self.inner
                 .sent_packets
                 .push_back(SentPktState::new(
