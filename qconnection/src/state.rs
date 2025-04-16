@@ -94,8 +94,10 @@ impl ConnState {
                 Ordering::Acquire,
             ) {
                 Ok(_old_state_code) => {
-                    let old_state = decode(old_state_code)
-                        .expect("conenction failed before first path initialized");
+                    // when server received a initial packet but failed to decrypt it, connection state will
+                    // enter Closing directly without enter Attempted.
+                    let old_state =
+                        decode(old_state_code).unwrap_or(BaseConnectionStates::Attempted.into());
                     match state {
                         QlogConnectionState::Granular(
                             GranularConnectionStates::HandshakeConfirmed,

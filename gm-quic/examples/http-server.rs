@@ -34,7 +34,7 @@ struct Options {
         long,
         short,
         value_delimiter = ',',
-        default_value = "[]",
+        default_value = "quic",
         help = "ALPNs to use for the connection"
     )]
     alpns: Vec<Vec<u8>>,
