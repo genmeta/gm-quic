@@ -187,7 +187,7 @@ impl ArcTlsSession {
 }
 
 /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send + use<> {
+pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send {
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
         components.spaces.handshake().crypto_stream(),

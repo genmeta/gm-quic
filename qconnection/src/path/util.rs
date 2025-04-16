@@ -15,9 +15,6 @@ use qbase::{
 
 /// A buffer that contains a single frame to be sent.
 ///
-/// Be different with [`qbase::util::Future`], this struct is fully synchronized, this struct does not provide a method
-/// to wait for a frame to be sent.
-///
 /// This struct impl [`Default`], and the `new` method is not provided.
 pub struct SendBuffer<T> {
     item: Mutex<Option<T>>,

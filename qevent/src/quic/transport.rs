@@ -1253,10 +1253,8 @@ mod rollback {
     impl From<FramesProcessed> for legacy::TransportFramesProcessed {
         fn from(value: FramesProcessed) -> Self {
             assert!(
-                value
-                    .packet_numbers
-                    .as_ref()
-                    .is_none_or(|value| value.len() != 1),
+                value.packet_numbers.as_ref().is_none()
+                    || value.packet_numbers.as_ref().is_some_and(|v| v.len() != 1),
                 "it not possible to do this convert"
             );
             build!(legacy::TransportFramesProcessed {

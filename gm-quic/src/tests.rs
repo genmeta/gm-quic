@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     net::SocketAddr,
     sync::{Arc, LazyLock, Once},
     time::Duration,

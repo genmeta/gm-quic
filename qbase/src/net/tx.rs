@@ -223,8 +223,10 @@ mod tests {
             let waker = waker.clone();
             let wake_times = woken_times.clone();
 
-            let wait_for = async move |r#for| {
-                core::future::poll_fn(|cx| {
+            let wait_for = move |r#for| {
+                let wake_times = wake_times.clone();
+                let waker = waker.clone();
+                core::future::poll_fn(move |cx| {
                     let wake_times = wake_times.fetch_add(1, Release);
                     waker.wait_for(cx, r#for);
                     if wake_times % 2 == 1 {
@@ -233,7 +235,6 @@ mod tests {
                         Poll::Pending
                     }
                 })
-                .await;
             };
 
             async move {

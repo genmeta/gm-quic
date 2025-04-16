@@ -398,7 +398,7 @@ impl CongestionController {
                 .time_of_last_ack_eliciting_packet
                 .unwrap()
                 + duration;
-            if pto_time.is_none_or(|(timeout, _)| t < timeout) {
+            if pto_time.is_none() || pto_time.is_some_and(|(pto_time, _)| t < pto_time) {
                 pto_time = Some((t, epoch));
             }
         }

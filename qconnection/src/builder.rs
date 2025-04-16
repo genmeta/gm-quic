@@ -469,7 +469,7 @@ impl ComponentsReady {
     }
 }
 
-fn accpet_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send + use<> {
+fn accpet_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send {
     let params = components.parameters.clone();
     let streams = components.spaces.data().streams().clone();
     let cid_registry = components.cid_registry.clone();

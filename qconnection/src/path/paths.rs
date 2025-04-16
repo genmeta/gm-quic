@@ -1,4 +1,4 @@
-use std::{io, sync::Arc, time::Duration};
+use std::{future::Future, io, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use derive_more::Deref;
@@ -108,7 +108,7 @@ impl ArcPathContexts {
         self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Arc<Path>> {
+    pub fn iter(&self) -> impl Iterator<Item = Arc<Path>> + '_ {
         self.paths.iter().map(|p| p.path.clone())
     }
 
