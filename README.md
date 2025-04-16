@@ -57,7 +57,9 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
 - **gm-quic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance. 
-- **qevent**: The implementation of [qlog][2] supports logging internal activities of individual QUIC connections in JSON format, maintains compatibility with qlog 3, and enables visualization analysis through qvis. However, it is important to note that enabling qlog can significantly impact performance despite its utility in troubleshooting.
+- **qevent**: The implementation of [qlog][2] supports logging internal activities of individual QUIC connections in JSON format, maintains compatibility with qlog 3, and enables visualization analysis through [qvis][5]. However, it is important to note that enabling qlog can significantly impact performance despite its utility in troubleshooting.
+
+![image](https://github.com/genmeta/gm-quic/blob/main/images/qvis.png)
 
 ## Usage
 
@@ -142,6 +144,12 @@ We also implement the interface defined by [`hyperium/h3`](https://github.com/hy
 
 As for reading and writing data from a QUIC stream, the tokio's **`AsyncRead`** and **`AsyncWrite`** interfaces are implemented for QUIC streams, making it very convenient to use.
 
+## Performance
+
+GitHub Actions periodically runs [benchmark tests][6]. The results show that go-quic, quiche, tquic and quinn all deliver excellent performance, with each excelling in different benchmark testing scenarios. It is critical to note that ​transmission performance is also heavily influenced by congestion control algorithms. While ​gm-quic​'s performance will continue to be optimized in the near future, developers seeking even higher throughput can leverage its abstract interface to replace UdpSocket with ​DPDK​ (Data Plane Development Kit) or ​XDP​ (eXpress Data Path).
+
+<img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_15KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_30KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_2048KB.png" width=33% height=33%>
+
 ## Contribution 
 
 All feedback and PRs are welcome, including bug reports, feature requests, documentation improvements, code refactoring, and more. 
@@ -159,3 +167,5 @@ and we will reply to your email with an invitation link and QR code to join the 
 [2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
 [3]: https://datatracker.ietf.org/doc/html/rfc9221
 [4]: https://github.com/genmeta/gm-quic/blob/main/h3-shim/examples/
+[5]: https://qvis.quictools.info/#/files
+[6]: https://github.com/genmeta/gm-quic/actions

@@ -46,7 +46,9 @@ QUIC协议可谓一个相当复杂的、IO密集型的协议，因此正是适�
 - **gm-quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
 - **qudp**： QUIC的高性能UDP封装，使用GSO、GRO等手段极致优化UDP的性能
 - **qunreliable**: 基于QUIC的不可靠数据报传输的扩展，相比于直接用UDP发送不可靠数据报，该扩展拥有QUIC的传输控制和极致安全性。详情参考[RFC 9221][3]
-- **qevent**: [qlog][2]的实现，支持以json形式记录单个quic连接内部活动，兼容qlog 3，支持qvis可视化分析。请注意，开启qlog虽有助于分析问题，但相当影响性能
+- **qevent**: [qlog][2]的实现，支持以json形式记录单个quic连接内部活动，兼容qlog 3，支持[qvis][5]可视化分析。请注意，开启qlog虽有助于分析问题，但相当影响性能
+
+![image](https://github.com/genmeta/gm-quic/blob/main/images/qvis.png)
 
 ## 使用方式
 
@@ -125,6 +127,12 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 
 至于如何从QUIC流中读写数据，则为QUIC流实现了标准的**`AsyncRead`**、**`AsyncWrite`**接口，可以很方便地使用。
 
+## 性能
+
+github action会定期运行[基准测试][6]，效果如下。go-quic和quiche、tquic、quinn都具备优良性能，在三种基准测试场景下互有千秋。须知传输性能跟传输控制算法也有很大关系，gm-quic的性能在未来一段时间还会持续优化，如果想获得更高性能，gm-quic提供了抽象接口，可使用DPDK或者XDP代替UdpSocket！
+
+<img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_15KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_30KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_2048KB.png" width=33% height=33%>
+
 
 ## 贡献
 
@@ -141,3 +149,5 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 [2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
 [3]: https://datatracker.ietf.org/doc/html/rfc9221
 [4]: https://github.com/genmeta/gm-quic/blob/main/h3-shim/examples/
+[5]: https://qvis.quictools.info/#/files
+[6]: https://github.com/genmeta/gm-quic/actions
