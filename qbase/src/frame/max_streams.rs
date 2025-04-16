@@ -61,7 +61,6 @@ pub fn max_streams_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {
     move |input: &[u8]| {
-        use crate::sid::Dir;
         let (remain, max_streams) = be_varint(input)?;
         if max_streams > MAX_STREAMS_LIMIT {
             Err(nom::Err::Error(nom::error::Error::new(

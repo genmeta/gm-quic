@@ -488,11 +488,11 @@ macro_rules! imp_be_events {
     (@impl_one $importance:ident $event:ty => urn $schme:literal ; ) => {
         impl BeSpecificEventData for $event {
             fn scheme() -> &'static str {
-                const { concat!["urn:ietf:params:qlog:events:",$schme] }
+                concat!["urn:ietf:params:qlog:events:",$schme]
             }
 
             fn importance() -> EventImportance {
-                const { EventImportance::$importance }
+                EventImportance::$importance
             }
         }
     };

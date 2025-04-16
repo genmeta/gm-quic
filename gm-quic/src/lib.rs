@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 
 pub use qconnection::{
     builder::{
@@ -23,16 +23,18 @@ mod server;
 #[cfg(test)]
 mod tests;
 
-static PROTO: LazyLock<Arc<QuicProto>> = LazyLock::new(|| {
-    let proto = Arc::new(QuicProto::new());
-    tokio::spawn({
-        let proto = proto.clone();
-        async move {
-            while let Some((packet, pathway, socket)) = proto.recv_unrouted_packet().await {
-                QuicServer::try_accpet_connection(packet, pathway, socket).await;
+fn proto() -> &'static Arc<QuicProto> {
+    static PROTO: OnceLock<Arc<QuicProto>> = OnceLock::new();
+    PROTO.get_or_init(|| {
+        let proto = Arc::new(QuicProto::new());
+        tokio::spawn({
+            let proto = proto.clone();
+            async move {
+                while let Some((packet, pathway, socket)) = proto.recv_unrouted_packet().await {
+                    QuicServer::try_accpet_connection(packet, pathway, socket).await;
+                }
             }
-        }
-    });
-
-    proto
-});
+        });
+        proto
+    })
+}

@@ -366,7 +366,7 @@ pub struct Token {
 impl<H: 'static> TryFrom<&qbase::packet::header::LongHeader<H>> for Token {
     type Error = ();
     fn try_from(header: &qbase::packet::header::LongHeader<H>) -> Result<Self, Self::Error> {
-        use qbase::packet::header::{InitialHeader, RetryHeader};
+        use qbase::packet::header::RetryHeader;
         let header: &dyn core::any::Any = header;
         if let Some(initial) = header.downcast_ref::<InitialHeader>() {
             return Ok(crate::build!(Token {

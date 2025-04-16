@@ -155,28 +155,28 @@ impl DataSpace {
 
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         // try to load reliable frames into this 0RTT packet to send
         _ = self
             .reliable_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         // try to load stream frames into this 0RTT packet to send
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit())
-            .inspect_err(|s| signals |= *s)
+            .map_err(|s| signals |= s)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
         let _ = self
             .datagrams
             .try_load_data_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
         Ok((
@@ -233,37 +233,37 @@ impl DataSpace {
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
-            .inspect_err(|s| signals |= *s)
+            .map_err(|s| signals |= s)
             .ok();
 
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         _ = path_response_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         // try to load reliable frames into this 1RTT packet to send
         _ = self
             .reliable_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         // try to load stream frames into this 1RTT packet to send
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit())
-            .inspect_err(|s| signals |= *s)
+            .map_err(|s| signals |= s)
             .unwrap_or_default();
 
         #[cfg(feature = "unreliable")]
         let _ = self
             .datagrams
             .try_load_data_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
 
         Ok((
             packet
@@ -298,10 +298,10 @@ impl DataSpace {
         let mut signals = Signals::empty();
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         _ = path_response_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|s| signals |= *s);
+            .map_err(|s| signals |= s);
         // 其实还应该加上NCIDF，但是从ReliableFrameDeque分拣太复杂了
 
         packet

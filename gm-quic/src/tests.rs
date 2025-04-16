@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     net::SocketAddr,
-    sync::{Arc, LazyLock, Once},
+    sync::{Arc, Once},
     time::Duration,
 };
 
@@ -17,7 +17,10 @@ use tracing::Instrument;
 
 use crate::{handy::*, *};
 
-pub static QLOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| Arc::new(NullLogger));
+fn qlogger() -> Arc<dyn Log + Send + Sync> {
+    static QLOGGER: OnceLock<Arc<dyn Log + Send + Sync>> = OnceLock::new();
+    QLOGGER.get_or_init(|| Arc::new(NullLogger)).clone()
+}
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -37,16 +40,18 @@ where
             .init()
     });
 
-    static RT: LazyLock<Runtime> = LazyLock::new(|| {
+    static RT: OnceLock<Runtime> = OnceLock::new();
+
+    let rt = RT.get_or_init(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to create runtime")
     });
 
-    RT.block_on(async move {
-        static LOCK: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::default);
-        let _lock = LOCK.lock().await;
+    rt.block_on(async move {
+        static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+        let _lock = LOCK.get_or_init(Default::default).lock().await;
 
         let (server, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
@@ -112,7 +117,7 @@ fn launch_echo_server(
             include_bytes!("../../tests/keychain/localhost/server.key"),
         )
         .with_parameters(parameters)
-        .with_qlog(QLOGGER.clone())
+        .with_qlog(qlogger())
         .listen("127.0.0.1:0".parse::<SocketAddr>()?)?;
     Ok((server.clone(), serve_echo(server)))
 }
@@ -126,7 +131,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
         .with_root_certificates(roots)
         .with_parameters(parameters)
         .without_cert()
-        .with_qlog(QLOGGER.clone())
+        .with_qlog(qlogger())
         .enable_sslkeylog()
         .build();
 
@@ -180,7 +185,7 @@ fn shutdown() -> Result<(), Error> {
                 include_bytes!("../../tests/keychain/localhost/server.key"),
             )
             .with_parameters(server_parameters())
-            .with_qlog(QLOGGER.clone())
+            .with_qlog(qlogger())
             .listen("127.0.0.1:0".parse::<SocketAddr>()?)?;
         Ok((server.clone(), serve_only_one_stream(server)))
     };
