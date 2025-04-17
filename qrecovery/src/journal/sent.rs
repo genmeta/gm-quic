@@ -19,10 +19,8 @@ use tokio::time::Instant;
 /// - Flighting: 数据包正在传输中
 /// - Acked: 数据包已经被确认
 /// - Lost: 数据包丢失
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SentPktState {
-    #[allow(dead_code)]
-    #[default]
     Skipped,
     Flighting {
         nframes: usize,
@@ -68,7 +66,7 @@ impl SentPktState {
 
     fn be_acked(&mut self) -> usize {
         match *self {
-            SentPktState::Skipped => unreachable!("impossible, beware of fraud"),
+            SentPktState::Skipped => 0,
             SentPktState::Flighting {
                 nframes,
                 sent_time,
@@ -114,7 +112,9 @@ impl SentPktState {
                 };
                 nframes
             }
-            _ => unreachable!(),
+            Self::Retransmitted { nframes, .. } => nframes,
+            Self::Acked { .. } => unreachable!("acked packet should not be lost"),
+            Self::Skipped => 0,
         }
     }
 
@@ -398,11 +398,7 @@ impl<T> NewPacketGuard<'_, T> {
         if self.trivial && nframes == 0 {
             self.inner
                 .sent_packets
-                .push_back(SentPktState::Acked {
-                    nframes,
-                    sent_time,
-                    expire_time: sent_time,
-                })
+                .push_back(SentPktState::Skipped)
                 .expect("packet number never overflow");
         } else if nframes > 0 {
             self.inner
