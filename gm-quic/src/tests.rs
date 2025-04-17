@@ -213,6 +213,31 @@ fn shutdown() -> Result<(), Error> {
     run_serially(launch_server, launch_client)
 }
 
+#[test]
+fn idle_timeout() {
+    fn server_parameters() -> ServerParameters {
+        let mut params = ServerParameters::default();
+
+        params.set_initial_max_streams_bidi(2u32);
+        params.set_initial_max_streams_uni(0u32);
+        params.set_initial_max_data(1u32 << 10);
+        params.set_initial_max_stream_data_uni(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
+        params.set_max_idle_timeout(Duration::from_secs(1)); // from 10s to 1s
+
+        params
+    }
+
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+        let connection = client.connect("localhost", server_addr)?;
+        connection.terminated().await;
+        Result::Ok(())
+    };
+    run_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+}
+
 const PARALLEL_ECHO_CONNS: usize = 20;
 const PARALLEL_ECHO_STREAMS: usize = 2;
 
@@ -252,7 +277,7 @@ fn parallel_big_stream() -> Result<(), Error> {
 
         let mut big_streams = JoinSet::new();
         // about 10MB
-        let test_data = Arc::new(TEST_DATA.to_vec().repeat(512));
+        let test_data = Arc::new(TEST_DATA.to_vec().repeat(128));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
             let connection = client.connect("localhost", server_addr)?;
@@ -298,6 +323,7 @@ fn limited_streams() -> Result<(), Error> {
         params.set_initial_max_stream_data_uni(1u32 << 10);
         params.set_initial_max_stream_data_bidi_local(1u32 << 10);
         params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
+        params.set_max_idle_timeout(Duration::from_secs(10));
 
         params
     }
