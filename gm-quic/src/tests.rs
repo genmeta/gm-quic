@@ -65,6 +65,11 @@ where
     })
 }
 
+const CA_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/ca.cert");
+const SERVER_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/server.cert");
+const SERVER_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/server.key");
+const TEST_DATA: &[u8] = include_bytes!("tests.rs");
+
 async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
     io::copy(&mut reader, &mut writer).await?;
     writer.shutdown().await?;
@@ -112,10 +117,7 @@ fn launch_echo_server(
 ) -> Result<(Arc<QuicServer>, impl Future<Output: Send>), Error> {
     let server = QuicServer::builder()
         .without_client_cert_verifier()
-        .with_single_cert(
-            include_bytes!("../../tests/keychain/localhost/server.cert"),
-            include_bytes!("../../tests/keychain/localhost/server.key"),
-        )
+        .with_single_cert(SERVER_CERT, SERVER_KEY)
         .with_parameters(parameters)
         .with_qlog(qlogger())
         .listen("127.0.0.1:0".parse::<SocketAddr>()?)?;
@@ -124,9 +126,7 @@ fn launch_echo_server(
 
 fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
     let mut roots = rustls::RootCertStore::empty();
-    roots.add_parsable_certificates(
-        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
-    );
+    roots.add_parsable_certificates(CA_CERT.to_certificate());
     let client = QuicClient::builder()
         .with_root_certificates(roots)
         .with_parameters(parameters)
@@ -143,7 +143,19 @@ fn single_stream() {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", server_addr)?;
-        send_and_verify_echo(&connection, include_bytes!("tests.rs")).await?;
+        send_and_verify_echo(&connection, TEST_DATA).await?;
+
+        Ok(())
+    };
+    run_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+}
+
+#[test]
+fn signal_big_stream() {
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+        let connection = client.connect("localhost", server_addr)?;
+        send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(1024)).await?;
 
         Ok(())
     };
@@ -180,10 +192,7 @@ fn shutdown() -> Result<(), Error> {
     let launch_server = || {
         let server = QuicServer::builder()
             .without_client_cert_verifier()
-            .with_single_cert(
-                include_bytes!("../../tests/keychain/localhost/server.cert"),
-                include_bytes!("../../tests/keychain/localhost/server.key"),
-            )
+            .with_single_cert(SERVER_CERT, SERVER_KEY)
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
             .listen("127.0.0.1:0".parse::<SocketAddr>()?)?;
@@ -204,8 +213,8 @@ fn shutdown() -> Result<(), Error> {
     run_serially(launch_server, launch_client)
 }
 
-const PARALLEL_ECHO_CONNS: usize = 2;
-const PARALLEL_ECHO_STREAMS: usize = 10;
+const PARALLEL_ECHO_CONNS: usize = 20;
+const PARALLEL_ECHO_STREAMS: usize = 2;
 
 #[test]
 fn parallel_stream() -> Result<(), Error> {
@@ -219,13 +228,42 @@ fn parallel_stream() -> Result<(), Error> {
             for stream_idx in 0..PARALLEL_ECHO_STREAMS {
                 let connection = connection.clone();
                 streams.spawn(
-                    async move { send_and_verify_echo(&connection, include_bytes!("tests.rs")).await }
+                    async move { send_and_verify_echo(&connection, TEST_DATA).await }
                         .instrument(tracing::info_span!("stream", conn_idx, stream_idx)),
                 );
             }
         }
 
         streams
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<(), Error>>()?;
+
+        Ok(())
+    };
+    run_serially(|| launch_echo_server(server_parameters()), launch_client)
+}
+
+#[test]
+fn parallel_big_stream() -> Result<(), Error> {
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+
+        let mut big_streams = JoinSet::new();
+        // about 10MB
+        let test_data = Arc::new(TEST_DATA.to_vec().repeat(512));
+
+        for conn_idx in 0..PARALLEL_ECHO_CONNS {
+            let connection = client.connect("localhost", server_addr)?;
+            let test_data = test_data.clone();
+            big_streams.spawn(
+                async move { send_and_verify_echo(&connection, &test_data).await }
+                    .instrument(tracing::info_span!("stream", conn_idx)),
+            );
+        }
+
+        big_streams
             .join_all()
             .await
             .into_iter()
@@ -274,7 +312,7 @@ fn limited_streams() -> Result<(), Error> {
             for stream_idx in 0..PARALLEL_ECHO_STREAMS / 2 {
                 let connection = connection.clone();
                 streams.spawn(
-                    async move { send_and_verify_echo(&connection, include_bytes!("tests.rs")).await }
+                    async move { send_and_verify_echo(&connection, TEST_DATA).await }
                         .instrument(tracing::info_span!("stream", conn_idx, stream_idx)),
                 );
             }
