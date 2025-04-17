@@ -127,8 +127,8 @@ async fn process(
     reuse: bool,
 ) -> Result<(), Error> {
     let mut stdin = BufReader::new(io::stdin());
-    tracing::warn!(
-        "enter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quic` to quit"
+    eprintln!(
+        "Ewter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quit` to quit."
     );
     loop {
         let mut input = String::new();
