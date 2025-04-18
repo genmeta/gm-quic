@@ -114,6 +114,9 @@ impl CongestionController {
                     self.need_send_ack_eliciting_packets[epoch].saturating_sub(1);
             }
             self.algorithm.on_packet_sent_cc(&sent);
+            self.packet_spaces[epoch]
+                .loss_time
+                .get_or_insert_with(|| now + self.rtt.loss_delay());
             self.set_loss_detection_timer();
         }
         self.packet_spaces[epoch].sent_packets.push_back(sent);
