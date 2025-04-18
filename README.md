@@ -67,18 +67,18 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 
 Run h3 example server:
 
-```
+``` shell
 cargo run --example=h3-server --package=h3-shim -- --dir=./h3-shim
 ```
 
 Send a h3 request:
 
-```
-cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs --keylog
+``` shell
+cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs
 ```
 
 
-For more complete examples, please refer to the `examples` folders under the `h3-shim`, `gm-quic` and `qconnection` folders.
+For more complete examples, please refer to the `examples` folders under the `h3-shim` and `gm-quic` folders.
 
 #### API
 
