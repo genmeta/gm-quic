@@ -62,60 +62,53 @@ impl Io for UdpSocketController {
         use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
 
         use super::BATCH_SIZE;
-        let mut sent_packet = 0;
-        loop {
-            let slices: Vec<_> = buffers
-                .iter()
-                .skip(sent_packet)
-                .take(BATCH_SIZE)
-                .map(std::slice::from_ref)
-                .collect();
+        let slices: Vec<_> = buffers
+            .iter()
+            .take(BATCH_SIZE)
+            .map(std::slice::from_ref)
+            .collect();
 
-            let batch_size = slices.len();
-            if batch_size == 0 {
-                break;
-            }
-            #[cfg(feature = "gso")]
-            let (cmsgs, space) = (
-                vec![nix::sys::socket::ControlMessage::UdpGsoSegments(
-                    &hdr.seg_size,
-                )],
-                Some(cmsg_space!(libc::c_int)),
-            );
-            #[cfg(not(feature = "gso"))]
-            let (cmsgs, space) = (Vec::new(), None);
-
-            macro_rules! send_batch {
-                ($ty:ty, $addr:expr) => {{
-                    let sock_addr = <$ty>::from($addr);
-                    let addrs = vec![Some(sock_addr); BATCH_SIZE];
-                    let mut data =
-                        nix::sys::socket::MultiHeaders::<$ty>::preallocate(BATCH_SIZE, space);
-                    match nix::sys::socket::sendmmsg(
-                        self.io.as_raw_fd(),
-                        &mut data,
-                        &slices,
-                        &addrs,
-                        &cmsgs,
-                        MsgFlags::empty(),
-                    ) {
-                        Ok(ret) => sent_packet += ret.into_iter().count(),
-                        Err(e) if e == nix::errno::Errno::EINVAL => continue,
-                        Err(_) if sent_packet > 0 => return Ok(sent_packet),
-                        Err(e) if e == nix::errno::Errno::EAGAIN => {
-                            return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }};
-            }
-
-            match hdr.dst {
-                SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
-                SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
-            }
+        let batch_size = slices.len();
+        if batch_size == 0 {
+            return Ok(0);
         }
-        Ok(sent_packet)
+        #[cfg(feature = "gso")]
+        let (cmsgs, space) = (
+            vec![nix::sys::socket::ControlMessage::UdpGsoSegments(
+                &hdr.seg_size,
+            )],
+            Some(cmsg_space!(libc::c_int)),
+        );
+        #[cfg(not(feature = "gso"))]
+        let (cmsgs, space) = (Vec::new(), None);
+
+        macro_rules! send_batch {
+            ($ty:ty, $addr:expr) => {{
+                let sock_addr = <$ty>::from($addr);
+                let addrs = vec![Some(sock_addr); BATCH_SIZE];
+                let mut data =
+                    nix::sys::socket::MultiHeaders::<$ty>::preallocate(BATCH_SIZE, space);
+                match nix::sys::socket::sendmmsg(
+                    self.io.as_raw_fd(),
+                    &mut data,
+                    &slices,
+                    &addrs,
+                    &cmsgs,
+                    MsgFlags::empty(),
+                ) {
+                    Ok(ret) => Ok(ret.count()),
+                    Err(e) if e == nix::errno::Errno::EINVAL || e == nix::errno::Errno::EAGAIN => {
+                        Err(io::Error::new(io::ErrorKind::WouldBlock, e))
+                    }
+                    Err(e) => Err(e.into()),
+                }
+            }};
+        }
+
+        match hdr.dst {
+            SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
+            SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
+        }
     }
 
     #[cfg(any(

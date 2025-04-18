@@ -389,10 +389,9 @@ impl<'a> Transaction<'a> {
         tx_waker: ArcSendWaker,
     ) -> Result<Option<Self>, Signals> {
         let send_quota = cc.send_quota()?;
-        let credit_limit = anti_amplifier.balance()?;
-        if credit_limit.is_none() {
+        let Some(credit_limit) = anti_amplifier.balance()? else {
             return Ok(None);
-        }
+        };
         let flow_limit = match flow_ctrl.send_limit(send_quota) {
             Ok(flow_limit) => flow_limit,
             Err(_error) => return Ok(None),
@@ -401,7 +400,7 @@ impl<'a> Transaction<'a> {
             Some(borriwed_dcid) => borriwed_dcid,
             None => return Ok(None),
         };
-        let constraints = Constraints::new(credit_limit.unwrap(), send_quota);
+        let constraints = Constraints::new(credit_limit, send_quota);
         Ok(Some(Self {
             scid,
             dcid: borriwed_dcid,

@@ -1,9 +1,11 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    task::{Context, Poll, ready},
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Wake, Waker, ready},
 };
 
 use socket2::{Domain, Socket, Type};
@@ -59,6 +61,8 @@ impl Default for DatagramHeader {
 #[derive(Debug)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
+    read: Arc<Wakers>,
+    write: Arc<Wakers>,
 }
 
 impl UdpSocketController {
@@ -73,12 +77,28 @@ impl UdpSocketController {
         socket.set_nonblocking(true)?;
         Self::config(&socket, addr)?;
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
-        let usc = Self { io };
+        let usc = Self {
+            io,
+            read: Default::default(),
+            write: Default::default(),
+        };
         Ok(usc)
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.io.local_addr()
+    }
+
+    pub fn poll_send_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.write.register(cx.waker());
+        self.io
+            .poll_send_ready(&mut Context::from_waker(&self.write.clone().into()))
+    }
+
+    pub fn poll_recv_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.read.register(cx.waker());
+        self.io
+            .poll_recv_ready(&mut Context::from_waker(&self.read.clone().into()))
     }
 
     pub fn poll_send(
@@ -87,20 +107,17 @@ impl UdpSocketController {
         bufs: &[IoSlice<'_>],
         hdr: &DatagramHeader,
     ) -> Poll<io::Result<usize>> {
-        let mut sent = 0;
-        while sent < bufs.len() {
-            ready!(self.io.poll_send_ready(cx)?);
-            let current_bufs = &bufs[sent..];
+        loop {
+            ready!(self.poll_send_ready(cx))?;
             match self
                 .io
-                .try_io(Interest::WRITABLE, || self.sendmsg(current_bufs, hdr))
+                .try_io(Interest::WRITABLE, || self.sendmsg(bufs, hdr))
             {
-                Ok(n) => sent += n,
+                Ok(n) => return Poll::Ready(Ok(n)),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }
-        Poll::Ready(Ok(sent))
     }
 
     pub fn poll_recv(
@@ -110,7 +127,7 @@ impl UdpSocketController {
         hdrs: &mut [DatagramHeader],
     ) -> Poll<io::Result<usize>> {
         loop {
-            ready!(self.io.poll_recv_ready(cx)?);
+            ready!(self.poll_recv_ready(cx)?);
             let f = || self.recvmsg(bufs, hdrs);
             let ret = self.io.try_io(Interest::READABLE, f);
             if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
@@ -118,6 +135,27 @@ impl UdpSocketController {
             } else {
                 return Poll::Ready(ret);
             }
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+struct Wakers(Mutex<VecDeque<Waker>>);
+
+impl Wakers {
+    fn register(&self, waker: &Waker) {
+        self.0.lock().unwrap().push_back(waker.clone());
+    }
+}
+
+impl Wake for Wakers {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        for waker in self.0.lock().unwrap().drain(..) {
+            waker.wake_by_ref();
         }
     }
 }
