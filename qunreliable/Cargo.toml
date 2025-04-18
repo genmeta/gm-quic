@@ -1,6 +1,6 @@
 [package]
 name = "qunreliable"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 description = "Datagram transmission of gm-quic"
 readme.workspace = true

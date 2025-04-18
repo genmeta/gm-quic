@@ -56,17 +56,17 @@ QUIC协议可谓一个相当复杂的、IO密集型的协议，因此正是适�
 
 运行一个H3服务器:
 
-```
+``` shell
 cargo run --example=h3-server --package=h3-shim -- --dir=./h3-shim
 ```
 
 发起一个H3请求:
 
-```
-cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs --keylog
+``` shell
+cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs
 ```
 
-更多案例请翻阅`h3-shim`，`gm-quic`以及`qconnection`文件夹下的`examples`文件夹。
+更多案例请翻阅`h3-shim`以及`gm-quic`文件夹下的`examples`文件夹。
 
 #### API简介
 
