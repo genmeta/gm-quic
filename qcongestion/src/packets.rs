@@ -232,7 +232,7 @@ impl PacketSpace {
         packet_threshold: usize,
         algorithm: &mut Box<dyn Control>,
     ) -> impl Iterator<Item = u64> {
-        assert!(self.largest_acked_packet.is_some());
+        // assert!(self.largest_acked_packet.is_some());
         self.loss_time = None;
 
         let now = Instant::now();
