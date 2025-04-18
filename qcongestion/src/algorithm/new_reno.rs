@@ -96,6 +96,7 @@ impl NewReno {
         }
         // 如果是 Retranmit 状态，又被 ack， 把拥塞窗口加回来
         if self.in_congestion_recovery(&acked_packet.time_sent) {
+            qevent::event!({ RecoveryMetricsUpdated::from(&*self) });
             return;
         }
         if self.congestion_window < self.ssthresh {
@@ -104,6 +105,7 @@ impl NewReno {
             self.congestion_window +=
                 self.max_datagram_size() * acked_packet.sent_bytes / self.congestion_window;
         }
+        qevent::event!({ RecoveryMetricsUpdated::from(&*self) });
     }
 
     /// B.6. On New Congestion Event
@@ -131,6 +133,7 @@ impl NewReno {
         self.congestion_window = self.ssthresh.max(2 * self.max_datagram_size());
         // A packet can be sent to speed up loss recovery.
         // self.maybe_send_packet(1);
+        qevent::event!({ RecoveryMetricsUpdated::from(&*self) });
     }
 
     /// B.7. Process ECN Information
