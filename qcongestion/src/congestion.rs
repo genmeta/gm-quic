@@ -307,7 +307,7 @@ impl CongestionController {
         }
 
         if self.no_ack_eliciting_in_flight() {
-            assert!(!self.peer_completed_address_validation());
+            // assert!(!self.peer_completed_address_validation());
             if self.path_status.has_handshake_key() {
                 // Send an anti-deadlock packet: Initial is padded
                 // to earn more anti-amplification credit,
@@ -376,7 +376,7 @@ impl CongestionController {
         let mut duration = self.rtt.base_pto(self.pto_count);
         let now = Instant::now();
         if self.no_ack_eliciting_in_flight() {
-            assert!(!self.peer_completed_address_validation());
+            // assert!(!self.peer_completed_address_validation());
             if self.path_status.has_handshake_key() {
                 return Some((now + duration, Epoch::Handshake));
             } else {

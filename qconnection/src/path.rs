@@ -47,6 +47,7 @@ pub struct Path {
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
     tx_waker: ArcSendWaker,
     pmtu: Arc<AtomicU16>,
+    status: PathStatus,
 }
 
 impl Path {
@@ -67,7 +68,7 @@ impl Path {
             Algorithm::NewReno,
             max_ack_delay,
             feedbacks,
-            path_status,
+            path_status.clone(),
             tx_waker.clone(),
         );
         let handle = cc.launch();
@@ -84,6 +85,7 @@ impl Path {
             response_rcvbuf: Default::default(),
             tx_waker,
             pmtu,
+            status: path_status,
         })
     }
 
@@ -130,6 +132,9 @@ impl Path {
         packet_contains: PacketContains,
     ) {
         self.anti_amplifier.on_rcvd(size);
+        if size > 0 {
+            self.status.release_anti_amplification_limit();
+        }
         if packet_contains == PacketContains::EffectivePayload {
             *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
         }
@@ -147,6 +152,11 @@ impl Path {
     }
 
     pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
+        self.anti_amplifier
+            .on_sent(segments.iter().map(|s| s.len()).sum());
+        if self.anti_amplifier.balance().is_err() {
+            self.status.enter_anti_amplification_limit();
+        }
         while !segments.is_empty() {
             let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
             let sent =
