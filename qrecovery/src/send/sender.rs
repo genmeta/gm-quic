@@ -338,7 +338,7 @@ impl<TX: Clone> SendingSender<TX> {
             shutdown_waker: self.shutdown_waker.take(),
             broker: self.broker.clone(),
             tx_wakers: self.tx_wakers.clone(),
-            is_fin_acked: false,
+            fin_state: FinState::Sent,
         }
     }
 }
@@ -364,6 +364,13 @@ where
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum FinState {
+    Sent,
+    Lost,
+    Rcvd,
+}
+
 #[derive(Debug)]
 pub struct DataSentSender<TX> {
     stream_id: StreamId,
@@ -373,7 +380,7 @@ pub struct DataSentSender<TX> {
     broker: TX,
     // retran/fin
     tx_wakers: ArcSendWakers,
-    is_fin_acked: bool,
+    fin_state: FinState,
 }
 
 impl<TX> DataSentSender<TX> {
@@ -392,12 +399,22 @@ impl<TX> DataSentSender<TX> {
                 let is_eos = offset + data.len() as u64 == total_size;
                 (offset, is_fresh, data, is_eos)
             })
+            .or_else(|signals| {
+                if self.fin_state == FinState::Lost {
+                    self.fin_state = FinState::Sent;
+                    Ok((total_size, false, (&[], &[]), true))
+                } else {
+                    Err(signals)
+                }
+            })
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
         self.sndbuf.on_data_acked(range);
-        self.is_fin_acked = self.is_fin_acked || is_fin;
+        if is_fin {
+            self.fin_state = FinState::Rcvd;
+        }
         if self.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -409,11 +426,14 @@ impl<TX> DataSentSender<TX> {
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {
-        self.sndbuf.is_all_rcvd() && self.is_fin_acked
+        self.sndbuf.is_all_rcvd() && self.fin_state == FinState::Rcvd
     }
 
     pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
         self.tx_wakers.wake_all_by(Signals::TRANSPORT);
+        if range.end == self.sndbuf.written() && self.fin_state != FinState::Rcvd {
+            self.fin_state = FinState::Lost;
+        }
         self.sndbuf.may_loss_data(range)
     }
 
@@ -616,7 +636,7 @@ mod tests {
         // Test transition to DataSentSender
         let data_sent = sending.upgrade();
         assert_eq!(data_sent.stream_id, stream_id);
-        assert!(!data_sent.is_fin_acked);
+        assert!(data_sent.fin_state == FinState::Sent);
     }
 
     #[test]
@@ -643,7 +663,7 @@ mod tests {
             shutdown_waker: None,
             broker,
             tx_wakers: Default::default(),
-            is_fin_acked: false,
+            fin_state: FinState::Sent,
         };
 
         // Test pick_up with empty buffer
@@ -664,7 +684,7 @@ mod tests {
             shutdown_waker: None,
             broker,
             tx_wakers: Default::default(),
-            is_fin_acked: false,
+            fin_state: FinState::Sent,
         };
 
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
