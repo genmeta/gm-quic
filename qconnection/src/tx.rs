@@ -55,7 +55,7 @@ impl PacketLogger {
             frames: self.frames,
             raw: qevent::RawInfo {
                 length: packet.packet_len() as u64,
-                payload_length: { packet.packet_len() + packet.tag_len() } as u64,
+                payload_length: { packet.payload_len() + packet.tag_len() } as u64,
                 data: packet.buffer(),
             },
             // TODO: trigger

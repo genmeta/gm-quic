@@ -616,17 +616,16 @@ impl Feedback for DataSpace {
             for frame in sent_packets.may_loss_packet(pn) {
                 match frame {
                     GuaranteedFrame::Crypto(frame) => {
-                        may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
+                        may_lost_frames.extend([&frame]);
                         crypto_outgoing.may_loss_data(&frame);
                     }
                     GuaranteedFrame::Stream(frame) => {
-                        may_lost_frames.extend(Some(&Frame::Stream(frame, bytes::Bytes::new())));
+                        may_lost_frames.extend([&frame]);
                         self.streams.may_loss_data(&frame);
                     }
                     GuaranteedFrame::Reliable(frame) => {
                         may_lost_frames.extend([&frame]);
                         self.reliable_frames.send_frame([frame]);
-                        // self.sendable.notify_waiters();
                     }
                 };
             }
