@@ -277,8 +277,7 @@ impl Feedback for HandshakeSpace {
         for pn in pns {
             let mut may_lost_frames = QuicFramesCollector::<PacketLost>::new();
             for frame in sent_packets.may_loss_packet(pn) {
-                // for this convert, empty bytes indicates the raw info is not available
-                may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
+                may_lost_frames.extend([&frame]);
                 outgoing.may_loss_data(&frame);
             }
             qevent::event!(PacketLost {
