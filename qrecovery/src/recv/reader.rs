@@ -64,7 +64,25 @@ use super::recver::{ArcRecver, Recver};
 /// [`stop`]: Reader::stop
 /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
 #[derive(Debug)]
-pub struct Reader<TX>(pub(crate) ArcRecver<TX>);
+pub struct Reader<TX> {
+    inner: ArcRecver<TX>,
+    qlog_span: qevent::telemetry::Span,
+    tracing_span: tracing::Span,
+}
+
+impl<TX> Reader<TX> {
+    /// Create a new [`Reader`] from the given [`Recver`].
+    ///
+    /// This method is used by the `accept_bi_stream` and `accept_uni_stream` methods of
+    /// [`QuicConnection`](crate::QuicConnection).
+    pub(crate) fn new(inner: ArcRecver<TX>) -> Self {
+        Self {
+            inner,
+            qlog_span: qevent::telemetry::Span::current(),
+            tracing_span: tracing::Span::current(),
+        }
+    }
+}
 
 impl<TX> Reader<TX>
 where
@@ -79,8 +97,10 @@ where
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
     pub fn stop(&mut self, error_code: u64) {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
         debug_assert!(error_code <= VARINT_MAX);
-        let mut recver = self.0.recver();
+        let mut recver = self.inner.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {
@@ -107,7 +127,9 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut recver = self.0.recver();
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut recver = self.inner.recver();
         let receiving_state = recver.as_mut().map_err(|e| e.clone())?;
         // 能相当清楚地看到应用层读取数据驱动的接收状态演变
         match receiving_state {
@@ -144,7 +166,7 @@ where
 
 impl<TX> Drop for Reader<TX> {
     fn drop(&mut self) {
-        let mut recver = self.0.recver();
+        let mut recver = self.inner.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {

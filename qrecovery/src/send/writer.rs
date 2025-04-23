@@ -64,7 +64,21 @@ use super::sender::{ArcSender, Sender};
 /// [`cancel`]: Writer::cancel
 /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
 #[derive(Debug)]
-pub struct Writer<TX>(pub(crate) ArcSender<TX>);
+pub struct Writer<TX> {
+    inner: ArcSender<TX>,
+    qlog_span: qevent::telemetry::Span,
+    tracing_span: tracing::Span,
+}
+
+impl<TX> Writer<TX> {
+    pub(crate) fn new(inner: ArcSender<TX>) -> Self {
+        Self {
+            inner,
+            qlog_span: qevent::telemetry::Span::current(),
+            tracing_span: tracing::Span::current(),
+        }
+    }
+}
 
 impl<TX> Writer<TX>
 where
@@ -80,7 +94,9 @@ where
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
     pub fn cancel(&mut self, err_code: u64) {
-        let mut sender = self.0.sender();
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
@@ -108,7 +124,9 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let mut sender = self.0.sender();
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
             Sender::Ready(s) => s.poll_write(cx, buf),
@@ -131,7 +149,9 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.sender();
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
             Sender::Ready(s) => s.poll_flush(cx),
@@ -148,7 +168,9 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.sender();
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
             Sender::Ready(s) => s.poll_shutdown(cx),
@@ -167,7 +189,7 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
 
 impl<TX> Drop for Writer<TX> {
     fn drop(&mut self) {
-        let mut sender = self.0.sender();
+        let mut sender = self.inner.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {

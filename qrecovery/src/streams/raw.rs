@@ -602,7 +602,10 @@ where
             let io_state = IOState::bidirection();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state.clone());
             input.insert(sid, Incoming::new(arc_recver.clone()), io_state);
-            Poll::Ready(Ok(Some((sid, (Reader(arc_recver), Writer(arc_sender))))))
+            Poll::Ready(Ok(Some((
+                sid,
+                (Reader::new(arc_recver), Writer::new(arc_sender)),
+            ))))
         } else {
             Poll::Ready(Ok(None))
         }
@@ -622,7 +625,7 @@ where
             let arc_sender = self.create_sender(sid, snd_buf_size);
             let io_state = IOState::send_only();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
-            Poll::Ready(Ok(Some((sid, Writer(arc_sender)))))
+            Poll::Ready(Ok(Some((sid, Writer::new(arc_sender)))))
         } else {
             Poll::Ready(Ok(None))
         }
