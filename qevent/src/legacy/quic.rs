@@ -619,14 +619,43 @@ pub struct TransportDataMoved {
     data: Option<HexString>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged, rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamDataLocation {
     User,
     Application,
     Transport,
     Network,
     Other(String),
+}
+
+impl Serialize for StreamDataLocation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            StreamDataLocation::User => serializer.serialize_str("user"),
+            StreamDataLocation::Application => serializer.serialize_str("application"),
+            StreamDataLocation::Transport => serializer.serialize_str("transport"),
+            StreamDataLocation::Network => serializer.serialize_str("network"),
+            StreamDataLocation::Other(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamDataLocation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)? {
+            s if s == "user" => Ok(StreamDataLocation::User),
+            s if s == "application" => Ok(StreamDataLocation::Application),
+            s if s == "transport" => Ok(StreamDataLocation::Transport),
+            s if s == "network" => Ok(StreamDataLocation::Network),
+            s => Ok(StreamDataLocation::Other(s)),
+        }
+    }
 }
 
 #[serde_with::skip_serializing_none]

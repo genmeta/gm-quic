@@ -14,7 +14,9 @@ use qbase::{
     sid::StreamId,
     varint::{VARINT_MAX, VarInt},
 };
-use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::quic::transport::{
+    GranularStreamStates, StreamDataLocation, StreamDataMoved, StreamSide, StreamStateUpdated,
+};
 
 use super::rcvbuf;
 
@@ -39,7 +41,15 @@ where
         buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
-            self.rcvbuf.try_read(buf);
+            let offset = self.rcvbuf.nread();
+            let length = self.rcvbuf.try_read(buf) as u64;
+            qevent::event!(StreamDataMoved {
+                stream_id: self.stream_id,
+                offset,
+                length,
+                from: StreamDataLocation::Transport,
+                to: StreamDataLocation::Application,
+            });
 
             let threshold = 1_000_000;
             if self.rcvbuf.nread() + threshold > self.max_stream_data {
@@ -158,7 +168,18 @@ impl<TX> Recv<TX> {
                 ),
             ));
         }
+        let data_length = body.len() as u64;
         let fresh_data = self.rcvbuf.recv(data_start, body);
+        qevent::event!(
+            StreamDataMoved {
+                stream_id: self.stream_id,
+                offset: data_start,
+                length: data_length,
+                from: StreamDataLocation::Network,
+                to: StreamDataLocation::Transport,
+            },
+            fresh_data
+        );
         if self.largest < data_end {
             self.largest = data_end;
         }
@@ -254,13 +275,24 @@ impl<TX> SizeKnown<TX> {
                 ),
             ));
         }
-        let fresh = self.rcvbuf.recv(data_start, data);
+        let data_length = data.len() as u64;
+        let fresh_data = self.rcvbuf.recv(data_start, data);
+        qevent::event!(
+            StreamDataMoved {
+                stream_id: self.stream_id,
+                offset: data_start,
+                length: data_length,
+                from: StreamDataLocation::Network,
+                to: StreamDataLocation::Transport,
+            },
+            fresh_data
+        );
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
             }
         }
-        Ok(fresh as usize)
+        Ok(fresh_data as usize)
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {
@@ -284,7 +316,15 @@ impl<TX> SizeKnown<TX> {
         buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
-            self.rcvbuf.try_read(buf);
+            let offset = self.rcvbuf.nread();
+            let length = self.rcvbuf.try_read(buf) as u64;
+            qevent::event!(StreamDataMoved {
+                stream_id: self.stream_id,
+                offset,
+                length,
+                from: StreamDataLocation::Transport,
+                to: StreamDataLocation::Application,
+            });
             Poll::Ready(Ok(()))
         } else {
             self.read_waker = Some(cx.waker().clone());
@@ -387,7 +427,15 @@ impl DataRcvd {
     /// "Pending" but instead returns "Ready". However, in reality, nothing has been
     /// read. This kind of result typically indicates the end.
     pub(super) fn poll_read(&mut self, buf: &mut impl BufMut) {
-        self.rcvbuf.try_read(buf);
+        let offset = self.rcvbuf.nread();
+        let length = self.rcvbuf.try_read(buf) as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
     }
 
     pub(super) fn is_all_read(&self) -> bool {

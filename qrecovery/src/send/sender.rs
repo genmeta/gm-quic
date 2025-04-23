@@ -13,7 +13,13 @@ use qbase::{
     util::DescribeData,
     varint::VarInt,
 };
-use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
+use qevent::{
+    RawInfo,
+    quic::transport::{
+        DataMovedAdditionalInfo, GranularStreamStates, StreamDataLocation, StreamDataMoved,
+        StreamSide, StreamStateUpdated,
+    },
+};
 
 use super::sndbuf::SendBuf;
 
@@ -95,6 +101,13 @@ impl<TX> ReadySender<TX> {
             let stream_data = self.sndbuf.written();
             if stream_data < self.max_stream_data {
                 let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                qevent::event!(StreamDataMoved {
+                    stream_id: self.stream_id,
+                    offset: self.sndbuf.written(),
+                    length: n as u64,
+                    from: StreamDataLocation::Application,
+                    to: StreamDataLocation::Transport,
+                });
                 self.tx_wakers.wake_all_by(Signals::WRITTEN);
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
@@ -220,6 +233,13 @@ impl<TX> SendingSender<TX> {
             let stream_data = self.sndbuf.written();
             if stream_data < self.max_stream_data {
                 let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                qevent::event!(StreamDataMoved {
+                    stream_id: self.stream_id,
+                    offset: self.sndbuf.written(),
+                    length: n as u64,
+                    from: StreamDataLocation::Application,
+                    to: StreamDataLocation::Transport,
+                });
                 self.tx_wakers.wake_all_by(Signals::WRITTEN);
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
@@ -262,6 +282,18 @@ impl<TX> SendingSender<TX> {
                 } else {
                     Err(signals)
                 }
+            })
+            .map(|(offset, is_fresh, data, is_eos)| {
+                qevent::event!(StreamDataMoved {
+                    stream_id: self.stream_id,
+                    offset,
+                    length: data.len() as u64,
+                    from: StreamDataLocation::Transport,
+                    to: StreamDataLocation::Network,
+                    ?additional_info: is_eos.then_some(DataMovedAdditionalInfo::FinSet),
+                    raw: RawInfo { data }
+                });
+                (offset, is_fresh, data, is_eos)
             })
     }
 
@@ -406,6 +438,18 @@ impl<TX> DataSentSender<TX> {
                 } else {
                     Err(signals)
                 }
+            })
+            .map(|(offset, is_fresh, data, is_eos)| {
+                qevent::event!(StreamDataMoved {
+                    stream_id: self.stream_id,
+                    offset,
+                    length: data.len() as u64,
+                    from: StreamDataLocation::Transport,
+                    to: StreamDataLocation::Network,
+                    ?additional_info: is_eos.then_some(DataMovedAdditionalInfo::FinSet),
+                    raw: RawInfo { data }
+                },);
+                (offset, is_fresh, data, is_eos)
             })
     }
 
