@@ -257,7 +257,7 @@ mod tests {
             {
                 connection_close_frame_at_layer(super::APP_LAYER)
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())

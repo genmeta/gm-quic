@@ -76,7 +76,7 @@ where
             return Err(Error::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
-                format!("active connection id limit {} < 2", active_cid_limit),
+                format!("active connection id limit {active_cid_limit} < 2"),
             ));
         }
         for _ in self.cid_deque.largest()..active_cid_limit {

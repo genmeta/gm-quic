@@ -121,7 +121,7 @@ mod tests {
             if frame_type.into_inner() == STREAMS_BLOCKED_FRAME_TYPE as u64 {
                 streams_blocked_frame_with_dir(frame_type.into_inner() as u8)
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())
@@ -134,7 +134,7 @@ mod tests {
             if frame_type.into_inner() == (STREAMS_BLOCKED_FRAME_TYPE | 0x1) as u64 {
                 streams_blocked_frame_with_dir(frame_type.into_inner() as u8)
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())

@@ -183,7 +183,7 @@ mod tests {
             if frame_type.into_inner() == RESET_STREAM_FRAME_TYPE as u64 {
                 super::be_reset_stream_frame
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())

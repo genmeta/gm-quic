@@ -141,7 +141,7 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
-        let file_name = format!("{group_id}_{}.sqlog", vantage_point);
+        let file_name = format!("{group_id}_{vantage_point}.sqlog");
         let file = self.storage.join(&file_name);
 
         let qlog_file_seq = crate::build!(legacy::QlogFileSeq {

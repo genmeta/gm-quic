@@ -64,7 +64,7 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
     let password = match username_password.next() {
         Some(password) => password.to_string(),
         None => rpassword::prompt_password(format!("Please input password for {username}: "))
-            .map_err(|e| format!("failed to read password: {}", e))?,
+            .map_err(|e| format!("failed to read password: {e}"))?,
     };
 
     // 创建通道用于异步通信
@@ -178,14 +178,14 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
         .authority(options.auth.clone())
         .path_and_query("/ssh")
         .build()
-        .map_err(|e| format!("failed to build uri: {}", e))?;
+        .map_err(|e| format!("failed to build uri: {e}"))?;
 
     // 构建 Basic Auth 头
     use base64::Engine;
 
-    let credentials = format!("{}:{}", username, password);
+    let credentials = format!("{username}:{password}");
     let b64_encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
-    let auth_header = format!("Basic {}", b64_encoded);
+    let auth_header = format!("Basic {b64_encoded}");
 
     let port = options.auth.port_u16().unwrap_or(443);
     let addr = tokio::net::lookup_host((options.auth.host(), port))
@@ -239,12 +239,12 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
                     if let Some(msg) = msg {
                         let serialized = serde_json::to_vec(&msg).unwrap();
                         if let Err(e) = sender.send_data(serialized.into()).await {
-                            eprintln!("Write error: {}", e);
+                            eprintln!("Write error: {e}");
                             break;
                         }
                     } else {
                         if let Err(e) = sender.finish().await {
-                            eprintln!("Finish error: {}", e);
+                            eprintln!("Finish error: {e}");
                         }
                         break;
                     }
@@ -252,7 +252,7 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
                 _ = interval.tick() => {
                     let serialized = serde_json::to_vec(&TerminalMessage::Heartbeat).unwrap();
                     if let Err(e) = sender.send_data(serialized.into()).await {
-                        eprintln!("Heartbeat channel error: {}", e);
+                        eprintln!("Heartbeat channel error: {e}");
                         break;
                     }
                 }
@@ -275,7 +275,7 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
                         break;
                     }
                     Err(e) => {
-                        eprintln!("Read error: {}", e);
+                        eprintln!("Read error: {e}");
                         receiver.stop_sending(h3::error::Code::H3_NO_ERROR);
                         break;
                     }
@@ -294,7 +294,7 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
     }
 
     if let Err(e) = tokio::try_join!(send_task, recv_task) {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
     }
 
     // 清理

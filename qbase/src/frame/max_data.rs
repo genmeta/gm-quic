@@ -87,7 +87,7 @@ mod tests {
             if frame_type.into_inner() == MAX_DATA_FRAME_TYPE as u64 {
                 be_max_data_frame
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())
