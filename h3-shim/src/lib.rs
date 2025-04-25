@@ -1,4 +1,5 @@
 pub mod conn;
+pub mod pool;
 pub use conn::{OpenStreams, QuicConnection};
 pub mod error;
 pub use error::Error;

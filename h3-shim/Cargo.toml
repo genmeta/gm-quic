@@ -15,6 +15,7 @@ autoexamples = false
 h3 = { workspace = true }
 h3-datagram = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
 futures = { workspace = true }
 gm-quic = { workspace = true }
 qbase = { workspace = true }
