@@ -58,7 +58,7 @@ mod tests {
             if frame_type.into_inner() == super::HANDSHAKE_DONE_FRAME_TYPE as u64 {
                 be_handshake_done_frame
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())

@@ -102,7 +102,7 @@ mod tests {
             if frame_type.into_inner() == super::PATH_CHALLENGE_FRAME_TYPE as u64 {
                 be_path_challenge_frame
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(buf.as_ref())

@@ -304,7 +304,7 @@ mod tests {
             if frame_type.into_inner() >= STREAM_FRAME_TYPE as u64 {
                 stream_frame_with_flag(frame_type.into_inner() as u8 & 0b111)
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(input)
@@ -338,7 +338,7 @@ mod tests {
             if frame_type.into_inner() >= STREAM_FRAME_TYPE as u64 {
                 stream_frame_with_flag(frame_type.into_inner() as u8 & 0b111)
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                panic!("wrong frame type: {frame_type}")
             }
         })
         .parse(input)

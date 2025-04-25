@@ -692,8 +692,8 @@ mod tests {
         assert_eq!(state.decode(), (100, Color::Pending));
 
         // test Dispaly
-        assert_eq!(format!("{}", state), "[100: Pending]");
-        assert_eq!(format!("{:?}", state), "[100: Pending]");
+        assert_eq!(format!("{state}"), "[100: Pending]");
+        assert_eq!(format!("{state:?}"), "[100: Pending]");
     }
 
     #[test]

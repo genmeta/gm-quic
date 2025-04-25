@@ -28,7 +28,7 @@ pub struct ConnectionId {
 impl core::fmt::LowerHex for ConnectionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for &b in self.as_ref() {
-            write!(f, "{:02x}", b)?;
+            write!(f, "{b:02x}")?;
         }
         Ok(())
     }

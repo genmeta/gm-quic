@@ -344,8 +344,7 @@ impl From<FrameType> for VarInt {
 pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
     let (remain, frame_type) = crate::varint::be_varint(input).map_err(|_| {
         nom::Err::Error(Error::IncompleteType(format!(
-            "Incomplete frame type from input: {:?}",
-            input
+            "Incomplete frame type from input: {input:?}"
         )))
     })?;
     let frame_type = FrameType::try_from(frame_type).map_err(nom::Err::Error)?;
@@ -650,7 +649,7 @@ mod tests {
         fn parse_address_frame(input: &[u8]) -> Result<(usize, AddAddressFrame), Error> {
             let origin = input.len();
             let (remain, frame) = be_add_address_frame(input).map_err(|_| {
-                Error::IncompleteType(format!("Incomplete frame type from input: {:?}", input))
+                Error::IncompleteType(format!("Incomplete frame type from input: {input:?}"))
             })?;
             let consumed = origin - remain.len();
             Ok((consumed, frame))
