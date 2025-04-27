@@ -1,4 +1,4 @@
-use std::ops::{DerefMut, Range};
+use std::ops::DerefMut;
 
 use bytes::BufMut;
 use qbase::{
@@ -113,9 +113,7 @@ impl<TX> Outgoing<TX> {
 
     /// Called when the data sent to peer is acknowlwged.
     ///
-    /// * `range` is the range of stream data that has been acknowledged.
-    ///
-    /// * `is_fin` indicates whether the acknowledged stream frame contains the `FIN` flag.
+    /// * `frame`: the stream frame that has been acknowledged.
     ///
     /// Return `true` if the stream is completely acknowledged, all data has been sent and received.
     ///
@@ -129,10 +127,10 @@ impl<TX> Outgoing<TX> {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    s.on_data_acked(&frame.range());
+                    s.on_data_acked(frame);
                 }
                 Sender::DataSent(s) => {
-                    s.on_data_acked(&frame.range(), frame.is_fin());
+                    s.on_data_acked(frame);
                     if s.is_all_rcvd() {
                         qevent::event!(StreamStateUpdated {
                             stream_id: frame.stream_id(),
@@ -154,8 +152,8 @@ impl<TX> Outgoing<TX> {
 
     /// Called when the data sent to peer may lost.
     ///
-    /// * `range` is the range of stream data that may lost.
-    pub fn may_loss_data(&self, range: &Range<u64>) {
+    /// * `frame`: the stream frame that may be lost.
+    pub fn may_loss_data(&self, frame: &StreamFrame) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
@@ -164,10 +162,10 @@ impl<TX> Outgoing<TX> {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    s.may_loss_data(range);
+                    s.may_loss_data(frame);
                 }
                 Sender::DataSent(s) => {
-                    s.may_loss_data(range);
+                    s.may_loss_data(frame);
                 }
                 // ignore loss
                 _ => (),

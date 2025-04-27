@@ -1,13 +1,12 @@
 use std::{
     io,
-    ops::Range,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
 use qbase::{
     error::Error,
-    frame::{ResetStreamError, ResetStreamFrame, SendFrame},
+    frame::{ResetStreamError, ResetStreamFrame, SendFrame, StreamFrame},
     net::tx::{ArcSendWakers, Signals},
     sid::StreamId,
     util::DescribeData,
@@ -297,8 +296,8 @@ impl<TX> SendingSender<TX> {
             })
     }
 
-    pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
-        self.sndbuf.on_data_acked(range);
+    pub(super) fn on_data_acked(&mut self, frame: &StreamFrame) {
+        self.sndbuf.on_data_acked(&frame.range());
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -306,9 +305,9 @@ impl<TX> SendingSender<TX> {
         }
     }
 
-    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+    pub(super) fn may_loss_data(&mut self, frame: &StreamFrame) {
         self.tx_wakers.wake_all_by(Signals::TRANSPORT);
-        self.sndbuf.may_loss_data(range)
+        self.sndbuf.may_loss_data(&frame.range())
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -453,10 +452,9 @@ impl<TX> DataSentSender<TX> {
             })
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
-    pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
-        self.sndbuf.on_data_acked(range);
-        if is_fin {
+    pub(super) fn on_data_acked(&mut self, frame: &StreamFrame) {
+        self.sndbuf.on_data_acked(&frame.range());
+        if frame.is_fin() {
             self.fin_state = FinState::Rcvd;
         }
         if self.is_all_rcvd() {
@@ -473,12 +471,12 @@ impl<TX> DataSentSender<TX> {
         self.sndbuf.is_all_rcvd() && self.fin_state == FinState::Rcvd
     }
 
-    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+    pub(super) fn may_loss_data(&mut self, frame: &StreamFrame) {
         self.tx_wakers.wake_all_by(Signals::TRANSPORT);
-        if range.end == self.sndbuf.written() && self.fin_state != FinState::Rcvd {
+        if frame.is_fin() && self.fin_state != FinState::Rcvd {
             self.fin_state = FinState::Lost;
         }
-        self.sndbuf.may_loss_data(range)
+        self.sndbuf.may_loss_data(&frame.range())
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

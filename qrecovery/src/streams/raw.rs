@@ -319,7 +319,7 @@ where
             .ok()
             .and_then(|set| set.get(&stream_frame.stream_id()))
         {
-            o.may_loss_data(&stream_frame.range());
+            o.may_loss_data(stream_frame);
         }
     }
 
