@@ -118,4 +118,8 @@ impl ArcPathContexts {
             p.cc().discard_epoch(Epoch::Handshake);
         });
     }
+
+    pub fn clear(&self) {
+        self.paths.clear();
+    }
 }
