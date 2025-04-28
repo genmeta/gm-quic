@@ -13,6 +13,9 @@ use tokio::time::Instant;
 
 use crate::{ArcLocalCids, Components, path::ArcPathContexts};
 
+/// Keep a few states to support sending a packet with ccf.
+///
+/// when it is dropped all paths will be destroyed
 pub struct Terminator {
     last_recv_time: Mutex<Instant>,
     rcvd_packets: AtomicUsize,
@@ -20,6 +23,12 @@ pub struct Terminator {
     dcid: Option<ConnectionId>,
     ccf: ConnectionCloseFrame,
     paths: ArcPathContexts,
+}
+
+impl Drop for Terminator {
+    fn drop(&mut self) {
+        self.paths.clear();
+    }
 }
 
 impl Terminator {
@@ -132,6 +141,7 @@ impl Termination {
         self.error.clone()
     }
 
+    // Close packets queues, dont send and receive any more packets.
     pub fn enter_draining(&mut self) {
         if let State::Closing(rcvd_pkt_q) = mem::replace(&mut self.state, State::Draining) {
             rcvd_pkt_q.close_all();

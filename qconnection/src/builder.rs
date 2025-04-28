@@ -539,58 +539,67 @@ impl Components {
         pathway: Pathway,
         is_probed: bool,
     ) -> io::Result<Arc<Path>> {
-        self.paths.get_or_try_create_with (pathway,||{
-                let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
-                qevent::event!(PathAssigned {
-                    path_id: pathway.to_string(),
-                    path_local: link.src(),
-                    path_remote: link.dst(),
-                });
-                let max_ack_delay = self.parameters.get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
+        let try_create = || {
+            let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
+            qevent::event!(PathAssigned {
+                path_id: pathway.to_string(),
+                path_local: link.src(),
+                path_remote: link.dst(),
+            });
+            let max_ack_delay = self
+                .parameters
+                .get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
-                let path = Arc::new(Path::new(&self.proto, link, pathway, max_ack_delay,[
+            let path = Arc::new(Path::new(
+                &self.proto,
+                link,
+                pathway,
+                max_ack_delay,
+                [
                     self.spaces.initial().clone(),
                     self.spaces.handshake().clone(),
                     self.spaces.data().clone(),
+                ],
+                self.handshake.status(),
+            )?);
 
-                ], self.handshake.status())?);
+            if !is_probed {
+                path.grant_anti_amplification();
+            }
 
-                if !is_probed {
-                    path.grant_anti_amplification();
+            let burst = path.new_burst(self);
+            let idle_timeout = path.idle_timeout(self);
+
+            let task = {
+                let path = path.clone();
+                let defer_idle_timeout = self.defer_idle_timeout;
+                async move {
+                    let validate = async {
+                        if do_validate {
+                            path.validate().await
+                        } else {
+                            path.skip_validation();
+                            true
+                        }
+                    };
+                    let reason: String = tokio::select! {
+                        false = validate => "failed to validate".into(),
+                        _ = idle_timeout => "idle timeout".into(),
+                        Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
+                        _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
+                    };
+                    Err(reason)
                 }
+            };
 
-                let burst = path.new_burst(self);
-                let idle_timeout = path.idle_timeout(self);
+            let task =
+                Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
+                    .instrument_in_current();
 
-                let task = {
-                    let path = path.clone();
-                    let defer_idle_timeout = self.defer_idle_timeout;
-                    async move {
-                        let validate = async {
-                            if do_validate {
-                                path.validate().await
-                            } else {
-                                path.skip_validation();
-                                true
-                            }
-                        };
-                        let reason: String = tokio::select! {
-                            false = validate => "failed to validate".into(),
-                            _ = idle_timeout => "idle timeout".into(),
-                            Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
-                            _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
-                        };
-                        Err(reason)
-                    }
-                };
-
-                let task =
-                    Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
-                        .instrument_in_current();
-
-                tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
-                Ok((path,task))
-        })
+            tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
+            Ok((path, task))
+        };
+        self.paths.get_or_try_create_with(pathway, try_create)
     }
 }
 
