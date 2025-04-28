@@ -54,6 +54,7 @@ use qbase::{
     token::ArcTokenRegistry,
     varint::VarInt,
 };
+use qevent::telemetry::Instrument;
 use qinterface::{
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
@@ -68,6 +69,7 @@ use space::Spaces;
 use state::ConnState;
 use termination::Termination;
 use tls::ArcTlsSession;
+use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
 ///
@@ -133,6 +135,8 @@ impl Components {
                 .await?;
             Ok(streams.open_bi(snd_wnd_size.into_inner()).await?)
         }
+        .instrument_in_current()
+        .in_current_span()
     }
 
     pub fn open_uni_stream(
@@ -146,6 +150,8 @@ impl Components {
                 .await?;
             Ok(streams.open_uni(snd_wnd_size.into_inner()).await?)
         }
+        .instrument_in_current()
+        .in_current_span()
     }
 
     pub fn accept_bi_stream(
@@ -160,6 +166,8 @@ impl Components {
                 .await?;
             Ok(Some(streams.accept_bi(snd_wnd_size.into_inner()).await?))
         }
+        .instrument_in_current()
+        .in_current_span()
     }
 
     pub fn accept_uni_stream(
@@ -167,6 +175,8 @@ impl Components {
     ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send {
         let streams = self.spaces.data().streams().clone();
         async move { Ok(Some(streams.accept_uni().await?)) }
+            .instrument_in_current()
+            .in_current_span()
     }
 
     #[cfg(feature = "unreliable")]
@@ -184,6 +194,8 @@ impl Components {
                 .await?;
             datagrams.writer(max_datagram_frame_size.into_inner())
         }
+        .instrument_in_current()
+        .in_current_span()
     }
 
     pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
@@ -205,15 +217,6 @@ pub struct Connection {
 }
 
 impl Connection {
-    fn try_map_components<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
-        self.state
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(op)
-            .map_err(|termination| termination.error().into())
-    }
-
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         let mut conn = self.state.write().unwrap();
@@ -237,16 +240,24 @@ impl Connection {
         self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
     }
 
+    fn try_map_components<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        self.state
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(op)
+            .map_err(|termination| termination.error().into())
+    }
+
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.open_bi_stream())?
             .await
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.open_uni_stream())?
             .await
     }
@@ -254,59 +265,49 @@ impl Connection {
     pub async fn accept_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.accept_bi_stream())?
             .await
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.accept_uni_stream())?
             .await
     }
 
     #[cfg(feature = "unreliable")]
     pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.unreliable_reader())?
     }
 
     #[cfg(feature = "unreliable")]
     pub async fn unreliable_writer(&self) -> io::Result<DatagramWriter> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.unreliable_writer())?
             .await
     }
 
     pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.add_path(link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| core_conn.del_path(pathway))
     }
 
     pub fn is_active(&self) -> bool {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|_| true).unwrap_or_default()
     }
 
     pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.try_map_components(|core_conn| Ok(core_conn.parameters.get_origin_dcid()?))?
     }
 
     pub async fn handshaked(&self) {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.handshaked()) {
             f.await
         }
     }
 
     pub async fn terminated(&self) {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.terminated()) {
             f.await
         }

@@ -7,15 +7,19 @@ use std::{
 };
 
 use qbase::{error::Error, net::route::Link};
-use qevent::quic::{
-    Owner,
-    connectivity::{
-        BaseConnectionStates, ConnectionStarted, ConnectionState as QlogConnectionState,
-        ConnectionStateUpdated, GranularConnectionStates,
+use qevent::{
+    quic::{
+        Owner,
+        connectivity::{
+            BaseConnectionStates, ConnectionStarted, ConnectionState as QlogConnectionState,
+            ConnectionStateUpdated, GranularConnectionStates,
+        },
+        transport::ParametersSet,
     },
-    transport::ParametersSet,
+    telemetry::Instrument,
 };
 use tokio::sync::Semaphore;
+use tracing::Instrument as _;
 
 use crate::Components;
 
@@ -125,6 +129,8 @@ impl ConnState {
     pub fn handshaked(&self) -> impl Future<Output = ()> + Send {
         let handshaked = self.handshaked.clone();
         async move { _ = handshaked.acquire().await }
+            .instrument_in_current()
+            .in_current_span()
     }
 
     pub fn terminated(&self) -> impl Future<Output = ()> + Send {
@@ -135,6 +141,8 @@ impl ConnState {
                 .await
                 .expect("terminated semaphore should never be closed")
         }
+        .instrument_in_current()
+        .in_current_span()
     }
 }
 
