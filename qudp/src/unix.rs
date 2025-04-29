@@ -59,7 +59,10 @@ impl Io for UdpSocketController {
         target_os = "netbsd"
     ))]
     fn sendmsg(&self, buffers: &[IoSlice<'_>], hdr: &DatagramHeader) -> io::Result<usize> {
-        use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
+        use nix::{
+            errno::Errno,
+            sys::socket::{MsgFlags, MultiHeaders, SockaddrIn, SockaddrIn6, sendmmsg},
+        };
 
         use super::BATCH_SIZE;
         let slices: Vec<_> = buffers
@@ -86,9 +89,8 @@ impl Io for UdpSocketController {
             ($ty:ty, $addr:expr) => {{
                 let sock_addr = <$ty>::from($addr);
                 let addrs = vec![Some(sock_addr); BATCH_SIZE];
-                let mut data =
-                    nix::sys::socket::MultiHeaders::<$ty>::preallocate(BATCH_SIZE, space);
-                match nix::sys::socket::sendmmsg(
+                let mut data = MultiHeaders::<$ty>::preallocate(BATCH_SIZE, space);
+                match sendmmsg(
                     self.io.as_raw_fd(),
                     &mut data,
                     &slices,
@@ -97,7 +99,7 @@ impl Io for UdpSocketController {
                     MsgFlags::empty(),
                 ) {
                     Ok(ret) => Ok(ret.count()),
-                    Err(e) if e == nix::errno::Errno::EINVAL || e == nix::errno::Errno::EAGAIN => {
+                    Err(e @ (Errno::EINTR | Errno::EAGAIN | Errno::ENOBUFS)) => {
                         Err(io::Error::new(io::ErrorKind::WouldBlock, e))
                     }
                     Err(e) => Err(e.into()),
@@ -118,13 +120,16 @@ impl Io for UdpSocketController {
         target_os = "tvos"
     ))]
     fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &DatagramHeader) -> io::Result<usize> {
-        use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
+        use nix::{
+            errno::Errno,
+            sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6, sendmsg},
+        };
         let mut sent_packet = 0;
         for slice in slices.iter() {
             macro_rules! send_batch {
                 ($ty:ty, $addr:expr) => {{
                     let sock_addr = <$ty>::from($addr);
-                    match nix::sys::socket::sendmsg(
+                    match sendmsg(
                         self.io.as_raw_fd(),
                         &[*slice],
                         &[],
@@ -132,9 +137,9 @@ impl Io for UdpSocketController {
                         Some(&sock_addr),
                     ) {
                         Ok(_send_bytes) => sent_packet += 1,
-                        Err(e) if e == nix::errno::Errno::EINVAL => continue,
                         Err(_) if sent_packet > 0 => return Ok(sent_packet),
-                        Err(e) if e == nix::errno::Errno::EAGAIN => {
+                        Err(Errno::EINTR) => continue,
+                        Err(e @ (Errno::EAGAIN | Errno::ENOBUFS)) => {
                             return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
                         }
                         Err(e) => {
