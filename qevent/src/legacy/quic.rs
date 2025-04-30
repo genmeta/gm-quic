@@ -901,8 +901,11 @@ pub enum PacketNumberSpace {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketHeader {
     packet_type: PacketType,
+    // In rfc https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-quic-events-02#name-packetheader, this field mut be present.
+    // But in fact, for packet type Retry and VN and for packet dropped before pn decoded, this field is not exist.
+    // In the updated RFC this field is optional, so here we simply mark it as optional as well.
     #[builder(default)]
-    packet_number: u64,
+    packet_number: Option<u64>,
 
     /// the bit flags of the packet headers (spin bit, key update bit,
     /// etc. up to and including the packet number length bits
