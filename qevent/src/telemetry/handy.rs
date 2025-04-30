@@ -174,7 +174,7 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
                 log_file.write_u8(b'\n').await?;
             }
 
-            io::Result::Ok(())
+            log_file.shutdown().await
         });
 
         crate::span!(Arc::new(IoExpoter(tx)), group_id = group_id)
