@@ -14,11 +14,7 @@ use qbase::{
 };
 use tokio::task::{AbortHandle, JoinHandle};
 
-use crate::{
-    QuicInterface,
-    queue::RcvdPacketQueue,
-    util::{Channel, TryRecvError},
-};
+use crate::{QuicInterface, queue::RcvdPacketQueue, util::Channel};
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub struct Signpost {
@@ -87,7 +83,7 @@ impl QuicProto {
     /// When a packet is received, it will be delivered to the corresponding connection if it exists.
     ///
     /// Otherwise, it will be stored in the unrouted packets queue, you can get it by calling [`Self::recv_unrouted_packet`],
-    /// or [`Self::try_recv_unrouted_packet`] to check if there is a packet in the queue.
+    /// to check if there is a packet in the queue.
     /// For quic server, they can accept connections by handling unrouted packets.
     ///
     /// If you want to dismiss all unrouted packets, you can call [`Self::dismiss_unrouted_packets`].
@@ -194,7 +190,12 @@ impl QuicProto {
         false
     }
 
-    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, link: Link) {
+    async fn try_deliver(
+        &self,
+        packet: Packet,
+        pathway: Pathway,
+        link: Link,
+    ) -> Result<(), (Packet, Pathway, Link)> {
         let dcid = match &packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
@@ -210,29 +211,36 @@ impl QuicProto {
 
         if let Some(rcvd_pkt_q) = self.router_table.get(&signpost).map(|queue| queue.clone()) {
             _ = rcvd_pkt_q.deliver(packet, pathway, link).await;
-            return;
+            return Ok(());
         }
-        _ = self.unrouted_packets.send((packet, pathway, link));
+        Err((packet, pathway, link))
+    }
+
+    pub async fn deliver(&self, packet: Packet, pathway: Pathway, link: Link) {
+        if let Err(received) = self.try_deliver(packet, pathway, link).await {
+            _ = self.unrouted_packets.send(received);
+        }
     }
 
     /// Dismiss all unrouted packets.
     ///
     /// This is useful for a quic client that dont need to handle unrouted packets.
     ///
-    /// Once this is called, [`Self::try_recv_unrouted_packet`] will always return [`TryRecvError::Closed`],
-    /// and [`Self::recv_unrouted_packet`] will return None.
+    /// Once this is called, [`Self::recv_unrouted_packet`] always will return None.
     ///
     /// **Once this operation is called it cannot be undone**
     pub fn dismiss_unrouted_packets(&self) {
         self.unrouted_packets.close();
     }
 
-    pub fn try_recv_unrouted_packet(&self) -> Result<(Packet, Pathway, Link), TryRecvError> {
-        self.unrouted_packets.try_recv()
-    }
-
     pub async fn recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Link)> {
-        self.unrouted_packets.recv().await
+        loop {
+            let (packet, pathway, link) = self.unrouted_packets.recv().await?;
+            match self.try_deliver(packet, pathway, link).await {
+                Ok(()) => continue,
+                Err((packet, pathway, link)) => return Some((packet, pathway, link)),
+            }
+        }
     }
 
     // for origin_dcid
