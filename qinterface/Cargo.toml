@@ -1,6 +1,6 @@
 [package]
 name = "qinterface"
-version.workspace = true
+version = "0.2.2"
 edition.workspace = true
 description = "gm-quic's packet routing and definition of the underlying IO interface"
 readme.workspace = true
