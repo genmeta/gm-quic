@@ -1,6 +1,6 @@
 [package]
 name = "qconnection"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 description = "Encapsulation of QUIC connections, a part of gm-quic"
 readme.workspace = true
