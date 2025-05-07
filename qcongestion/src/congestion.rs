@@ -259,9 +259,7 @@ impl CongestionController {
             return;
         }
 
-        if let Some((timeout, _)) = self.get_pto_time_and_epoch() {
-            self.loss_detection_timer = Some(timeout);
-        }
+        self.loss_detection_timer = self.get_pto_time_and_epoch().map(|(timeout, _)| timeout);
     }
 
     // A.9. On Timeout
