@@ -70,6 +70,29 @@ const SERVER_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/server
 const SERVER_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/server.key");
 const TEST_DATA: &[u8] = include_bytes!("tests.rs");
 
+#[test]
+fn server_bind_no_interfaces() -> Result<(), Error> {
+    run_serially(
+        || {
+            let build_result = QuicServer::builder()
+                .without_client_cert_verifier()
+                .use_strict_mode() // strict doesnot allow binding no interface
+                .with_single_cert(SERVER_CERT, SERVER_KEY)
+                .listen(&[] as &[_]);
+            assert!(build_result.is_err());
+
+            let server = QuicServer::builder()
+                .without_client_cert_verifier()
+                .with_single_cert(SERVER_CERT, SERVER_KEY)
+                .listen(&[] as &[_])?;
+            // bind interface then add interface
+            server.add_interface(Arc::new(UdpSocketController::bind("127.0.0.1:0".parse()?)?))?;
+            Ok((server, async {}))
+        },
+        |_| async { Ok(()) },
+    )
+}
+
 async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
     io::copy(&mut reader, &mut writer).await?;
     writer.shutdown().await?;
@@ -139,7 +162,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
 }
 
 #[test]
-fn single_stream() {
+fn single_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", server_addr)?;
@@ -147,11 +170,11 @@ fn single_stream() {
 
         Ok(())
     };
-    run_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+    run_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
 #[test]
-fn signal_big_stream() {
+fn signal_big_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", server_addr)?;
@@ -159,7 +182,7 @@ fn signal_big_stream() {
 
         Ok(())
     };
-    run_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+    run_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
 #[test]

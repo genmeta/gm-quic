@@ -613,22 +613,23 @@ impl QuicServerBuilder<TlsServerConfig> {
             token_provider: self.token_provider,
         });
 
-        tokio::spawn({
-            let server = quic_server.clone();
-            async move {
+        // select_all will panic if the iterator specified contains no items.
+        if !quic_server.bind_interfaces.is_empty() {
+            let quic_server = quic_server.clone();
+            tokio::spawn(async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
                     Ok(error) => error.expect_err("recv task loop never finish without error"),
-                    Err(_join_error) if server.listener.is_closed() => return,
+                    Err(_join_error) if quic_server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
                 tracing::error!(
                     "interface on {local_addr} that server listened was closed unexpectedly: {error}"
                 );
-                server.shutdown();
-            }
-        });
+                quic_server.shutdown();
+            });
+        }
 
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
@@ -730,22 +731,23 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             token_provider: self.token_provider,
         });
 
-        tokio::spawn({
-            let server = quic_server.clone();
-            async move {
+        // select_all will panic if the iterator specified contains no items.
+        if !quic_server.bind_interfaces.is_empty() {
+            let quic_server = quic_server.clone();
+            tokio::spawn(async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
                     Ok(error) => error.expect_err("recv task loop never finish without error"),
-                    Err(_join_error) if server.listener.is_closed() => return,
+                    Err(_join_error) if quic_server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
                 tracing::error!(
                     "interface on {local_addr} that server listened was closed unexpectedly: {error}"
                 );
-                server.shutdown();
-            }
-        });
+                quic_server.shutdown();
+            });
+        }
 
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
