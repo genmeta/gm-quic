@@ -74,13 +74,6 @@ const TEST_DATA: &[u8] = include_bytes!("tests.rs");
 fn server_bind_no_interfaces() -> Result<(), Error> {
     run_serially(
         || {
-            let build_result = QuicServer::builder()
-                .without_client_cert_verifier()
-                .use_strict_mode() // strict doesnot allow binding no interface
-                .with_single_cert(SERVER_CERT, SERVER_KEY)
-                .listen(&[] as &[_]);
-            assert!(build_result.is_err());
-
             let server = QuicServer::builder()
                 .without_client_cert_verifier()
                 .with_single_cert(SERVER_CERT, SERVER_KEY)

@@ -59,7 +59,10 @@ impl Path {
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
     ) -> io::Result<Self> {
-        let interface = proto.get_interface(link.src())?;
+        let interface = proto.get_interface(link.src()).ok_or(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "Interface not fount",
+        ))?;
         let pmtu = Arc::new(AtomicU16::new(MSS as u16));
         let path_status = PathStatus::new(handshake_status, pmtu.clone());
         let tx_waker = ArcSendWaker::new();
