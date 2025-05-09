@@ -184,17 +184,15 @@ where
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
         const DEFAULT_TOKENS: usize = 4096;
         let (sid, remain_tokens, fresh_bytes) = match &output.cursor {
-            // [sid+1..] + [..=sid]
+            // rev([..=sid]) + rev([sid+1..])
             Some((sid, tokens)) if *tokens == 0 => try_load_data_into_once(
-                output
-                    .outgoings
-                    .range((Excluded(sid), Unbounded))
-                    .chain(output.outgoings.range(..=sid))
+                (output.outgoings.range(..=sid).rev())
+                    .chain(output.outgoings.range((Excluded(sid), Unbounded)).rev())
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
                 packet,
                 flow_limit,
             ),
-            // [sid] + [sid+1..] + [..sid]
+            // [sid] + rev([..sid]) + rev([sid+1..])
             Some((sid, tokens)) => try_load_data_into_once(
                 Option::into_iter(
                     output
@@ -203,20 +201,16 @@ where
                         .map(|outgoing| (*sid, outgoing, *tokens)),
                 )
                 .chain(
-                    output
-                        .outgoings
-                        .range((Excluded(sid), Unbounded))
-                        .chain(output.outgoings.range(..sid))
+                    (output.outgoings.range(..sid).rev())
+                        .chain(output.outgoings.range((Excluded(sid), Unbounded)).rev())
                         .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
                 ),
                 packet,
                 flow_limit,
             ),
-            // [..]
+            // rev([..])
             None => try_load_data_into_once(
-                output
-                    .outgoings
-                    .range(..)
+                (output.outgoings.range(..).rev())
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
                 packet,
                 flow_limit,
