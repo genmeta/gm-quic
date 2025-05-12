@@ -63,7 +63,7 @@ tracing = "0.1"
 
 # dev-dependencies, for examples
 clap = { version = "4", features = ["derive"] }
-h3 = "0.0.7"
+h3 = "0.0.8"
 h3-datagram = "0.0.1"
 http = "1"
 indicatif = { version = "0.17", features = ["tokio"] }
