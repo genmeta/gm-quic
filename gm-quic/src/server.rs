@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    io::{self},
+    io,
     net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, RwLock, Weak},
 };
@@ -63,16 +63,22 @@ pub struct QuicServer {
 }
 
 impl QuicServer {
+    /// Bind to an interface.
+    ///
+    /// The server will receive datagrams from it, and prevent the interfaces from being automatically released.
+    ///
+    /// This method can be called after the server shutdown, but the server will still not accept new connections.
     pub fn add_interface(&self, iface: Arc<dyn QuicInterface>) -> io::Result<()> {
         let local_addr = iface.local_addr()?;
-        Interfaces::add(iface.clone())?;
-        self.bind_interfaces.insert(local_addr, iface);
+        let entry = self.bind_interfaces.entry(local_addr);
+        crate::proto().add_interface(iface.clone())?;
         qevent::event!(
             ServerListening {
                 socket_addr: local_addr,
             },
             use_strict_mode = self.use_strict_mode,
         );
+        entry.insert(iface);
         Ok(())
     }
 
@@ -129,9 +135,7 @@ impl QuicServer {
 
     /// Get the addresses that the server still listens to.
     ///
-    /// The return vector may be different from the addresses you passed to the [`QuicServerBuilder::listen`] method,
-    /// because the server may fail to bind to some addresses. And, while the server is running, some sockets may be
-    /// closed unexpectedly.
+    /// The return vector may be different from the addresses you passed to the [`QuicServerBuilder::listen`] method.
     pub fn addresses(&self) -> HashSet<SocketAddr> {
         self.bind_interfaces
             .iter()
@@ -207,7 +211,7 @@ impl QuicServer {
                     Event::Handshaked => {}
                     Event::ProbedNewPath(..) => {}
                     Event::PathInactivated(_, socket) => {
-                        _ = Interfaces::try_free_interface(socket.src())
+                        crate::proto().try_free_interface(socket.src());
                     }
                     Event::Failed(error) => connection.enter_closing(error.into()),
                     Event::Closed(ccf) => connection.enter_draining(ccf),
@@ -218,13 +222,40 @@ impl QuicServer {
         });
     }
 
+    pub(crate) fn on_interface_broken(
+        local_addr: SocketAddr,
+        broken_iface: Weak<dyn QuicInterface>,
+        error: io::Error,
+    ) {
+        let Some(server) = Self::global().read().unwrap().upgrade() else {
+            return;
+        };
+
+        if let Some((local_addr, removed_iface)) =
+            server.bind_interfaces.remove_if(&local_addr, |_, iface| {
+                Weak::ptr_eq(&broken_iface, &Arc::downgrade(iface))
+            })
+        {
+            if server.bind_interfaces.is_empty() {
+                tracing::error!(
+                    "Interface {local_addr} was closed unexpectedly: {error:?}. All interfaces were closed!"
+                );
+            } else {
+                tracing::error!("Interface {local_addr} was closed unexpectedly: {error:?}");
+            };
+            drop(removed_iface); // already removed from proto
+        }
+    }
+
     pub fn shutdown(&self) {
         if self.listener.close().is_none() {
             // already closed
             return;
         }
+
         for entry in self.bind_interfaces.iter() {
-            Interfaces::del(*entry.key(), entry.value());
+            // iface in proto(1) + iface in dashmap(1) = 2
+            crate::proto().del_interface_if(*entry.key(), |iface, _| Arc::strong_count(iface) == 2);
         }
         self.bind_interfaces.clear();
     }
@@ -233,6 +264,12 @@ impl QuicServer {
 impl Drop for QuicServer {
     fn drop(&mut self) {
         self.shutdown();
+        for (&addr, _iface) in std::mem::take(&mut self.bind_interfaces)
+            .into_read_only()
+            .iter()
+        {
+            crate::proto().del_interface_if(addr, |iface, _| Arc::strong_count(iface) == 2);
+        }
     }
 }
 
@@ -536,29 +573,38 @@ impl QuicServerBuilder<TlsServerConfig> {
 
     /// Start to listen for incoming connections.
     ///
-    /// The server will bind to all the addresses you provide and accept QUIC connections from them.
+    /// ## Bind Interfaces
     ///
-    /// If *any* address fails to bind, this method will immediately return an error and the server will not be started.
+    /// The server will bind interfaces from the given addresses, receive datagrams from them,
+    /// and prevent the interfaces from being automatically released.
     ///
-    /// The server will automatically perform the QUIC protocol handshake, and you can get the connection accepted by
-    /// the server by calling the [`QuicServer::accept`] method (even though the handshake may not have been completed yet)
+    /// The server must successfully bind all given interfaces when it is created,
+    /// otherwise this method will immediately return an error and the server will not be started.
     ///
-    /// Note that there can be only one server running at the same time,
+    /// The server can be created without binding any interface.
+    ///
+    /// You can additionally bind new interfaces after server launched by calling [`QuicServer::add_interface`].
+    ///
+    /// ## Accept Conenctions
+    ///
+    /// By default, the server will accept connections from all interfaces (not only those bound to the quic server,
+    /// but also those bound to other quic clients).
+    ///
+    /// If strict mode is used, the server will *only* accept connections from the interface the server is bound to.
+    /// This is closer to traditional server behavior.
+    ///
+    /// By calling the [`QuicServer::accept`] method, you can get all connections connected to the server.
+    /// The QUIC protocol handshake will be completed automatically in the background.
+    /// The connection obtained through accpet may not have completed the handshake yet.
+    ///
+    /// ## Shutdown
+    ///
+    /// When the `QuicServer` is dropped or [`QuicServer::shutdown`] is called,
+    /// the server will stop listening for incoming connections,
+    /// and you can start a new server by calling the this method again.
+    ///
+    /// *Note*: There can be only one server running at the same time,
     /// so this method will return an error if there is already a server running.
-    ///
-    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections,
-    /// and you can start a new server by calling the [`QuicServerBuilder::listen`] method again.
-    ///
-    /// ## If the strict mode is used
-    ///
-    /// The server will *only* accept connections from the given addresses that successfully bound.
-    ///
-    /// ## If the strict mode is not used (default)
-    ///
-    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
-    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
-    ///
-    /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = QuicServer::global().write().unwrap();
         if let Some(server) = server.upgrade() {
@@ -571,34 +617,23 @@ impl QuicServerBuilder<TlsServerConfig> {
             }
         }
 
-        // 不接受出现错误，出现错误直接让listen返回Err
-        let (bind_interfaces, iface_recv_tasks, local_addrs) =
-            addresses.to_socket_addrs()?.try_fold(
-                (DashMap::new(), vec![], vec![]),
-                |(bind_interfaces, mut recv_tasks, mut local_addrs), address| {
-                    if bind_interfaces.contains_key(&address) {
-                        return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
-                    }
-                    let interface = self.quic_iface_factory.bind(address)?;
+        // All provided addresses should be bound to the server successfully.
+        let bind_interfaces =
+            addresses
+                .to_socket_addrs()?
+                .try_fold(DashMap::new(), |interfaces, bind_addr| {
+                    let interface = self.quic_iface_factory.bind(bind_addr)?;
                     let local_addr = interface.local_addr()?;
-                    recv_tasks.push(Interfaces::add(interface.clone())?);
-                    local_addrs.push(local_addr);
-                    bind_interfaces.insert(local_addr, interface);
+                    crate::proto().add_interface(interface.clone())?;
                     qevent::event!(
                         ServerListening {
-                            socket_addr: local_addr,
+                            socket_addr: local_addr
                         },
                         use_strict_mode = self.use_strict_mode,
                     );
-                    Ok((bind_interfaces, recv_tasks, local_addrs))
-                },
-            )?;
-
-        if bind_interfaces.is_empty() && self.use_strict_mode {
-            let error = "no address provided, and strict mode is used";
-            let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
-            return Err(error);
-        }
+                    interfaces.insert(local_addr, interface);
+                    io::Result::Ok(interfaces)
+                })?;
 
         let quic_server = Arc::new(QuicServer {
             bind_interfaces,
@@ -612,24 +647,6 @@ impl QuicServerBuilder<TlsServerConfig> {
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
-
-        // select_all will panic if the iterator specified contains no items.
-        if !quic_server.bind_interfaces.is_empty() {
-            let quic_server = quic_server.clone();
-            tokio::spawn(async move {
-                let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
-                let error = match result {
-                    Ok(error) => error.expect_err("recv task loop never finish without error"),
-                    Err(_join_error) if quic_server.listener.is_closed() => return,
-                    Err(join_error) => join_error.into(),
-                };
-                let local_addr = local_addrs[iface_idx];
-                tracing::error!(
-                    "interface on {local_addr} that server listened was closed unexpectedly: {error}"
-                );
-                quic_server.shutdown();
-            });
-        }
 
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
@@ -651,37 +668,43 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 
     /// Start to listen for incoming connections.
     ///
-    /// The server will bind to all the addresses you provide and accept QUIC connections from them.
+    /// ## Bind Interfaces
     ///
-    /// If *any* address fails to bind, this method will immediately return an error and the server will not be started.
+    /// The server will bind interfaces from the given addresses, receive datagrams from them,
+    /// and prevent the interfaces from being automatically released.
     ///
-    /// The server will automatically perform the QUIC protocol handshake, and you can get the connection accepted by
-    /// the server by calling the [`QuicServer::accept`] method (even though the handshake may not have been completed yet)
+    /// The server must successfully bind all given interfaces when it is created,
+    /// otherwise this method will immediately return an error and the server will not be started.
     ///
-    /// Note that there can be only one server running at the same time,
+    /// The server can be created without binding any interface.
+    ///
+    /// You can additionally bind new interfaces after server launched by calling [`QuicServer::add_interface`].
+    ///
+    /// ## Accept Conenctions
+    ///
+    /// By default, the server will accept connections from all interfaces (not only those bound to the quic server,
+    /// but also those bound to other quic clients).
+    ///
+    /// If strict mode is used, the server will *only* accept connections from the interface the server is bound to.
+    /// This is closer to traditional server behavior.
+    ///
+    /// By calling the [`QuicServer::accept`] method, you can get all connections connected to the server.
+    /// The QUIC protocol handshake will be completed automatically in the background.
+    /// The connection obtained through accpet may not have completed the handshake yet.
+    ///
+    /// ## Shutdown
+    ///
+    /// When the `QuicServer` is dropped or [`QuicServer::shutdown`] is called,
+    /// the server will stop listening for incoming connections,
+    /// and you can start a new server by calling the this method again.
+    ///
+    /// *Note*: There can be only one server running at the same time,
     /// so this method will return an error if there is already a server running.
-    ///
-    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections,
-    /// and you can start a new server by calling the [`QuicServerBuilder::listen`] method again.
-    ///
-    /// ## If the strict mode is used
-    ///
-    /// The server will *only* accept connections from the given addresses that successfully bound.
-    ///
-    /// ## If the strict mode is not used (default)
-    ///
-    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
-    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
-    ///
-    /// For example, you started a client and connected to a remote server. If the strict mode is not used,
-    /// the server can accept the connections that connected to the addresses that client used.
-    /// This is useful in some cases, such as the server is behind a NAT.
-    ///
-    /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = QuicServer::global().write().unwrap();
         if let Some(server) = server.upgrade() {
             if !server.listener.is_closed() {
+                tracing::error!("There is already a active server running");
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "There is already a active server running",
@@ -689,28 +712,23 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             }
         }
 
-        // 不接受出现错误，出现错误直接让listen返回Err
-        let (bind_interfaces, iface_recv_tasks, local_addrs) =
-            addresses.to_socket_addrs()?.try_fold(
-                (DashMap::new(), vec![], vec![]),
-                |(bind_interfaces, mut recv_tasks, mut local_addrs), address| {
-                    if bind_interfaces.contains_key(&address) {
-                        return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
-                    }
-                    let interface = self.quic_iface_factory.bind(address)?;
+        // All provided addresses should be bound to the server successfully.
+        let bind_interfaces =
+            addresses
+                .to_socket_addrs()?
+                .try_fold(DashMap::new(), |interfaces, bind_addr| {
+                    let interface = self.quic_iface_factory.bind(bind_addr)?;
                     let local_addr = interface.local_addr()?;
-                    recv_tasks.push(Interfaces::add(interface.clone())?);
-                    local_addrs.push(local_addr);
-                    bind_interfaces.insert(local_addr, interface);
+                    crate::proto().add_interface(interface.clone())?;
                     qevent::event!(
                         ServerListening {
-                            socket_addr: local_addr,
+                            socket_addr: local_addr
                         },
                         use_strict_mode = self.use_strict_mode,
                     );
-                    Ok((bind_interfaces, recv_tasks, local_addrs))
-                },
-            )?;
+                    interfaces.insert(local_addr, interface);
+                    io::Result::Ok(interfaces)
+                })?;
 
         if bind_interfaces.is_empty() && self.use_strict_mode {
             let error = "no address provided, and strict mode is used";
@@ -730,24 +748,6 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
-
-        // select_all will panic if the iterator specified contains no items.
-        if !quic_server.bind_interfaces.is_empty() {
-            let quic_server = quic_server.clone();
-            tokio::spawn(async move {
-                let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
-                let error = match result {
-                    Ok(error) => error.expect_err("recv task loop never finish without error"),
-                    Err(_join_error) if quic_server.listener.is_closed() => return,
-                    Err(join_error) => join_error.into(),
-                };
-                let local_addr = local_addrs[iface_idx];
-                tracing::error!(
-                    "interface on {local_addr} that server listened was closed unexpectedly: {error}"
-                );
-                quic_server.shutdown();
-            });
-        }
 
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)

@@ -570,11 +570,11 @@ mod tests {
 
         assert!(matches!(
             cid_apply1.borrow_cid(waker.clone()),
-            Ok(Some(r#ref)) if *r#ref == cids[4]
+            Ok(Some(entry)) if *entry == cids[4]
         ));
         assert!(matches!(
             cid_apply2.borrow_cid(waker.clone()),
-           Ok(Some(r#ref)) if *r#ref == cids[5]
+           Ok(Some(entry)) if *entry == cids[5]
         ));
 
         cid_apply2.retire();
@@ -612,11 +612,11 @@ mod tests {
         let waker = ArcSendWaker::new();
         assert!(matches!(
             cid_apply1.borrow_cid(waker.clone()),
-           Ok(Some(r#ref)) if *r#ref == cids[4]
+           Ok(Some(entry)) if *entry == cids[4]
         ));
         assert!(matches!(
             cid_apply2.borrow_cid(waker.clone()),
-            Ok(Some(r#ref)) if *r#ref == cids[5]
+            Ok(Some(entry)) if *entry == cids[5]
         ));
     }
 }
