@@ -1,4 +1,8 @@
-use std::{fmt, io, net::SocketAddr, sync::Arc};
+use std::{
+    fmt, io,
+    net::SocketAddr,
+    sync::{Arc, Weak},
+};
 
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
@@ -57,14 +61,16 @@ pub struct QuicProto {
     interfaces: DashMap<SocketAddr, InterfaceContext>,
     router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
     unrouted_packets: Channel<(Packet, Pathway, Link)>,
+    broken_interfaces: Channel<(SocketAddr, Weak<dyn QuicInterface>, io::Error)>,
 }
 
 impl fmt::Debug for QuicProto {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QuicProto")
             .field("interfaces", &"...")
-            .field("connections", &"...")
-            .field("listner", &"...")
+            .field("router_table", &"...")
+            .field("unrouted_packets", &"...")
+            .field("broken_interfaces", &"...")
             .finish()
     }
 }
@@ -96,16 +102,18 @@ impl QuicProto {
     /// Though the interface is replaced, the connections that are using the old interface will not be affected.
     pub fn add_interface(
         self: &Arc<Self>,
-        local_addr: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> JoinHandle<io::Result<()>> {
+    ) -> io::Result<JoinHandle<io::Error>> {
+        let local_addr = interface.local_addr()?;
         let entry = self
             .interfaces
             .entry(local_addr)
             .and_modify(|ctx| ctx.task.abort());
 
         let this = self.clone();
-        let recv_task = tokio::spawn(async move {
+        let weak_iface = Arc::downgrade(&interface);
+
+        let recv_task = async move {
             let mut rcvd_pkts = Vec::with_capacity(3);
 
             let mut recv_bufs: Vec<BytesMut> = vec![];
@@ -152,19 +160,46 @@ impl QuicProto {
                     }
                 }
             }
+        };
+
+        let this = self.clone();
+        let recv_task = tokio::spawn(async move {
+            let task_failed: io::Result<()> = recv_task.await;
+            let error = task_failed.expect_err("receive task never failed without error");
+            _ = this.broken_interfaces.send((
+                local_addr,
+                weak_iface,
+                io::Error::new(error.kind(), format!("{error}")),
+            ));
+            error
         });
         entry.insert(InterfaceContext {
             inner: interface,
             task: recv_task.abort_handle(),
         });
-        recv_task
+        Ok(recv_task)
     }
 
-    pub fn get_interface(&self, local_addr: SocketAddr) -> io::Result<Arc<dyn QuicInterface>> {
+    pub fn get_interface(&self, local_addr: SocketAddr) -> Option<Arc<dyn QuicInterface>> {
         self.interfaces
             .get(&local_addr)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "interface does not exist"))
             .map(|ctx| ctx.inner.clone())
+    }
+
+    pub fn get_interface_if<P>(
+        &self,
+        local_addr: SocketAddr,
+        f: P,
+    ) -> Option<Arc<dyn QuicInterface>>
+    where
+        P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
+    {
+        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(local_addr) {
+            if f(&entry.get().inner, &entry.get().task) {
+                return Some(entry.get().inner.clone());
+            }
+        }
+        None
     }
 
     /// Remove the interface by the local address.
@@ -177,17 +212,19 @@ impl QuicProto {
     /// Remove the interface by the local address if the condition is [`true`].
     ///
     /// Its better to use this method to remove the interface than [`Self::del_interface`].
-    pub fn del_interface_if<P>(&self, local_addr: SocketAddr, f: P) -> bool
+    pub fn del_interface_if<P>(&self, local_addr: SocketAddr, f: P)
     where
         P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
     {
         if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(local_addr) {
             if f(&entry.get().inner, &entry.get().task) {
                 entry.remove();
-                return true;
             }
         }
-        false
+    }
+
+    pub fn try_free_interface(&self, local_addr: SocketAddr) {
+        self.del_interface_if(local_addr, |iface, _| Arc::strong_count(iface) == 1)
     }
 
     async fn try_deliver(
@@ -241,6 +278,16 @@ impl QuicProto {
                 Err((packet, pathway, link)) => return Some((packet, pathway, link)),
             }
         }
+    }
+
+    pub fn dismiss_broken_interfaces(&self) {
+        self.broken_interfaces.close();
+    }
+
+    pub async fn get_broken_interface(
+        &self,
+    ) -> Option<(SocketAddr, Weak<dyn QuicInterface>, io::Error)> {
+        self.broken_interfaces.recv().await
     }
 
     // for origin_dcid
