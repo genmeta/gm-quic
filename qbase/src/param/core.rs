@@ -5,7 +5,7 @@ use derive_more::AsRef;
 use super::GeneralParameters;
 use crate::{
     cid::ConnectionId,
-    error::{Error, ErrorKind},
+    error::{ErrorKind, QuicError},
     frame::FrameType,
     param::{
         ParameterId, ParameterValue, PreferredAddress, StoreParameter, StoreParameterExt,
@@ -15,8 +15,8 @@ use crate::{
     varint::VarInt,
 };
 
-fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> Error {
-    Error::new(
+fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> QuicError {
+    QuicError::new(
         ErrorKind::TransportParameter,
         FrameType::Crypto.into(),
         format!("parameter 0x{id:x}: {ne}"),
@@ -80,19 +80,19 @@ macro_rules! parameters {
                 })
             }
 
-            fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), Error>{
+            fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError>{
                 match (id, value) {
                     $( (ParameterId::$id, value) => {
                         let value = $id_ty::try_from(value).map_err(|_| parameter_error(id, "Invalid parameter value: type unmatch"))?;
                         $( if !$bound.contains(&value.$cast()) {
-                            return Err(parameter_error(id, format!("Invalid parameter value: out of bound {:?}", $bound)));
+                            return Err(parameter_error(id, format!("Invalid parameter value: out of bound {:?}", $bound)).into());
                         } )?
                         self.0.insert(id, value.into());
                     } )*
                     (ParameterId::Value(id), ParameterValue::Bytes(value)) => {
                         self.0.insert(ParameterId::Value(id), ParameterValue::Bytes(value));
                     }
-                    _ => return Err(parameter_error(id, "Invalid parameter value: type unmatch")),
+                    _ => return Err(parameter_error(id, "Invalid parameter value: type unmatch").into()),
                 }
                 Ok(())
             }
@@ -236,9 +236,9 @@ parameters! {
     }
 }
 
-pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error> {
-    fn map_nom_error(ne: impl ToString) -> Error {
-        Error::new(
+pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, QuicError> {
+    fn map_nom_error(ne: impl ToString) -> QuicError {
+        QuicError::new(
             ErrorKind::TransportParameter,
             FrameType::Crypto.into(),
             ne.to_string(),
@@ -251,7 +251,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error>
         params.set(id, value)?;
     }
 
-    fn must_exist(id: ParameterId) -> Error {
+    fn must_exist(id: ParameterId) -> QuicError {
         tracing::error!("   Cause by: validating parameters");
         parameter_error(id, "must exist in ClientParameters")
     }
@@ -262,7 +262,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error>
         }
     }
 
-    fn must_not_exist(id: ParameterId) -> Error {
+    fn must_not_exist(id: ParameterId) -> QuicError {
         tracing::error!("   Cause by: validating parameters");
         parameter_error(id, "should not exist in ClientParameters")
     }
@@ -363,9 +363,9 @@ parameters! {
     }
 }
 
-pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, Error> {
-    fn map_nom_error(ne: impl ToString) -> Error {
-        Error::new(
+pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, QuicError> {
+    fn map_nom_error(ne: impl ToString) -> QuicError {
+        QuicError::new(
             ErrorKind::TransportParameter,
             FrameType::Crypto.into(),
             ne.to_string(),
@@ -378,7 +378,7 @@ pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, Error>
         params.set(id, value)?;
     }
 
-    fn must_exist(id: ParameterId) -> Error {
+    fn must_exist(id: ParameterId) -> QuicError {
         tracing::error!("   Cause by: validate parameters");
         parameter_error(id, "must exist in ServerParameters")
     }

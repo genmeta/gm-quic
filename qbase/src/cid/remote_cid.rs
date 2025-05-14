@@ -6,7 +6,7 @@ use std::{
 
 use super::ConnectionId;
 use crate::{
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{GetFrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::tx::{ArcSendWaker, Signals},
     token::ResetToken,
@@ -95,14 +95,15 @@ where
         let active_len = seq.saturating_sub(retire_prior_to);
         if active_len > self.active_cid_limit {
             tracing::error!("   Cause by: received a new issued connection id frame from peer");
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::ConnectionIdLimit,
                 frame.frame_type().into(),
                 format!(
                     "{active_len} exceed active_cid_limit {}",
                     self.active_cid_limit
                 ),
-            ));
+            )
+            .into());
         }
 
         // Discard the frame if the sequence number is less than the current offset.

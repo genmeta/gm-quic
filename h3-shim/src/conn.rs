@@ -1,5 +1,6 @@
 use std::{
     io,
+    ops::Deref,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -7,11 +8,10 @@ use std::{
 
 use futures::Stream;
 use gm_quic::{StreamId, StreamReader, StreamWriter};
+use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 
-#[cfg(feature = "unreliable")]
-use crate::ext::{RecvDatagram, SendDatagram};
 use crate::{
-    Error,
+    error::{self, convert_connection_io_error},
     streams::{BidiStream, RecvStream, SendStream},
 };
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
@@ -21,23 +21,23 @@ pub struct QuicConnection {
     accpet_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
-    #[cfg(feature = "unreliable")]
-    pub(crate) send_datagram: SendDatagram,
-    #[cfg(feature = "unreliable")]
-    pub(crate) recv_datagram: RecvDatagram,
+}
+
+impl Deref for QuicConnection {
+    type Target = Arc<gm_quic::Connection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
 }
 
 impl QuicConnection {
-    pub async fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    pub fn new(conn: Arc<gm_quic::Connection>) -> Self {
         Self {
             accpet_bi: AcceptBiStreams::new(conn.clone()),
             accpet_uni: AcceptUniStreams::new(conn.clone()),
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
-            #[cfg(feature = "unreliable")]
-            send_datagram: SendDatagram(conn.unreliable_writer().await.map_err(Into::into)),
-            #[cfg(feature = "unreliable")]
-            recv_datagram: RecvDatagram(conn.unreliable_reader().map_err(Into::into)),
             connection: conn,
         }
     }
@@ -49,13 +49,11 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for QuicConnection {
 
     type SendStream = SendStream<B>;
 
-    type OpenError = Error;
-
     #[inline]
     fn poll_open_bidi(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
         // 以下代码的代价是，每次调用open_bi_stream()都是一个新的实现了Future的闭包
         // 实际上应该是同一个，否则每次poll都会造成open_bi_stream()中的每个await点
         // 都得重新执行一遍，这是有问题的。
@@ -78,7 +76,7 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for QuicConnection {
     fn poll_open_send(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::SendStream, StreamErrorIncoming>> {
         self.open_uni.poll_open(cx)
     }
 
@@ -96,13 +94,11 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
 
     type OpenStreams = OpenStreams;
 
-    type AcceptError = Error;
-
     #[inline]
     fn poll_accept_recv(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::RecvStream>, Self::AcceptError>> {
+    ) -> Poll<Result<Self::RecvStream, ConnectionErrorIncoming>> {
         self.accpet_uni.poll_accept(cx)
     }
 
@@ -110,7 +106,7 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
     fn poll_accept_bidi(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::BidiStream>, Self::AcceptError>> {
+    ) -> Poll<Result<Self::BidiStream, ConnectionErrorIncoming>> {
         self.accpet_bi.poll_accept(cx)
     }
 
@@ -156,13 +152,11 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
 
     type SendStream = SendStream<B>;
 
-    type OpenError = Error;
-
     #[inline]
     fn poll_open_bidi(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
         self.open_bi.poll_open(cx)
     }
 
@@ -170,7 +164,7 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
     fn poll_open_send(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::SendStream, StreamErrorIncoming>> {
         self.open_uni.poll_open(cx)
     }
 
@@ -190,7 +184,9 @@ fn sid_exceed_limit_error() -> io::Error {
 }
 
 #[allow(clippy::type_complexity)]
-struct OpenBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
+struct OpenBiStreams(
+    BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), ConnectionErrorIncoming>>,
+);
 
 impl OpenBiStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
@@ -199,7 +195,7 @@ impl OpenBiStreams {
                 .open_bi_stream()
                 .await
                 .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
-                .map_err(Into::into);
+                .map_err(convert_connection_io_error);
             Some((bidi, conn))
         });
         Self(Box::pin(stream))
@@ -208,16 +204,22 @@ impl OpenBiStreams {
     /// TODO: 以此法实现的`poll_open`方法，不可重入，即A、B同时要打开一个流，
     /// 实际上只有一个能成功，后一个的waker会取代前一个的waker注册在stream中，导致前一个waker无法被唤醒
     /// 以下同
-    fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<BidiStream<B>, Error>> {
+    fn poll_open<B>(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<BidiStream<B>, StreamErrorIncoming>> {
         self.0
             .as_mut()
             .poll_next(cx)
             .map(Option::unwrap)
             .map_ok(|(sid, stream)| BidiStream::new(sid, stream))
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: e,
+            })
     }
 }
 
-struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), Error>>);
+struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), ConnectionErrorIncoming>>);
 
 impl OpenUniStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
@@ -226,23 +228,31 @@ impl OpenUniStreams {
                 .open_uni_stream()
                 .await
                 .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
-                .map_err(Into::into);
+                .map_err(convert_connection_io_error);
             Some((send, conn))
         });
         Self(Box::pin(stream))
     }
 
-    fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<SendStream<B>, Error>> {
+    fn poll_open<B>(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SendStream<B>, StreamErrorIncoming>> {
         self.0
             .as_mut()
             .poll_next(cx)
             .map(Option::unwrap)
             .map_ok(|(sid, writer)| SendStream::new(sid, writer))
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: e,
+            })
     }
 }
 
 #[allow(clippy::type_complexity)]
-struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
+struct AcceptBiStreams(
+    BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), ConnectionErrorIncoming>>,
+);
 
 impl AcceptBiStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
@@ -251,7 +261,7 @@ impl AcceptBiStreams {
                 conn.accept_bi_stream()
                     .await
                     .map(Option::unwrap)
-                    .map_err(Into::into),
+                    .map_err(error::convert_connection_io_error),
                 conn,
             ))
         });
@@ -261,16 +271,16 @@ impl AcceptBiStreams {
     fn poll_accept<B>(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<BidiStream<B>>, Error>> {
+    ) -> Poll<Result<BidiStream<B>, ConnectionErrorIncoming>> {
         self.0
             .as_mut()
             .poll_next(cx)
-            .map(Option::transpose)
-            .map_ok(|rw| rw.map(|(sid, stream)| BidiStream::new(sid, stream)))
+            .map(Option::unwrap)
+            .map_ok(|(sid, stream)| BidiStream::new(sid, stream))
     }
 }
 
-struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), Error>>);
+struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), ConnectionErrorIncoming>>);
 
 impl AcceptUniStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
@@ -279,17 +289,20 @@ impl AcceptUniStreams {
                 .accept_uni_stream()
                 .await
                 .map(Option::unwrap)
-                .map_err(Into::into);
+                .map_err(error::convert_connection_io_error);
             Some((uni, conn))
         });
         Self(Box::pin(stream))
     }
 
-    fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<RecvStream>, Error>> {
+    fn poll_accept(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<RecvStream, ConnectionErrorIncoming>> {
         self.0
             .as_mut()
             .poll_next(cx)
-            .map(Option::transpose)
-            .map_ok(|r| r.map(|(sid, reader)| RecvStream::new(sid, reader)))
+            .map(Option::unwrap)
+            .map_ok(|(sid, reader)| RecvStream::new(sid, reader))
     }
 }

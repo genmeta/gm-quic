@@ -40,11 +40,11 @@ impl nom::error::ParseError<&[u8]> for Error {
     }
 }
 
-impl From<Error> for crate::error::Error {
+impl From<Error> for crate::error::QuicError {
     fn from(e: Error) -> Self {
         tracing::error!("   Cause by: parsing quic packet error {e}");
         match e {
-            Error::InvalidReservedBits(_, _) => crate::error::Error::with_default_fty(
+            Error::InvalidReservedBits(_, _) => crate::error::QuicError::with_default_fty(
                 crate::error::ErrorKind::ProtocolViolation,
                 e.to_string(),
             ),

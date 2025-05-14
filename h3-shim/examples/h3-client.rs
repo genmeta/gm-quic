@@ -211,7 +211,7 @@ async fn download_files_with_progress(
     let connection = client.connect(server_name, server_addr)?;
 
     let (mut connection, send_request) =
-        h3::client::new(h3_shim::QuicConnection::new(connection).await).await?;
+        h3::client::new(h3_shim::QuicConnection::new(connection)).await?;
     tokio::spawn(async move { connection.wait_idle().await });
     conns_pb.inc_length(1);
 

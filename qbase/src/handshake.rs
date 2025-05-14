@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use crate::{
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
     sid::Role,
 };
@@ -194,10 +194,11 @@ where
     fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<bool, Error> {
         match self {
             Handshake::Client(h) => Ok(h.recv_handshake_done_frame(frame)),
-            _ => Err(Error::with_default_fty(
+            _ => Err(QuicError::with_default_fty(
                 ErrorKind::ProtocolViolation,
                 "Server received a HANDSHAKE_DONE frame",
-            )),
+            )
+            .into()),
         }
     }
 }
@@ -208,7 +209,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        error::{Error, ErrorKind},
+        error::ErrorKind,
         frame::{ReceiveFrame, SendFrame},
         util::ArcAsyncDeque,
     };
@@ -266,10 +267,11 @@ mod tests {
         let ret = handshake.recv_frame(&HandshakeDoneFrame);
         assert_eq!(
             ret,
-            Err(Error::with_default_fty(
+            Err(QuicError::with_default_fty(
                 ErrorKind::ProtocolViolation,
                 "Server received a HANDSHAKE_DONE frame",
-            ))
+            )
+            .into())
         );
     }
 

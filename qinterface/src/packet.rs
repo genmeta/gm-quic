@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use derive_more::Deref;
 use qbase::{
-    error::Error,
+    error::QuicError,
     packet::{
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
@@ -109,7 +109,7 @@ where
         hpk: &dyn HeaderProtectionKey,
         pk: &dyn PacketKey,
         pn_decoder: impl FnOnce(PacketNumber) -> Result<u64, InvalidPacketNumber>,
-    ) -> Option<Result<PlainPacket<H>, Error>> {
+    ) -> Option<Result<PlainPacket<H>, QuicError>> {
         let pkt_buf = self.payload.as_mut();
         let undecoded_pn = match remove_protection_of_long_packet(hpk, pkt_buf, self.payload_offset)
         {
@@ -155,7 +155,7 @@ where
         hpk: &dyn HeaderProtectionKey,
         pk: &ArcOneRttPacketKeys,
         pn_decoder: impl FnOnce(PacketNumber) -> Result<u64, InvalidPacketNumber>,
-    ) -> Option<Result<PlainPacket<H>, Error>> {
+    ) -> Option<Result<PlainPacket<H>, QuicError>> {
         let pkt_buf = self.payload.as_mut();
         let (undecoded_pn, key_phase) =
             match remove_protection_of_short_packet(hpk, pkt_buf, self.payload_offset) {

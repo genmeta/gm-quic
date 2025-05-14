@@ -64,7 +64,7 @@ tracing = "0.1"
 # dev-dependencies, for examples
 clap = { version = "4", features = ["derive"] }
 h3 = "0.0.8"
-h3-datagram = "0.0.1"
+h3-datagram = "0.0.2"
 http = "1"
 indicatif = { version = "0.17", features = ["tokio"] }
 rustls-native-certs = "0.8"

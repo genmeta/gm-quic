@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt::Display};
 
+use derive_more::From;
 use thiserror::Error;
 
 use crate::{
@@ -177,36 +178,13 @@ pub enum ErrorFrameType {
 /// A value of 0 (equivalent to the mention of the PADDING frame) is used when the frame type is unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{kind} in {frame_type:?}, reason: {reason}")]
-pub struct Error {
+pub struct QuicError {
     kind: ErrorKind,
     frame_type: ErrorFrameType,
     reason: Cow<'static, str>,
 }
 
-impl From<FrameType> for ErrorFrameType {
-    fn from(value: FrameType) -> Self {
-        Self::V1(value)
-    }
-}
-
-impl From<ErrorFrameType> for VarInt {
-    fn from(val: ErrorFrameType) -> Self {
-        match val {
-            ErrorFrameType::V1(frame) => frame.into(),
-            ErrorFrameType::Ext(value) => value,
-        }
-    }
-}
-
-/// App specific error.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("App layer error occur with error code {error_code}, reason: {reason}")]
-pub struct AppError {
-    error_code: VarInt,
-    reason: Cow<'static, str>,
-}
-
-impl Error {
+impl QuicError {
     /// Create a new error with the given kind, frame type, and reason.
     /// The frame type is the one that triggered this error.
     pub fn new<T: Into<Cow<'static, str>>>(
@@ -242,6 +220,29 @@ impl Error {
     }
 }
 
+impl From<FrameType> for ErrorFrameType {
+    fn from(value: FrameType) -> Self {
+        Self::V1(value)
+    }
+}
+
+impl From<ErrorFrameType> for VarInt {
+    fn from(val: ErrorFrameType) -> Self {
+        match val {
+            ErrorFrameType::V1(frame) => frame.into(),
+            ErrorFrameType::Ext(value) => value,
+        }
+    }
+}
+
+/// App specific error.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("App layer error occur with error code {error_code}, reason: {reason}")]
+pub struct AppError {
+    error_code: VarInt,
+    reason: Cow<'static, str>,
+}
+
 impl AppError {
     /// Create a new app error with the given app error code and reason.
     pub fn new(error_code: VarInt, reason: impl Into<Cow<'static, str>>) -> Self {
@@ -257,22 +258,35 @@ impl AppError {
     pub fn error_code(&self) -> u64 {
         self.error_code.into_inner()
     }
+}
 
-    /// Otherwise, information about the application state might be revealed.
-    ///
-    /// Endpoints MUST clear the value of the Reason Phrase field and SHOULD use
-    /// the APPLICATION_ERROR code when converting to a CONNECTION_CLOSE of type 0x1c.
-    ///
-    /// See [section-10.2.3-3](https://datatracker.ietf.org/doc/html/rfc9000#section-10.2.3-3)
-    /// of [QUIC](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
-    pub fn conceal() -> Error {
-        Error::with_default_fty(ErrorKind::Application, "")
+#[derive(Debug, Clone, PartialEq, Eq, Error, From)]
+pub enum Error {
+    #[error("{0}")]
+    Quic(QuicError),
+    #[error("{0}")]
+    App(AppError),
+}
+
+impl Error {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Error::Quic(e) => e.kind(),
+            Error::App(_) => ErrorKind::Application,
+        }
+    }
+
+    pub fn frame_type(&self) -> ErrorFrameType {
+        match self {
+            Error::Quic(e) => e.frame_type(),
+            Error::App(_) => FrameType::Padding.into(),
+        }
     }
 }
 
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
-        if e.kind != ErrorKind::Application {
+        if let Error::Quic(e) = &e {
             tracing::error!("   Cause by: quic error={e}");
         }
         Self::new(std::io::ErrorKind::BrokenPipe, e)
@@ -281,10 +295,13 @@ impl From<Error> for std::io::Error {
 
 impl From<Error> for ConnectionCloseFrame {
     fn from(e: Error) -> Self {
-        if e.kind != ErrorKind::Application {
-            tracing::error!("   Cause by: error occur at quic layer {:?}", e);
+        match e {
+            Error::Quic(e) => {
+                tracing::error!("   Cause by: error occur at quic layer {:?}", e);
+                Self::new_quic(e.kind, e.frame_type, e.reason)
+            }
+            Error::App(app_error) => Self::new_app(app_error.error_code, app_error.reason),
         }
-        Self::new_quic(e.kind, e.frame_type, e.reason)
     }
 }
 
@@ -305,20 +322,16 @@ impl From<ConnectionCloseFrame> for Error {
                         frame
                     );
                 }
-                Self::new(
-                    frame.error_kind(),
-                    frame.frame_type(),
-                    frame.reason().to_owned(),
-                )
+                Self::Quic(QuicError {
+                    kind: frame.error_kind(),
+                    frame_type: frame.frame_type(),
+                    reason: frame.reason().to_owned().into(),
+                })
             }
-            ConnectionCloseFrame::App(frame) => Self::with_default_fty(
-                ErrorKind::Application,
-                format!(
-                    "App layer error occur with code {error_code}, reason: {reason}",
-                    error_code = frame.error_code(),
-                    reason = frame.reason(),
-                ),
-            ),
+            ConnectionCloseFrame::App(frame) => Self::App(AppError {
+                error_code: VarInt::from_u64(frame.error_code()).expect("error code overflow"),
+                reason: frame.reason().to_owned().into(),
+            }),
         }
     }
 }
@@ -364,21 +377,21 @@ mod tests {
 
     #[test]
     fn test_error_creation() {
-        let err = Error::new(ErrorKind::Internal, FrameType::Ping.into(), "test error");
+        let err = QuicError::new(ErrorKind::Internal, FrameType::Ping.into(), "test error");
         assert_eq!(err.kind(), ErrorKind::Internal);
         assert_eq!(err.frame_type(), FrameType::Ping.into());
 
-        let err = Error::with_default_fty(ErrorKind::Application, "default frame type");
+        let err = QuicError::with_default_fty(ErrorKind::Application, "default frame type");
         assert_eq!(err.frame_type(), FrameType::Padding.into());
     }
 
     #[test]
     fn test_error_conversion() {
-        let err = Error::new(
+        let err = Error::Quic(QuicError::new(
             ErrorKind::Internal,
             FrameType::Ping.into(),
             "test conversion",
-        );
+        ));
 
         // Test Error to ConnectionCloseFrame
         let frame: ConnectionCloseFrame = err.clone().into();

@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     cid::ConnectionId,
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::FrameType,
     sid::Role,
 };
@@ -182,7 +182,7 @@ impl Parameters {
         }
     }
 
-    fn parse_and_validate_remote_params(&mut self, input: &[u8]) -> Result<(), Error> {
+    fn parse_and_validate_remote_params(&mut self, input: &[u8]) -> Result<(), QuicError> {
         match self.role() {
             Role::Client => self.server = be_server_parameters(input)?,
             Role::Server => self.client = be_client_parameters(input)?,
@@ -190,7 +190,7 @@ impl Parameters {
         Ok(())
     }
 
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), Error> {
+    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), QuicError> {
         let (initial_scid, remote_ready) = match &mut self.requirements {
             Requirements::Client { initial_scid, .. } => {
                 (initial_scid, self.state & Self::SERVER_READY != 0)
@@ -228,9 +228,9 @@ impl Parameters {
         }
     }
 
-    fn authenticate_cids(&self) -> Result<bool, Error> {
-        fn param_error(reason: &'static str) -> Error {
-            Error::new(
+    fn authenticate_cids(&self) -> Result<bool, QuicError> {
+        fn param_error(reason: &'static str) -> QuicError {
+            QuicError::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
                 reason,
@@ -340,11 +340,12 @@ impl ArcParameters {
                 Role::Server => params.server.get_as::<V>(id),
             }
             .ok_or_else(|| {
-                Error::new(
+                QuicError::new(
                     ErrorKind::TransportParameter,
                     FrameType::Crypto.into(),
                     format!("access unknow parameter 0x{id:x}",),
                 )
+                .into()
             }),
             Err(e) => Err(e.clone()),
         }
@@ -373,11 +374,12 @@ impl ArcParameters {
                     Role::Server => params.client.get_as::<V>(id),
                 }
                 .ok_or_else(|| {
-                    Error::new(
+                    QuicError::new(
                         ErrorKind::TransportParameter,
                         FrameType::Crypto.into(),
                         format!("access unknow parameter 0x{id:x}",),
                     )
+                    .into()
                 })
             }),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -620,11 +622,12 @@ mod tests {
         ]);
         assert_eq!(
             result,
-            Err(Error::new(
+            Err(QuicError::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
                 "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
-            ))
+            )
+            .into())
         );
     }
 
@@ -648,11 +651,12 @@ mod tests {
         );
 
         // Simulate connection error
-        let error = Error::new(
+        let error = QuicError::new(
             ErrorKind::TransportParameter,
             FrameType::Crypto.into(),
             "test error",
-        );
+        )
+        .into();
         arc_params.on_conn_error(&error);
 
         assert!(

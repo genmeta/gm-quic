@@ -4,7 +4,7 @@ use bytes::BufMut;
 use qbase::{
     Epoch,
     cid::ConnectionId,
-    error::Error,
+    error::{Error, QuicError},
     frame::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
@@ -102,7 +102,7 @@ impl DataSpace {
     pub async fn decrypt_0rtt_packet(
         &self,
         packet: CipherZeroRttPacket,
-    ) -> Option<Result<PlainZeroRttPacket, Error>> {
+    ) -> Option<Result<PlainZeroRttPacket, QuicError>> {
         match self.zero_rtt_keys.get_remote_keys().await {
             Some(keys) => packet.decrypt_long_packet(
                 keys.remote.header.as_ref(),
@@ -119,7 +119,7 @@ impl DataSpace {
     pub async fn decrypt_1rtt_packet(
         &self,
         packet: CipherOneRttPacket,
-    ) -> Option<Result<PlainOneRttPacket, Error>> {
+    ) -> Option<Result<PlainOneRttPacket, QuicError>> {
         match self.one_rtt_keys.get_remote_keys().await {
             Some((hpk, pk)) => packet.decrypt_short_packet(hpk.as_ref(), &pk, |pn| {
                 self.journal.of_rcvd_packets().decode_pn(pn)
@@ -504,7 +504,7 @@ pub fn spawn_deliver_and_parse(
                                 let (frame, frame_type) = frame?;
                                 frames.extend(Some(&frame));
                                 dispatch_data_frame(frame, packet.get_type(), &path);
-                                Result::<_, Error>::Ok(packet_contains.include(frame_type))
+                                Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
                             })?;
                         packet.log_received(frames);
 
@@ -523,7 +523,7 @@ pub fn spawn_deliver_and_parse(
 
                     Result::<(), Error>::Ok(())
                 };
-                if let Err(error) = parse.await {
+                if let Err(Error::Quic(error)) = parse.await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -557,7 +557,7 @@ pub fn spawn_deliver_and_parse(
                                 let (frame, frame_type) = frame?;
                                 frames.extend(Some(&frame));
                                 dispatch_data_frame(frame, packet.get_type(), &path);
-                                Result::<_, Error>::Ok(packet_contains.include(frame_type))
+                                Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
                             })?;
                         packet.log_received(frames);
 
@@ -575,7 +575,7 @@ pub fn spawn_deliver_and_parse(
                     }
                     Result::<(), Error>::Ok(())
                 };
-                if let Err(error) = parse.await {
+                if let Err(Error::Quic(error)) = parse.await {
                     event_broker.emit(Event::Failed(error));
                 };
             }

@@ -167,7 +167,7 @@ fn pipe<F: Send + Debug + 'static>(
     tokio::spawn(
         async move {
             while let Some(f) = source.recv().await {
-                if let Err(e) = destination.recv_frame(&f) {
+                if let Err(Error::Quic(e)) = destination.recv_frame(&f) {
                     broker.emit(Event::Failed(e));
                     break;
                 }
@@ -203,7 +203,7 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for FlowControlledDataStreams {
             }
             Err(e) => {
                 tracing::error!("   Cause by: received an invalid StreamFrame");
-                return Err(e);
+                return Err(e.into());
             }
         }
         Ok(())
@@ -221,7 +221,7 @@ impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
             }
             Err(e) => {
                 tracing::error!("   Cause by: received an invalid StreamCtlFrame");
-                return Err(e);
+                return Err(e.into());
             }
         }
         Ok(())

@@ -67,6 +67,7 @@ jobs:
     strategy:
       matrix:
         target: [ubuntu,macos,windows]
+      fail-fast: false
     runs-on: ${{ matrix.target }}-latest
     steps:
       - uses: actions/checkout@v4

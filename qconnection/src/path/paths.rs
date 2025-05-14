@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use derive_more::Deref;
 use qbase::{
     Epoch,
-    error::{Error, ErrorKind},
+    error::{ErrorKind, QuicError},
     net::{route::Pathway, tx::ArcSendWakers},
 };
 use qcongestion::Transport;
@@ -91,7 +91,7 @@ impl ArcPathContexts {
                 .emit(Event::PathInactivated(path.pathway, path.link));
             tracing::warn!(%pathway, reason, "path removed");
             if self.is_empty() {
-                let error = Error::with_default_fty(
+                let error = QuicError::with_default_fty(
                     ErrorKind::NoViablePath,
                     format!("no viable path exist, last path removed because: {reason}"),
                 );

@@ -213,7 +213,9 @@ impl QuicServer {
                     Event::PathInactivated(_, socket) => {
                         crate::proto().try_free_interface(socket.src());
                     }
-                    Event::Failed(error) => connection.enter_closing(error.into()),
+                    Event::Failed(error) => {
+                        connection.enter_closing(qbase::error::Error::from(error).into())
+                    }
                     Event::Closed(ccf) => connection.enter_draining(ccf),
                     Event::StatelessReset => { /* TOOD: stateless reset */ }
                     Event::Terminated => return,

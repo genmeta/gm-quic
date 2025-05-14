@@ -9,7 +9,7 @@ use std::{
 
 use qbase::{
     Epoch,
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     param::ArcParameters,
 };
 use qevent::telemetry::Instrument;
@@ -215,7 +215,9 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                             None => ErrorKind::ProtocolViolation,
                         };
                         let reason = format!("TLS error: {e}");
-                        broker.emit(Event::Failed(Error::with_default_fty(error_kind, reason)));
+                        broker.emit(Event::Failed(QuicError::with_default_fty(
+                            error_kind, reason,
+                        )));
                         break;
                     }
 
@@ -249,16 +251,17 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                 .await
             {
                 Ok(results) => results,
-                Err(e) => {
+                Err(Error::Quic(e)) => {
                     event_broker.emit(Event::Failed(e));
                     break;
                 }
+                Err(Error::App(..)) => break,
             };
 
             if !messages.is_empty() {
                 let write_result = crypto_stream_writers[cur_epoch].write_all(&messages).await;
                 if let Err(e) = write_result {
-                    let error = Error::with_default_fty(ErrorKind::Internal, e.to_string());
+                    let error = QuicError::with_default_fty(ErrorKind::Internal, e.to_string());
                     event_broker.emit(Event::Failed(error));
                     break;
                 }

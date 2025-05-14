@@ -135,7 +135,7 @@ where
     type Output = usize;
 
     fn recv_frame(&self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
-        self.0.recv_stream_control(frame)
+        self.0.recv_stream_control(frame).map_err(Error::Quic)
     }
 }
 
@@ -146,7 +146,7 @@ where
     type Output = usize;
 
     fn recv_frame(&self, frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
-        self.0.recv_data(frame)
+        self.0.recv_data(frame).map_err(Error::Quic)
     }
 }
 

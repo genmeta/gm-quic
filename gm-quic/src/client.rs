@@ -203,7 +203,7 @@ impl QuicClient {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)
                             });
-                            connection.enter_closing(error.into())
+                            connection.enter_closing(qbase::error::Error::from(error).into())
                         }
                         Event::Closed(ccf) => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {

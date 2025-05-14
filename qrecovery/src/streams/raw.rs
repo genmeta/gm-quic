@@ -2,7 +2,7 @@ use std::task::{Context, Poll, ready};
 
 use bytes::BufMut;
 use qbase::{
-    error::{Error as QuicError, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{
         FrameType, GetFrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
@@ -516,7 +516,7 @@ where
     ///
     /// After the method called, read on [`Reader`] or write on [`Writer`] will return an error,
     /// the resouces will be released.
-    pub fn on_conn_error(&self, error: &QuicError) {
+    pub fn on_conn_error(&self, error: &Error) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return,
@@ -548,26 +548,26 @@ where
         tx_wakers: ArcSendWakers,
     ) -> Self {
         use ParameterId::*;
-        let max_bi_streams = local_params.get_as_ensured::<VarInt>(InitialMaxStreamsBidi);
-        let max_uni_streams = local_params.get_as_ensured::<VarInt>(InitialMaxStreamsUni);
-        let uni_stream_rcvbuf_size = local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataUni);
+        let max_bi_streams = local_params.get_as_ensured::<u64>(InitialMaxStreamsBidi);
+        let max_uni_streams = local_params.get_as_ensured::<u64>(InitialMaxStreamsUni);
+        let uni_stream_rcvbuf_size = local_params.get_as_ensured::<u64>(InitialMaxStreamDataUni);
         let local_bi_stream_rcvbuf_size =
-            local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataBidiLocal);
+            local_params.get_as_ensured::<u64>(InitialMaxStreamDataBidiLocal);
         let remote_bi_stream_rcvbuf_size =
-            local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataBidiRemote);
+            local_params.get_as_ensured::<u64>(InitialMaxStreamDataBidiRemote);
 
         Self {
             role,
             stream_ids: StreamIds::new(
                 role,
-                max_bi_streams.into_inner(),
-                max_uni_streams.into_inner(),
+                max_bi_streams,
+                max_uni_streams,
                 Ext(ctrl_frames.clone()),
                 ctrl,
             ),
-            uni_stream_rcvbuf_size: uni_stream_rcvbuf_size.into_inner(),
-            local_bi_stream_rcvbuf_size: local_bi_stream_rcvbuf_size.into_inner(),
-            remote_bi_stream_rcvbuf_size: remote_bi_stream_rcvbuf_size.into_inner(),
+            uni_stream_rcvbuf_size,
+            local_bi_stream_rcvbuf_size,
+            remote_bi_stream_rcvbuf_size,
             output: ArcOutput::new(),
             input: ArcInput::default(),
             listener: ArcListener::new(),
@@ -581,7 +581,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_buf_size: u64,
-    ) -> Poll<Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, Error>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -610,7 +610,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_buf_size: u64,
-    ) -> Poll<Result<Option<(StreamId, Writer<Ext<TX>>)>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, Writer<Ext<TX>>)>, Error>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),

@@ -26,6 +26,13 @@ impl AppCloseFrame {
         &self.reason
     }
 
+    /// Otherwise, information about the application state might be revealed.
+    ///
+    /// Endpoints MUST clear the value of the Reason Phrase field and SHOULD use
+    /// the APPLICATION_ERROR code when converting to a CONNECTION_CLOSE of type 0x1c.
+    ///
+    /// See [section-10.2.3-3](https://datatracker.ietf.org/doc/html/rfc9000#section-10.2.3-3)
+    /// of [QUIC](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
     pub fn conceal(&mut self) {
         self.reason = Cow::Borrowed("");
     }

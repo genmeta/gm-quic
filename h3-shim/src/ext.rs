@@ -1,78 +1,75 @@
-use std::task::{Context, Poll};
+// See https://github.com/hyperium/h3/issues/307"
 
-use gm_quic::{DatagramReader, DatagramWriter};
-use h3_datagram::{
-    datagram::Datagram,
-    quic_traits::{RecvDatagramExt, SendDatagramExt},
-};
+// use std::{
+//     io,
+//     ops::Deref,
+//     task::{Context, Poll},
+// };
 
-use crate::{Error, conn::QuicConnection};
+// use bytes::{Buf, Bytes};
+// use futures::future::BoxFuture;
+// use gm_quic::{DatagramReader, DatagramWriter};
+// use h3_datagram::{
+//     ConnectionErrorIncoming,
+//     datagram::EncodedDatagram,
+//     quic_traits::{DatagramConnectionExt, RecvDatagram, SendDatagram, SendDatagramErrorIncoming},
+// };
 
-impl<B: bytes::Buf> SendDatagramExt<B> for QuicConnection {
-    type Error = Error;
+// use crate::{conn::QuicConnection, error::convert_connection_io_error};
 
-    #[inline]
-    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), Self::Error> {
-        self.send_datagram.send_datagram(data)
-    }
-}
+// impl<B: bytes::Buf> DatagramConnectionExt<B> for QuicConnection {
+//     type SendDatagramHandler = DatagramSender;
 
-impl RecvDatagramExt for QuicConnection {
-    type Buf = bytes::Bytes;
+//     type RecvDatagramHandler = DatagramReceiver;
 
-    type Error = Error;
+//     fn send_datagram_handler(&self) -> Self::SendDatagramHandler {
+//         let conn = self.deref().clone();
+//         DatagramSender::Pending(Box::pin(async move { conn.unreliable_writer().await }))
+//     }
 
-    // [`Poll::Ready(Err(e))`] means the connection is broken.
-    // [`Poll::Ready(Ok(None))`] is meaningless.
+//     fn recv_datagram_handler(&self) -> Self::RecvDatagramHandler {
+//         let conn = self.deref().clone();
+//         DatagramReceiver::Pending(Box::pin(async move { conn.unreliable_reader() }))
+//     }
+// }
 
-    #[inline]
-    fn poll_accept_datagram(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        self.recv_datagram.poll_accept_datagram(cx)
-    }
-}
+// pub enum DatagramSender {
+//     Pending(BoxFuture<'static, io::Result<DatagramWriter>>),
+//     Ready(Result<DatagramWriter, SendDatagramErrorIncoming>),
+// }
 
-pub struct SendDatagram(pub(crate) Result<DatagramWriter, Error>);
+// impl<B: bytes::Buf> SendDatagram<B> for DatagramSender {
+//     fn send_datagram<T: Into<EncodedDatagram<B>>>(
+//         &mut self,
+//         data: T,
+//     ) -> Result<(), SendDatagramErrorIncoming> {
+//         // let mut buf = bytes::BytesMut::new();
+//         // buf
+//         // data.encode(&mut buf);
+//         let mut datagram = <T as Into<EncodedDatagram<B>>>::into(data);
+//         self.0
+//             .send_bytes(datagram.copy_to_bytes(datagram.remaining()))
+//             .map_err(|e| match e {
+//                 e if e.kind() == io::ErrorKind::InvalidInput => SendDatagramErrorIncoming::TooLarge,
+//                 e => SendDatagramErrorIncoming::ConnectionError(convert_connection_io_error(e)),
+//             })
+//     }
+// }
 
-impl<B: bytes::Buf> SendDatagramExt<B> for SendDatagram {
-    type Error = Error;
+// pub enum DatagramReceiver {
+//     Pending(BoxFuture<'static, io::Result<DatagramReader>>),
+//     Ready(Result<DatagramReader, ConnectionErrorIncoming>),
+// }
 
-    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), Self::Error> {
-        let writer = match &mut self.0 {
-            Ok(writer) => writer,
-            Err(e) => return Err(e.clone()),
-        };
-        let mut buf = bytes::BytesMut::new();
-        data.encode(&mut buf);
-        writer
-            .send_bytes(buf.freeze())
-            .map_err(Error::from)
-            .inspect_err(|e| self.0 = Err(e.clone()))
-    }
-}
+// impl RecvDatagram for DatagramReceiver {
+//     /// The buffer type
+//     type Buffer = Bytes;
 
-pub struct RecvDatagram(pub(crate) Result<DatagramReader, Error>);
-
-impl RecvDatagramExt for RecvDatagram {
-    type Buf = bytes::Bytes;
-
-    type Error = Error;
-
-    fn poll_accept_datagram(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        let reader = match &mut self.0 {
-            Ok(reader) => reader,
-            Err(e) => return Poll::Ready(Err(e.clone())),
-        };
-
-        reader.poll_recv(cx).map(|r| {
-            r.map(Some)
-                .map_err(Error::from)
-                .inspect_err(|e| self.0 = Err(e.clone()))
-        })
-    }
-}
+//     /// Poll the connection for incoming datagrams.
+//     fn poll_incoming_datagram(
+//         &mut self,
+//         cx: &mut Context<'_>,
+//     ) -> Poll<Result<Self::Buffer, ConnectionErrorIncoming>> {
+//         self.0.poll_recv(cx).map_err(convert_connection_io_error)
+//     }
+// }

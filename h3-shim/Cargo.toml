@@ -13,7 +13,7 @@ autoexamples = false
 
 [dependencies]
 h3 = { workspace = true }
-h3-datagram = { workspace = true }
+h3-datagram = { workspace = true, optional = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
@@ -23,7 +23,7 @@ tokio = { workspace = true }
 qconnection = { workspace = true }
 
 [features]
-unreliable = ["qconnection/unreliable"]
+unreliable = ["dep:h3-datagram", "qconnection/unreliable"]
 
 [dev-dependencies]
 base64 = "0.22"
