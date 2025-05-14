@@ -9,7 +9,7 @@ use std::{
 
 use bytes::{BufMut, Bytes};
 use qbase::{
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{DatagramFrame, EncodeFrame, GetFrameType},
 };
 
@@ -72,7 +72,7 @@ impl DatagramIncoming {
         let reader = guard.as_mut().map_err(|e| e.clone())?;
         if (frame.encoding_size() + data.len()) > reader.local_max_size {
             tracing::error!("   Cause by: DatagramIncoming::recv_datagram");
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::ProtocolViolation,
                 frame.frame_type().into(),
                 format!(
@@ -80,7 +80,8 @@ impl DatagramIncoming {
                     frame.encoding_size() + data.len(),
                     reader.local_max_size
                 ),
-            ));
+            )
+            .into());
         }
 
         reader.rcvd_datagrams.push_back(data);
@@ -290,11 +291,12 @@ mod tests {
     #[tokio::test]
     async fn test_datagram_reader_on_conn_error() {
         let incoming = DatagramIncoming::new(1024);
-        let error = Error::new(
+        let error = QuicError::new(
             ErrorKind::ProtocolViolation,
             FrameType::Datagram(0).into(),
             "protocol violation",
-        );
+        )
+        .into();
         incoming.on_conn_error(&error);
 
         let new_reader = incoming.new_reader();

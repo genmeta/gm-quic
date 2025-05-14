@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    error::{Error as QuicError, ErrorFrameType, ErrorKind as QuicErrorKind},
+    error::{Error, ErrorFrameType, ErrorKind, QuicError},
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     varint::VarInt,
@@ -67,7 +67,7 @@ impl<TX> SendControler<TX> {
 /// causing the connection-level flow control to never reach its limit,
 /// effectively rendering it useless.
 #[derive(Clone, Debug)]
-pub struct ArcSendControler<TX>(Arc<Mutex<Result<SendControler<TX>, QuicError>>>);
+pub struct ArcSendControler<TX>(Arc<Mutex<Result<SendControler<TX>, Error>>>);
 
 impl<TX> ArcSendControler<TX> {
     /// Creates a new [`ArcSendControler`] with `initial_max_data`.
@@ -103,7 +103,7 @@ impl<TX> ArcSendControler<TX> {
     /// the traffic credit is considered to be consumed immediately.
     /// The unused flow control quota for this send will be returned to the sending controller.
     /// This design avoids the sending task’s exclusive access to the sending controller.
-    pub fn credit(&self, quota: usize) -> Result<Credit<'_, TX>, QuicError>
+    pub fn credit(&self, quota: usize) -> Result<Credit<'_, TX>, Error>
     where
         TX: SendFrame<DataBlockedFrame>,
     {
@@ -130,7 +130,7 @@ impl<TX> ArcSendControler<TX> {
 
     /// Connection-level Stream Flow Control can only be terminated
     /// if the connection encounters an error
-    pub fn on_error(&self, error: &QuicError) {
+    pub fn on_error(&self, error: &Error) {
         let mut guard = self.0.lock().unwrap();
         if guard.deref().is_err() {
             return;
@@ -144,7 +144,7 @@ impl<TX> ArcSendControler<TX> {
 impl<TX> ReceiveFrame<MaxDataFrame> for ArcSendControler<TX> {
     type Output = ();
 
-    fn recv_frame(&self, frame: &MaxDataFrame) -> Result<Self::Output, QuicError> {
+    fn recv_frame(&self, frame: &MaxDataFrame) -> Result<Self::Output, Error> {
         self.increase_limit(frame.max_data());
         Ok(())
     }
@@ -218,7 +218,7 @@ where
     /// The data must be new, old retransmitted data does not count. Whether the data is
     /// new or not will be determined by each stream after delivering the data packet to them.
     /// The amount of new data will be passed as the `amount` parameter.
-    fn on_new_rcvd(&mut self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+    fn on_new_rcvd(&mut self, frame_type: FrameType, amount: usize) -> Result<usize, Error> {
         self.rcvd_data += amount as u64;
         if self.rcvd_data <= self.max_data {
             if self.rcvd_data + self.step >= self.max_data {
@@ -232,10 +232,11 @@ where
         } else {
             // Err(Overflow((rcvd_data - max_data) as usize))
             Err(QuicError::new(
-                QuicErrorKind::FlowControl,
+                ErrorKind::FlowControl,
                 ErrorFrameType::V1(frame_type),
                 format!("flow control overflow: {}", self.rcvd_data - self.max_data),
-            ))
+            )
+            .into())
         }
     }
 }
@@ -277,8 +278,8 @@ where
     /// when new stream data is received.
     ///
     /// As mentioned in [`ArcSendControler`], if the flow control limit is exceeded,
-    /// a [`QuicError`] error will be returned.
-    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+    /// a [`Error`] error will be returned.
+    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, Error> {
         self.0.lock().unwrap().on_new_rcvd(frame_type, amount)
     }
 }
@@ -291,7 +292,7 @@ where
 impl<TX> ReceiveFrame<DataBlockedFrame> for ArcRecvController<TX> {
     type Output = ();
 
-    fn recv_frame(&self, _frame: &DataBlockedFrame) -> Result<Self::Output, QuicError> {
+    fn recv_frame(&self, _frame: &DataBlockedFrame) -> Result<Self::Output, Error> {
         // Do nothing
         Ok(())
     }
@@ -334,7 +335,7 @@ impl<TX: Clone> FlowController<TX> {
     /// Get some flow control credit to send fresh flow data.
     /// The returned value may be smaller than the parameter's intended value.
     /// If some QUIC error occured, it would return the error directly.
-    pub fn send_limit(&self, quota: usize) -> Result<Credit<'_, TX>, QuicError>
+    pub fn send_limit(&self, quota: usize) -> Result<Credit<'_, TX>, Error>
     where
         TX: SendFrame<DataBlockedFrame>,
     {
@@ -346,7 +347,7 @@ impl<TX: Clone> FlowController<TX> {
     /// It will makes
     /// the connection-level stream flow controller in the sending direction become unavailable,
     /// and the connection-level stream flow controller in the receiving direction terminate.
-    pub fn on_conn_error(&self, error: &QuicError) {
+    pub fn on_conn_error(&self, error: &Error) {
         self.sender.on_error(error);
     }
 }
@@ -358,7 +359,7 @@ where
     /// Updates the total received data size and checks if the flow control limit is exceeded.
     /// By the way, it will also send a [`MaxDataFrame`] to the sender
     /// to expand the receive window if necessary.
-    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, Error> {
         self.recver.on_new_rcvd(frame_type, amount)
     }
 }
@@ -439,6 +440,6 @@ mod tests {
         // test overflow
         let result = controler.on_new_rcvd(FrameType::ResetStream, 101);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), QuicErrorKind::FlowControl);
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::FlowControl);
     }
 }

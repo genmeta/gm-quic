@@ -18,6 +18,7 @@ pub use qbase::{
     token::{TokenProvider, TokenSink, handy::*},
 };
 use qbase::{
+    error::Error,
     frame::ConnectionCloseFrame,
     net::tx::ArcSendWakers,
     param::{ArcParameters, ParameterId, RememberedParameters},
@@ -508,23 +509,21 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 
         flow_ctrl.reset_send_window(
             params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxData)
-                .await?
-                .into_inner(),
+                .get_remote_as::<u64>(ParameterId::InitialMaxData)
+                .await?,
         );
 
         cid_registry.local.set_limit(
             params
-                .get_remote_as::<VarInt>(ParameterId::ActiveConnectionIdLimit)
-                .await?
-                .into_inner(),
+                .get_remote_as::<u64>(ParameterId::ActiveConnectionIdLimit)
+                .await?,
         )?;
 
-        Ok(())
+        Result::<_, Error>::Ok(())
     };
     let event_broker = components.event_broker.clone();
     async move {
-        if let Err(e) = task.await {
+        if let Err(Error::Quic(e)) = task.await {
             event_broker.emit(Event::Failed(e));
         }
     }

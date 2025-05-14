@@ -7,7 +7,7 @@ use bytes::BufMut;
 use qbase::{
     Epoch,
     cid::ConnectionId,
-    error::Error,
+    error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
         route::{Link, Pathway},
@@ -85,7 +85,7 @@ impl InitialSpace {
     pub async fn decrypt_packet(
         &self,
         packet: CipherInitialPacket,
-    ) -> Option<Result<PlainInitialPacket, Error>> {
+    ) -> Option<Result<PlainInitialPacket, QuicError>> {
         match self.keys.get_remote_keys().await {
             Some(keys) => packet.decrypt_long_packet(
                 keys.remote.header.as_ref(),
@@ -262,7 +262,7 @@ pub fn spawn_deliver_and_parse(
                             let (frame, frame_type) = frame?;
                             frames.extend(Some(&frame));
                             dispatch_frame(frame, &path);
-                            Result::<_, Error>::Ok(packet_contains.include(frame_type))
+                            Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
                         })?;
                     packet.log_received(frames);
 
@@ -305,7 +305,7 @@ pub fn spawn_deliver_and_parse(
                 Result::<(), Error>::Ok(())
             };
 
-            if let Err(error) = parse.await {
+            if let Err(Error::Quic(error)) = parse.await {
                 event_broker.emit(Event::Failed(error));
             };
         }

@@ -1,54 +1,42 @@
-use std::{error, fmt, io, sync::Arc};
+use std::{error::Error, sync::Arc};
 
+use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 use qbase::frame::ResetStreamError;
 
-#[derive(Clone)]
-pub struct Error(Arc<io::Error>);
-
-impl fmt::Display for Error {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+pub fn convert_quic_error(e: qbase::error::Error) -> ConnectionErrorIncoming {
+    match e {
+        qbase::error::Error::Quic(quic_error) => {
+            ConnectionErrorIncoming::Undefined(Arc::new(quic_error))
+        }
+        qbase::error::Error::App(app_error) => ConnectionErrorIncoming::ApplicationClose {
+            error_code: app_error.error_code(),
+        },
     }
 }
 
-impl fmt::Debug for Error {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
+pub fn convert_connection_io_error(e: std::io::Error) -> ConnectionErrorIncoming {
+    let source = match e {
+        e if e.source().is_none() => return ConnectionErrorIncoming::Undefined(Arc::new(e)),
+        e => e
+            .into_inner()
+            .expect("io::Error with source should have an inner error"),
+    };
+    source
+        .downcast::<qbase::error::Error>()
+        .map(|quic_error| convert_quic_error(*quic_error))
+        .unwrap_or_else(|e| ConnectionErrorIncoming::Undefined(Arc::from(e)))
 }
 
-impl error::Error for Error {
-    #[inline]
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        self.0.source()
+pub fn convert_stream_io_error(e: std::io::Error) -> StreamErrorIncoming {
+    if let Some(reset_stream_error) = e
+        .source()
+        .and_then(|e| e.downcast_ref::<ResetStreamError>())
+    {
+        return StreamErrorIncoming::StreamTerminated {
+            error_code: reset_stream_error.error_code(),
+        };
     }
-}
-
-impl h3::quic::Error for Error {
-    #[inline]
-    fn is_timeout(&self) -> bool {
-        false
-    }
-
-    #[inline]
-    fn err_code(&self) -> Option<u64> {
-        error::Error::source(self)
-            .and_then(|e| e.downcast_ref::<ResetStreamError>().map(|e| e.error_code()))
-    }
-}
-
-impl From<io::Error> for Error {
-    #[inline]
-    fn from(value: io::Error) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<ResetStreamError> for Error {
-    #[inline]
-    fn from(value: ResetStreamError) -> Self {
-        io::Error::new(io::ErrorKind::BrokenPipe, value).into()
+    StreamErrorIncoming::ConnectionErrorIncoming {
+        connection_error: convert_connection_io_error(e),
     }
 }

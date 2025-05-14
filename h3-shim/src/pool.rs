@@ -68,7 +68,7 @@ impl H3ConnectionPool {
 
             let quic_connection = self.quic_client.connect(server_name.clone(), server_ep)?;
             let (mut h3_connection, send_request) =
-                h3::client::new(crate::QuicConnection::new(quic_connection.clone()).await)
+                h3::client::new(crate::QuicConnection::new(quic_connection.clone()))
                     .await
                     .map_err(io::Error::other)?;
 

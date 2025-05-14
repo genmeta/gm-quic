@@ -6,7 +6,7 @@ use nom::{IResult, bytes::complete::take};
 use rand::Rng;
 
 use crate::{
-    error::{Error, ErrorKind},
+    error::{ErrorKind, QuicError},
     frame::{GetFrameType, NewTokenFrame, ReceiveFrame},
 };
 
@@ -97,11 +97,12 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
                 client.sink(server_name, frame.token().to_vec());
                 Ok(())
             }
-            TokenRegistry::Server(_) => Err(Error::new(
+            TokenRegistry::Server(_) => Err(QuicError::new(
                 ErrorKind::ProtocolViolation,
                 frame.frame_type().into(),
                 "Server received NewTokenFrame",
-            )),
+            )
+            .into()),
         }
     }
 }

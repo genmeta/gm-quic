@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use super::FrameType;
 use crate::{
-    error::{Error as TransportError, ErrorKind as TransportErrorKind},
+    error::{ErrorKind as TransportErrorKind, QuicError as TransportError},
     packet::r#type::Type,
     varint::VarInt,
 };

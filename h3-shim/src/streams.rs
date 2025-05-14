@@ -6,9 +6,10 @@ use std::{
 
 use bytes::Buf;
 use gm_quic::{StreamReader, StreamWriter};
+use h3::quic::StreamErrorIncoming;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::Error;
+use crate::error::convert_stream_io_error;
 
 pub struct SendStream<B> {
     writer: StreamWriter,
@@ -28,10 +29,8 @@ impl<B> SendStream<B> {
 }
 
 impl<B: bytes::Buf> h3::quic::SendStream<B> for SendStream<B> {
-    type Error = Error;
-
     #[inline]
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         let Some(buf) = self.data.as_mut() else {
             return Poll::Ready(Ok(()));
         };
@@ -46,26 +45,29 @@ impl<B: bytes::Buf> h3::quic::SendStream<B> for SendStream<B> {
                 }
                 Err(e) => {
                     self.data = None;
-                    return Poll::Ready(Err(e.into()));
+                    return Poll::Ready(Err(convert_stream_io_error(e)));
                 }
             }
         }
     }
 
     #[inline]
-    fn send_data<T: Into<h3::quic::WriteBuf<B>>>(&mut self, data: T) -> Result<(), Self::Error> {
+    fn send_data<T: Into<h3::quic::WriteBuf<B>>>(
+        &mut self,
+        data: T,
+    ) -> Result<(), StreamErrorIncoming> {
         assert!(self.data.is_none());
         self.data = Some(data.into());
         Ok(())
     }
 
     #[inline]
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         assert!(self.data.is_none());
 
         Pin::new(&mut self.writer)
             .poll_shutdown(cx)
-            .map(|r| r.map_err(Error::from))
+            .map(|r| r.map_err(convert_stream_io_error))
     }
 
     #[inline]
@@ -86,12 +88,12 @@ impl<B: bytes::Buf> h3::quic::SendStreamUnframed<B> for SendStream<B> {
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut D,
-    ) -> Poll<Result<usize, Self::Error>> {
+    ) -> Poll<Result<usize, StreamErrorIncoming>> {
         assert!(self.data.is_none());
 
         Pin::new(&mut self.writer)
             .poll_write(cx, buf.chunk())
-            .map(|r| r.map_err(Error::from))
+            .map(|r| r.map_err(convert_stream_io_error))
     }
 }
 
@@ -113,10 +115,11 @@ impl RecvStream {
 impl h3::quic::RecvStream for RecvStream {
     type Buf = bytes::Bytes;
 
-    type Error = Error;
-
     #[inline]
-    fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+    fn poll_data(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Self::Buf>, StreamErrorIncoming>> {
         let mut uninit_buf = [MaybeUninit::uninit(); 4096];
         let mut read_buf = ReadBuf::uninit(&mut uninit_buf);
         match ready!(Pin::new(&mut self.reader).poll_read(cx, &mut read_buf)) {
@@ -127,7 +130,7 @@ impl h3::quic::RecvStream for RecvStream {
                 let bytes = bytes::Bytes::copy_from_slice(read_buf.filled());
                 Poll::Ready(Ok(Some(bytes)))
             }
-            Err(e) => Poll::Ready(Err(e.into())),
+            Err(e) => Poll::Ready(Err(convert_stream_io_error(e))),
         }
     }
 
@@ -162,10 +165,11 @@ impl<B> BidiStream<B> {
 impl<B> h3::quic::RecvStream for BidiStream<B> {
     type Buf = bytes::Bytes;
 
-    type Error = Error;
-
     #[inline]
-    fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+    fn poll_data(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Self::Buf>, StreamErrorIncoming>> {
         self.recv.poll_data(cx)
     }
 
@@ -181,20 +185,21 @@ impl<B> h3::quic::RecvStream for BidiStream<B> {
 }
 
 impl<B: bytes::Buf> h3::quic::SendStream<B> for BidiStream<B> {
-    type Error = Error;
-
     #[inline]
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         self.send.poll_ready(cx)
     }
 
     #[inline]
-    fn send_data<T: Into<h3::quic::WriteBuf<B>>>(&mut self, data: T) -> Result<(), Self::Error> {
+    fn send_data<T: Into<h3::quic::WriteBuf<B>>>(
+        &mut self,
+        data: T,
+    ) -> Result<(), StreamErrorIncoming> {
         self.send.send_data(data)
     }
 
     #[inline]
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         self.send.poll_finish(cx)
     }
 
@@ -215,7 +220,7 @@ impl<B: bytes::Buf> h3::quic::SendStreamUnframed<B> for BidiStream<B> {
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut D,
-    ) -> Poll<Result<usize, Self::Error>> {
+    ) -> Poll<Result<usize, StreamErrorIncoming>> {
         self.send.poll_send(cx, buf)
     }
 }

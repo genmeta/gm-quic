@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{ConnectionId, GenUniqueCid, RetireCid};
 use crate::{
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{
         FrameType, GetFrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame,
         SendFrame,
@@ -73,11 +73,12 @@ where
         debug_assert!(self.active_cid_limit.is_none());
         if active_cid_limit < 2 {
             tracing::error!("   Cause by: setting new active connection id limit");
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
                 format!("active connection id limit {active_cid_limit} < 2"),
-            ));
+            )
+            .into());
         }
         for _ in self.cid_deque.largest()..active_cid_limit {
             self.issue_new_cid();
@@ -103,14 +104,14 @@ where
         let seq = frame.sequence();
         if seq >= self.cid_deque.largest() {
             tracing::error!("   Cause by: received a invalid RetireConnectionIdFrame");
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::ConnectionIdLimit,
                 frame.frame_type().into(),
                 format!(
                     "Sequence({seq}) in RetireConnectionIdFrame exceeds the largest one({}) issued by us",
                     self.cid_deque.largest().saturating_sub(1)
                 ),
-            ));
+            ).into());
         }
 
         if let Some(value) = self.cid_deque.get_mut(seq) {

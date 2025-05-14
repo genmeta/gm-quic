@@ -208,7 +208,7 @@ async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send +
     let conn = quic_client.connect(options.auth.host(), addr)?;
 
     // create h3 client
-    let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
+    let gm_quic_conn = h3_shim::QuicConnection::new(conn);
     let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
     let conn_close_monitor = conn.wait_idle();
 

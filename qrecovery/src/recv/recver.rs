@@ -6,7 +6,7 @@ use std::{
 
 use bytes::{BufMut, Bytes};
 use qbase::{
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, QuicError},
     frame::{
         GetFrameType, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, SendFrame,
         StopSendingFrame, StreamFrame,
@@ -90,7 +90,7 @@ impl<TX: Clone> Recv<TX> {
     pub(super) fn determin_size(
         &mut self,
         stream_frame: &StreamFrame,
-    ) -> Result<SizeKnown<TX>, Error> {
+    ) -> Result<SizeKnown<TX>, QuicError> {
         if let Some(waker) = self.read_waker.take() {
             waker.wake();
         }
@@ -102,7 +102,7 @@ impl<TX: Clone> Recv<TX> {
                 "   Cause by: {} received an end stream frame with a smaller final size",
                 stream_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FinalSize,
                 stream_frame.frame_type().into(),
                 format!(
@@ -149,7 +149,11 @@ impl<TX> Recv<TX> {
         self.stream_id
     }
 
-    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, Error> {
+    pub(super) fn recv(
+        &mut self,
+        stream_frame: &StreamFrame,
+        body: Bytes,
+    ) -> Result<usize, QuicError> {
         let data_start = stream_frame.offset();
 
         let data_end = data_start + body.len() as u64;
@@ -158,7 +162,7 @@ impl<TX> Recv<TX> {
                 "   Cause by: the stream data size received by {} exceeds the limit",
                 stream_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FlowControl,
                 stream_frame.frame_type().into(),
                 format!(
@@ -191,14 +195,17 @@ impl<TX> Recv<TX> {
         Ok(fresh_data as _)
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<usize, Error> {
+    pub(super) fn recv_reset(
+        &mut self,
+        reset_frame: &ResetStreamFrame,
+    ) -> Result<usize, QuicError> {
         let final_size = reset_frame.final_size();
         if final_size < self.largest {
             tracing::error!(
                 "   Cause by: {} recived a ResetStreamFrame with a smaller final size",
                 reset_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FinalSize,
                 reset_frame.frame_type().into(),
                 format!(
@@ -242,7 +249,11 @@ impl<TX> SizeKnown<TX> {
         self.stream_id
     }
 
-    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, data: Bytes) -> Result<usize, Error> {
+    pub(super) fn recv(
+        &mut self,
+        stream_frame: &StreamFrame,
+        data: Bytes,
+    ) -> Result<usize, QuicError> {
         let data_start = stream_frame.offset();
         let data_end = data_start + data.len() as u64;
         if data_end > self.final_size {
@@ -250,7 +261,7 @@ impl<TX> SizeKnown<TX> {
                 "   Cause by: the actual stream data size received by {} exceeds the final size",
                 stream_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FinalSize,
                 stream_frame.frame_type().into(),
                 format!(
@@ -265,7 +276,7 @@ impl<TX> SizeKnown<TX> {
                 "   Cause by: {} received an end stream frame with a different final size",
                 stream_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FinalSize,
                 stream_frame.frame_type().into(),
                 format!(
@@ -332,14 +343,14 @@ impl<TX> SizeKnown<TX> {
         }
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<(), Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
         let final_size = reset_frame.final_size();
         if final_size != self.final_size {
             tracing::error!(
                 "   Cause by: {} received a ResetStreamFrame with a different final size",
                 reset_frame.stream_id()
             );
-            return Err(Error::new(
+            return Err(QuicError::new(
                 ErrorKind::FinalSize,
                 reset_frame.frame_type().into(),
                 format!(

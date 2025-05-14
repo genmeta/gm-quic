@@ -12,7 +12,7 @@ use nom::Parser;
 
 use crate::{
     cid::{ConnectionId, WriteConnectionId, be_connection_id, be_connection_id_with_len},
-    error::Error,
+    error::QuicError,
     token::{ResetToken, WriteResetToken, be_reset_token},
     varint::{VarInt, WriteVarInt, be_varint},
 };
@@ -228,6 +228,15 @@ pub enum ParameterValue {
     VarInt(VarInt),
 }
 
+impl TryFrom<ParameterValue> for u64 {
+    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        VarInt::try_from(value).map(|value| value.into_inner())
+    }
+}
+
 pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, ParameterValue)> {
     use nom::{bytes::streaming::take, combinator::map};
 
@@ -355,7 +364,7 @@ impl<T: bytes::BufMut> WriteParameter for T {
 pub trait StoreParameter {
     fn get(&self, id: ParameterId) -> Option<ParameterValue>;
 
-    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), Error>;
+    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError>;
 }
 
 pub type GeneralParameters = HashMap<ParameterId, ParameterValue>;
@@ -365,7 +374,7 @@ impl StoreParameter for GeneralParameters {
         self.get(&id).cloned()
     }
 
-    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), Error> {
+    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError> {
         self.insert(id, value);
         Ok(())
     }
@@ -391,7 +400,7 @@ pub trait StoreParameterExt: StoreParameter {
     }
 
     #[inline]
-    fn set_as<V>(&mut self, id: ParameterId, value: V) -> Result<(), Error>
+    fn set_as<V>(&mut self, id: ParameterId, value: V) -> Result<(), QuicError>
     where
         ParameterValue: From<V>,
     {

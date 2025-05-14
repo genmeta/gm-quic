@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use qbase::{
-    error::Error,
+    error::QuicError,
     frame::ConnectionCloseFrame,
     net::route::{Link, Pathway},
 };
@@ -20,7 +20,7 @@ pub enum Event {
     // Path become inactivated, or removed by application
     PathInactivated(Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
-    Failed(Error),
+    Failed(QuicError),
     // Received a connection close frame, will enter the draining state
     Closed(ConnectionCloseFrame),
     // Received a stateless reset, will enter the draining state

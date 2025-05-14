@@ -3,7 +3,7 @@ use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use gm_quic::handy::server_parameters;
-use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
+use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{fs::File, io::AsyncReadExt};
@@ -113,7 +113,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
     // handle incoming connections and requests
     while let Ok((new_conn, _pathway)) = quic_server.accept().await {
         let h3_conn =
-            match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await).await {
+            match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn)).await {
                 Ok(h3_conn) => {
                     info!("accept a new quic connection");
                     h3_conn
@@ -134,25 +134,25 @@ async fn handle_connection<T>(
     serve_root: Arc<PathBuf>,
     mut connection: h3::server::Connection<T, Bytes>,
 ) where
-    T: h3::quic::Connection<Bytes>,
+    T: h3::quic::Connection<Bytes> + 'static,
     <T as h3::quic::OpenStreams<Bytes>>::BidiStream: h3::quic::BidiStream<Bytes> + Send + 'static,
 {
     loop {
         match connection.accept().await {
-            Ok(Some((request, stream))) => {
-                info!(?request, "handle");
+            Ok(Some(request_resolver)) => {
                 let serve_root = serve_root.clone();
+                let handle_request = async move {
+                    let (request, stream) = request_resolver.resolve_request().await?;
+                    handle_request(request, stream, serve_root).await
+                };
                 tokio::spawn(async move {
-                    if let Err(e) = handle_request(request, stream, serve_root).await {
+                    if let Err(e) = handle_request.await {
                         error!("handling request failed: {}", e);
                     }
                 });
             }
             Ok(None) => break,
-            Err(error) => match error.get_error_level() {
-                ErrorLevel::ConnectionError => break,
-                ErrorLevel::StreamError => continue,
-            },
+            Err(..) => break,
         }
     }
 }

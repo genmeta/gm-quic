@@ -52,7 +52,6 @@ use qbase::{
     param::{ArcParameters, ParameterId},
     sid::StreamId,
     token::ArcTokenRegistry,
-    varint::VarInt,
 };
 use qevent::telemetry::Instrument;
 use qinterface::{
@@ -131,9 +130,9 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
                 .await?;
-            Ok(streams.open_bi(snd_wnd_size.into_inner()).await?)
+            Ok(streams.open_bi(snd_wnd_size).await?)
         }
         .instrument_in_current()
         .in_current_span()
@@ -146,9 +145,9 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataUni)
+                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataUni)
                 .await?;
-            Ok(streams.open_uni(snd_wnd_size.into_inner()).await?)
+            Ok(streams.open_uni(snd_wnd_size).await?)
         }
         .instrument_in_current()
         .in_current_span()
@@ -162,9 +161,9 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataBidiLocal)
+                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataBidiLocal)
                 .await?;
-            Ok(Some(streams.accept_bi(snd_wnd_size.into_inner()).await?))
+            Ok(Some(streams.accept_bi(snd_wnd_size).await?))
         }
         .instrument_in_current()
         .in_current_span()
@@ -190,9 +189,9 @@ impl Components {
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
             let max_datagram_frame_size = params
-                .get_remote_as::<VarInt>(ParameterId::MaxDatagramFrameSize)
+                .get_remote_as::<u64>(ParameterId::MaxDatagramFrameSize)
                 .await?;
-            datagrams.writer(max_datagram_frame_size.into_inner())
+            datagrams.writer(max_datagram_frame_size)
         }
         .instrument_in_current()
         .in_current_span()

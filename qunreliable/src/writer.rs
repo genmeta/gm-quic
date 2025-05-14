@@ -274,7 +274,7 @@ impl DatagramWriter {
 mod tests {
 
     use qbase::{
-        error::ErrorKind,
+        error::{ErrorKind, QuicError},
         frame::{
             FrameType, PaddingFrame,
             io::{WriteDataFrame, WriteFrame},
@@ -380,11 +380,14 @@ mod tests {
         let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
-        outgoing.on_conn_error(&Error::new(
-            ErrorKind::ProtocolViolation,
-            FrameType::Datagram(0).into(),
-            "test",
-        ));
+        outgoing.on_conn_error(
+            &QuicError::new(
+                ErrorKind::ProtocolViolation,
+                FrameType::Datagram(0).into(),
+                "test",
+            )
+            .into(),
+        );
         let writer_guard = writer.writer.lock().unwrap();
         assert!(writer_guard.as_ref().is_err());
     }
