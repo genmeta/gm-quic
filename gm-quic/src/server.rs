@@ -213,6 +213,7 @@ impl QuicServer {
                     Event::PathInactivated(_, socket) => {
                         crate::proto().try_free_interface(socket.src());
                     }
+                    Event::ApplicationClose => {}
                     Event::Failed(error) => {
                         connection.enter_closing(qbase::error::Error::from(error).into())
                     }

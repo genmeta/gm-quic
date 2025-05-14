@@ -21,6 +21,8 @@ pub enum Event {
     PathInactivated(Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
     Failed(QuicError),
+    // The connection is closed by application, just a notification
+    ApplicationClose,
     // Received a connection close frame, will enter the draining state
     Closed(ConnectionCloseFrame),
     // Received a stateless reset, will enter the draining state
@@ -57,7 +59,7 @@ impl EmitEvent for ArcEventBroker {
                     return;
                 }
             }
-            Event::Failed(..) => {
+            Event::ApplicationClose | Event::Failed(..) => {
                 let terminator = GranularConnectionStates::Closing;
                 if self.conn_state.update(terminator.into()).is_none() {
                     return;
