@@ -199,6 +199,11 @@ impl QuicClient {
                         Event::PathInactivated(_pathway, socket) => {
                             crate::proto().try_free_interface(socket.src());
                         }
+                        Event::ApplicationClose => {
+                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
+                                Arc::ptr_eq(&connection, exist)
+                            });
+                        }
                         Event::Failed(error) => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)

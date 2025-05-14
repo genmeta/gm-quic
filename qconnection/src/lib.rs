@@ -42,9 +42,8 @@ use std::{
 };
 
 use enum_dispatch::enum_dispatch;
-use events::ArcEventBroker;
-use path::ArcPathContexts;
-use prelude::HeartbeatConfig;
+use events::{ArcEventBroker, EmitEvent, Event};
+use path::{ArcPathContexts, idle::HeartbeatConfig};
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
@@ -234,9 +233,16 @@ impl Connection {
     }
 
     pub fn close(&self, reason: Cow<'static, str>, code: u64) {
-        // let _span = (self.qlog_span.enter(), self.tracing_span.enter());
-        let error_code = code.try_into().unwrap();
-        self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let error_code = code.try_into().expect("application error code overflow");
+        let ccf = ConnectionCloseFrame::new_app(error_code, reason);
+
+        let mut conn = self.state.write().unwrap();
+        if let Ok(components) = conn.as_mut() {
+            components.event_broker.emit(Event::ApplicationClose);
+            *conn = Err(components.clone().enter_closing(ccf));
+        }
     }
 
     fn try_map_components<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
