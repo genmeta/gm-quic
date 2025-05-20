@@ -138,9 +138,7 @@ impl Path {
         if size > 0 {
             self.status.release_anti_amplification_limit();
         }
-        if packet_contains == PacketContains::EffectivePayload {
-            *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
-        }
+        *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
     }
