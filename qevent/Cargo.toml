@@ -1,6 +1,6 @@
 [package]
 name = "qevent"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 description = "qlog implementation"
 readme.workspace = true
