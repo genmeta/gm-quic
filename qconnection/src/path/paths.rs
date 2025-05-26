@@ -87,8 +87,11 @@ impl ArcPathContexts {
 
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
         if let Some((_, path)) = self.paths.remove(pathway) {
-            self.broker
-                .emit(Event::PathInactivated(path.pathway, path.link));
+            self.broker.emit(Event::PathInactivated(
+                path.interface.abstract_addr(),
+                path.pathway,
+                path.link,
+            ));
             tracing::warn!(%pathway, reason, "path removed");
             if self.is_empty() {
                 let error = QuicError::with_default_fty(

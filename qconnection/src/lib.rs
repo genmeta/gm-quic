@@ -47,7 +47,10 @@ use path::{ArcPathContexts, idle::HeartbeatConfig};
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
-    net::route::{Link, Pathway},
+    net::{
+        address::AbstractAddr,
+        route::{Link, Pathway},
+    },
     param::{ArcParameters, ParameterId},
     sid::StreamId,
     token::ArcTokenRegistry,
@@ -196,8 +199,13 @@ impl Components {
         .in_current_span()
     }
 
-    pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.get_or_try_create_path(link, pathway, false)
+    pub fn add_path(
+        &self,
+        ifaca_addr: AbstractAddr,
+        link: Link,
+        pathway: Pathway,
+    ) -> io::Result<()> {
+        self.get_or_try_create_path(ifaca_addr, link, pathway, false)
             .map(|_| ())
     }
 
@@ -245,7 +253,7 @@ impl Connection {
         }
     }
 
-    fn try_map_components<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
+    fn try_map_components<T>(&self, op: impl FnOnce(&Components) -> T) -> io::Result<T> {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.state
             .read()
@@ -290,8 +298,13 @@ impl Connection {
             .await
     }
 
-    pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(link, pathway))?
+    pub fn add_path(
+        &self,
+        iface_addr: AbstractAddr,
+        link: Link,
+        pathway: Pathway,
+    ) -> io::Result<()> {
+        self.try_map_components(|core_conn| core_conn.add_path(iface_addr, link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {

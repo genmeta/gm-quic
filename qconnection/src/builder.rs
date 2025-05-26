@@ -20,7 +20,7 @@ pub use qbase::{
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
-    net::tx::ArcSendWakers,
+    net::{address::AbstractAddr, tx::ArcSendWakers},
     param::{ArcParameters, ParameterId, RememberedParameters},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
@@ -534,6 +534,7 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 impl Components {
     pub fn get_or_try_create_path(
         &self,
+        iface_addr: AbstractAddr,
         link: Link,
         pathway: Pathway,
         is_probed: bool,
@@ -551,6 +552,7 @@ impl Components {
 
             let path = Arc::new(Path::new(
                 &self.proto,
+                iface_addr,
                 link,
                 pathway,
                 max_ack_delay,

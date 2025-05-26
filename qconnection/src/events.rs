@@ -3,7 +3,10 @@ use std::sync::Arc;
 use qbase::{
     error::QuicError,
     frame::ConnectionCloseFrame,
-    net::route::{Link, Pathway},
+    net::{
+        address::AbstractAddr,
+        route::{Link, Pathway},
+    },
 };
 use qevent::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
 use tokio::sync::mpsc;
@@ -18,7 +21,7 @@ pub enum Event {
     // Received a packet from a new path and successfully decrypted the packet
     ProbedNewPath(Pathway, Link),
     // Path become inactivated, or removed by application
-    PathInactivated(Pathway, Link),
+    PathInactivated(AbstractAddr, Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
     Failed(QuicError),
     // The connection is closed by application, just a notification

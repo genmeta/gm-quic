@@ -1,62 +1,53 @@
-use std::{
-    fmt,
-    net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    ops::Deref,
-    str::FromStr,
-};
+use std::{fmt, net::SocketAddr, ops::Deref, str::FromStr};
 
-use bytes::BufMut;
-use nom::{
-    IResult, Parser,
-    combinator::{flat_map, map},
-    number::streaming::{be_u16, be_u32, be_u128},
-};
 use serde::{Deserialize, Serialize};
+
+use super::address::{ParseQuicAddrError, QuicAddr, ToQuicAddr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
-    Direct {
-        addr: SocketAddr,
-    },
-    Agent {
-        agent: SocketAddr,
-        outer: SocketAddr,
-    },
+    Direct { addr: QuicAddr },
+    Agent { agent: QuicAddr, outer: QuicAddr },
 }
 
 impl EndpointAddr {
-    pub fn direct(addr: SocketAddr) -> Self {
-        EndpointAddr::Direct { addr }
+    pub fn direct(addr: impl ToQuicAddr) -> Self {
+        EndpointAddr::Direct {
+            addr: addr.to_quic_addr(),
+        }
     }
 
-    pub fn with_agent(agent: SocketAddr, outer: SocketAddr) -> Self {
-        EndpointAddr::Agent { agent, outer }
+    pub fn with_agent(agent: impl ToQuicAddr, outer: impl ToQuicAddr) -> Self {
+        EndpointAddr::Agent {
+            agent: agent.to_quic_addr(),
+            outer: outer.to_quic_addr(),
+        }
     }
 
-    /// Returns the outer address of this EndpointAddr
+    /// Returns the outer addr of this EndpointAddr
     ///
-    /// Note: Before successful hole punching with this Endpoint, packets should be sent to the address
+    /// Note: Before successful hole punching with this Endpoint, packets should be sent to the addr
     /// returned by deref() to establish communication. Once hole punching is successful or about to
-    /// begin, use the address returned by this function.
-    pub fn addr(&self) -> SocketAddr {
+    /// begin, use the addr returned by this function.
+    pub fn addr(&self) -> QuicAddr {
         match self {
             EndpointAddr::Direct { addr } => *addr,
             EndpointAddr::Agent { outer, .. } => *outer,
         }
     }
 
-    pub fn encoding_size(&self) -> usize {
-        let addr_size = |addr: &SocketAddr| {
-            if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
-        };
-        match self {
-            EndpointAddr::Direct { addr } => addr_size(addr),
-            EndpointAddr::Agent {
-                agent,
-                outer: inner,
-            } => addr_size(agent) + addr_size(inner),
-        }
-    }
+    // pub fn encoding_size(&self) -> usize {
+    //     let addr_size = |addr: &QuicAddr| {
+    //         if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
+    //     };
+    //     match self {
+    //         EndpointAddr::Direct { addr } => addr_size(addr),
+    //         EndpointAddr::Agent {
+    //             agent,
+    //             outer: inner,
+    //         } => addr_size(agent) + addr_size(inner),
+    //     }
+    // }
 }
 
 impl fmt::Display for EndpointAddr {
@@ -69,7 +60,7 @@ impl fmt::Display for EndpointAddr {
 }
 
 impl Deref for EndpointAddr {
-    type Target = SocketAddr;
+    type Target = QuicAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -80,83 +71,83 @@ impl Deref for EndpointAddr {
 }
 
 impl FromStr for EndpointAddr {
-    type Err = AddrParseError;
+    type Err = ParseQuicAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = s.split_once("-") {
-            // Agent format: "1.12.124.56:1234-202.106.68.43:6080"
-            let agent = first.trim().parse()?;
-            let outer = second.trim().parse()?;
+            // Agent format: "inet:1.12.124.56:1234-inet:202.106.68.43:6080"
+            let agent: QuicAddr = first.trim().parse()?;
+            let outer: QuicAddr = second.trim().parse()?;
             Ok(EndpointAddr::with_agent(agent, outer))
         } else {
             // Direct format: "1.12.124.56:1234"
-            let addr = s.trim().parse()?;
+            let addr: QuicAddr = s.trim().parse()?;
             Ok(EndpointAddr::direct(addr))
         }
     }
 }
 
-pub trait WriteEndpointAddr {
-    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
-}
+// pub trait WriteEndpointAddr {
+//     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
+// }
 
-impl<T: BufMut> WriteEndpointAddr for T {
-    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
-        match endpoint {
-            EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
-            EndpointAddr::Agent {
-                agent,
-                outer: inner,
-            } => {
-                self.put_socket_addr(&agent);
-                self.put_socket_addr(&inner);
-            }
-        }
-    }
-}
+// impl<T: BufMut> WriteEndpointAddr for T {
+//     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
+//         match endpoint {
+//             EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
+//             EndpointAddr::Agent {
+//                 agent,
+//                 outer: inner,
+//             } => {
+//                 self.put_socket_addr(&agent);
+//                 self.put_socket_addr(&inner);
+//             }
+//         }
+//     }
+// }
 
-pub fn be_endpoint_addr(
-    input: &[u8],
-    is_relay: bool,
-    is_ipv6: bool,
-) -> nom::IResult<&[u8], EndpointAddr> {
-    if is_relay {
-        let (remain, agent) = be_socket_addr(input, is_ipv6)?;
-        let (remain, outer) = be_socket_addr(remain, is_ipv6)?;
-        Ok((remain, EndpointAddr::Agent { agent, outer }))
-    } else {
-        let (remain, addr) = be_socket_addr(input, is_ipv6)?;
-        Ok((remain, EndpointAddr::Direct { addr }))
-    }
-}
+// pub fn be_endpoint_addr(
+//     input: &[u8],
+//     is_relay: bool,
+//     is_ipv6: bool,
+// ) -> nom::IResult<&[u8], EndpointAddr> {
+//     if is_relay {
+//         let (remain, agent) = be_socket_addr(input, is_ipv6)?;
+//         let (remain, outer) = be_socket_addr(remain, is_ipv6)?;
+//         Ok((remain, EndpointAddr::Agent { agent, outer }))
+//     } else {
+//         let (remain, addr) = be_socket_addr(input, is_ipv6)?;
+//         Ok((remain, EndpointAddr::Direct { addr }))
+//     }
+// }
 
-pub trait WriteSocketAddr {
-    fn put_socket_addr(&mut self, addr: &SocketAddr);
-}
+// pub trait WriteQuicAddr {
+//     fn put_socket_addr(&mut self, addr: &QuicAddr);
+// }
 
-impl<T: BufMut> WriteSocketAddr for T {
-    fn put_socket_addr(&mut self, addr: &SocketAddr) {
-        self.put_u16(addr.port());
-        match addr.ip() {
-            IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
-            IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
-        }
-    }
-}
+// impl<T: BufMut> WriteQuicAddr for T {
+//     fn put_socket_addr(&mut self, addr: &QuicAddr) {
+//         self.put_u16(addr.port());
+//         match addr.ip() {
+//             IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
+//             IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
+//         }
+//     }
+// }
 
-pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], SocketAddr> {
-    flat_map(be_u16, |port| {
-        map(be_ip_addr(is_ipv6), move |ip| SocketAddr::new(ip, port))
-    })
-    .parse(input)
-}
+// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], QuicAddr> {
+//     flat_map(be_u16, |port| {
+//         map(be_ip_addr(is_ipv6), move |ip| QuicAddr::new(ip, port))
+//     })
+//     .parse(input)
+// }
 
-pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
-    move |input| match is_v6 {
-        true => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
-        false => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
-    }
-}
+// pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
+//     move |input| match is_v6 {
+//         true => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
+//         false => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
+//     }
+// }
 
 pub trait ToEndpointAddr {
     fn to_endpoint_addr(self) -> EndpointAddr;
@@ -168,27 +159,15 @@ impl ToEndpointAddr for EndpointAddr {
     }
 }
 
-impl ToEndpointAddr for SocketAddr {
+impl<T: ToQuicAddr> ToEndpointAddr for T {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::direct(self)
+        EndpointAddr::direct(self.to_quic_addr())
     }
 }
 
-impl ToEndpointAddr for &'static str {
+impl<A: ToQuicAddr, O: ToQuicAddr> ToEndpointAddr for (A, O) {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        SocketAddr::from_str(self).unwrap().to_endpoint_addr()
-    }
-}
-
-impl ToEndpointAddr for String {
-    fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::from_str(self.as_str()).unwrap()
-    }
-}
-
-impl ToEndpointAddr for (SocketAddr, SocketAddr) {
-    fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::with_agent(self.0, self.1)
+        EndpointAddr::with_agent(self.0.to_quic_addr(), self.1.to_quic_addr())
     }
 }
 
@@ -229,11 +208,11 @@ impl Pathway {
     }
 }
 
-/// Network way, representing the quadruple of source and destination addresses.
+/// Network way, representing the quadruple of source and destination addres.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Link {
-    src: SocketAddr,
-    dst: SocketAddr,
+    src: QuicAddr,
+    dst: QuicAddr,
 }
 
 impl fmt::Display for Link {
@@ -244,17 +223,20 @@ impl fmt::Display for Link {
 
 impl Link {
     #[inline]
-    pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
-        Self { src, dst }
+    pub fn new(src: impl ToQuicAddr, dst: impl ToQuicAddr) -> Self {
+        Self {
+            src: src.to_quic_addr(),
+            dst: dst.to_quic_addr(),
+        }
     }
 
     #[inline]
-    pub fn src(&self) -> SocketAddr {
+    pub fn src(&self) -> QuicAddr {
         self.src
     }
 
     #[inline]
-    pub fn dst(&self) -> SocketAddr {
+    pub fn dst(&self) -> QuicAddr {
         self.dst
     }
 
@@ -324,17 +306,17 @@ mod tests {
     #[test]
     fn test_endpoint_addr_from_str() {
         // Test direct format
-        let addr = "127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
+        let addr = "inet:127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
         assert!(matches!(addr, EndpointAddr::Direct { .. }));
 
         // Test agent format
-        let addr = "127.0.0.1:8080-192.168.1.1:9000"
+        let addr = "inet:127.0.0.1:8080-inet:192.168.1.1:9000"
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));
 
         // Test with whitespace
-        let addr = "  127.0.0.1:8080  -  192.168.1.1:9000  "
+        let addr = "  inet:127.0.0.1:8080  -  inet:192.168.1.1:9000  "
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));

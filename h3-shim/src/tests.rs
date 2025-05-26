@@ -42,7 +42,9 @@ where
 
         let (server, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = *server.addresses().iter().next().expect("no address");
+        let server_addr = (*server.addresses().iter().next().expect("no address"))
+            .try_into()
+            .expect("This test support only SocketAddr");
         time::timeout(Duration::from_secs(10), launch_client(server_addr))
             .await
             .expect("test timeout")?;
