@@ -7,7 +7,7 @@ mod qudp {
     };
 
     use bytes::BytesMut;
-    use qbase::net::{Link, Pathway, ToEndpointAddr};
+    use qbase::net::route::{Link, Pathway, ToEndpointAddr};
     use qudp::{BATCH_SIZE, UdpSocketController};
 
     use crate::{PacketHeader, QuicInterface};

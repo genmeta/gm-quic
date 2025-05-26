@@ -12,8 +12,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        PacketHeader,
-        route::{Link, Pathway},
+        route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
     packet::PacketContains,
