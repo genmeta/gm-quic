@@ -55,7 +55,9 @@ where
 
         let (server, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = *server.addresses().iter().next().expect("no address");
+        let server_addr = (*server.addresses().iter().next().expect("no address"))
+            .try_into()
+            .expect("This test support only SocketAddr");
         time::timeout(Duration::from_secs(10), launch_client(server_addr))
             .await
             .expect("test timeout")?;
@@ -77,9 +79,11 @@ fn server_bind_no_interfaces() -> Result<(), Error> {
             let server = QuicServer::builder()
                 .without_client_cert_verifier()
                 .with_single_cert(SERVER_CERT, SERVER_KEY)
-                .listen(&[] as &[_])?;
+                .listen(())?;
             // bind interface then add interface
-            server.add_interface(Arc::new(UdpSocketController::bind("127.0.0.1:0".parse()?)?))?;
+            server.add_interface(Arc::new(UdpSocketController::bind(
+                "inet:127.0.0.1:0".parse()?,
+            )?))?;
             Ok((server, async {}))
         },
         |_| async { Ok(()) },

@@ -1,13 +1,15 @@
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
 };
 
 use dashmap::DashMap;
-use futures::{FutureExt, StreamExt};
 use handy::UdpSocketController;
-use qbase::param::RememberedParameters;
+use qbase::{
+    net::address::{AbstractAddr, AddrKind, ToAbstractAddrs},
+    param::RememberedParameters,
+};
 use qconnection::builder::*;
 use qevent::telemetry::{Log, handy::NullLogger};
 use rustls::{
@@ -23,7 +25,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// A quic client that can initiates connections to servers.
 // be different from QuicServer, QuicClient is not arc
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<SocketAddr, Arc<dyn QuicInterface>>>,
+    bind_interfaces: Option<DashMap<AbstractAddr, Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
@@ -133,29 +135,33 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let quic_iface = match &self.bind_interfaces {
             None => {
-                let quic_iface = if server_ep.is_ipv4() {
-                    self.quic_iface_factory
-                        .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
-                } else {
-                    self.quic_iface_factory
-                        .bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))?
+                let quic_iface = match server_ep.kind() {
+                    AddrKind::Inet4 => self
+                        .quic_iface_factory
+                        .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).into())?,
+                    AddrKind::Inet6 => self
+                        .quic_iface_factory
+                        .bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).into())?,
+                    _ => {
+                        return Err(io::Error::other(
+                            "Failed to bind an unspecified address for this kind of endpoint address",
+                        ));
+                    }
                 };
+
                 crate::proto().add_interface(quic_iface.clone())?;
                 quic_iface
             }
             Some(bind_interfaces) => bind_interfaces
                 .iter()
-                .map(|entry| *entry.key())
-                .filter(|local_addr| {
-                    local_addr.is_ipv4() == server_ep.is_ipv4()
-                        || local_addr.is_ipv6() == server_ep.is_ipv6()
-                })
-                .find_map(|local_addr| {
+                .map(|entry| entry.key().clone())
+                .filter(|abstract_addr| abstract_addr.kind() == server_ep.kind())
+                .find_map(|iface_addr| {
                     if self.reuse_address {
-                        crate::proto().get_interface(local_addr)
+                        crate::proto().get_interface(iface_addr)
                     } else {
                         crate::proto()
-                            .get_interface_if(local_addr, |iface, _| Arc::strong_count(iface) == 1)
+                            .get_interface_if(iface_addr, |iface, _| Arc::strong_count(iface) == 1)
                     }
                 })
                 .ok_or(io::Error::new(
@@ -196,8 +202,8 @@ impl QuicClient {
                     match event {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(_pathway, socket) => {
-                            crate::proto().try_free_interface(socket.src());
+                        Event::PathInactivated(iface_addr, ..) => {
+                            crate::proto().try_free_interface(iface_addr);
                         }
                         Event::ApplicationClose => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
@@ -223,7 +229,7 @@ impl QuicClient {
             }
         });
 
-        connection.add_path(link, pathway)?;
+        connection.add_path(quic_iface.abstract_addr(), link, pathway)?;
         Ok(connection)
     }
 
@@ -278,8 +284,9 @@ impl QuicClient {
 impl Drop for QuicClient {
     fn drop(&mut self) {
         if let Some(bind_interfaces) = self.bind_interfaces.take() {
-            for (&addr, _iface) in bind_interfaces.into_read_only().iter() {
-                crate::proto().del_interface_if(addr, |iface, _| Arc::strong_count(iface) == 2);
+            for (addr, _iface) in bind_interfaces.into_read_only().iter() {
+                crate::proto()
+                    .del_interface_if(addr.clone(), |iface, _| Arc::strong_count(iface) == 2);
             }
         }
     }
@@ -287,7 +294,7 @@ impl Drop for QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
+    bind_interfaces: DashMap<AbstractAddr, Arc<dyn QuicInterface>>,
     reuse_address: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
@@ -336,52 +343,20 @@ impl<T> QuicClientBuilder<T> {
     /// returns an error), only the log will be printed.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
+    pub fn bind(self, addrs: impl ToAbstractAddrs) -> io::Result<Self> {
         for entry in self.bind_interfaces.iter() {
-            crate::proto().try_free_interface(*entry.key());
+            crate::proto().try_free_interface(entry.key().clone());
         }
         self.bind_interfaces.clear();
 
-        let iface_recv_tasks =
-            addrs
-                .to_socket_addrs()?
-                .try_fold(vec![], |mut recv_tasks, address| {
-                    if self.bind_interfaces.contains_key(&address) {
-                        return io::Result::Ok(recv_tasks);
-                    }
-                    let interface = self.quic_iface_factory.bind(address)?;
-                    let local_addr = interface.local_addr()?;
-                    recv_tasks.push(
-                        crate::proto()
-                            .add_interface(interface.clone())?
-                            .map(move |result| (result, local_addr)),
-                    );
-                    self.bind_interfaces.insert(local_addr, interface);
-                    Ok(recv_tasks)
-                })?;
-
-        tokio::spawn({
-            let bind_interfaces = self.bind_interfaces.clone();
-            async move {
-                let mut iface_recv_tasks =
-                    futures::stream::FuturesUnordered::from_iter(iface_recv_tasks);
-                while let Some((result, local_addr)) = iface_recv_tasks.next().await {
-                    let error = match result {
-                        // Ok(result) => result.into_err(),
-                        Ok(error) => error,
-                        Err(join_error) if join_error.is_cancelled() => return,
-                        Err(join_error) => join_error.into(),
-                    };
-                    tracing::warn!(
-                        "interface on {local_addr} that client bound was closed unexpectedly: {error}"
-                    );
-                    bind_interfaces.remove(&local_addr);
-                }
-                tracing::warn!(
-                    "all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server"
-                );
+        for abstract_addr in addrs.to_abstract_addrs()? {
+            if self.bind_interfaces.contains_key(&abstract_addr) {
+                continue;
             }
-        });
+            let interface = self.quic_iface_factory.bind(abstract_addr.clone())?;
+            self.bind_interfaces.insert(abstract_addr, interface);
+        }
+
         Ok(self)
     }
 

@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use derive_builder::Builder;
 use derive_more::From;
-use qbase::frame::{ConnectionCloseFrame, QuicCloseFrame};
+use qbase::{
+    frame::{ConnectionCloseFrame, QuicCloseFrame},
+    net::address::QuicAddr,
+};
 
 use super::{
     ApplicationCode, ConnectionID, CryptoError, IPAddress, IpVersion, Owner, PathEndpointInfo,
@@ -34,10 +37,15 @@ pub struct ServerListening {
 }
 
 impl ServerListeningBuilder {
-    pub fn socket_addr(&mut self, socket_addr: SocketAddr) -> &mut Self {
+    pub fn address(&mut self, socket_addr: QuicAddr) -> &mut Self {
         match socket_addr {
-            SocketAddr::V4(addr) => self.ip_v4(addr.ip().to_string()).port_v4(addr.port()),
-            SocketAddr::V6(addr) => self.ip_v6(addr.ip().to_string()).port_v6(addr.port()),
+            QuicAddr::Inet(SocketAddr::V4(addr)) => {
+                self.ip_v4(addr.ip().to_string()).port_v4(addr.port())
+            }
+            QuicAddr::Inet(SocketAddr::V6(addr)) => {
+                self.ip_v6(addr.ip().to_string()).port_v6(addr.port())
+            }
+            _ => self,
         }
     }
 }
@@ -74,17 +82,22 @@ pub struct ConnectionStarted {
 
 impl ConnectionStartedBuilder {
     /// helper method to set the source and destination socket addresses
-    pub fn socket(&mut self, (src, dst): (SocketAddr, SocketAddr)) -> &mut Self {
-        debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
-        self.ip_version(if src.is_ipv4() {
-            IpVersion::V4
-        } else {
-            IpVersion::V6
-        })
-        .src_ip(src.ip().to_string())
-        .dst_ip(dst.ip().to_string())
-        .src_port(src.port())
-        .dst_port(dst.port())
+    pub fn socket(&mut self, (src, dst): (QuicAddr, QuicAddr)) -> &mut Self {
+        match (src, dst) {
+            (QuicAddr::Inet(src), QuicAddr::Inet(dst)) => {
+                debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
+                self.ip_version(if src.is_ipv4() {
+                    IpVersion::V4
+                } else {
+                    IpVersion::V6
+                })
+                .src_ip(src.ip().to_string())
+                .dst_ip(dst.ip().to_string())
+                .src_port(src.port())
+                .dst_port(dst.port())
+            }
+            _ => self,
+        }
     }
 }
 

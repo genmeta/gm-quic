@@ -10,7 +10,10 @@ use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    net::route::{EndpointAddr, Link, PacketHeader, Pathway},
+    net::{
+        address::{AbstractAddr, QuicAddr},
+        route::{Link, PacketHeader, Pathway},
+    },
     packet::{self, Packet, PacketReader, header::GetDcid},
 };
 use tokio::task::{AbortHandle, JoinHandle};
@@ -55,16 +58,17 @@ impl Drop for InterfaceContext {
 #[doc(alias = "RouterInterface")]
 #[derive(Default)]
 pub struct QuicProto {
-    interfaces: DashMap<SocketAddr, InterfaceContext>,
+    interfaces: DashMap<AbstractAddr, InterfaceContext>,
     router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    unrouted_packets: Channel<(Packet, Pathway, Link)>,
-    broken_interfaces: Channel<(SocketAddr, Weak<dyn QuicInterface>, io::Error)>,
+    unrouted_packets: Channel<(AbstractAddr, Packet, Pathway, Link)>,
+    broken_interfaces: Channel<(AbstractAddr, Weak<dyn QuicInterface>, io::Error)>,
 }
 
 impl fmt::Debug for QuicProto {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QuicProto")
             .field("interfaces", &"...")
+            .field("address_mappings", &"...")
             .field("router_table", &"...")
             .field("unrouted_packets", &"...")
             .field("broken_interfaces", &"...")
@@ -101,14 +105,13 @@ impl QuicProto {
         self: &Arc<Self>,
         interface: Arc<dyn QuicInterface>,
     ) -> io::Result<JoinHandle<io::Error>> {
-        let local_addr = interface.local_addr()?;
+        let iface_addr = interface.abstract_addr();
         let entry = self
             .interfaces
-            .entry(local_addr)
+            .entry(iface_addr.clone())
             .and_modify(|ctx| ctx.task.abort());
 
         let this = self.clone();
-        let weak_iface = Arc::downgrade(&interface);
 
         let recv_task = async move {
             let mut rcvd_pkts = Vec::with_capacity(3);
@@ -119,7 +122,7 @@ impl QuicProto {
             loop {
                 // way: local -> peer
                 let receive = core::future::poll_fn(|cx| {
-                    let interface = this.interfaces.get(&local_addr).ok_or_else(|| {
+                    let interface = this.interfaces.get(&iface_addr).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
                     })?;
                     let max_segments = interface.inner.max_segments();
@@ -153,18 +156,22 @@ impl QuicProto {
                         .drain(..)
                         .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
                     {
-                        this.deliver(packet, header.pathway(), header.link()).await;
+                        this.deliver(iface_addr.clone(), packet, header.pathway(), header.link())
+                            .await;
                     }
                 }
             }
         };
 
         let this = self.clone();
+        let iface_addr = interface.abstract_addr();
+        let weak_iface = Arc::downgrade(&interface);
+
         let recv_task = tokio::spawn(async move {
             let task_failed: io::Result<()> = recv_task.await;
             let error = task_failed.expect_err("receive task never failed without error");
             _ = this.broken_interfaces.send((
-                local_addr,
+                iface_addr,
                 weak_iface,
                 io::Error::new(error.kind(), format!("{error}")),
             ));
@@ -177,21 +184,21 @@ impl QuicProto {
         Ok(recv_task)
     }
 
-    pub fn get_interface(&self, local_addr: SocketAddr) -> Option<Arc<dyn QuicInterface>> {
+    pub fn get_interface(&self, iface_addr: AbstractAddr) -> Option<Arc<dyn QuicInterface>> {
         self.interfaces
-            .get(&local_addr)
+            .get(&iface_addr)
             .map(|ctx| ctx.inner.clone())
     }
 
     pub fn get_interface_if<P>(
         &self,
-        local_addr: SocketAddr,
+        iface_addr: AbstractAddr,
         f: P,
     ) -> Option<Arc<dyn QuicInterface>>
     where
         P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
     {
-        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(local_addr) {
+        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(iface_addr) {
             if f(&entry.get().inner, &entry.get().task) {
                 return Some(entry.get().inner.clone());
             }
@@ -202,34 +209,35 @@ impl QuicProto {
     /// Remove the interface by the local address.
     ///
     /// If the interface exist, it will be removed, and the receive task on the interface will be aborted.
-    pub fn del_interface(&self, local_addr: SocketAddr) {
-        self.interfaces.remove(&local_addr);
+    pub fn del_interface(&self, iface_addr: AbstractAddr) {
+        self.interfaces.remove(&iface_addr);
     }
 
     /// Remove the interface by the local address if the condition is [`true`].
     ///
     /// Its better to use this method to remove the interface than [`Self::del_interface`].
-    pub fn del_interface_if<P>(&self, local_addr: SocketAddr, f: P)
+    pub fn del_interface_if<P>(&self, iface_addr: AbstractAddr, f: P)
     where
         P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
     {
-        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(local_addr) {
+        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(iface_addr) {
             if f(&entry.get().inner, &entry.get().task) {
                 entry.remove();
             }
         }
     }
 
-    pub fn try_free_interface(&self, local_addr: SocketAddr) {
-        self.del_interface_if(local_addr, |iface, _| Arc::strong_count(iface) == 1)
+    pub fn try_free_interface(&self, iface_addr: AbstractAddr) {
+        self.del_interface_if(iface_addr, |iface, _| Arc::strong_count(iface) == 1)
     }
 
     async fn try_deliver(
         &self,
+        iface_addr: AbstractAddr,
         packet: Packet,
         pathway: Pathway,
         link: Link,
-    ) -> Result<(), (Packet, Pathway, Link)> {
+    ) -> Result<(), (AbstractAddr, Packet, Pathway, Link)> {
         let dcid = match &packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
@@ -238,20 +246,32 @@ impl QuicProto {
         let signpost = if !dcid.is_empty() {
             Signpost::from(*dcid)
         } else {
-            use EndpointAddr::*;
-            let (Direct { addr } | Agent { agent: addr, .. }) = pathway.local();
-            Signpost::from(addr)
+            match *pathway.local() {
+                QuicAddr::Inet(socket_addr) => Signpost::from(socket_addr),
+                _ => {
+                    tracing::warn!(
+                        "receive a packet with empty dcid, and failed to fallback to zero length cid"
+                    );
+                    return Err((iface_addr, packet, pathway, link));
+                }
+            }
         };
 
         if let Some(rcvd_pkt_q) = self.router_table.get(&signpost).map(|queue| queue.clone()) {
-            _ = rcvd_pkt_q.deliver(packet, pathway, link).await;
+            _ = rcvd_pkt_q.deliver(iface_addr, packet, pathway, link).await;
             return Ok(());
         }
-        Err((packet, pathway, link))
+        Err((iface_addr, packet, pathway, link))
     }
 
-    pub async fn deliver(&self, packet: Packet, pathway: Pathway, link: Link) {
-        if let Err(received) = self.try_deliver(packet, pathway, link).await {
+    pub async fn deliver(
+        &self,
+        iface_addr: AbstractAddr,
+        packet: Packet,
+        pathway: Pathway,
+        link: Link,
+    ) {
+        if let Err(received) = self.try_deliver(iface_addr, packet, pathway, link).await {
             _ = self.unrouted_packets.send(received);
         }
     }
@@ -267,12 +287,12 @@ impl QuicProto {
         self.unrouted_packets.close();
     }
 
-    pub async fn recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Link)> {
+    pub async fn recv_unrouted_packet(&self) -> Option<(AbstractAddr, Packet, Pathway, Link)> {
         loop {
-            let (packet, pathway, link) = self.unrouted_packets.recv().await?;
-            match self.try_deliver(packet, pathway, link).await {
+            let (iface_addr, packet, pathway, link) = self.unrouted_packets.recv().await?;
+            match self.try_deliver(iface_addr, packet, pathway, link).await {
                 Ok(()) => continue,
-                Err((packet, pathway, link)) => return Some((packet, pathway, link)),
+                Err(received) => return Some(received),
             }
         }
     }
@@ -283,7 +303,7 @@ impl QuicProto {
 
     pub async fn get_broken_interface(
         &self,
-    ) -> Option<(SocketAddr, Weak<dyn QuicInterface>, io::Error)> {
+    ) -> Option<(AbstractAddr, Weak<dyn QuicInterface>, io::Error)> {
         self.broken_interfaces.recv().await
     }
 

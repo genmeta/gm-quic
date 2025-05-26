@@ -1,5 +1,8 @@
 use qbase::{
-    net::route::{Link, Pathway},
+    net::{
+        address::AbstractAddr,
+        route::{Link, Pathway},
+    },
     packet::{
         DataHeader, Packet,
         header::{long, short},
@@ -9,12 +12,14 @@ use qbase::{
 
 use crate::packet::CipherPacket;
 
+type PacketQueue<P> = BoundQueue<(AbstractAddr, CipherPacket<P>, Pathway, Link)>;
+
 // 需要一个四元组，pathway + src + dst
 pub struct RcvdPacketQueue {
-    initial: BoundQueue<(CipherPacket<long::InitialHeader>, Pathway, Link)>,
-    handshake: BoundQueue<(CipherPacket<long::HandshakeHeader>, Pathway, Link)>,
-    zero_rtt: BoundQueue<(CipherPacket<long::ZeroRttHeader>, Pathway, Link)>,
-    one_rtt: BoundQueue<(CipherPacket<short::OneRttHeader>, Pathway, Link)>,
+    initial: PacketQueue<long::InitialHeader>,
+    handshake: PacketQueue<long::HandshakeHeader>,
+    zero_rtt: PacketQueue<long::ZeroRttHeader>,
+    one_rtt: PacketQueue<short::OneRttHeader>,
     // pub retry:
 }
 
@@ -34,19 +39,19 @@ impl RcvdPacketQueue {
         }
     }
 
-    pub fn initial(&self) -> &BoundQueue<(CipherPacket<long::InitialHeader>, Pathway, Link)> {
+    pub fn initial(&self) -> &PacketQueue<long::InitialHeader> {
         &self.initial
     }
 
-    pub fn handshake(&self) -> &BoundQueue<(CipherPacket<long::HandshakeHeader>, Pathway, Link)> {
+    pub fn handshake(&self) -> &PacketQueue<long::HandshakeHeader> {
         &self.handshake
     }
 
-    pub fn zero_rtt(&self) -> &BoundQueue<(CipherPacket<long::ZeroRttHeader>, Pathway, Link)> {
+    pub fn zero_rtt(&self) -> &PacketQueue<long::ZeroRttHeader> {
         &self.zero_rtt
     }
 
-    pub fn one_rtt(&self) -> &BoundQueue<(CipherPacket<short::OneRttHeader>, Pathway, Link)> {
+    pub fn one_rtt(&self) -> &PacketQueue<short::OneRttHeader> {
         &self.one_rtt
     }
 
@@ -57,24 +62,42 @@ impl RcvdPacketQueue {
         self.one_rtt.close();
     }
 
-    pub async fn deliver(&self, packet: Packet, pathway: Pathway, socket: Link) {
+    pub async fn deliver(
+        &self,
+        iface_addr: AbstractAddr,
+        packet: Packet,
+        pathway: Pathway,
+        socket: Link,
+    ) {
         match packet {
             Packet::Data(packet) => match packet.header {
                 DataHeader::Long(long::DataHeader::Initial(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.initial.send((packet, pathway, socket)).await;
+                    _ = self
+                        .initial
+                        .send((iface_addr, packet, pathway, socket))
+                        .await;
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.handshake.send((packet, pathway, socket)).await;
+                    _ = self
+                        .handshake
+                        .send((iface_addr, packet, pathway, socket))
+                        .await;
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.zero_rtt.send((packet, pathway, socket)).await;
+                    _ = self
+                        .zero_rtt
+                        .send((iface_addr, packet, pathway, socket))
+                        .await;
                 }
                 DataHeader::Short(header) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.one_rtt.send((packet, pathway, socket)).await;
+                    _ = self
+                        .one_rtt
+                        .send((iface_addr, packet, pathway, socket))
+                        .await;
                 }
             },
             Packet::VN(_vn) => {}

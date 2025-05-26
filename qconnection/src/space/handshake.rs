@@ -7,6 +7,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
+        address::AbstractAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -48,7 +49,7 @@ use crate::{
 
 pub type CipherHanshakePacket = CipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
-pub type ReceivedFrom = (CipherHanshakePacket, Pathway, Link);
+pub type ReceivedFrom = (AbstractAddr, CipherHanshakePacket, Pathway, Link);
 
 pub struct HandshakeSpace {
     keys: ArcKeys,
@@ -199,17 +200,18 @@ pub fn spawn_deliver_and_parse(
     let role = components.handshake.role();
     let conn_state = components.conn_state.clone();
     let deliver_and_parse = async move {
-        while let Some((packet, pathway, link)) = packets.recv().await {
+        while let Some((iface_addr, packet, pathway, link)) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
-                    let path = match components.get_or_try_create_path(link, pathway, true) {
-                        Ok(path) => path,
-                        Err(_) => {
-                            packet.drop_on_conenction_closed();
-                            return Ok(());
-                        }
-                    };
+                    let path =
+                        match components.get_or_try_create_path(iface_addr, link, pathway, true) {
+                            Ok(path) => path,
+                            Err(_) => {
+                                packet.drop_on_conenction_closed();
+                                return Ok(());
+                            }
+                        };
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                     // address to have been validated.
@@ -370,7 +372,7 @@ pub fn spawn_deliver_and_parse_closing(
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = bundles.recv().await {
+            while let Some((_, packet, pathway, _socket)) = bundles.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

@@ -1,12 +1,13 @@
 use std::{
     collections::HashSet,
     io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::ToSocketAddrs,
     sync::{Arc, RwLock, Weak},
 };
 
 use dashmap::DashMap;
 use handy::UdpSocketController;
+use qbase::net::address::{AbstractAddr, QuicAddr, ToAbstractAddrs};
 use qconnection::builder::*;
 use qevent::{
     quic::connectivity::ServerListening,
@@ -50,7 +51,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// [`QuicServer`] can only accept connections, dont manage the connections. You can get the incoming connection by
 /// calling the [`QuicServer::accept`] method.
 pub struct QuicServer {
-    bind_interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
+    bind_interfaces: DashMap<AbstractAddr, Arc<dyn QuicInterface>>,
     defer_idle_timeout: HeartbeatConfig,
     listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
@@ -70,11 +71,11 @@ impl QuicServer {
     /// This method can be called after the server shutdown, but the server will still not accept new connections.
     pub fn add_interface(&self, iface: Arc<dyn QuicInterface>) -> io::Result<()> {
         let local_addr = iface.local_addr()?;
-        let entry = self.bind_interfaces.entry(local_addr);
+        let entry = self.bind_interfaces.entry(iface.abstract_addr());
         crate::proto().add_interface(iface.clone())?;
         qevent::event!(
             ServerListening {
-                socket_addr: local_addr,
+                address: local_addr,
             },
             use_strict_mode = self.use_strict_mode,
         );
@@ -136,10 +137,10 @@ impl QuicServer {
     /// Get the addresses that the server still listens to.
     ///
     /// The return vector may be different from the addresses you passed to the [`QuicServerBuilder::listen`] method.
-    pub fn addresses(&self) -> HashSet<SocketAddr> {
+    pub fn addresses(&self) -> HashSet<QuicAddr> {
         self.bind_interfaces
             .iter()
-            .map(|entry| *entry.key())
+            .filter_map(|entry| entry.value().local_addr().ok())
             .collect()
     }
 
@@ -166,12 +167,17 @@ impl QuicServer {
         SERVER.get_or_init(Default::default)
     }
 
-    pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, link: Link) {
+    pub(crate) async fn try_accpet_connection(
+        iface_addr: AbstractAddr,
+        packet: Packet,
+        pathway: Pathway,
+        link: Link,
+    ) {
         let Some(server) = Self::global().read().unwrap().upgrade() else {
             return;
         };
 
-        if server.use_strict_mode && !server.bind_interfaces.contains_key(&link.src()) {
+        if server.use_strict_mode && !server.bind_interfaces.contains_key(&iface_addr) {
             return;
         }
 
@@ -183,6 +189,11 @@ impl QuicServer {
             },
             _ => return,
         };
+
+        if origin_dcid.is_empty() {
+            tracing::warn!("Received a packet with empty destination CID, ignoring it");
+            return;
+        }
 
         let token_provider = server
             .token_provider
@@ -202,7 +213,9 @@ impl QuicServer {
                 .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
-        crate::proto().deliver(packet, pathway, link).await;
+        crate::proto()
+            .deliver(iface_addr, packet, pathway, link)
+            .await;
         _ = server.listener.send((connection.clone(), pathway));
 
         tokio::spawn(async move {
@@ -210,8 +223,8 @@ impl QuicServer {
                 match event {
                     Event::Handshaked => {}
                     Event::ProbedNewPath(..) => {}
-                    Event::PathInactivated(_, socket) => {
-                        crate::proto().try_free_interface(socket.src());
+                    Event::PathInactivated(iface_addr, ..) => {
+                        crate::proto().try_free_interface(iface_addr);
                     }
                     Event::ApplicationClose => {}
                     Event::Failed(error) => {
@@ -226,7 +239,7 @@ impl QuicServer {
     }
 
     pub(crate) fn on_interface_broken(
-        local_addr: SocketAddr,
+        iface_addr: AbstractAddr,
         broken_iface: Weak<dyn QuicInterface>,
         error: io::Error,
     ) {
@@ -235,7 +248,7 @@ impl QuicServer {
         };
 
         if let Some((local_addr, removed_iface)) =
-            server.bind_interfaces.remove_if(&local_addr, |_, iface| {
+            server.bind_interfaces.remove_if(&iface_addr, |_, iface| {
                 Weak::ptr_eq(&broken_iface, &Arc::downgrade(iface))
             })
         {
@@ -258,7 +271,9 @@ impl QuicServer {
 
         for entry in self.bind_interfaces.iter() {
             // iface in proto(1) + iface in dashmap(1) = 2
-            crate::proto().del_interface_if(*entry.key(), |iface, _| Arc::strong_count(iface) == 2);
+            crate::proto().del_interface_if(entry.key().clone(), |iface, _| {
+                Arc::strong_count(iface) == 2
+            });
         }
         self.bind_interfaces.clear();
     }
@@ -267,11 +282,11 @@ impl QuicServer {
 impl Drop for QuicServer {
     fn drop(&mut self) {
         self.shutdown();
-        for (&addr, _iface) in std::mem::take(&mut self.bind_interfaces)
+        for (addr, _iface) in std::mem::take(&mut self.bind_interfaces)
             .into_read_only()
             .iter()
         {
-            crate::proto().del_interface_if(addr, |iface, _| Arc::strong_count(iface) == 2);
+            crate::proto().del_interface_if(addr.clone(), |iface, _| Arc::strong_count(iface) == 2);
         }
     }
 }
@@ -296,6 +311,7 @@ pub struct QuicServerBuilder<T> {
 }
 
 /// The builder for the quic server with SNI enabled.
+#[allow(unused)]
 pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     use_strict_mode: bool,
@@ -608,7 +624,7 @@ impl QuicServerBuilder<TlsServerConfig> {
     ///
     /// *Note*: There can be only one server running at the same time,
     /// so this method will return an error if there is already a server running.
-    pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
+    pub fn listen(self, addresses: impl ToAbstractAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = QuicServer::global().write().unwrap();
         if let Some(server) = server.upgrade() {
             if !server.listener.is_closed() {
@@ -621,22 +637,22 @@ impl QuicServerBuilder<TlsServerConfig> {
         }
 
         // All provided addresses should be bound to the server successfully.
-        let bind_interfaces =
-            addresses
-                .to_socket_addrs()?
-                .try_fold(DashMap::new(), |interfaces, bind_addr| {
-                    let interface = self.quic_iface_factory.bind(bind_addr)?;
-                    let local_addr = interface.local_addr()?;
-                    crate::proto().add_interface(interface.clone())?;
-                    qevent::event!(
-                        ServerListening {
-                            socket_addr: local_addr
-                        },
-                        use_strict_mode = self.use_strict_mode,
-                    );
-                    interfaces.insert(local_addr, interface);
-                    io::Result::Ok(interfaces)
-                })?;
+        let bind_interfaces = addresses.to_abstract_addrs()?.try_fold(
+            DashMap::new(),
+            |interfaces, abstract_addr| {
+                let interface = self.quic_iface_factory.bind(abstract_addr.clone())?;
+                let local_addr = interface.local_addr()?;
+                crate::proto().add_interface(interface.clone())?;
+                qevent::event!(
+                    ServerListening {
+                        address: local_addr
+                    },
+                    use_strict_mode = self.use_strict_mode,
+                );
+                interfaces.insert(abstract_addr, interface);
+                io::Result::Ok(interfaces)
+            },
+        )?;
 
         let quic_server = Arc::new(QuicServer {
             bind_interfaces,
@@ -704,55 +720,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// *Note*: There can be only one server running at the same time,
     /// so this method will return an error if there is already a server running.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        let mut server = QuicServer::global().write().unwrap();
-        if let Some(server) = server.upgrade() {
-            if !server.listener.is_closed() {
-                tracing::error!("There is already a active server running");
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "There is already a active server running",
-                ));
-            }
-        }
-
-        // All provided addresses should be bound to the server successfully.
-        let bind_interfaces =
-            addresses
-                .to_socket_addrs()?
-                .try_fold(DashMap::new(), |interfaces, bind_addr| {
-                    let interface = self.quic_iface_factory.bind(bind_addr)?;
-                    let local_addr = interface.local_addr()?;
-                    crate::proto().add_interface(interface.clone())?;
-                    qevent::event!(
-                        ServerListening {
-                            socket_addr: local_addr
-                        },
-                        use_strict_mode = self.use_strict_mode,
-                    );
-                    interfaces.insert(local_addr, interface);
-                    io::Result::Ok(interfaces)
-                })?;
-
-        if bind_interfaces.is_empty() && self.use_strict_mode {
-            let error = "no address provided, and strict mode is used";
-            let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
-            return Err(error);
-        }
-
-        let quic_server = Arc::new(QuicServer {
-            bind_interfaces,
-            use_strict_mode: self.use_strict_mode,
-            listener: Default::default(),
-            _supported_versions: self.supported_versions,
-            defer_idle_timeout: self.defer_idle_timeout,
-            parameters: self.parameters,
-            tls_config: Arc::new(self.tls_config),
-            stream_strategy_factory: self.stream_strategy_factory,
-            logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
-            token_provider: self.token_provider,
-        });
-
-        *server = Arc::downgrade(&quic_server);
-        Ok(quic_server)
+        _ = addresses;
+        unimplemented!("TODO")
     }
 }

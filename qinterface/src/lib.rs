@@ -8,15 +8,19 @@ pub mod util;
 
 use std::{
     io,
-    net::SocketAddr,
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use qbase::net::route::PacketHeader;
+use qbase::net::{
+    address::{AbstractAddr, QuicAddr},
+    route::PacketHeader,
+};
 
 pub trait QuicInterface: Send + Sync {
-    fn local_addr(&self) -> io::Result<SocketAddr>;
+    fn abstract_addr(&self) -> AbstractAddr;
+
+    fn local_addr(&self) -> io::Result<QuicAddr>;
 
     fn max_segment_size(&self) -> usize;
 

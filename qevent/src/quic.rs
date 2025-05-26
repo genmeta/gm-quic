@@ -11,6 +11,7 @@ use qbase::{
         Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
+    net::address::QuicAddr,
     packet::header::{
         GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
@@ -158,6 +159,15 @@ impl From<SocketAddr> for PathEndpointInfo {
                 ip_v6: addr.ip().to_string(),
                 port_v6: addr.port(),
             }),
+        }
+    }
+}
+
+impl From<QuicAddr> for PathEndpointInfo {
+    fn from(value: QuicAddr) -> Self {
+        match value {
+            QuicAddr::Inet(socket_addr) => socket_addr.into(),
+            _ => crate::build!(Self {}),
         }
     }
 }

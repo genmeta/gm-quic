@@ -10,6 +10,7 @@ use qbase::{
         ReceiveFrame, SendFrame,
     },
     net::{
+        address::AbstractAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -55,11 +56,11 @@ use crate::{
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, Pathway, Link);
+pub type ReceivedZeroRttFrom = (AbstractAddr, CipherZeroRttPacket, Pathway, Link);
 
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
-pub type ReceivedOneRttFrom = (CipherOneRttPacket, Pathway, Link);
+pub type ReceivedOneRttFrom = (AbstractAddr, CipherOneRttPacket, Pathway, Link);
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -486,11 +487,13 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
-            while let Some((packet, pathway, link)) = zeor_rtt_packets.recv().await {
+            while let Some((iface_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
-                        let path = match components.get_or_try_create_path(link, pathway, true) {
+                        let path = match components
+                            .get_or_try_create_path(iface_addr, link, pathway, true)
+                        {
                             Ok(path) => path,
                             Err(_) => {
                                 packet.drop_on_conenction_closed();
@@ -536,11 +539,13 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
-            while let Some((packet, pathway, link)) = one_rtt_packets.recv().await {
+            while let Some((iface_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
-                        let path = match components.get_or_try_create_path(link, pathway, true) {
+                        let path = match components
+                            .get_or_try_create_path(iface_addr, link, pathway, true)
+                        {
                             Ok(path) => path,
                             Err(_) => {
                                 packet.drop_on_conenction_closed();
@@ -713,7 +718,7 @@ pub fn spawn_deliver_and_parse_closing(
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = packets.recv().await {
+            while let Some((_, packet, pathway, _socket)) = packets.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
