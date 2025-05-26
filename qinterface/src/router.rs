@@ -10,10 +10,7 @@ use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    net::{
-        PacketHeader,
-        route::{EndpointAddr, Link, Pathway},
-    },
+    net::route::{EndpointAddr, Link, PacketHeader, Pathway},
     packet::{self, Packet, PacketReader, header::GetDcid},
 };
 use tokio::task::{AbortHandle, JoinHandle};
