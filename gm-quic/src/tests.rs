@@ -55,7 +55,7 @@ where
 
         let (listeners, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = dbg!(listeners.hosts())["localhost"]
+        let server_addr = listeners.hosts()["localhost"]
             .iter()
             .next()
             .expect("Server should bind at least one address")
@@ -214,7 +214,7 @@ fn shutdown() -> Result<(), Error> {
             tokio::spawn(async move {
                 let (_sid, (reader, writer)) = connection.accept_bi_stream().await?.unwrap();
                 echo_stream(reader, writer).await?;
-                connection.close("no error".into(), 0);
+                connection.close("Bye bye", 0);
                 Result::<(), Error>::Ok(())
             });
         }

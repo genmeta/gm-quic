@@ -179,7 +179,7 @@ async fn download(
     };
 
     if !reuse {
-        connection.close("done".into(), 0);
+        connection.close("Bye bye", 0);
     }
 
     tracing::info!("saved to file {file_path}");

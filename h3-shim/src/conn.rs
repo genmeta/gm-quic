@@ -83,7 +83,7 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for QuicConnection {
     #[inline]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
-        self.connection.close(reason.into(), code.into());
+        self.connection.close(reason, code.into());
     }
 }
 
@@ -171,7 +171,7 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
     #[inline]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
-        self.connection.close(reason.into(), code.into());
+        self.connection.close(reason, code.into());
     }
 }
 
