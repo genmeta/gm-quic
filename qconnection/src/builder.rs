@@ -49,7 +49,7 @@ use crate::{
     space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
     termination::Terminator,
-    tls::{self, ArcTlsSession},
+    tls::{self, ArcPeerCerts, ArcServerName, ArcTlsSession},
 };
 
 impl Connection {
@@ -61,7 +61,8 @@ impl Connection {
             server: rustls::pki_types::ServerName::try_from(server_name.clone())
                 .expect("server name is not valid"),
             token: token_sink.fetch_token(&server_name),
-            token_registry: ArcTokenRegistry::with_sink(server_name, token_sink),
+            token_registry: ArcTokenRegistry::with_sink(server_name.clone(), token_sink),
+            server_name,
             client_params: ClientParameters::default(),
             remembered: None,
         }
@@ -80,6 +81,7 @@ pub struct ClientFoundation {
     token: Vec<u8>,
     token_registry: ArcTokenRegistry,
     client_params: ClientParameters,
+    server_name: String,
     remembered: Option<RememberedParameters>,
 }
 
@@ -306,6 +308,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
+            server_name: ArcServerName::from(self.foundation.server_name),
             qlog_span: None,
         }
     }
@@ -390,6 +393,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
+            server_name: ArcServerName::default(),
             qlog_span: None,
         }
     }
@@ -408,6 +412,8 @@ pub struct ComponentsReady {
     defer_idle_timeout: HeartbeatConfig,
     tx_wakers: ArcSendWakers,
     qlog_span: Option<Span>,
+
+    server_name: ArcServerName,
 }
 
 impl ComponentsReady {
@@ -452,6 +458,8 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             conn_state,
+            peer_certs: ArcPeerCerts::default(),
+            server_name: self.server_name,
         };
 
         tracing_span.in_scope(|| {

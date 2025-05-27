@@ -9,3 +9,6 @@ pub use data::{DescribeData, WriteData};
 
 mod index_deque;
 pub use index_deque::{IndexDeque, IndexError};
+
+mod future;
+pub use future::{Future, ReadyFuture};

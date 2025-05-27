@@ -2,11 +2,11 @@ use core::{
     ops::DerefMut,
     task::{Context, Poll, Waker},
 };
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
+mod peer_certs;
+pub use peer_certs::{ArcPeerCerts, PeerCerts};
+mod server_name;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
@@ -15,6 +15,7 @@ use qbase::{
 use qevent::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
 use rustls::quic::KeyChange;
+pub use server_name::ArcServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
 
@@ -52,13 +53,31 @@ impl TlsSession {
         self.tls_conn.write_hs(buf)
     }
 
-    fn try_get_parameters(&mut self, params: &ArcParameters) -> Result<(), Error> {
+    fn try_assign_parameters(&mut self, params: &ArcParameters) -> Result<(), Error> {
+        self.tls_conn.peer_certificates();
         if !params.has_rcvd_remote_params() {
             if let Some(raw) = self.tls_conn.quic_transport_parameters() {
                 params.recv_remote_params(raw)?;
             }
         }
         Ok(())
+    }
+
+    fn try_assign_peer_certs(&mut self, peer_certs: &ArcPeerCerts) {
+        if !peer_certs.is_ready() {
+            if let Some(certs) = self.tls_conn.peer_certificates() {
+                peer_certs.assign(certs);
+            }
+        }
+    }
+
+    fn try_assign_server_name(&mut self, server_name: &ArcServerName) {
+        if !server_name.is_ready() {
+            debug_assert!(matches!(self.tls_conn, TlsConnection::Server(_)));
+            if let Some(name) = self.server_name() {
+                server_name.assign(name);
+            }
+        }
     }
 
     fn alert(&self) -> Option<rustls::AlertDescription> {
@@ -81,6 +100,8 @@ struct ReadAndProcess<'r> {
     tls_conn: &'r Mutex<Result<TlsSession, Error>>,
     messages: &'r mut Vec<u8>,
     parameters: &'r ArcParameters,
+    peer_certs: &'r ArcPeerCerts,
+    server_name: &'r ArcServerName,
 }
 
 impl futures::Future for ReadAndProcess<'_> {
@@ -100,7 +121,9 @@ impl futures::Future for ReadAndProcess<'_> {
             return Poll::Pending;
         }
 
-        tls_conn.try_get_parameters(this.parameters)?;
+        tls_conn.try_assign_parameters(this.parameters)?;
+        tls_conn.try_assign_peer_certs(this.peer_certs);
+        tls_conn.try_assign_server_name(this.server_name);
 
         Poll::Ready(Ok((key_change, !tls_conn.is_handshaking())))
     }
@@ -161,12 +184,16 @@ impl ArcTlsSession {
         &'r self,
         buf: &'r mut Vec<u8>,
         parameters: &'r ArcParameters,
+        peer_certs: &'r ArcPeerCerts,
+        server_name: &'r ArcServerName,
     ) -> ReadAndProcess<'r> {
         buf.clear();
         ReadAndProcess {
             tls_conn: &self.0,
             messages: buf,
             parameters,
+            peer_certs,
+            server_name,
         }
     }
 
@@ -184,10 +211,19 @@ impl ArcTlsSession {
             .and_then(TlsSession::server_name)
             .map(ToString::to_string)
     }
+
+    pub fn handshake_complete(&self) -> Result<bool, Error> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|tls_session| !tls_session.is_handshaking())
+            .map_err(|e| e.clone())
+    }
 }
 
 /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send {
+pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()> + Send {
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
         components.spaces.handshake().crypto_stream(),
@@ -239,6 +275,8 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
     let one_rtt_keys = components.spaces.data().one_rtt_keys();
     let handshake = components.handshake.clone();
     let parameters = components.parameters.clone();
+    let peer_certs = components.peer_certs.clone();
+    let server_name = components.server_name.clone();
     let event_broker = components.event_broker.clone();
     let paths = components.paths.clone();
 
@@ -247,7 +285,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
         let mut cur_epoch = Epoch::Initial;
         loop {
             let (key_upgrade, is_tls_done) = match tls_session
-                .read_and_process(&mut messages, &parameters)
+                .read_and_process(&mut messages, &parameters, &peer_certs, &server_name)
                 .await
             {
                 Ok(results) => results,
@@ -259,11 +297,13 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
             };
 
             if !messages.is_empty() {
-                let write_result = crypto_stream_writers[cur_epoch].write_all(&messages).await;
-                if let Err(e) = write_result {
+                if let Err(e) = crypto_stream_writers[cur_epoch].write_all(&messages).await {
                     let error = QuicError::with_default_fty(ErrorKind::Internal, e.to_string());
                     event_broker.emit(Event::Failed(error));
                     break;
+                }
+                if tls_session.handshake_complete().is_ok_and(|b| b) && !peer_certs.is_ready() {
+                    peer_certs.no_certs();
                 }
             }
 

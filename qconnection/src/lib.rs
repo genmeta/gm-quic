@@ -29,6 +29,7 @@ pub mod prelude {
         Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
         path::idle::HeartbeatConfig,
+        tls::PeerCerts,
     };
 }
 
@@ -45,7 +46,9 @@ use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
 use path::{ArcPathContexts, idle::HeartbeatConfig};
 use qbase::{
-    cid, flow,
+    cid,
+    error::Error,
+    flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
         address::AbstractAddr,
@@ -69,7 +72,7 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ConnState;
 use termination::Termination;
-use tls::ArcTlsSession;
+use tls::{ArcPeerCerts, ArcServerName, ArcTlsSession, PeerCerts};
 use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
@@ -121,6 +124,9 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
     conn_state: ConnState,
+
+    peer_certs: ArcPeerCerts,
+    server_name: ArcServerName,
 }
 
 impl Components {
@@ -212,6 +218,16 @@ impl Components {
     pub fn del_path(&self, pathway: &Pathway) {
         self.paths.remove(pathway, "application removed");
     }
+
+    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCerts>, Error>> + Send {
+        let peer_certs = self.peer_certs.clone();
+        async move { peer_certs.get().await }
+    }
+
+    pub fn server_name(&self) -> impl Future<Output = Result<String, Error>> + Send {
+        let server_name = self.server_name.clone();
+        async move { server_name.get().await }
+    }
 }
 
 type ConnectionState = RwLock<Result<Components, Termination>>;
@@ -240,7 +256,7 @@ impl Connection {
         }
     }
 
-    pub fn close(&self, reason: Cow<'static, str>, code: u64) {
+    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
 
         let error_code = code.try_into().expect("application error code overflow");
@@ -330,6 +346,18 @@ impl Connection {
         if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.terminated()) {
             f.await
         }
+    }
+
+    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCerts>> {
+        Ok(self
+            .try_map_components(|core_conn| core_conn.peer_certs())?
+            .await?)
+    }
+
+    pub async fn server_name(&self) -> io::Result<String> {
+        Ok(self
+            .try_map_components(|core_conn| core_conn.server_name())?
+            .await?)
     }
 }
 

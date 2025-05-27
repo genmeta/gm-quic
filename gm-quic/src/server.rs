@@ -296,7 +296,6 @@ impl QuicListeners {
     }
 
     pub fn hosts(&self) -> HashMap<String, HashMap<AbstractAddr, Option<QuicAddr>>> {
-        dbg!(&self.hosts, &self.ifaces);
         self.hosts
             .iter()
             .map(|entry| {
@@ -357,17 +356,6 @@ impl QuicListeners {
         let Ok(premit) = listeners.backlog.clone().acquire_owned().await else {
             return;
         };
-
-        // TODO: read client server name
-        if server_names.is_empty() || server_names.len() > 1 {
-            return;
-        }
-
-        let server_name = server_names
-            .iter()
-            .next()
-            .map(|s| s.to_owned())
-            .expect("checked");
 
         let (client_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
@@ -430,17 +418,30 @@ impl QuicListeners {
                 }
             });
 
-            if connection.handshaked().await {
-                _ = listeners
-                    .incomings
-                    .send((server_name, connection.clone(), pathway, link));
-            } else {
-                tracing::error!(
-                    role = "server",
-                    odcid = format!("{origin_dcid:x}"),
-                    "Failed to accpet connection from {}",
-                    link.dst()
-                );
+            match connection.server_name().await {
+                Ok(server_name) => {
+                    if !server_names.contains(&server_name) {
+                        tracing::warn!(
+                            role = "server",
+                            odcid = format!("{origin_dcid:x}"),
+                            "Connection from {} with server name {server_name} is not allowed.",
+                            link.dst()
+                        );
+                        connection.close("", 1);
+                        return;
+                    }
+                    _ = listeners
+                        .incomings
+                        .send((server_name, connection.clone(), pathway, link));
+                }
+                Err(error) => {
+                    tracing::error!(
+                        role = "server",
+                        odcid = format!("{origin_dcid:x}"),
+                        "Failed to accpet connection from {}: {error:?}",
+                        link.dst()
+                    );
+                }
             }
         });
     }
