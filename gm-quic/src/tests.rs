@@ -6,6 +6,7 @@ use std::{
 };
 
 use qevent::telemetry::{Log, handy::*};
+use rustls::server::WebPkiClientVerifier;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     runtime::Runtime,
@@ -75,6 +76,8 @@ where
 const CA_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/ca.cert");
 const SERVER_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/server.cert");
 const SERVER_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/server.key");
+const CLIENT_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/client.cert");
+const CLIENT_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/client.key");
 const TEST_DATA: &[u8] = include_bytes!("tests.rs");
 
 #[test]
@@ -387,4 +390,72 @@ fn limited_streams() -> Result<(), Error> {
         Ok(())
     };
     test_serially(|| launch_echo_server(server_parameters()), launch_client)
+}
+
+#[test]
+fn client_auth() -> Result<(), Error> {
+    pub async fn auth_client(listeners: Arc<QuicListeners>) -> io::Result<()> {
+        loop {
+            let (server, connection, _pathway, _link) = listeners.accept().await?;
+            assert_eq!(server, "localhost");
+
+            match connection.peer_certs().await?.as_ref() {
+                PeerCerts::CertChain(items) => {
+                    assert_eq!(items.len(), 1);
+                    let client = rcgen::Ia5String::try_from("client").unwrap();
+                    assert!(items[0].subject_alt_names.iter().any(
+                        |name| matches!(name, rcgen::SanType::DnsName(name) if name == &client),
+                    ));
+                }
+                PeerCerts::None | PeerCerts::RawPublicKey(..) => {
+                    panic!("Client should present a certificate")
+                }
+            }
+
+            tokio::spawn(async move {
+                while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {
+                    tokio::spawn(echo_stream(reader, writer));
+                }
+            });
+        }
+    }
+    let launch_server = || {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(CA_CERT.to_certificate());
+        let listeners = QuicListeners::builder()?
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(Arc::new(roots))
+                    .build()
+                    .unwrap(),
+            )
+            .add_host(
+                "localhost",
+                Host::with_cert_key(SERVER_CERT, SERVER_KEY)?
+                    .bind_addresses("127.0.0.1:0".parse::<SocketAddr>()?)?,
+            )?
+            .with_parameters(server_parameters())
+            .with_qlog(qlogger())
+            .listen(128)?;
+        Ok((listeners.clone(), auth_client(listeners)))
+    };
+    test_serially(launch_server, |server_addr| async move {
+        let client = {
+            let parameters = client_parameters();
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", server_addr)?;
+        send_and_verify_echo(&connection, TEST_DATA).await?;
+
+        Ok(())
+    })
 }

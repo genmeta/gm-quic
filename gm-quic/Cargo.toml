@@ -33,6 +33,7 @@ clap = { workspace = true }
 http = { workspace = true }
 indicatif = { workspace = true }
 qevent = { workspace = true, features = ["enabled"] }
+rcgen = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }
