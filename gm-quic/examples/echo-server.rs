@@ -61,19 +61,23 @@ async fn run(options: Options) -> io::Result<()> {
         None => Arc::new(NullLogger),
     };
 
-    let server = QuicServer::builder()
+    let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
-        .with_single_cert(options.certs.cert.as_path(), options.certs.key.as_path())
+        .add_host(
+            options.certs.server_name.as_str(),
+            Host::with_cert_key(options.certs.cert.as_path(), options.certs.key.as_path())?
+                .bind_addresses(options.listen.as_slice())?,
+        )?
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
-        .listen(options.listen.as_slice())?;
+        .listen(128)?;
 
-    info!("listen on {:?}", server.addresses());
+    info!("listening on {:?}", listeners.hosts());
 
-    serve_echo(server).await
+    serve_echo(listeners).await
 }
 
-async fn serve_echo(server: Arc<QuicServer>) -> io::Result<()> {
+async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
     async fn handle_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
         io::copy(&mut reader, &mut writer).await?;
         writer.shutdown().await?;
@@ -83,7 +87,7 @@ async fn serve_echo(server: Arc<QuicServer>) -> io::Result<()> {
     }
 
     loop {
-        let (connection, pathway) = server.accept().await?;
+        let (_, connection, pathway, ..) = listeners.accept().await?;
         info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
             while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {

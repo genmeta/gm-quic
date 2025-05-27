@@ -142,6 +142,7 @@ impl<T: ToAbstractAddrs> ToAbstractAddrs for &[T] {
 pub struct InterfaceAddr {
     device_name: String,
     ip_family: IpFamily,
+    port: u16,
 }
 
 impl InterfaceAddr {
@@ -155,7 +156,7 @@ impl InterfaceAddr {
 
 impl Display for InterfaceAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.device_name, self.ip_family)
+        write!(f, "{}:{}:{}", self.device_name, self.ip_family, self.port)
     }
 }
 
@@ -167,6 +168,10 @@ pub enum ParseInterfaceAddrError {
     MissingIpFamily,
     #[error("Invalid IP family in interface addr: {0}")]
     InvalidIpFamily(InvalidIpFamily),
+    #[error("Missing port in interface addr")]
+    MissingPort,
+    #[error("Invalid port in interface addr: {0}")]
+    InvalidPort(<u16 as FromStr>::Err),
 }
 
 impl FromStr for InterfaceAddr {
@@ -176,15 +181,20 @@ impl FromStr for InterfaceAddr {
         if s.is_empty() {
             return Err(ParseInterfaceAddrError::MissingDeviceName);
         }
-        let (device_name, ip_family) = s
+        let (device_name, ip_port) = s
             .split_once(':')
             .ok_or(ParseInterfaceAddrError::MissingIpFamily)?;
+        let (ip_family, port) = ip_port
+            .rsplit_once(':')
+            .ok_or(ParseInterfaceAddrError::MissingPort)?;
         let ip_family = ip_family
             .parse()
             .map_err(ParseInterfaceAddrError::InvalidIpFamily)?;
+        let port = port.parse().map_err(ParseInterfaceAddrError::InvalidPort)?;
         Ok(Self {
             device_name: device_name.to_owned(),
             ip_family,
+            port,
         })
     }
 }
@@ -310,8 +320,9 @@ mod tests {
         let iface = AbstractAddr::Iface(InterfaceAddr {
             device_name: "enp17s0".to_string(),
             ip_family: IpFamily::V4,
+            port: 1234,
         });
-        assert_eq!(iface.to_string(), "iface:enp17s0:v4");
+        assert_eq!(iface.to_string(), "iface:enp17s0:v4:1234");
 
         let inet = AbstractAddr::Specific(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080).to_quic_addr(),
@@ -321,12 +332,13 @@ mod tests {
 
     #[test]
     fn test_abstract_addr_from_str() {
-        let iface: AbstractAddr = "iface:enp17s0:v4".parse().unwrap();
+        let iface: AbstractAddr = "iface:enp17s0:v4:5678".parse().unwrap();
         assert_eq!(
             iface,
             AbstractAddr::Iface(InterfaceAddr {
                 device_name: "enp17s0".to_string(),
                 ip_family: IpFamily::V4,
+                port: 5678,
             })
         );
 
@@ -374,10 +386,11 @@ mod tests {
         let iface = InterfaceAddr {
             device_name: "wlp18s0".to_string(),
             ip_family: IpFamily::V6,
+            port: 0,
         };
-        assert_eq!(iface.to_string(), "wlp18s0:v6");
+        assert_eq!(iface.to_string(), "wlp18s0:v6:0");
 
-        let parsed: InterfaceAddr = "wlp18s0:v6".parse().unwrap();
+        let parsed: InterfaceAddr = "wlp18s0:v6:0".parse().unwrap();
         assert_eq!(parsed, iface);
 
         // Test error cases
@@ -393,7 +406,12 @@ mod tests {
 
         assert!(matches!(
             "enp17s0:v7".parse::<InterfaceAddr>(),
-            Err(ParseInterfaceAddrError::InvalidIpFamily(_))
+            Err(ParseInterfaceAddrError::MissingPort)
+        ));
+
+        assert!(matches!(
+            "enp17s0:v7:0".parse::<InterfaceAddr>(),
+            Err(ParseInterfaceAddrError::InvalidIpFamily(..))
         ));
     }
 

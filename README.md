@@ -119,7 +119,7 @@ let quic_client_conn = quic_client
 The QUIC server provides SNI(Server Name Indication) support in TLS, allowing the configuration of multiple server names and certificates. 
 
 ```rust
-let quic_server = QuicServer::builder()
+let listeners = QuicServer::builder()
     // Keep the accepted connection alive when it is idle
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
@@ -132,7 +132,7 @@ let quic_server = QuicServer::builder()
         "127.0.0.1:8443".parse().unwrap(),
     ][..]);
 
-while let Ok(quic_server_conn) = quic_server.accept().await? {
+while let Ok(quic_server_conn) = listeners.accept().await? {
     // The following is a demonstration
     tokio::spawn(handle_quic_conn(quic_server_conn));
 }

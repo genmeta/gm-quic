@@ -104,7 +104,7 @@ let quic_client_conn = quic_client
 QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息。
 
 ```rust
-let quic_server = QuicServer::builder()
+let listeners = QuicServer::builder()
     // 同client
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
@@ -117,7 +117,7 @@ let quic_server = QuicServer::builder()
         "127.0.0.1:8443".parse().unwrap(),
     ][..]);
 
-while let Ok(quic_server_conn) = quic_server.accept().await? {
+while let Ok(quic_server_conn) = listeners.accept().await? {
     // 以下为演示
     tokio::spawn(handle_quic_conn(quic_server_conn));
 }

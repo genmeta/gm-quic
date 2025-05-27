@@ -1,11 +1,11 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    fmt::Debug,
     io,
-    net::ToSocketAddrs,
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, RwLock, RwLockWriteGuard, Weak},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use handy::UdpSocketController;
 use qbase::net::address::{AbstractAddr, QuicAddr, ToAbstractAddrs};
 use qconnection::builder::*;
@@ -16,9 +16,9 @@ use qevent::{
 use qinterface::util::Channel;
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
-    server::{NoClientAuth, ResolvesServerCert, WantsServerCert, danger::ClientCertVerifier},
+    server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::*;
 
@@ -33,12 +33,98 @@ impl ResolvesServerCert for VirtualHosts {
         client_hello: rustls::server::ClientHello,
     ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         self.0.get(client_hello.server_name()?).map(|host| {
-            let cert =
-                rustls::sign::CertifiedKey::new(host.cert_chain.clone(), host.private_key.clone());
-            Arc::new(cert)
+            Arc::new(rustls::sign::CertifiedKey {
+                cert: host.cert_chain.clone(),
+                key: host.private_key.clone(),
+                ocsp: host.ocsp.clone(),
+            })
         })
     }
 }
+
+pub struct Host {
+    bind_addresses: DashSet<AbstractAddr>,
+    cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    private_key: Arc<dyn rustls::sign::SigningKey>,
+    ocsp: Option<Vec<u8>>,
+}
+
+impl Host {
+    pub fn with_cert_key(
+        cert_chain: impl ToCertificate,
+        private_key: impl ToPrivateKey,
+    ) -> io::Result<HostBuilder> {
+        Ok(HostBuilder {
+            bind_addresses: HashSet::new(),
+            cert_chain: cert_chain.to_certificate(),
+            private_key: private_key.to_private_key(),
+            ocsp: None,
+        })
+    }
+}
+
+impl Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Host")
+            .field(
+                "bind_interfaces",
+                &self
+                    .bind_addresses
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect::<Vec<_>>(),
+            )
+            .field("cert_chain", &self.cert_chain)
+            .field("private_key", &self.private_key)
+            .finish()
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        for entry in self.bind_addresses.iter() {
+            crate::proto().del_interface_if(entry.key().clone(), |iface, _| {
+                Arc::strong_count(iface) == 2
+            });
+        }
+        self.bind_addresses.clear();
+    }
+}
+
+pub struct HostBuilder {
+    pub bind_addresses: HashSet<AbstractAddr>,
+    pub cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    pub private_key: rustls::pki_types::PrivateKeyDer<'static>,
+    pub ocsp: Option<Vec<u8>>,
+}
+
+impl HostBuilder {
+    pub fn bind_addresses(mut self, bind_addresses: impl ToAbstractAddrs) -> io::Result<Self> {
+        self.bind_addresses = bind_addresses.to_abstract_addrs()?.collect();
+        Ok(self)
+    }
+
+    pub fn with_ocsp(mut self, ocsp: impl Into<Option<Vec<u8>>>) -> Self {
+        self.ocsp = ocsp.into();
+        self
+    }
+}
+
+struct ListenedInterface {
+    interface: Arc<dyn QuicInterface>,
+    servers: Arc<DashSet<String>>,
+}
+
+impl Debug for ListenedInterface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenedInterface")
+            .field("interface", &self.interface.abstract_addr())
+            .field("servers", &self.servers)
+            .finish()
+    }
+}
+
+type Incoming = (String, Arc<Connection>, Pathway, Link);
 
 /// The quic server that can accept incoming connections.
 ///
@@ -50,97 +136,183 @@ impl ResolvesServerCert for VirtualHosts {
 ///
 /// [`QuicServer`] can only accept connections, dont manage the connections. You can get the incoming connection by
 /// calling the [`QuicServer::accept`] method.
-pub struct QuicServer {
-    bind_interfaces: DashMap<AbstractAddr, Arc<dyn QuicInterface>>,
+pub struct QuicListeners {
     defer_idle_timeout: HeartbeatConfig,
-    listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
+    incomings: Arc<Channel<Incoming>>,
     parameters: ServerParameters,
-    use_strict_mode: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
+    backlog: Arc<Semaphore>,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
+
+    hosts: Arc<DashMap<String, Host>>,
+    ifaces: Arc<DashMap<AbstractAddr, ListenedInterface>>,
+
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
-impl QuicServer {
-    /// Bind to an interface.
-    ///
-    /// The server will receive datagrams from it, and prevent the interfaces from being automatically released.
-    ///
-    /// This method can be called after the server shutdown, but the server will still not accept new connections.
-    pub fn add_interface(&self, iface: Arc<dyn QuicInterface>) -> io::Result<()> {
-        let local_addr = iface.local_addr()?;
-        let entry = self.bind_interfaces.entry(iface.abstract_addr());
-        crate::proto().add_interface(iface.clone())?;
-        qevent::event!(
-            ServerListening {
-                address: local_addr,
-            },
-            use_strict_mode = self.use_strict_mode,
-        );
-        entry.insert(iface);
-        Ok(())
-    }
-
+impl QuicListeners {
     /// Start to build a QuicServer.
-    pub fn builder() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
-        QuicServerBuilder {
-            use_strict_mode: false,
+    pub fn builder() -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
+        let global_guard = QuicListeners::global()
+            .write()
+            .expect("QuicListeners global lock");
+        if let Some(server) = global_guard.upgrade() {
+            if !server.incomings.is_closed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "A QuicServer is already running, please shutdown it first.",
+                ));
+            }
+        }
+        Ok(QuicListenersBuilder {
+            global_guard,
             supported_versions: Vec::with_capacity(2),
             defer_idle_timeout: HeartbeatConfig::default(),
             quic_iface_factory: Box::new(UdpSocketController::bind),
             parameters: ServerParameters::default(),
+            hosts: Arc::new(DashMap::new()),
+            ifaces: Arc::new(DashMap::new()),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
-        }
+        })
     }
 
     /// Start to build a QuicServer with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls(tls_config: TlsServerConfig) -> QuicServerBuilder<TlsServerConfig> {
-        QuicServerBuilder {
-            use_strict_mode: false,
+    pub fn builder_with_tls(
+        tls_config: TlsServerConfig,
+    ) -> io::Result<QuicListenersBuilder<TlsServerConfig>> {
+        let global_guard = QuicListeners::global()
+            .write()
+            .expect("QuicListeners global lock");
+        if let Some(server) = global_guard.upgrade() {
+            if !server.incomings.is_closed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "A QuicServer is already running, please shutdown it first.",
+                ));
+            }
+        }
+        Ok(QuicListenersBuilder {
+            global_guard,
             supported_versions: Vec::with_capacity(2),
             quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
+            hosts: Arc::new(DashMap::new()),
+            ifaces: Arc::new(DashMap::new()),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
-        }
+        })
     }
 
     /// Start to build a QuicServer with the given tls crypto provider.
     pub fn builder_with_crypto_provieder(
         provider: Arc<rustls::crypto::CryptoProvider>,
-    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
-        QuicServerBuilder {
-            use_strict_mode: false,
+    ) -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
+        let global_guard = QuicListeners::global()
+            .write()
+            .expect("QuicListeners global lock");
+        if let Some(server) = global_guard.upgrade() {
+            if !server.incomings.is_closed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "A QuicServer is already running, please shutdown it first.",
+                ));
+            }
+        }
+        Ok(QuicListenersBuilder {
+            global_guard,
             supported_versions: Vec::with_capacity(2),
             quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
+            hosts: Arc::new(DashMap::new()),
+            ifaces: Arc::new(DashMap::new()),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
-        }
+        })
     }
 
-    /// Get the addresses that the server still listens to.
+    /// Bind to an interface.
     ///
-    /// The return vector may be different from the addresses you passed to the [`QuicServerBuilder::listen`] method.
-    pub fn addresses(&self) -> HashSet<QuicAddr> {
-        self.bind_interfaces
+    /// The server will receive datagrams from it, and prevent the interfaces from being automatically released.
+    ///
+    /// This method can be called after the server shutdown, but the server will still not accept new connections.
+    pub fn add_interface(
+        &self,
+        host: impl Into<String>,
+        iface: Arc<dyn QuicInterface>,
+    ) -> io::Result<()> {
+        let host = host.into();
+        let new_addr = iface.local_addr()?;
+        let Some(host_entry) = self.hosts.get(&host) else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Host {host} not exist."),
+            ));
+        };
+        // update or insert the interface
+        let listened_interface = match self.ifaces.entry(iface.abstract_addr()) {
+            dashmap::Entry::Occupied(mut exist_iface) => {
+                // if the interface on the same address is already exist, update if the interface is different
+                if !Arc::ptr_eq(&iface, &exist_iface.get().interface) {
+                    crate::proto().add_interface(iface.clone())?;
+                    exist_iface.insert(ListenedInterface {
+                        interface: iface.clone(),
+                        servers: exist_iface.get().servers.clone(),
+                    });
+                }
+                exist_iface.into_ref()
+            }
+            dashmap::Entry::Vacant(vacant_entry) => {
+                crate::proto().add_interface(iface.clone())?;
+                vacant_entry.insert(ListenedInterface {
+                    interface: iface.clone(),
+                    servers: Arc::default(),
+                })
+            }
+        };
+
+        host_entry
+            .bind_addresses
+            .insert(listened_interface.interface.abstract_addr());
+        if listened_interface.servers.insert(host) {
+            qevent::event!(ServerListening { address: new_addr });
+        }
+
+        Ok(())
+    }
+
+    pub fn hosts(&self) -> HashMap<String, HashMap<AbstractAddr, Option<QuicAddr>>> {
+        dbg!(&self.hosts, &self.ifaces);
+        self.hosts
             .iter()
-            .filter_map(|entry| entry.value().local_addr().ok())
+            .map(|entry| {
+                let addresses = entry
+                    .value()
+                    .bind_addresses
+                    .iter()
+                    .map(|addr| {
+                        let iface = self.ifaces.get(&addr).expect("Interface must exist");
+                        let local_addr = iface.interface.local_addr().ok();
+                        (addr.key().clone(), local_addr)
+                    })
+                    .collect();
+                let server_name = entry.key().to_owned();
+                (server_name, addresses)
+            })
             .collect()
     }
 
@@ -150,21 +322,17 @@ impl QuicServer {
     /// as sending data, receiving data... operations will be pending until the connection is connected or closed.
     ///
     /// If all listening udp sockets are closed, this method will return an error.
-    pub async fn accept(&self) -> io::Result<(Arc<Connection>, Pathway)> {
-        let no_address_listening = || {
-            debug_assert!(!self.use_strict_mode);
-            let reason = "one of the listening interface was closed unexpectedly";
-            io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
-        };
-        self.listener.recv().await.ok_or_else(no_address_listening)
+    pub async fn accept(&self) -> io::Result<(String, Arc<Connection>, Pathway, Link)> {
+        let no_address_listening = || io::Error::other("Server shutdown");
+        self.incomings.recv().await.ok_or_else(no_address_listening)
     }
 }
 
 // internal methods
-impl QuicServer {
-    fn global() -> &'static RwLock<Weak<QuicServer>> {
-        static SERVER: OnceLock<RwLock<Weak<QuicServer>>> = OnceLock::new();
-        SERVER.get_or_init(Default::default)
+impl QuicListeners {
+    fn global() -> &'static RwLock<Weak<QuicListeners>> {
+        static LISTENERS: OnceLock<RwLock<Weak<QuicListeners>>> = OnceLock::new();
+        LISTENERS.get_or_init(Default::default)
     }
 
     pub(crate) async fn try_accpet_connection(
@@ -173,13 +341,33 @@ impl QuicServer {
         pathway: Pathway,
         link: Link,
     ) {
-        let Some(server) = Self::global().read().unwrap().upgrade() else {
+        let Some(listeners) = Self::global().read().unwrap().upgrade() else {
             return;
         };
 
-        if server.use_strict_mode && !server.bind_interfaces.contains_key(&iface_addr) {
+        let Some(server_names) = listeners
+            .ifaces
+            .get(&iface_addr)
+            .map(|iface| iface.servers.clone())
+        else {
+            return;
+        };
+
+        // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
+        let Ok(premit) = listeners.backlog.clone().acquire_owned().await else {
+            return;
+        };
+
+        // TODO: read client server name
+        if server_names.is_empty() || server_names.len() > 1 {
             return;
         }
+
+        let server_name = server_names
+            .iter()
+            .next()
+            .map(|s| s.to_owned())
+            .expect("checked");
 
         let (client_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
@@ -195,7 +383,7 @@ impl QuicServer {
             return;
         }
 
-        let token_provider = server
+        let token_provider = listeners
             .token_provider
             .clone()
             .unwrap_or_else(|| Arc::new(NoopTokenRegistry));
@@ -204,36 +392,55 @@ impl QuicServer {
 
         let connection = Arc::new(
             Connection::with_token_provider(token_provider)
-                .with_parameters(server.parameters.clone())
-                .with_tls_config(server.tls_config.clone())
-                .with_streams_concurrency_strategy(server.stream_strategy_factory.as_ref())
+                .with_parameters(listeners.parameters.clone())
+                .with_tls_config(listeners.tls_config.clone())
+                .with_streams_concurrency_strategy(listeners.stream_strategy_factory.as_ref())
                 .with_proto(crate::proto().clone())
-                .defer_idle_timeout(server.defer_idle_timeout)
+                .defer_idle_timeout(listeners.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
-                .with_qlog(server.logger.as_ref())
+                .with_qlog(listeners.logger.as_ref())
                 .run_with(event_broker),
         );
-        crate::proto()
-            .deliver(iface_addr, packet, pathway, link)
-            .await;
-        _ = server.listener.send((connection.clone(), pathway));
 
         tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                match event {
-                    Event::Handshaked => {}
-                    Event::ProbedNewPath(..) => {}
-                    Event::PathInactivated(iface_addr, ..) => {
-                        crate::proto().try_free_interface(iface_addr);
+            let _permit = premit; // hold the permit until the connection established or handshake failed
+            crate::proto()
+                .deliver(iface_addr, packet, pathway, link)
+                .await;
+
+            tokio::spawn({
+                let connection = connection.clone();
+                async move {
+                    while let Some(event) = events.recv().await {
+                        match event {
+                            Event::Handshaked => {}
+                            Event::ProbedNewPath(..) => {}
+                            Event::PathInactivated(iface_addr, ..) => {
+                                crate::proto().try_free_interface(iface_addr);
+                            }
+                            Event::ApplicationClose => {}
+                            Event::Failed(error) => {
+                                connection.enter_closing(qbase::error::Error::from(error).into())
+                            }
+                            Event::Closed(ccf) => connection.enter_draining(ccf),
+                            Event::StatelessReset => { /* TOOD: stateless reset */ }
+                            Event::Terminated => return,
+                        }
                     }
-                    Event::ApplicationClose => {}
-                    Event::Failed(error) => {
-                        connection.enter_closing(qbase::error::Error::from(error).into())
-                    }
-                    Event::Closed(ccf) => connection.enter_draining(ccf),
-                    Event::StatelessReset => { /* TOOD: stateless reset */ }
-                    Event::Terminated => return,
                 }
+            });
+
+            if connection.handshaked().await {
+                _ = listeners
+                    .incomings
+                    .send((server_name, connection.clone(), pathway, link));
+            } else {
+                tracing::error!(
+                    role = "server",
+                    odcid = format!("{origin_dcid:x}"),
+                    "Failed to accpet connection from {}",
+                    link.dst()
+                );
             }
         });
     }
@@ -243,89 +450,57 @@ impl QuicServer {
         broken_iface: Weak<dyn QuicInterface>,
         error: io::Error,
     ) {
-        let Some(server) = Self::global().read().unwrap().upgrade() else {
+        let Some(listeners) = Self::global().read().unwrap().upgrade() else {
             return;
         };
 
-        if let Some((local_addr, removed_iface)) =
-            server.bind_interfaces.remove_if(&iface_addr, |_, iface| {
-                Weak::ptr_eq(&broken_iface, &Arc::downgrade(iface))
-            })
-        {
-            if server.bind_interfaces.is_empty() {
-                tracing::error!(
-                    "Interface {local_addr} was closed unexpectedly: {error:?}. All interfaces were closed!"
-                );
-            } else {
-                tracing::error!("Interface {local_addr} was closed unexpectedly: {error:?}");
-            };
-            drop(removed_iface); // already removed from proto
-        }
+        if let Some(listened_interface) = listeners.ifaces.get(&iface_addr) {
+            if Weak::ptr_eq(
+                &Arc::downgrade(&listened_interface.interface),
+                &broken_iface,
+            ) {
+                for server_name in listened_interface.servers.iter() {
+                    let server_name = &*server_name;
+                    tracing::error!(
+                        "Interface {iface_addr} used by {server_name} was closed unexpectedly: {error:?}."
+                    );
+                }
+            }
+        };
     }
 
     pub fn shutdown(&self) {
-        if self.listener.close().is_none() {
+        if self.incomings.close().is_none() {
             // already closed
             return;
         }
 
-        for entry in self.bind_interfaces.iter() {
-            // iface in proto(1) + iface in dashmap(1) = 2
-            crate::proto().del_interface_if(entry.key().clone(), |iface, _| {
-                Arc::strong_count(iface) == 2
-            });
-        }
-        self.bind_interfaces.clear();
+        self.backlog.close();
     }
 }
 
-impl Drop for QuicServer {
+impl Drop for QuicListeners {
     fn drop(&mut self) {
         self.shutdown();
-        for (addr, _iface) in std::mem::take(&mut self.bind_interfaces)
-            .into_read_only()
-            .iter()
-        {
-            crate::proto().del_interface_if(addr.clone(), |iface, _| Arc::strong_count(iface) == 2);
-        }
     }
 }
 
-#[derive(Debug)]
-struct Host {
-    cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-    private_key: Arc<dyn rustls::sign::SigningKey>,
-}
-
-/// The builder for the quic server.
-pub struct QuicServerBuilder<T> {
+/// The builder for the quic listeners.
+pub struct QuicListenersBuilder<T> {
+    global_guard: RwLockWriteGuard<'static, Weak<QuicListeners>>,
     supported_versions: Vec<u32>,
-    use_strict_mode: bool,
     quic_iface_factory: Box<dyn ProductQuicInterface>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
-    tls_config: T,
-    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
-    logger: Option<Arc<dyn Log + Send + Sync>>,
-    token_provider: Option<Arc<dyn TokenProvider>>,
-}
-
-/// The builder for the quic server with SNI enabled.
-#[allow(unused)]
-pub struct QuicServerSniBuilder<T> {
-    supported_versions: Vec<u32>,
-    use_strict_mode: bool,
     hosts: Arc<DashMap<String, Host>>,
-    quic_iface_factory: Box<dyn ProductQuicInterface>,
-    defer_idle_timeout: HeartbeatConfig,
-    parameters: ServerParameters,
+    ifaces: Arc<DashMap<AbstractAddr, ListenedInterface>>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
-impl<T> QuicServerBuilder<T> {
+impl<T> QuicListenersBuilder<T> {
     /// (WIP)Specify the supported quic versions.
     ///
     /// If you call this multiple times, only the last call will take effect.
@@ -388,25 +563,6 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
-    /// Accept connections from addresses that server not listened to.
-    ///
-    /// ## If the strict mode is not used (default)
-    ///
-    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
-    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
-    ///
-    /// For example, you started a client and connected to a remote server. If the strict mode is not used,
-    /// the server can accept the connections that connected to the addresses that client used.
-    /// This is useful in some cases, such as the server is behind a NAT.
-    ///
-    /// ## If the strict mode is used
-    ///
-    /// The server will *only* accept connections from the given addresses that successfully bound.
-    pub fn use_strict_mode(mut self) -> Self {
-        self.use_strict_mode = true;
-        self
-    }
-
     /// Specify how [`QuicServerBuilder::listen`] binds to the interface.
     ///
     /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
@@ -424,21 +580,24 @@ impl<T> QuicServerBuilder<T> {
     }
 }
 
-impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
+impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     /// Choose how to verify client certificates.
     pub fn with_client_cert_verifier(
         self,
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
-    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
-        QuicServerBuilder {
-            use_strict_mode: self.use_strict_mode,
+    ) -> QuicListenersBuilder<TlsServerConfig> {
+        QuicListenersBuilder {
+            global_guard: self.global_guard,
             supported_versions: self.supported_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_client_cert_verifier(client_cert_verifier),
+                .with_client_cert_verifier(client_cert_verifier)
+                .with_cert_resolver(Arc::new(VirtualHosts(self.hosts.clone()))),
+            hosts: self.hosts,
+            ifaces: self.ifaces,
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
@@ -446,18 +605,19 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     }
 
     /// Disable client authentication.
-    pub fn without_client_cert_verifier(
-        self,
-    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
-        QuicServerBuilder {
-            use_strict_mode: self.use_strict_mode,
+    pub fn without_client_cert_verifier(self) -> QuicListenersBuilder<TlsServerConfig> {
+        QuicListenersBuilder {
+            global_guard: self.global_guard,
             supported_versions: self.supported_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_client_cert_verifier(Arc::new(NoClientAuth)),
+                .with_client_cert_verifier(Arc::new(NoClientAuth))
+                .with_cert_resolver(Arc::new(VirtualHosts(self.hosts.clone()))),
+            hosts: self.hosts,
+            ifaces: self.ifaces,
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
@@ -465,85 +625,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     }
 }
 
-impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
-    /// Sets a single certificate chain and matching private key.  This
-    /// certificate and key is used for all subsequent connections,
-    /// irrespective of things like SNI hostname.
-    ///
-    /// Read [`TlsServerConfigBuilder::with_single_cert`] for more.
-    pub fn with_single_cert(
-        self,
-        cert_chain: impl ToCertificate,
-        key_der: impl ToPrivateKey,
-    ) -> QuicServerBuilder<TlsServerConfig> {
-        QuicServerBuilder {
-            use_strict_mode: self.use_strict_mode,
-            supported_versions: self.supported_versions,
-            quic_iface_factory: self.quic_iface_factory,
-            defer_idle_timeout: self.defer_idle_timeout,
-            parameters: self.parameters,
-            tls_config: self
-                .tls_config
-                .with_single_cert(cert_chain.to_certificate(), key_der.to_private_key())
-                .expect("The private key was wrong encoded or failed validation"),
-            stream_strategy_factory: self.stream_strategy_factory,
-            logger: self.logger,
-            token_provider: self.token_provider,
-        }
-    }
-
-    /// Sets a single certificate chain, matching private key and optional OCSP
-    /// response.  This certificate and key is used for all
-    /// subsequent connections, irrespective of things like SNI hostname.
-    ///
-    /// Read [`TlsServerConfigBuilder::with_single_cert_with_ocsp`] for more.
-    pub fn with_single_cert_with_ocsp(
-        self,
-        cert_chain: impl ToCertificate,
-        key_der: impl ToPrivateKey,
-        ocsp: Vec<u8>,
-    ) -> QuicServerBuilder<TlsServerConfig> {
-        QuicServerBuilder {
-            use_strict_mode: self.use_strict_mode,
-            supported_versions: self.supported_versions,
-            quic_iface_factory: self.quic_iface_factory,
-            defer_idle_timeout: self.defer_idle_timeout,
-            parameters: self.parameters,
-            tls_config: self
-                .tls_config
-                .with_single_cert_with_ocsp(
-                    cert_chain.to_certificate(),
-                    key_der.to_private_key(),
-                    ocsp,
-                )
-                .expect("The private key was wrong encoded or failed validation"),
-            stream_strategy_factory: self.stream_strategy_factory,
-            logger: self.logger,
-            token_provider: self.token_provider,
-        }
-    }
-
-    /// Enable TLS SNI (Server Name Indication) extensions.
-    pub fn enable_sni(self) -> QuicServerSniBuilder<TlsServerConfig> {
-        let hosts = Arc::new(DashMap::new());
-        QuicServerSniBuilder {
-            use_strict_mode: self.use_strict_mode,
-            supported_versions: self.supported_versions,
-            quic_iface_factory: self.quic_iface_factory,
-            defer_idle_timeout: self.defer_idle_timeout,
-            parameters: self.parameters,
-            tls_config: self
-                .tls_config
-                .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
-            hosts,
-            stream_strategy_factory: self.stream_strategy_factory,
-            logger: self.logger,
-            token_provider: self.token_provider,
-        }
-    }
-}
-
-impl QuicServerSniBuilder<TlsServerConfig> {
+impl QuicListenersBuilder<TlsServerConfig> {
     /// Add a host with a certificate chain and a private key.
     ///
     /// Call this method multiple times to add multiple hosts, each with its own certificate chain and private key.
@@ -552,30 +634,72 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// the connection will be rejected.
     pub fn add_host(
         self,
-        server_name: impl Into<String>,
-        cert_chain: impl ToCertificate,
-        key_der: impl ToPrivateKey,
-    ) -> Self {
-        let private_key = self
+        name: impl Into<String>,
+        host: impl Into<HostBuilder>,
+    ) -> io::Result<Self> {
+        let host_name = name.into();
+        let new_host: HostBuilder = host.into();
+
+        let host_entry = match self.hosts.entry(host_name.clone()) {
+            dashmap::Entry::Vacant(entry) => entry,
+            dashmap::Entry::Occupied(..) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("Host {host_name} already exists"),
+                ));
+            }
+        };
+
+        let signed_key = self
             .tls_config
             .crypto_provider()
             .key_provider
-            .load_private_key(key_der.to_private_key())
-            .unwrap();
+            .load_private_key(new_host.private_key)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Failed to load private key for host {host_name}: {e}"),
+                )
+            })?;
 
-        let server_name = server_name.into();
-        self.hosts.insert(
-            server_name,
-            Host {
-                cert_chain: cert_chain.to_certificate(),
-                private_key,
+        let bind_addresses = new_host.bind_addresses.into_iter().try_fold(
+            DashSet::new(),
+            |bind_addresses, bind_address| {
+                let iface_address = {
+                    if let Some(listened_interface) = self.ifaces.get(&bind_address) {
+                        let inserted = listened_interface.servers.insert(host_name.clone());
+                        assert!(!inserted);
+                        listened_interface.interface.abstract_addr()
+                    } else {
+                        let iface = self.quic_iface_factory.bind(bind_address.clone())?;
+                        let iface_addr = iface.abstract_addr();
+                        crate::proto().add_interface(iface.clone())?;
+                        let previous = self.ifaces.insert(
+                            iface_addr.clone(),
+                            ListenedInterface {
+                                interface: iface,
+                                servers: Arc::new([host_name.clone()].into_iter().collect()),
+                            },
+                        );
+                        assert!(previous.is_none());
+                        iface_addr
+                    }
+                };
+                bind_addresses.insert(iface_address);
+                io::Result::Ok(bind_addresses)
             },
-        );
-        self
-    }
-}
+        )?;
 
-impl QuicServerBuilder<TlsServerConfig> {
+        host_entry.insert(Host {
+            bind_addresses,
+            cert_chain: new_host.cert_chain,
+            private_key: signed_key,
+            ocsp: new_host.ocsp,
+        });
+
+        Ok(self)
+    }
+
     /// Specify the [alpn-protocol-ids] that the server supports.
     ///
     /// If you call this multiple times, all the `alpn_protocol` will be used.
@@ -624,103 +748,29 @@ impl QuicServerBuilder<TlsServerConfig> {
     ///
     /// *Note*: There can be only one server running at the same time,
     /// so this method will return an error if there is already a server running.
-    pub fn listen(self, addresses: impl ToAbstractAddrs) -> io::Result<Arc<QuicServer>> {
-        let mut server = QuicServer::global().write().unwrap();
-        if let Some(server) = server.upgrade() {
-            if !server.listener.is_closed() {
-                tracing::error!("There is already a active server running");
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "There is already a active server running",
-                ));
-            }
+    pub fn listen(mut self, backlog: usize) -> io::Result<Arc<QuicListeners>> {
+        if self.hosts.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "At least one host must be added",
+            ));
         }
 
-        // All provided addresses should be bound to the server successfully.
-        let bind_interfaces = addresses.to_abstract_addrs()?.try_fold(
-            DashMap::new(),
-            |interfaces, abstract_addr| {
-                let interface = self.quic_iface_factory.bind(abstract_addr.clone())?;
-                let local_addr = interface.local_addr()?;
-                crate::proto().add_interface(interface.clone())?;
-                qevent::event!(
-                    ServerListening {
-                        address: local_addr
-                    },
-                    use_strict_mode = self.use_strict_mode,
-                );
-                interfaces.insert(abstract_addr, interface);
-                io::Result::Ok(interfaces)
-            },
-        )?;
-
-        let quic_server = Arc::new(QuicServer {
-            bind_interfaces,
-            use_strict_mode: self.use_strict_mode,
-            listener: Default::default(),
+        let quic_listeners = Arc::new(QuicListeners {
+            incomings: Default::default(),
             _supported_versions: self.supported_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
+            hosts: self.hosts,
+            ifaces: self.ifaces,
             tls_config: Arc::new(self.tls_config),
             stream_strategy_factory: self.stream_strategy_factory,
+            backlog: Arc::new(Semaphore::new(backlog)),
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
 
-        *server = Arc::downgrade(&quic_server);
-        Ok(quic_server)
-    }
-}
-
-impl QuicServerSniBuilder<TlsServerConfig> {
-    /// Specify the `alpn_protocol` that the server supports.
-    ///
-    /// If you call this multiple times, all the `alpn_protocol` will be used.
-    ///
-    /// If you never call this method, we will not do ALPN negotiation with the client.
-    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
-        self.tls_config
-            .alpn_protocols
-            .extend(alpn.into_iter().map(Into::into));
-        self
-    }
-
-    /// Start to listen for incoming connections.
-    ///
-    /// ## Bind Interfaces
-    ///
-    /// The server will bind interfaces from the given addresses, receive datagrams from them,
-    /// and prevent the interfaces from being automatically released.
-    ///
-    /// The server must successfully bind all given interfaces when it is created,
-    /// otherwise this method will immediately return an error and the server will not be started.
-    ///
-    /// The server can be created without binding any interface.
-    ///
-    /// You can additionally bind new interfaces after server launched by calling [`QuicServer::add_interface`].
-    ///
-    /// ## Accept Conenctions
-    ///
-    /// By default, the server will accept connections from all interfaces (not only those bound to the quic server,
-    /// but also those bound to other quic clients).
-    ///
-    /// If strict mode is used, the server will *only* accept connections from the interface the server is bound to.
-    /// This is closer to traditional server behavior.
-    ///
-    /// By calling the [`QuicServer::accept`] method, you can get all connections connected to the server.
-    /// The QUIC protocol handshake will be completed automatically in the background.
-    /// The connection obtained through accpet may not have completed the handshake yet.
-    ///
-    /// ## Shutdown
-    ///
-    /// When the `QuicServer` is dropped or [`QuicServer::shutdown`] is called,
-    /// the server will stop listening for incoming connections,
-    /// and you can start a new server by calling the this method again.
-    ///
-    /// *Note*: There can be only one server running at the same time,
-    /// so this method will return an error if there is already a server running.
-    pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        _ = addresses;
-        unimplemented!("TODO")
+        *self.global_guard = Arc::downgrade(&quic_listeners);
+        Ok(quic_listeners)
     }
 }

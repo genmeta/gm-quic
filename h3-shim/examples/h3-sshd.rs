@@ -83,7 +83,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         key,
     } = options.certs;
 
-    let quic_server = ::gm_quic::QuicServer::builder()
+    let listeners = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
@@ -91,10 +91,10 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .add_host(server_name, cert.as_path(), key.as_path())
         .with_alpns([ALPN.to_vec()])
         .listen(&options.listen[..])?;
-    info!("listen on {:?}", quic_server.addresses());
+    info!("listen on {:?}", listeners.addresses());
 
     // handle incoming connections and requests
-    while let Ok((new_conn, _pathway)) = quic_server.accept().await {
+    while let Ok((new_conn, _pathway)) = listeners.accept().await {
         let h3_conn =
             match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await).await {
                 Ok(h3_conn) => {

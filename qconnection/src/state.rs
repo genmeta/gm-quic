@@ -126,9 +126,9 @@ impl ConnState {
         }
     }
 
-    pub fn handshaked(&self) -> impl Future<Output = ()> + Send {
+    pub fn handshaked(&self) -> impl Future<Output = bool> + Send {
         let handshaked = self.handshaked.clone();
-        async move { _ = handshaked.acquire().await }
+        async move { handshaked.acquire().await.is_ok() }
             .instrument_in_current()
             .in_current_span()
     }

@@ -2,12 +2,11 @@ use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::handy::server_parameters;
+use gm_quic::{Host, handy::server_parameters};
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -83,7 +82,7 @@ fn main() {
 }
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!("serving {}", options.root.display());
+    tracing::info!("serving {}", options.root.display());
     let root = Arc::new(options.root);
     if !root.is_dir() {
         return Err(format!("{}: is not a readable directory", root.display()).into());
@@ -100,22 +99,25 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         key,
     } = options.certs;
 
-    let quic_server = ::gm_quic::QuicServer::builder()
+    let listeners = ::gm_quic::QuicListeners::builder()?
         .with_qlog(qlogger)
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
-        .enable_sni()
-        .add_host(server_name, cert.as_path(), key.as_path())
+        .add_host(
+            server_name,
+            Host::with_cert_key(cert.as_path(), key.as_path())?
+                .bind_addresses(options.listen.as_slice())?,
+        )?
         .with_alpns(options.alpns)
-        .listen(&options.listen[..])?;
-    info!("listen on {:?}", quic_server.addresses());
+        .listen(128)?;
+    tracing::info!("listen {:?}", listeners.hosts());
 
     // handle incoming connections and requests
-    while let Ok((new_conn, _pathway)) = quic_server.accept().await {
+    while let Ok((_server, new_conn, _pathway, _link)) = listeners.accept().await {
         let h3_conn =
             match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn)).await {
                 Ok(h3_conn) => {
-                    info!("accept a new quic connection");
+                    tracing::info!("accept a new quic connection");
                     h3_conn
                 }
                 Err(error) => {
@@ -147,7 +149,7 @@ async fn handle_connection<T>(
                 };
                 tokio::spawn(async move {
                     if let Err(e) = handle_request.await {
-                        error!("handling request failed: {}", e);
+                        tracing::error!("handling request failed: {}", e);
                     }
                 });
             }
@@ -173,7 +175,7 @@ where
             match File::open(&to_serve).await {
                 Ok(file) => (StatusCode::OK, Some(file)),
                 Err(e) => {
-                    error!("failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
+                    tracing::error!("failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
                     (StatusCode::NOT_FOUND, None)
                 }
             }

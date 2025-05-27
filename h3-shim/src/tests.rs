@@ -5,14 +5,14 @@ use std::{
     time::Duration,
 };
 
-use gm_quic::QuicServer;
+use gm_quic::QuicListeners;
 use tokio::{runtime::Runtime, sync::Mutex, time};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[allow(unused)]
 pub fn run_serially<C, S>(
-    launch_server: impl FnOnce() -> Result<(Arc<QuicServer>, S), Error>,
+    launch_server: impl FnOnce() -> Result<(Arc<QuicListeners>, S), Error>,
     launch_client: impl FnOnce(SocketAddr) -> C,
 ) -> Result<(), Error>
 where
@@ -40,15 +40,20 @@ where
         static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
         let _lock = LOCK.get_or_init(Default::default).lock().await;
 
-        let (server, server_task) = launch_server()?;
+        let (listeners, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = (*server.addresses().iter().next().expect("no address"))
+        let server_addr = listeners.hosts()["localhost"]
+            .iter()
+            .next()
+            .expect("Server should bind at least one address")
+            .1
+            .expect("Server should bind at least one address successfully")
             .try_into()
             .expect("This test support only SocketAddr");
         time::timeout(Duration::from_secs(10), launch_client(server_addr))
             .await
             .expect("test timeout")?;
-        server.shutdown();
+        listeners.shutdown();
         server_task.abort();
         Ok(())
     })
