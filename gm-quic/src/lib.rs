@@ -12,7 +12,7 @@ pub use qinterface::factory::ProductQuicInterface;
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
-    server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
+    server::{Host, QuicListeners, QuicListenersBuilder},
 };
 
 mod cert;
@@ -31,7 +31,7 @@ fn proto() -> &'static Arc<QuicProto> {
                 while let Some((iface_addr, packet, pathway, ink)) =
                     proto.recv_unrouted_packet().await
                 {
-                    QuicServer::try_accpet_connection(iface_addr, packet, pathway, ink).await;
+                    QuicListeners::try_accpet_connection(iface_addr, packet, pathway, ink).await;
                 }
             }
         };
@@ -39,7 +39,7 @@ fn proto() -> &'static Arc<QuicProto> {
             let proto = proto.clone();
             async move {
                 while let Some((local_addr, iface, error)) = proto.get_broken_interface().await {
-                    QuicServer::on_interface_broken(local_addr, iface, error);
+                    QuicListeners::on_interface_broken(local_addr, iface, error);
                 }
             }
         };

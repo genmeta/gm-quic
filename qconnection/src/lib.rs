@@ -319,10 +319,11 @@ impl Connection {
         self.try_map_components(|core_conn| Ok(core_conn.parameters.get_origin_dcid()?))?
     }
 
-    pub async fn handshaked(&self) {
+    pub async fn handshaked(&self) -> bool {
         if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.handshaked()) {
-            f.await
+            return f.await;
         }
+        false
     }
 
     pub async fn terminated(&self) {

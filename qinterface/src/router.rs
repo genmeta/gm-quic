@@ -106,6 +106,7 @@ impl QuicProto {
         interface: Arc<dyn QuicInterface>,
     ) -> io::Result<JoinHandle<io::Error>> {
         let iface_addr = interface.abstract_addr();
+        tracing::info!("add interface: {iface_addr}");
         let entry = self
             .interfaces
             .entry(iface_addr.clone())
