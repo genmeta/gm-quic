@@ -10,7 +10,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -52,7 +52,7 @@ use crate::{
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
-pub type ReceivedFrom = (AbstractAddr, CipherInitialPacket, Pathway, Link);
+pub type ReceivedFrom = (VirtualAddr, CipherInitialPacket, Pathway, Link);
 
 pub struct InitialSpace {
     keys: ArcKeys,
@@ -232,7 +232,7 @@ pub fn spawn_deliver_and_parse(
     let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let deliver_and_parse = async move {
-        while let Some((iface_addr, packet, pathway, link)) = packets.recv().await {
+        while let Some((virt_addr, packet, pathway, link)) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 // rfc9000 7.2:
@@ -250,7 +250,7 @@ pub fn spawn_deliver_and_parse(
 
                 if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
                     let path =
-                        match components.get_or_try_create_path(iface_addr, link, pathway, true) {
+                        match components.get_or_try_create_path(virt_addr, link, pathway, true) {
                             Ok(path) => path,
                             Err(_) => {
                                 packet.drop_on_conenction_closed();
