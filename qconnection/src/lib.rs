@@ -51,7 +51,7 @@ use qbase::{
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
@@ -207,7 +207,7 @@ impl Components {
 
     pub fn add_path(
         &self,
-        ifaca_addr: AbstractAddr,
+        ifaca_addr: VirtualAddr,
         link: Link,
         pathway: Pathway,
     ) -> io::Result<()> {
@@ -314,13 +314,8 @@ impl Connection {
             .await
     }
 
-    pub fn add_path(
-        &self,
-        iface_addr: AbstractAddr,
-        link: Link,
-        pathway: Pathway,
-    ) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(iface_addr, link, pathway))?
+    pub fn add_path(&self, virt_addr: VirtualAddr, link: Link, pathway: Pathway) -> io::Result<()> {
+        self.try_map_components(|core_conn| core_conn.add_path(virt_addr, link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {

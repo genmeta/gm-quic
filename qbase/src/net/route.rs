@@ -2,25 +2,30 @@ use std::{fmt, net::SocketAddr, ops::Deref, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use super::address::{ParseQuicAddrError, QuicAddr, ToQuicAddr};
+use super::address::{ConcreteAddr, ParseConcreteAddrError, ToConcreteAddr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
-    Direct { addr: QuicAddr },
-    Agent { agent: QuicAddr, outer: QuicAddr },
+    Direct {
+        addr: ConcreteAddr,
+    },
+    Agent {
+        agent: ConcreteAddr,
+        outer: ConcreteAddr,
+    },
 }
 
 impl EndpointAddr {
-    pub fn direct(addr: impl ToQuicAddr) -> Self {
+    pub fn direct(addr: impl ToConcreteAddr) -> Self {
         EndpointAddr::Direct {
-            addr: addr.to_quic_addr(),
+            addr: addr.to_concrete_addr(),
         }
     }
 
-    pub fn with_agent(agent: impl ToQuicAddr, outer: impl ToQuicAddr) -> Self {
+    pub fn with_agent(agent: impl ToConcreteAddr, outer: impl ToConcreteAddr) -> Self {
         EndpointAddr::Agent {
-            agent: agent.to_quic_addr(),
-            outer: outer.to_quic_addr(),
+            agent: agent.to_concrete_addr(),
+            outer: outer.to_concrete_addr(),
         }
     }
 
@@ -29,7 +34,7 @@ impl EndpointAddr {
     /// Note: Before successful hole punching with this Endpoint, packets should be sent to the addr
     /// returned by deref() to establish communication. Once hole punching is successful or about to
     /// begin, use the addr returned by this function.
-    pub fn addr(&self) -> QuicAddr {
+    pub fn addr(&self) -> ConcreteAddr {
         match self {
             EndpointAddr::Direct { addr } => *addr,
             EndpointAddr::Agent { outer, .. } => *outer,
@@ -37,7 +42,7 @@ impl EndpointAddr {
     }
 
     // pub fn encoding_size(&self) -> usize {
-    //     let addr_size = |addr: &QuicAddr| {
+    //     let addr_size = |addr: &ConcreteAddr| {
     //         if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
     //     };
     //     match self {
@@ -60,7 +65,7 @@ impl fmt::Display for EndpointAddr {
 }
 
 impl Deref for EndpointAddr {
-    type Target = QuicAddr;
+    type Target = ConcreteAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -71,17 +76,17 @@ impl Deref for EndpointAddr {
 }
 
 impl FromStr for EndpointAddr {
-    type Err = ParseQuicAddrError;
+    type Err = ParseConcreteAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = s.split_once("-") {
             // Agent format: "inet:1.12.124.56:1234-inet:202.106.68.43:6080"
-            let agent: QuicAddr = first.trim().parse()?;
-            let outer: QuicAddr = second.trim().parse()?;
+            let agent: ConcreteAddr = first.trim().parse()?;
+            let outer: ConcreteAddr = second.trim().parse()?;
             Ok(EndpointAddr::with_agent(agent, outer))
         } else {
             // Direct format: "1.12.124.56:1234"
-            let addr: QuicAddr = s.trim().parse()?;
+            let addr: ConcreteAddr = s.trim().parse()?;
             Ok(EndpointAddr::direct(addr))
         }
     }
@@ -121,12 +126,12 @@ impl FromStr for EndpointAddr {
 //     }
 // }
 
-// pub trait WriteQuicAddr {
-//     fn put_socket_addr(&mut self, addr: &QuicAddr);
+// pub trait WriteConcreteAddr {
+//     fn put_socket_addr(&mut self, addr: &ConcreteAddr);
 // }
 
-// impl<T: BufMut> WriteQuicAddr for T {
-//     fn put_socket_addr(&mut self, addr: &QuicAddr) {
+// impl<T: BufMut> WriteConcreteAddr for T {
+//     fn put_socket_addr(&mut self, addr: &ConcreteAddr) {
 //         self.put_u16(addr.port());
 //         match addr.ip() {
 //             IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
@@ -135,9 +140,9 @@ impl FromStr for EndpointAddr {
 //     }
 // }
 
-// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], QuicAddr> {
+// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], ConcreteAddr> {
 //     flat_map(be_u16, |port| {
-//         map(be_ip_addr(is_ipv6), move |ip| QuicAddr::new(ip, port))
+//         map(be_ip_addr(is_ipv6), move |ip| ConcreteAddr::new(ip, port))
 //     })
 //     .parse(input)
 // }
@@ -159,15 +164,15 @@ impl ToEndpointAddr for EndpointAddr {
     }
 }
 
-impl<T: ToQuicAddr> ToEndpointAddr for T {
+impl<T: ToConcreteAddr> ToEndpointAddr for T {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::direct(self.to_quic_addr())
+        EndpointAddr::direct(self.to_concrete_addr())
     }
 }
 
-impl<A: ToQuicAddr, O: ToQuicAddr> ToEndpointAddr for (A, O) {
+impl<A: ToConcreteAddr, O: ToConcreteAddr> ToEndpointAddr for (A, O) {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::with_agent(self.0.to_quic_addr(), self.1.to_quic_addr())
+        EndpointAddr::with_agent(self.0.to_concrete_addr(), self.1.to_concrete_addr())
     }
 }
 
@@ -211,8 +216,8 @@ impl Pathway {
 /// Network way, representing the quadruple of source and destination addres.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Link {
-    src: QuicAddr,
-    dst: QuicAddr,
+    src: ConcreteAddr,
+    dst: ConcreteAddr,
 }
 
 impl fmt::Display for Link {
@@ -223,20 +228,20 @@ impl fmt::Display for Link {
 
 impl Link {
     #[inline]
-    pub fn new(src: impl ToQuicAddr, dst: impl ToQuicAddr) -> Self {
+    pub fn new(src: impl ToConcreteAddr, dst: impl ToConcreteAddr) -> Self {
         Self {
-            src: src.to_quic_addr(),
-            dst: dst.to_quic_addr(),
+            src: src.to_concrete_addr(),
+            dst: dst.to_concrete_addr(),
         }
     }
 
     #[inline]
-    pub fn src(&self) -> QuicAddr {
+    pub fn src(&self) -> ConcreteAddr {
         self.src
     }
 
     #[inline]
-    pub fn dst(&self) -> QuicAddr {
+    pub fn dst(&self) -> ConcreteAddr {
         self.dst
     }
 

@@ -4,7 +4,7 @@ use qbase::{
     error::QuicError,
     frame::ConnectionCloseFrame,
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, Pathway},
     },
 };
@@ -21,7 +21,7 @@ pub enum Event {
     // Received a packet from a new path and successfully decrypted the packet
     ProbedNewPath(Pathway, Link),
     // Path become inactivated, or removed by application
-    PathInactivated(AbstractAddr, Pathway, Link),
+    PathInactivated(VirtualAddr, Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
     Failed(QuicError),
     // The connection is closed by application, just a notification
