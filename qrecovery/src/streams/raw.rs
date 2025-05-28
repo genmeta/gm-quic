@@ -111,11 +111,11 @@ where
 
     role: Role,
     stream_ids: StreamIds<Ext<TX>, Ext<TX>>,
-    // the receive buffer size for the accpeted unidirectional stream created by peer
+    // the receive buffer size for the accepted unidirectional stream created by peer
     uni_stream_rcvbuf_size: u64,
     // the receive buffer size of the bidirectional stream actively created by local
     local_bi_stream_rcvbuf_size: u64,
-    // the receive buffer size for the accpeted bidirectional stream created by peer
+    // the receive buffer size for the accepted bidirectional stream created by peer
     remote_bi_stream_rcvbuf_size: u64,
     // 所有流的待写端，要发送数据，就得向这些流索取
     output: ArcOutput<Ext<TX>>,

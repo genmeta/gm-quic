@@ -12,7 +12,7 @@ pub use qinterface::factory::ProductQuicInterface;
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
-    server::{Host, QuicListeners, QuicListenersBuilder},
+    server::{Host, HostBuilder, QuicListeners, QuicListenersBuilder},
 };
 
 mod cert;
@@ -21,7 +21,7 @@ mod server;
 #[cfg(test)]
 mod tests;
 
-fn proto() -> &'static Arc<QuicProto> {
+pub fn proto() -> &'static Arc<QuicProto> {
     static PROTO: OnceLock<Arc<QuicProto>> = OnceLock::new();
     PROTO.get_or_init(|| {
         let proto = Arc::new(QuicProto::new());
@@ -31,7 +31,7 @@ fn proto() -> &'static Arc<QuicProto> {
                 while let Some((iface_addr, packet, pathway, ink)) =
                     proto.recv_unrouted_packet().await
                 {
-                    QuicListeners::try_accpet_connection(iface_addr, packet, pathway, ink).await;
+                    QuicListeners::try_accept_connection(iface_addr, packet, pathway, ink).await;
                 }
             }
         };

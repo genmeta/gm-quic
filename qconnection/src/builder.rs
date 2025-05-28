@@ -465,7 +465,7 @@ impl ComponentsReady {
         tracing_span.in_scope(|| {
             qlog_span.in_scope(|| {
                 tokio::spawn(tls::keys_upgrade(&components));
-                tokio::spawn(accpet_transport_parameters(&components));
+                tokio::spawn(accept_transport_parameters(&components));
                 space::spawn_deliver_and_parse(&components);
             })
         });
@@ -478,7 +478,7 @@ impl ComponentsReady {
     }
 }
 
-fn accpet_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send {
+fn accept_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send {
     let params = components.parameters.clone();
     let streams = components.spaces.data().streams().clone();
     let cid_registry = components.cid_registry.clone();

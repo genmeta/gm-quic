@@ -403,9 +403,13 @@ fn client_auth() -> Result<(), Error> {
                 PeerCerts::CertChain(items) => {
                     assert_eq!(items.len(), 1);
                     let client = rcgen::Ia5String::try_from("client").unwrap();
-                    assert!(items[0].subject_alt_names.iter().any(
-                        |name| matches!(name, rcgen::SanType::DnsName(name) if name == &client),
-                    ));
+                    assert!(
+                        (items[0].distinguished_name.get(&rcgen::DnType::CommonName)).is_some_and(
+                            |cn| matches!(cn, rcgen::DnValue::Ia5String(cn) if  cn == &client),
+                        ) || items[0].subject_alt_names.iter().any(
+                            |name| matches!(name, rcgen::SanType::DnsName(name) if name == &client),
+                        )
+                    );
                 }
                 PeerCerts::None | PeerCerts::RawPublicKey(..) => {
                     panic!("Client should present a certificate")

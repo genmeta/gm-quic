@@ -115,13 +115,13 @@ where
         }
     }
 
-    /// Accpet a bidirectional stream, see the method of the same name on `QuicConnection` for more.
+    /// accept a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<Ext<TX>> {
         self.0.accept_bi(snd_wnd_size)
     }
 
-    /// Accpet a unidirectional stream, see the method of the same name on `QuicConnection` for more.
+    /// accept a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
         self.0.accept_uni()
