@@ -149,7 +149,7 @@ impl QuicClient {
                     }
                 };
 
-                crate::proto().add_interface(quic_iface.clone())?;
+                crate::proto().add_interface(quic_iface.clone());
                 quic_iface
             }
             Some(bind_interfaces) => bind_interfaces
@@ -284,9 +284,10 @@ impl QuicClient {
 impl Drop for QuicClient {
     fn drop(&mut self) {
         if let Some(bind_interfaces) = self.bind_interfaces.take() {
-            for (addr, _iface) in bind_interfaces.into_read_only().iter() {
-                crate::proto()
-                    .del_interface_if(addr.clone(), |iface, _| Arc::strong_count(iface) == 2);
+            for (bind_addr, bind_iface) in bind_interfaces.into_read_only().iter() {
+                crate::proto().del_interface_if(bind_addr.clone(), |iface, _| {
+                    Arc::ptr_eq(bind_iface, iface) && Arc::strong_count(iface) == 2
+                });
             }
         }
     }

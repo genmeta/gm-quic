@@ -56,12 +56,22 @@ impl Drop for InterfaceContext {
 }
 
 #[doc(alias = "RouterInterface")]
-#[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<AbstractAddr, InterfaceContext>,
     router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
     unrouted_packets: Channel<(AbstractAddr, Packet, Pathway, Link)>,
     broken_interfaces: Channel<(AbstractAddr, Weak<dyn QuicInterface>, io::Error)>,
+}
+
+impl Default for QuicProto {
+    fn default() -> Self {
+        Self {
+            interfaces: DashMap::new(),
+            router_table: DashMap::new(),
+            unrouted_packets: Channel::new(64),
+            broken_interfaces: Channel::new(64),
+        }
+    }
 }
 
 impl fmt::Debug for QuicProto {
@@ -104,7 +114,7 @@ impl QuicProto {
     pub fn add_interface(
         self: &Arc<Self>,
         interface: Arc<dyn QuicInterface>,
-    ) -> io::Result<JoinHandle<io::Error>> {
+    ) -> JoinHandle<io::Error> {
         let iface_addr = interface.abstract_addr();
         tracing::info!("add interface: {iface_addr}");
         let entry = self
@@ -171,18 +181,21 @@ impl QuicProto {
         let recv_task = tokio::spawn(async move {
             let task_failed: io::Result<()> = recv_task.await;
             let error = task_failed.expect_err("receive task never failed without error");
-            _ = this.broken_interfaces.send((
-                iface_addr,
-                weak_iface,
-                io::Error::new(error.kind(), format!("{error}")),
-            ));
+            _ = this
+                .broken_interfaces
+                .send((
+                    iface_addr,
+                    weak_iface,
+                    io::Error::new(error.kind(), format!("{error}")),
+                ))
+                .await;
             error
         });
         entry.insert(InterfaceContext {
             inner: interface,
             task: recv_task.abort_handle(),
         });
-        Ok(recv_task)
+        recv_task
     }
 
     pub fn get_interface(&self, iface_addr: AbstractAddr) -> Option<Arc<dyn QuicInterface>> {
@@ -273,7 +286,7 @@ impl QuicProto {
         link: Link,
     ) {
         if let Err(received) = self.try_deliver(iface_addr, packet, pathway, link).await {
-            _ = self.unrouted_packets.send(received);
+            _ = self.unrouted_packets.send_force(received);
         }
     }
 

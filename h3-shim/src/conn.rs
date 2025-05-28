@@ -17,8 +17,8 @@ use crate::{
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
     connection: Arc<gm_quic::Connection>,
-    accpet_bi: AcceptBiStreams,
-    accpet_uni: AcceptUniStreams,
+    accept_bi: AcceptBiStreams,
+    accept_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
 }
@@ -34,8 +34,8 @@ impl Deref for QuicConnection {
 impl QuicConnection {
     pub fn new(conn: Arc<gm_quic::Connection>) -> Self {
         Self {
-            accpet_bi: AcceptBiStreams::new(conn.clone()),
-            accpet_uni: AcceptUniStreams::new(conn.clone()),
+            accept_bi: AcceptBiStreams::new(conn.clone()),
+            accept_uni: AcceptUniStreams::new(conn.clone()),
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
             connection: conn,
@@ -99,7 +99,7 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Self::RecvStream, ConnectionErrorIncoming>> {
-        self.accpet_uni.poll_accept(cx)
+        self.accept_uni.poll_accept(cx)
     }
 
     #[inline]
@@ -107,7 +107,7 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, ConnectionErrorIncoming>> {
-        self.accpet_bi.poll_accept(cx)
+        self.accept_bi.poll_accept(cx)
     }
 
     /// 为何要再来个这玩意？多次一举

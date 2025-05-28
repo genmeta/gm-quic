@@ -18,7 +18,10 @@ use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{
+    OwnedSemaphorePermit, Semaphore,
+    mpsc::{self},
+};
 
 use crate::*;
 
@@ -50,6 +53,11 @@ pub struct Host {
 }
 
 impl Host {
+    /// Start to build a [`Host`].
+    ///
+    /// Return [`io::Error`] if the certificate chain or private key is invalid / failed to read.
+    ///
+    /// Note that the validity of the private key will be checked in [`QuicListenersBuilder::add_host`].
     pub fn with_cert_key(
         cert_chain: impl ToCertificate,
         private_key: impl ToPrivateKey,
@@ -80,17 +88,9 @@ impl Debug for Host {
     }
 }
 
-impl Drop for Host {
-    fn drop(&mut self) {
-        for entry in self.bind_addresses.iter() {
-            crate::proto().del_interface_if(entry.key().clone(), |iface, _| {
-                Arc::strong_count(iface) == 2
-            });
-        }
-        self.bind_addresses.clear();
-    }
-}
-
+/// Builder [`Host`] that can be added to the [`QuicListeners`].
+///
+/// Call [`Host::with_cert_key`] to create a new [`HostBuilder`].
 pub struct HostBuilder {
     pub bind_addresses: HashSet<AbstractAddr>,
     pub cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
@@ -99,6 +99,15 @@ pub struct HostBuilder {
 }
 
 impl HostBuilder {
+    /// Add bind addresses to the host.
+    ///
+    /// The bind addresses will be bind when [`QuicListenersBuilder::add_host`] is called,
+    /// and the host will listen to them when the [`QuicListeners`] is started.
+    ///
+    /// If you call this multiple times, only the last call will take effect.
+    ///
+    /// After the [`QuicListeners`] is started, you can also call [`QuicListeners::add_interface`]
+    /// to add more interfaces to the host.
     pub fn bind_addresses(mut self, bind_addresses: impl ToAbstractAddrs) -> io::Result<Self> {
         self.bind_addresses = bind_addresses.to_abstract_addrs()?.collect();
         Ok(self)
@@ -110,83 +119,97 @@ impl HostBuilder {
     }
 }
 
-struct ListenedInterface {
-    interface: Arc<dyn QuicInterface>,
-    servers: Arc<DashSet<String>>,
+/// An interface that has been bound to hosts in the [`QuicListeners`].
+struct BoundInterface {
+    iface: Arc<dyn QuicInterface>,
+    hosts: DashSet<String>,
 }
 
-impl Debug for ListenedInterface {
+impl Debug for BoundInterface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListenedInterface")
-            .field("interface", &self.interface.abstract_addr())
-            .field("servers", &self.servers)
+            .field("interface", &self.iface.abstract_addr())
+            .field("servers", &self.hosts)
             .finish()
     }
 }
 
-type Incoming = (String, Arc<Connection>, Pathway, Link);
+impl Drop for BoundInterface {
+    fn drop(&mut self) {
+        crate::proto().del_interface_if(self.iface.abstract_addr(), |iface, _| {
+            Arc::ptr_eq(iface, &self.iface) && Arc::strong_count(iface) == 2
+        });
+    }
+}
 
-/// The quic server that can accept incoming connections.
+pub type Incoming = (
+    /* server_name: */ String,
+    /* connection:  */ Arc<Connection>,
+    /* pathway:     */ Pathway,
+    /* link:        */ Link,
+);
+
+/// The quic listeners that can serving multiple hosts(QuicServer), accept incoming connections.
 ///
-/// To create a server, you need to use the [`QuicServerBuilder`] to configure the server, and then call the
-/// [`QuicServerBuilder::listen`] method to start the server.
+/// To create listeners, you need to use the [`QuicListenersBuilder`] to configure the server, and then call the
+/// [`QuicListenersBuilder::listen`] method to start listening.
 ///
-/// [`QuicServer`] is unique, which means that there can be only one server running at the same time. If you want to
-/// start a new server, you need to drop the old server first.
+/// [`QuicListenersBuilder`] is uniqueis unique, and only one Listeners can run at the same time.
+/// You can call [`QuicListeners::shutdown`], or drop all references to the [`Arc<QuicListeners>`] to stop the listeners.
 ///
-/// [`QuicServer`] can only accept connections, dont manage the connections. You can get the incoming connection by
-/// calling the [`QuicServer::accept`] method.
+/// You can let the quic Listener serve multiple Hosts by calling [`QuicListenersBuilder::add_host`] multiple times.
+/// Each Host only accepts connections from the interface it listens to,
+/// and the interfaces listened to by Hosts can overlap.
+///
+/// Host can be added without binding any interface.
+///
+/// After the [`QuicListenersBuilder::listen`], you can call [`QuicListeners::add_interface`]
+/// to let a Host listen to more interface, and [`QuicListeners::del_interface`] to remove an interface from a Host.
+///
+/// By calling [`QuicListeners::accept`], you can accept a connection.
+/// If the host which the incoming connection is connected is not listening
+/// on the interface which received the incoming connection,
+/// the connection will be automatically rejected.
+///
+/// The connection returned by [`QuicListeners::accept`] may not have completed the handshake.
+///
 pub struct QuicListeners {
     defer_idle_timeout: HeartbeatConfig,
-    incomings: Arc<Channel<Incoming>>,
+    incomings: Arc<Channel<(Incoming, OwnedSemaphorePermit)>>,
     parameters: ServerParameters,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     backlog: Arc<Semaphore>,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
-
     hosts: Arc<DashMap<String, Host>>,
-    ifaces: Arc<DashMap<AbstractAddr, ListenedInterface>>,
-
+    ifaces: Arc<DashMap<AbstractAddr, BoundInterface>>,
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 impl QuicListeners {
-    /// Start to build a QuicServer.
+    /// Start to build a [`QuicListeners`].
     pub fn builder() -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
-        let global_guard = QuicListeners::global()
-            .write()
-            .expect("QuicListeners global lock");
-        if let Some(server) = global_guard.upgrade() {
-            if !server.incomings.is_closed() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "A QuicServer is already running, please shutdown it first.",
-                ));
-            }
-        }
-        Ok(QuicListenersBuilder {
-            global_guard,
-            supported_versions: Vec::with_capacity(2),
-            defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(UdpSocketController::bind),
-            parameters: ServerParameters::default(),
-            hosts: Arc::new(DashMap::new()),
-            ifaces: Arc::new(DashMap::new()),
-            tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            logger: None,
-            token_provider: None,
-        })
+        Self::builder_with_tls(TlsServerConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ]))
     }
 
-    /// Start to build a QuicServer with the given TLS configuration.
+    /// Start to build a QuicServer with the given tls crypto provider.
+    pub fn builder_with_crypto_provieder(
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
+        Self::builder_with_tls(
+            TlsServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+        )
+    }
+
+    /// Start to build a [`QuicListeners`] with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls(
-        tls_config: TlsServerConfig,
-    ) -> io::Result<QuicListenersBuilder<TlsServerConfig>> {
+    pub fn builder_with_tls<T>(tls_config: T) -> io::Result<QuicListenersBuilder<T>> {
         let global_guard = QuicListeners::global()
             .write()
             .expect("QuicListeners global lock");
@@ -213,43 +236,12 @@ impl QuicListeners {
         })
     }
 
-    /// Start to build a QuicServer with the given tls crypto provider.
-    pub fn builder_with_crypto_provieder(
-        provider: Arc<rustls::crypto::CryptoProvider>,
-    ) -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
-        let global_guard = QuicListeners::global()
-            .write()
-            .expect("QuicListeners global lock");
-        if let Some(server) = global_guard.upgrade() {
-            if !server.incomings.is_closed() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "A QuicServer is already running, please shutdown it first.",
-                ));
-            }
-        }
-        Ok(QuicListenersBuilder {
-            global_guard,
-            supported_versions: Vec::with_capacity(2),
-            quic_iface_factory: Box::new(UdpSocketController::bind),
-            defer_idle_timeout: HeartbeatConfig::default(),
-            parameters: ServerParameters::default(),
-            hosts: Arc::new(DashMap::new()),
-            ifaces: Arc::new(DashMap::new()),
-            tls_config: TlsServerConfig::builder_with_provider(provider)
-                .with_protocol_versions(&[&rustls::version::TLS13])
-                .unwrap(),
-            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            logger: None,
-            token_provider: None,
-        })
-    }
-
-    /// Bind to an interface.
+    /// Let the host bind to an interface.
     ///
-    /// The server will receive datagrams from it, and prevent the interfaces from being automatically released.
+    /// The host must have been added when creating the [`QuicListeners`], otherwise this method will return an error.
     ///
-    /// This method can be called after the server shutdown, but the server will still not accept new connections.
+    /// If the added Interface has the same abstract address as an existing Interface but they are different instances,
+    /// the old Interface will be replaced, and packets will no longer be accepted on the old Interface.
     pub fn add_interface(
         &self,
         host: impl Into<String>,
@@ -267,34 +259,83 @@ impl QuicListeners {
         let listened_interface = match self.ifaces.entry(iface.abstract_addr()) {
             dashmap::Entry::Occupied(mut exist_iface) => {
                 // if the interface on the same address is already exist, update if the interface is different
-                if !Arc::ptr_eq(&iface, &exist_iface.get().interface) {
-                    crate::proto().add_interface(iface.clone())?;
-                    exist_iface.insert(ListenedInterface {
-                        interface: iface.clone(),
-                        servers: exist_iface.get().servers.clone(),
+                if !Arc::ptr_eq(&iface, &exist_iface.get().iface) {
+                    crate::proto().add_interface(iface.clone());
+                    exist_iface.insert(BoundInterface {
+                        iface: iface.clone(),
+                        hosts: exist_iface.get().hosts.clone(),
                     });
                 }
                 exist_iface.into_ref()
             }
             dashmap::Entry::Vacant(vacant_entry) => {
-                crate::proto().add_interface(iface.clone())?;
-                vacant_entry.insert(ListenedInterface {
-                    interface: iface.clone(),
-                    servers: Arc::default(),
+                crate::proto().add_interface(iface.clone());
+                vacant_entry.insert(BoundInterface {
+                    iface: iface.clone(),
+                    hosts: DashSet::default(),
                 })
             }
         };
 
         host_entry
             .bind_addresses
-            .insert(listened_interface.interface.abstract_addr());
-        if listened_interface.servers.insert(host) {
+            .insert(listened_interface.iface.abstract_addr());
+        if listened_interface.hosts.insert(host) {
             qevent::event!(ServerListening { address: new_addr });
         }
 
         Ok(())
     }
 
+    /// Make a specific Host or all Hosts stop listening on an interface.
+    ///
+    /// If `host` is not [`None`], only remove the interface for that host, which requires the Host to exist.
+    /// If host is [`None`], make all Hosts stop listening on that interface.
+    ///
+    /// If an Interface is no longer being listened to by any Host, the Interface will be released.
+    /// However, a Host can listen on no interfaces.
+    ///
+    /// Removing an interface that has already been removed will return `Ok(())`.
+    pub fn del_interface(
+        &self,
+        host: Option<impl Into<String>>,
+        bind: AbstractAddr,
+    ) -> io::Result<()> {
+        let dashmap::Entry::Occupied(bind_interface) = self.ifaces.entry(bind.clone()) else {
+            return Ok(());
+        };
+        match host {
+            Some(host) => {
+                let host = host.into();
+                let Some(host_entry) = self.hosts.get_mut(&host) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Host {host} not exist."),
+                    ));
+                };
+                if host_entry.bind_addresses.remove(&bind).is_none() {
+                    return Ok(()); // already removed
+                }
+                if host_entry.bind_addresses.is_empty() {
+                    bind_interface.remove();
+                }
+            }
+            None => {
+                let bind_interface = bind_interface.remove();
+                for host in bind_interface.hosts.iter() {
+                    let host = self.hosts.get_mut(&*host).expect("Host must exist");
+                    host.bind_addresses.remove(&bind);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Gets all hosts of the [`QuicListeners`] and their bound abstract addresses,
+    /// as well as the actual addresses corresponding to the abstract addresses.
+    ///
+    /// If the Interface corresponding to an abstract address doesn't exist or is damaged,
+    /// the corresponding actual address will be None.
     pub fn hosts(&self) -> HashMap<String, HashMap<AbstractAddr, Option<QuicAddr>>> {
         self.hosts
             .iter()
@@ -305,7 +346,7 @@ impl QuicListeners {
                     .iter()
                     .map(|addr| {
                         let iface = self.ifaces.get(&addr).expect("Interface must exist");
-                        let local_addr = iface.interface.local_addr().ok();
+                        let local_addr = iface.iface.local_addr().ok();
                         (addr.key().clone(), local_addr)
                     })
                     .collect();
@@ -315,15 +356,40 @@ impl QuicListeners {
             .collect()
     }
 
-    /// Accept the next incoming connection.
+    /// Accept a connection.
     ///
-    /// The connection accepted may still in the progress of handshake, but you can use it to do anything you want, such
-    /// as sending data, receiving data... operations will be pending until the connection is connected or closed.
+    /// If the host which the incoming connection is connected is not listening
+    /// on the interface which received the incoming connection,
+    /// the connection will be automatically rejected.
     ///
-    /// If all listening udp sockets are closed, this method will return an error.
+    /// The number of connections queued is limited by the backlog parameter provided to [`QuicListenersBuilder::listen`].
+    /// If the queue is full, new initial packets received by the [`QuicListeners`] may be dropped.
     pub async fn accept(&self) -> io::Result<(String, Arc<Connection>, Pathway, Link)> {
         let no_address_listening = || io::Error::other("Server shutdown");
-        self.incomings.recv().await.ok_or_else(no_address_listening)
+        self.incomings
+            .recv()
+            .await
+            .ok_or_else(no_address_listening)
+            .map(|(i, _)| i)
+    }
+
+    /// Close the QuicListeners, stops accepting new connections.
+    ///
+    /// Connections in the queue (unaccepted connections)will be closed
+    pub fn shutdown(&self) {
+        if self.incomings.close().is_none() {
+            // already closed
+            return;
+        }
+
+        self.incomings.close();
+        self.backlog.close();
+    }
+}
+
+impl Drop for QuicListeners {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -334,7 +400,7 @@ impl QuicListeners {
         LISTENERS.get_or_init(Default::default)
     }
 
-    pub(crate) async fn try_accpet_connection(
+    pub(crate) async fn try_accept_connection(
         iface_addr: AbstractAddr,
         packet: Packet,
         pathway: Pathway,
@@ -344,13 +410,10 @@ impl QuicListeners {
             return;
         };
 
-        let Some(server_names) = listeners
-            .ifaces
-            .get(&iface_addr)
-            .map(|iface| iface.servers.clone())
-        else {
+        let bound_ifaces = listeners.ifaces.clone();
+        if !bound_ifaces.contains_key(&iface_addr) {
             return;
-        };
+        }
 
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = listeners.backlog.clone().acquire_owned().await else {
@@ -391,9 +454,8 @@ impl QuicListeners {
         );
 
         tokio::spawn(async move {
-            let _permit = premit; // hold the permit until the connection established or handshake failed
             crate::proto()
-                .deliver(iface_addr, packet, pathway, link)
+                .deliver(iface_addr.clone(), packet, pathway, link)
                 .await;
 
             tokio::spawn({
@@ -420,7 +482,10 @@ impl QuicListeners {
 
             match connection.server_name().await {
                 Ok(server_name) => {
-                    if !server_names.contains(&server_name) {
+                    if !bound_ifaces
+                        .get(&iface_addr)
+                        .is_some_and(|iface| iface.hosts.contains(&server_name))
+                    {
                         tracing::warn!(
                             role = "server",
                             odcid = format!("{origin_dcid:x}"),
@@ -430,15 +495,16 @@ impl QuicListeners {
                         connection.close("", 1);
                         return;
                     }
-                    _ = listeners
-                        .incomings
-                        .send((server_name, connection.clone(), pathway, link));
+                    let incoming = (server_name, connection.clone(), pathway, link);
+                    if listeners.incomings.send((incoming, premit)).await.is_err() {
+                        connection.close("", 1);
+                    }
                 }
                 Err(error) => {
                     tracing::error!(
                         role = "server",
                         odcid = format!("{origin_dcid:x}"),
-                        "Failed to accpet connection from {}: {error:?}",
+                        "Failed to accept connection from {}: {error:?}",
                         link.dst()
                     );
                 }
@@ -456,11 +522,8 @@ impl QuicListeners {
         };
 
         if let Some(listened_interface) = listeners.ifaces.get(&iface_addr) {
-            if Weak::ptr_eq(
-                &Arc::downgrade(&listened_interface.interface),
-                &broken_iface,
-            ) {
-                for server_name in listened_interface.servers.iter() {
+            if Weak::ptr_eq(&Arc::downgrade(&listened_interface.iface), &broken_iface) {
+                for server_name in listened_interface.hosts.iter() {
                     let server_name = &*server_name;
                     tracing::error!(
                         "Interface {iface_addr} used by {server_name} was closed unexpectedly: {error:?}."
@@ -468,21 +531,6 @@ impl QuicListeners {
                 }
             }
         };
-    }
-
-    pub fn shutdown(&self) {
-        if self.incomings.close().is_none() {
-            // already closed
-            return;
-        }
-
-        self.backlog.close();
-    }
-}
-
-impl Drop for QuicListeners {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 
@@ -494,7 +542,7 @@ pub struct QuicListenersBuilder<T> {
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     hosts: Arc<DashMap<String, Host>>,
-    ifaces: Arc<DashMap<AbstractAddr, ListenedInterface>>,
+    ifaces: Arc<DashMap<AbstractAddr, BoundInterface>>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
@@ -521,15 +569,12 @@ impl<T> QuicListenersBuilder<T> {
         self
     }
 
-    /// Specify the streams concurrency strategy controller for the server.
+    /// Specify the factory which product the streams concurrency strategy controller for the server.
     ///
-    /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
-    /// (initial maximum number of bidirectional streams, initial maximum number of unidirectional streams) configured in
-    /// [transport parameters] and return a `ControlConcurrency` object.
+    /// The streams controller is used to control the concurrency of data streams.
+    /// Take a look of [`ControlStreamsConcurrency`] for more information.
     ///
     /// If you call this multiple times, only the last `controller` will be used.
-    ///
-    /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_streams_concurrency_strategy(
         mut self,
         strategy_factory: impl ProductStreamsConcurrencyController + 'static,
@@ -552,7 +597,7 @@ impl<T> QuicListenersBuilder<T> {
         self
     }
 
-    /// Specify the [transport parameters] for the server.
+    /// Specify the [transport parameters] for the server connections.
     ///
     /// If you call this multiple times, only the last `parameters` will be used.
     ///
@@ -564,10 +609,12 @@ impl<T> QuicListenersBuilder<T> {
         self
     }
 
-    /// Specify how [`QuicServerBuilder::listen`] binds to the interface.
+    /// Specify how hosts bind to the interface.
     ///
-    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
-    /// and the binder is [`UdpSocketController::bind`].
+    /// If you call this multiple times, only the last `factory` will be used.
+    ///
+    /// The default interface is [`UdpSocketController`] that support GSO and GRO on linux,
+    /// and the factory is [`UdpSocketController::bind`].
     pub fn with_iface_factory(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Box::new(factory),
@@ -575,6 +622,19 @@ impl<T> QuicListenersBuilder<T> {
         }
     }
 
+    /// Specify qlog collector for server connections.
+    ///
+    /// If you call this multiple times, only the last `logger` will be used.
+    ///
+    /// We have pre-implemented two Qloggers:
+    /// - [`DefaultSeqLogger`]: Generates a sqlog file for each connection,
+    ///   which will be written to the directory specified when constructing [`DefaultSeqLogger`].
+    ///   This Logger converts qlog to a lower version format that can be parsed by [qvis].
+    ///
+    /// - [`NullLogger`]: Ignores all qlogs, this is the default.
+    ///
+    /// [qvis]: https://qvis.quictools.info/
+    /// [`DefaultSeqLogger`]: qevent::telemetry::handy::DefaultSeqLogger
     pub fn with_qlog(mut self, logger: Arc<dyn Log + Send + Sync>) -> Self {
         self.logger = Some(logger);
         self
@@ -629,10 +689,23 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
 impl QuicListenersBuilder<TlsServerConfig> {
     /// Add a host with a certificate chain and a private key.
     ///
-    /// Call this method multiple times to add multiple hosts, each with its own certificate chain and private key.
-    /// The server will use the certificate chain and private key that matches the SNI hostname in the client's
-    /// `ClientHello` message. If the client does not send an SNI hostname, or the server name don't match any host,
-    /// the connection will be rejected.
+    /// Returns an error if the host has already been added, the private key is invalid,
+    /// or one of the bind addresses specified in the [`HostBuilder`] fails to bind.
+    ///
+    /// Call this method multiple times to add multiple hosts,
+    /// each with its own certificate chain and private key.  
+    ///
+    /// The server will use the certificate chain and private key
+    /// that matches the SNI server name in the client's `ClientHello` message.
+    /// If the client does not send an server name,
+    /// or the server name don't match any host,
+    /// the connection will be rejected by [`QuicListeners`].
+    ///
+    /// Host can be added without binding any interface.
+    ///
+    /// After the [`QuicListeners`] is started, you can call [`QuicListeners::add_interface`]
+    /// to add more interfaces to the host, can  [`QuicListeners::del_interface`] to remove an
+    /// interface from the host.
     pub fn add_host(
         self,
         name: impl Into<String>,
@@ -668,18 +741,18 @@ impl QuicListenersBuilder<TlsServerConfig> {
             |bind_addresses, bind_address| {
                 let iface_address = {
                     if let Some(listened_interface) = self.ifaces.get(&bind_address) {
-                        let inserted = listened_interface.servers.insert(host_name.clone());
+                        let inserted = listened_interface.hosts.insert(host_name.clone());
                         assert!(!inserted);
-                        listened_interface.interface.abstract_addr()
+                        listened_interface.iface.abstract_addr()
                     } else {
                         let iface = self.quic_iface_factory.bind(bind_address.clone())?;
                         let iface_addr = iface.abstract_addr();
-                        crate::proto().add_interface(iface.clone())?;
+                        crate::proto().add_interface(iface.clone());
                         let previous = self.ifaces.insert(
                             iface_addr.clone(),
-                            ListenedInterface {
-                                interface: iface,
-                                servers: Arc::new([host_name.clone()].into_iter().collect()),
+                            BoundInterface {
+                                iface,
+                                hosts: [host_name.clone()].into_iter().collect(),
                             },
                         );
                         assert!(previous.is_none());
@@ -715,40 +788,13 @@ impl QuicListenersBuilder<TlsServerConfig> {
         self
     }
 
-    /// Start to listen for incoming connections.
+    /// Start listening for incoming connections.
     ///
-    /// ## Bind Interfaces
+    /// Returns an error if no hosts have been added before.
     ///
-    /// The server will bind interfaces from the given addresses, receive datagrams from them,
-    /// and prevent the interfaces from being automatically released.
-    ///
-    /// The server must successfully bind all given interfaces when it is created,
-    /// otherwise this method will immediately return an error and the server will not be started.
-    ///
-    /// The server can be created without binding any interface.
-    ///
-    /// You can additionally bind new interfaces after server launched by calling [`QuicServer::add_interface`].
-    ///
-    /// ## Accept Conenctions
-    ///
-    /// By default, the server will accept connections from all interfaces (not only those bound to the quic server,
-    /// but also those bound to other quic clients).
-    ///
-    /// If strict mode is used, the server will *only* accept connections from the interface the server is bound to.
-    /// This is closer to traditional server behavior.
-    ///
-    /// By calling the [`QuicServer::accept`] method, you can get all connections connected to the server.
-    /// The QUIC protocol handshake will be completed automatically in the background.
-    /// The connection obtained through accpet may not have completed the handshake yet.
-    ///
-    /// ## Shutdown
-    ///
-    /// When the `QuicServer` is dropped or [`QuicServer::shutdown`] is called,
-    /// the server will stop listening for incoming connections,
-    /// and you can start a new server by calling the this method again.
-    ///
-    /// *Note*: There can be only one server running at the same time,
-    /// so this method will return an error if there is already a server running.
+    /// The `backlog` parameter has the same meaning as the backlog parameter of the UNIX listen function,
+    /// which is the maximum number of pending connections that can be queued.
+    /// If the queue is full, new initial packets may be dropped.
     pub fn listen(mut self, backlog: usize) -> io::Result<Arc<QuicListeners>> {
         if self.hosts.is_empty() {
             return Err(io::Error::new(
@@ -758,7 +804,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
         }
 
         let quic_listeners = Arc::new(QuicListeners {
-            incomings: Default::default(),
+            incomings: Arc::new(Channel::new(1)),
             _supported_versions: self.supported_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
