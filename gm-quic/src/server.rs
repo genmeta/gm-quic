@@ -413,7 +413,7 @@ impl AuthClient for HostAuther {
         true
     }
 
-    fn verify_client_certs(&self, _: &str, _: &ClientParameters, _: &PeerCerts) -> bool {
+    fn verify_client_certs(&self, _: &str, _: &ClientParameters, _: &PeerCert) -> bool {
         true
     }
 }

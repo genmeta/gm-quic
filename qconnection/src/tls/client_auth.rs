@@ -5,7 +5,7 @@ use std::{
 
 use qbase::{param::ClientParameters, util::Future};
 
-use crate::prelude::PeerCerts;
+use crate::prelude::PeerCert;
 
 pub type ClientAuthers = Vec<Arc<dyn AuthClient>>;
 
@@ -18,7 +18,7 @@ pub trait AuthClient: Send + Sync {
         &self,
         host: &str,
         clinet_params: &ClientParameters,
-        clinet_certs: &PeerCerts,
+        clinet_certs: &PeerCert,
     ) -> bool;
 }
 
