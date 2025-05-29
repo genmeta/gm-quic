@@ -81,8 +81,8 @@ enum Requirements {
 #[derive(Debug)]
 pub struct Parameters {
     state: u8,
-    client: ClientParameters,
-    server: ServerParameters,
+    client: Arc<ClientParameters>,
+    server: Arc<ServerParameters>,
     remembered: Option<RememberedParameters>,
     requirements: Requirements,
     wakers: Vec<Waker>,
@@ -104,8 +104,8 @@ impl Parameters {
     ) -> Self {
         Self {
             state: Self::CLIENT_READY,
-            client,
-            server: ServerParameters::default(),
+            client: Arc::new(client),
+            server: Arc::default(),
             remembered,
             requirements: Requirements::Client {
                 origin_dcid,
@@ -124,8 +124,8 @@ impl Parameters {
     fn new_server(server: ServerParameters) -> Self {
         Self {
             state: Self::SERVER_READY,
-            client: ClientParameters::default(),
-            server,
+            client: Arc::default(),
+            server: Arc::new(server),
             remembered: None,
             requirements: Requirements::Server { initial_scid: None },
             wakers: Vec::with_capacity(2),
@@ -143,10 +143,10 @@ impl Parameters {
         self.remembered.as_ref()
     }
 
-    fn set_retry_scid(&mut self, cid: ConnectionId) {
-        assert_eq!(self.role(), Role::Server);
-        self.server.set_retry_source_connection_id(cid);
-    }
+    // fn set_retry_scid(&mut self, cid: ConnectionId) {
+    //     assert_eq!(self.role(), Role::Server);
+    //     self.server.set_retry_source_connection_id(cid);
+    // }
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.state == Self::CLIENT_READY | Self::SERVER_READY {
@@ -161,7 +161,10 @@ impl Parameters {
         self.state == Self::CLIENT_READY | Self::SERVER_READY
     }
 
-    fn recv_remote_params(&mut self, params: &[u8]) -> Result<(), Error> {
+    fn recv_remote_params(
+        &mut self,
+        params: &[u8],
+    ) -> Result<Option<Arc<dyn StoreParameter>>, Error> {
         self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.parse_and_validate_remote_params(params)?;
         // Because TLS and packet parsing are in parallel,
@@ -171,9 +174,13 @@ impl Parameters {
         if self.authenticate_cids()? {
             self.state = Self::CLIENT_READY | Self::SERVER_READY;
             self.wake_all();
+            return Ok(Some(match self.role() {
+                Role::Client => self.server.clone(),
+                Role::Server => self.client.clone(),
+            }));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn wake_all(&mut self) {
@@ -184,8 +191,8 @@ impl Parameters {
 
     fn parse_and_validate_remote_params(&mut self, input: &[u8]) -> Result<(), QuicError> {
         match self.role() {
-            Role::Client => self.server = be_server_parameters(input)?,
-            Role::Server => self.client = be_client_parameters(input)?,
+            Role::Client => self.server = Arc::new(be_server_parameters(input)?),
+            Role::Server => self.client = Arc::new(be_client_parameters(input)?),
         }
         Ok(())
     }
@@ -326,6 +333,16 @@ impl ArcParameters {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
     }
 
+    pub fn get_local(&self) -> Result<Arc<dyn StoreParameter + Send + Sync>, Error> {
+        match self.0.lock().unwrap().as_ref() {
+            Ok(params) => Ok(match params.role() {
+                Role::Client => params.client.clone(),
+                Role::Server => params.server.clone(),
+            }),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Get the local transport parameter by id.
     ///
     /// Returns Err if some connection error occurred, or the parameter not exist
@@ -351,12 +368,29 @@ impl ArcParameters {
         }
     }
 
-    pub async fn ready(&self) -> Result<(), Error> {
+    pub async fn remote(&self) -> Result<Arc<dyn StoreParameter + Send + Sync>, Error> {
         std::future::poll_fn(|cx| match self.0.lock().unwrap().as_mut() {
-            Ok(params) => params.poll_ready(cx).map(|()| Ok(())),
+            Ok(params) => params.poll_ready(cx).map(|()| {
+                Ok(match params.role() {
+                    Role::Client => params.server.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                    Role::Server => params.client.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                })
+            }),
             Err(e) => Poll::Ready(Err(e.clone())),
         })
         .await
+    }
+
+    pub fn try_get_remote(&self) -> Result<Option<Arc<dyn StoreParameter + Send + Sync>>, Error> {
+        match self.0.lock().unwrap().as_ref() {
+            Ok(params) => Ok(params
+                .has_rcvd_remote_params()
+                .then(|| match params.role() {
+                    Role::Client => params.server.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                    Role::Server => params.client.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                })),
+            Err(e) => Err(e.clone()),
+        }
     }
 
     /// Get the remote transport parameter by id.
@@ -403,33 +437,17 @@ impl ArcParameters {
         Ok(params.remembered().and_then(|r| r.get_as(id)))
     }
 
-    pub fn map_client_parameters(&self, f: impl FnOnce(&ClientParameters)) {
-        let guard = self.0.lock().unwrap();
-        if let Ok(params) = guard.deref() {
-            assert!(params.state & Parameters::CLIENT_READY != 0);
-            f(&params.client);
-        }
-    }
-
-    pub fn map_server_parameters(&self, f: impl FnOnce(&ServerParameters)) {
-        let guard = self.0.lock().unwrap();
-        if let Ok(params) = guard.deref() {
-            assert!(params.state & Parameters::SERVER_READY != 0);
-            f(&params.server);
-        }
-    }
-
-    /// Sets the retry source connection ID in the server
-    /// transport parameters.
-    ///
-    /// It is meaningful only for the client, because only
-    /// server can send the Retry packet.
-    pub fn set_retry_scid(&self, cid: ConnectionId) {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(params) = guard.deref_mut() {
-            params.set_retry_scid(cid);
-        }
-    }
+    // /// Sets the retry source connection ID in the server
+    // /// transport parameters.
+    // ///
+    // /// It is meaningful only for the client, because only
+    // /// server can send the Retry packet.
+    // pub fn set_retry_scid(&self, cid: ConnectionId) {
+    //     let mut guard = self.0.lock().unwrap();
+    //     if let Ok(params) = guard.deref_mut() {
+    //         params.set_retry_scid(cid);
+    //     }
+    // }
 
     /// Gets the original destination connection ID of the connection.
     ///
@@ -449,8 +467,8 @@ impl ArcParameters {
         let guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref() {
             match params.role() {
-                Role::Client => buf.put_parameters(params.client.as_ref()),
-                Role::Server => buf.put_parameters(params.server.as_ref()),
+                Role::Client => buf.put_parameters(params.client.as_ref().as_ref()),
+                Role::Server => buf.put_parameters(params.server.as_ref().as_ref()),
             }
         }
     }
@@ -494,16 +512,21 @@ impl ArcParameters {
     /// It will parse and check the remote transport parameters,
     /// and wake all the wakers waiting for the remote transport parameters
     /// if the remote transport parameters are valid.
-    pub fn recv_remote_params(&self, bytes: &[u8]) -> Result<(), Error> {
+    pub fn recv_remote_params(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<Arc<dyn StoreParameter>>, Error> {
         let mut guard = self.0.lock().unwrap();
         let params = guard.as_mut().map_err(|e| e.clone())?;
         // 避免外界拿到错误的参数
-        if let Err(e) = params.recv_remote_params(bytes) {
-            params.wake_all();
-            *guard = Err(e.clone());
-            return Err(e);
+        match params.recv_remote_params(bytes) {
+            Ok(remote_params) => Ok(remote_params),
+            Err(error) => {
+                params.wake_all();
+                *guard = Err(error.clone());
+                Err(error)
+            }
         }
-        Ok(())
     }
 
     /// Returns true if the remote transport parameters have been received.
@@ -531,6 +554,8 @@ impl ArcParameters {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::varint::VarInt;
 
@@ -572,11 +597,14 @@ mod tests {
         let server_cid = ConnectionId::from_slice(b"server_test");
         _ = params.initial_scid_from_peer_need_equal(server_cid);
 
-        // Setup server parameters to match requirements
-        params.server.set_initial_source_connection_id(server_cid);
-        params.server.set_original_destination_connection_id(odcid);
+        params.server = Arc::new({
+            let mut server_params = ServerParameters::default();
+            server_params.set_initial_source_connection_id(server_cid);
+            server_params.set_original_destination_connection_id(odcid);
+            server_params
+        });
 
-        assert!(params.authenticate_cids().is_ok());
+        assert!(dbg!(params.authenticate_cids()).is_ok());
     }
 
     #[test]
@@ -621,13 +649,15 @@ mod tests {
             32, 4, 128, 0, 255, 255, // max_datagram_frame_size
         ]);
         assert_eq!(
-            result,
-            Err(QuicError::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto.into(),
-                "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
+            result.err(),
+            Some(
+                QuicError::new(
+                    ErrorKind::TransportParameter,
+                    FrameType::Crypto.into(),
+                    "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
+                )
+                .into()
             )
-            .into())
         );
     }
 
