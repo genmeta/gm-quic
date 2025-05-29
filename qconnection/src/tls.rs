@@ -145,7 +145,7 @@ impl futures::Future for ReadAndProcess<'_> {
                 {
                     return Poll::Ready(Err(QuicError::with_default_fty(
                         ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
-                        "Reject by clinet auther: server name verification failed",
+                        "",
                     )
                     .into()));
                 }
@@ -170,7 +170,7 @@ impl futures::Future for ReadAndProcess<'_> {
                     false => {
                         return Poll::Ready(Err(QuicError::with_default_fty(
                             ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
-                            "Reject by clinet auther: client parameters verification failed",
+                            "",
                         )
                         .into()));
                     }
@@ -197,7 +197,7 @@ impl futures::Future for ReadAndProcess<'_> {
                     {
                         return Poll::Ready(Err(QuicError::with_default_fty(
                             ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
-                            "Reject by clinet auther: client certificate verification failed",
+                            "",
                         )
                         .into()));
                     }

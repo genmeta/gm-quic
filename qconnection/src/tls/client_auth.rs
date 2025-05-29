@@ -1,10 +1,9 @@
 use std::{
-    ops::Deref,
     sync::Arc,
     task::{Context, Poll},
 };
 
-use qbase::{error::Error, param::ClientParameters, util::Future};
+use qbase::{param::ClientParameters, util::Future};
 
 use crate::prelude::PeerCerts;
 
@@ -34,7 +33,7 @@ pub trait AuthClient: Send + Sync {
 /// the client's transport parameters and verified the requested server name (SNI),
 /// enhancing security by preventing premature data transmission before proper validation.
 #[derive(Default, Debug, Clone)]
-pub struct ArcSendGate(Arc<Future<Result<(), Error>>>);
+pub struct ArcSendGate(Arc<Future<()>>);
 
 impl ArcSendGate {
     /// Create a new `SendGate` in the restricted state.
@@ -50,7 +49,7 @@ impl ArcSendGate {
     /// Transmission is immediately permitted, used when silent rejection
     /// is disabled or verification has already been completed.
     pub fn unrestricted() -> Self {
-        Self(Future::with(Ok(())).into())
+        Self(Future::with(()).into())
     }
 
     /// Request permission to send data.
@@ -59,17 +58,17 @@ impl ArcSendGate {
     /// are completed, or connection error occured.
     ///
     /// This method will not block when silent rejection is not enabled
-    pub async fn request_permit(&self) -> Result<(), Error> {
-        self.0.get().await.deref().clone()
+    pub async fn request_permit(&self) {
+        self.0.get().await;
     }
 
     /// Poll for permission to send data.
     ///
     /// `poll` version of [`request_permit`].
-    /// 
+    ///
     /// [`request_permit`]: Self::request_permit
-    pub fn poll_request_permit(&self, cx: &mut Context) -> Poll<Result<(), Error>> {
-        self.0.poll_get(cx).map(|r| r.deref().clone())
+    pub fn poll_request_permit(&self, cx: &mut Context) -> Poll<()> {
+        self.0.poll_get(cx).map(|_| ())
     }
 
     /// Check if transmission is currently permitted.
@@ -82,13 +81,6 @@ impl ArcSendGate {
     /// Called after client parameters and server verification are completed
     /// successfully. Unblocks all pending transmission requests.
     pub fn grant_permit(&self) {
-        self.0.assign(Ok(()));
-    }
-
-    /// Unblock send task when an connection error occurs.
-    ///
-    /// Send task will be woken up, but still no data will be sent.
-    pub fn on_conn_error(&self, error: &Error) {
-        self.0.assign(Err(error.clone()));
+        self.0.assign(());
     }
 }

@@ -136,25 +136,10 @@ enum SpecificComponents {
     Server(ServerComponents),
 }
 
-impl SpecificComponents {
-    fn on_conn_error(&self, error: &Error) {
-        match self {
-            SpecificComponents::Client => {}
-            SpecificComponents::Server(server) => server.on_conn_error(error),
-        }
-    }
-}
-
 #[derive(Clone)]
 struct ServerComponents {
     send_gate: ArcSendGate,
     client_authers: ClientAuthers,
-}
-
-impl ServerComponents {
-    fn on_conn_error(&self, error: &Error) {
-        self.send_gate.on_conn_error(error);
-    }
 }
 
 impl Components {

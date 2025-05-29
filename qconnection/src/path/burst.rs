@@ -156,9 +156,7 @@ impl Burst {
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
         if let Some(send_gate) = &self.send_gate {
-            if ready!(send_gate.poll_request_permit(cx)).is_err() {
-                return Poll::Pending;
-            }
+            ready!(send_gate.poll_request_permit(cx));
         }
         let (buffers, transaction) = match self.prepare(buffers) {
             Ok(Some((buffers, transaction))) => (buffers, transaction),

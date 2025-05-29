@@ -116,7 +116,6 @@ impl QuicProto {
         interface: Arc<dyn QuicInterface>,
     ) -> JoinHandle<io::Error> {
         let virt_addr = interface.virt_addr();
-        tracing::info!("add interface: {virt_addr}");
         let entry = self
             .interfaces
             .entry(virt_addr.clone())
