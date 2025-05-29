@@ -29,7 +29,7 @@ pub mod prelude {
         Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
         path::idle::HeartbeatConfig,
-        tls::PeerCerts,
+        tls::PeerCert,
     };
 }
 
@@ -72,7 +72,7 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ConnState;
 use termination::Termination;
-use tls::{ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCerts};
+use tls::{ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCert};
 use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
@@ -232,7 +232,7 @@ impl Components {
         self.paths.remove(pathway, "application removed");
     }
 
-    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCerts>, Error>> + Send {
+    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCert>, Error>> + Send {
         let peer_certs = self.peer_certs.clone();
         async move { peer_certs.get().await }
     }
@@ -356,7 +356,7 @@ impl Connection {
         }
     }
 
-    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCerts>> {
+    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCert>> {
         Ok(self
             .try_map_components(|core_conn| core_conn.peer_certs())?
             .await?)
