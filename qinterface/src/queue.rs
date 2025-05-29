@@ -1,6 +1,6 @@
 use qbase::{
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, Pathway},
     },
     packet::{
@@ -12,7 +12,7 @@ use qbase::{
 
 use crate::packet::CipherPacket;
 
-type PacketQueue<P> = BoundQueue<(AbstractAddr, CipherPacket<P>, Pathway, Link)>;
+type PacketQueue<P> = BoundQueue<(VirtualAddr, CipherPacket<P>, Pathway, Link)>;
 
 // 需要一个四元组，pathway + src + dst
 pub struct RcvdPacketQueue {
@@ -64,7 +64,7 @@ impl RcvdPacketQueue {
 
     pub async fn deliver(
         &self,
-        iface_addr: AbstractAddr,
+        virt_addr: VirtualAddr,
         packet: Packet,
         pathway: Pathway,
         socket: Link,
@@ -75,28 +75,28 @@ impl RcvdPacketQueue {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .initial
-                        .send((iface_addr, packet, pathway, socket))
+                        .send((virt_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .handshake
-                        .send((iface_addr, packet, pathway, socket))
+                        .send((virt_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .zero_rtt
-                        .send((iface_addr, packet, pathway, socket))
+                        .send((virt_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Short(header) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .one_rtt
-                        .send((iface_addr, packet, pathway, socket))
+                        .send((virt_addr, packet, pathway, socket))
                         .await;
                 }
             },

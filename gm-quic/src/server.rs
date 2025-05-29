@@ -7,7 +7,7 @@ use std::{
 
 use dashmap::{DashMap, DashSet};
 use handy::UdpSocketController;
-use qbase::net::address::{AbstractAddr, QuicAddr, ToAbstractAddrs};
+use qbase::net::address::{ConcreteAddr, ToVirtualAddrs, VirtualAddr};
 use qconnection::builder::*;
 use qevent::{
     quic::connectivity::ServerListening,
@@ -46,7 +46,7 @@ impl ResolvesServerCert for VirtualHosts {
 }
 
 pub struct Host {
-    bind_addresses: DashSet<AbstractAddr>,
+    bind_addresses: DashSet<VirtualAddr>,
     cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     private_key: Arc<dyn rustls::sign::SigningKey>,
     ocsp: Option<Vec<u8>>,
@@ -92,7 +92,7 @@ impl Debug for Host {
 ///
 /// Call [`Host::with_cert_key`] to create a new [`HostBuilder`].
 pub struct HostBuilder {
-    pub bind_addresses: HashSet<AbstractAddr>,
+    pub bind_addresses: HashSet<VirtualAddr>,
     pub cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub private_key: rustls::pki_types::PrivateKeyDer<'static>,
     pub ocsp: Option<Vec<u8>>,
@@ -108,8 +108,8 @@ impl HostBuilder {
     ///
     /// After the [`QuicListeners`] is started, you can also call [`QuicListeners::add_interface`]
     /// to add more interfaces to the host.
-    pub fn bind_addresses(mut self, bind_addresses: impl ToAbstractAddrs) -> io::Result<Self> {
-        self.bind_addresses = bind_addresses.to_abstract_addrs()?.collect();
+    pub fn bind_addresses(mut self, bind_addresses: impl ToVirtualAddrs) -> io::Result<Self> {
+        self.bind_addresses = bind_addresses.to_virtual_addrs()?.collect();
         Ok(self)
     }
 
@@ -128,7 +128,7 @@ struct BoundInterface {
 impl Debug for BoundInterface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListenedInterface")
-            .field("interface", &self.iface.abstract_addr())
+            .field("interface", &self.iface.virt_addr())
             .field("servers", &self.hosts)
             .finish()
     }
@@ -136,7 +136,7 @@ impl Debug for BoundInterface {
 
 impl Drop for BoundInterface {
     fn drop(&mut self) {
-        crate::proto().del_interface_if(self.iface.abstract_addr(), |iface, _| {
+        crate::proto().del_interface_if(self.iface.virt_addr(), |iface, _| {
             Arc::ptr_eq(iface, &self.iface) && Arc::strong_count(iface) == 2
         });
     }
@@ -182,7 +182,7 @@ pub struct QuicListeners {
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
     hosts: Arc<DashMap<String, Host>>,
-    ifaces: Arc<DashMap<AbstractAddr, BoundInterface>>,
+    ifaces: Arc<DashMap<VirtualAddr, BoundInterface>>,
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -248,7 +248,7 @@ impl QuicListeners {
         iface: Arc<dyn QuicInterface>,
     ) -> io::Result<()> {
         let host = host.into();
-        let new_addr = iface.local_addr()?;
+        let new_addr = iface.concrete_addr()?;
         let Some(host_entry) = self.hosts.get(&host) else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -256,7 +256,7 @@ impl QuicListeners {
             ));
         };
         // update or insert the interface
-        let listened_interface = match self.ifaces.entry(iface.abstract_addr()) {
+        let listened_interface = match self.ifaces.entry(iface.virt_addr()) {
             dashmap::Entry::Occupied(mut exist_iface) => {
                 // if the interface on the same address is already exist, update if the interface is different
                 if !Arc::ptr_eq(&iface, &exist_iface.get().iface) {
@@ -279,7 +279,7 @@ impl QuicListeners {
 
         host_entry
             .bind_addresses
-            .insert(listened_interface.iface.abstract_addr());
+            .insert(listened_interface.iface.virt_addr());
         if listened_interface.hosts.insert(host) {
             qevent::event!(ServerListening { address: new_addr });
         }
@@ -299,7 +299,7 @@ impl QuicListeners {
     pub fn del_interface(
         &self,
         host: Option<impl Into<String>>,
-        bind: AbstractAddr,
+        bind: VirtualAddr,
     ) -> io::Result<()> {
         let dashmap::Entry::Occupied(bind_interface) = self.ifaces.entry(bind.clone()) else {
             return Ok(());
@@ -336,7 +336,7 @@ impl QuicListeners {
     ///
     /// If the Interface corresponding to an abstract address doesn't exist or is damaged,
     /// the corresponding actual address will be None.
-    pub fn hosts(&self) -> HashMap<String, HashMap<AbstractAddr, Option<QuicAddr>>> {
+    pub fn hosts(&self) -> HashMap<String, HashMap<VirtualAddr, Option<ConcreteAddr>>> {
         self.hosts
             .iter()
             .map(|entry| {
@@ -346,7 +346,7 @@ impl QuicListeners {
                     .iter()
                     .map(|addr| {
                         let iface = self.ifaces.get(&addr).expect("Interface must exist");
-                        let local_addr = iface.iface.local_addr().ok();
+                        let local_addr = iface.iface.concrete_addr().ok();
                         (addr.key().clone(), local_addr)
                     })
                     .collect();
@@ -401,7 +401,7 @@ impl QuicListeners {
     }
 
     pub(crate) async fn try_accept_connection(
-        iface_addr: AbstractAddr,
+        virt_addr: VirtualAddr,
         packet: Packet,
         pathway: Pathway,
         link: Link,
@@ -411,7 +411,7 @@ impl QuicListeners {
         };
 
         let bound_ifaces = listeners.ifaces.clone();
-        if !bound_ifaces.contains_key(&iface_addr) {
+        if !bound_ifaces.contains_key(&virt_addr) {
             return;
         }
 
@@ -455,7 +455,7 @@ impl QuicListeners {
 
         tokio::spawn(async move {
             crate::proto()
-                .deliver(iface_addr.clone(), packet, pathway, link)
+                .deliver(virt_addr.clone(), packet, pathway, link)
                 .await;
 
             tokio::spawn({
@@ -465,8 +465,8 @@ impl QuicListeners {
                         match event {
                             Event::Handshaked => {}
                             Event::ProbedNewPath(..) => {}
-                            Event::PathInactivated(iface_addr, ..) => {
-                                crate::proto().try_free_interface(iface_addr);
+                            Event::PathInactivated(virt_addr, ..) => {
+                                crate::proto().try_free_interface(virt_addr);
                             }
                             Event::ApplicationClose => {}
                             Event::Failed(error) => {
@@ -483,7 +483,7 @@ impl QuicListeners {
             match connection.server_name().await {
                 Ok(server_name) => {
                     if !bound_ifaces
-                        .get(&iface_addr)
+                        .get(&virt_addr)
                         .is_some_and(|iface| iface.hosts.contains(&server_name))
                     {
                         tracing::warn!(
@@ -513,7 +513,7 @@ impl QuicListeners {
     }
 
     pub(crate) fn on_interface_broken(
-        iface_addr: AbstractAddr,
+        virt_addr: VirtualAddr,
         broken_iface: Weak<dyn QuicInterface>,
         error: io::Error,
     ) {
@@ -521,12 +521,12 @@ impl QuicListeners {
             return;
         };
 
-        if let Some(listened_interface) = listeners.ifaces.get(&iface_addr) {
+        if let Some(listened_interface) = listeners.ifaces.get(&virt_addr) {
             if Weak::ptr_eq(&Arc::downgrade(&listened_interface.iface), &broken_iface) {
                 for server_name in listened_interface.hosts.iter() {
                     let server_name = &*server_name;
                     tracing::error!(
-                        "Interface {iface_addr} used by {server_name} was closed unexpectedly: {error:?}."
+                        "Interface {virt_addr} used by {server_name} was closed unexpectedly: {error:?}."
                     );
                 }
             }
@@ -542,7 +542,7 @@ pub struct QuicListenersBuilder<T> {
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     hosts: Arc<DashMap<String, Host>>,
-    ifaces: Arc<DashMap<AbstractAddr, BoundInterface>>,
+    ifaces: Arc<DashMap<VirtualAddr, BoundInterface>>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
@@ -739,27 +739,27 @@ impl QuicListenersBuilder<TlsServerConfig> {
         let bind_addresses = new_host.bind_addresses.into_iter().try_fold(
             DashSet::new(),
             |bind_addresses, bind_address| {
-                let iface_address = {
+                let virtual_address = {
                     if let Some(listened_interface) = self.ifaces.get(&bind_address) {
                         let inserted = listened_interface.hosts.insert(host_name.clone());
                         assert!(!inserted);
-                        listened_interface.iface.abstract_addr()
+                        listened_interface.iface.virt_addr()
                     } else {
                         let iface = self.quic_iface_factory.bind(bind_address.clone())?;
-                        let iface_addr = iface.abstract_addr();
+                        let virt_addr = iface.virt_addr();
                         crate::proto().add_interface(iface.clone());
                         let previous = self.ifaces.insert(
-                            iface_addr.clone(),
+                            virt_addr.clone(),
                             BoundInterface {
                                 iface,
                                 hosts: [host_name.clone()].into_iter().collect(),
                             },
                         );
                         assert!(previous.is_none());
-                        iface_addr
+                        virt_addr
                     }
                 };
-                bind_addresses.insert(iface_address);
+                bind_addresses.insert(virtual_address);
                 io::Result::Ok(bind_addresses)
             },
         )?;

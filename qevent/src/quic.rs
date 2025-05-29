@@ -11,7 +11,7 @@ use qbase::{
         Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
-    net::address::QuicAddr,
+    net::address::ConcreteAddr,
     packet::header::{
         GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
@@ -163,10 +163,10 @@ impl From<SocketAddr> for PathEndpointInfo {
     }
 }
 
-impl From<QuicAddr> for PathEndpointInfo {
-    fn from(value: QuicAddr) -> Self {
+impl From<ConcreteAddr> for PathEndpointInfo {
+    fn from(value: ConcreteAddr) -> Self {
         match value {
-            QuicAddr::Inet(socket_addr) => socket_addr.into(),
+            ConcreteAddr::Inet(socket_addr) => socket_addr.into(),
             _ => crate::build!(Self {}),
         }
     }
