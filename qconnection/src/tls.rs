@@ -9,7 +9,7 @@ use core::{
 use std::sync::{Arc, Mutex};
 
 pub use client_auth::{ArcSendGate, AuthClient, ClientAuthers};
-pub use peer_certs::{ArcPeerCerts, PeerCerts};
+pub use peer_certs::{ArcPeerCerts, PeerCert};
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
@@ -72,7 +72,7 @@ impl TlsSession {
     fn try_assign_peer_certs(
         &mut self,
         peer_certs: &ArcPeerCerts,
-    ) -> Result<Option<Arc<PeerCerts>>, Error> {
+    ) -> Result<Option<Arc<PeerCert>>, Error> {
         if !peer_certs.is_ready() {
             if let Some(certs) = self.tls_conn.peer_certificates() {
                 return peer_certs.assign(certs).map(Some);

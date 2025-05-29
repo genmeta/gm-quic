@@ -1,49 +1,24 @@
 use std::{ops::Deref, sync::Arc};
 
 use qbase::{error::Error, util::Future};
-use rcgen::{CertificateParams, SubjectPublicKeyInfo};
 use rustls::pki_types::CertificateDer;
 
 /// The certificate chain or the raw public key used by the peer to authenticate.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PeerCerts {
+pub enum PeerCert {
     /// If the client auth is not required, the peer may not present any certificate.
     None,
-    RawPublicKey(SubjectPublicKeyInfo),
-    /// The order of the certificate chain is as it appears in the TLS protocol:
-    /// the first certificate relates to the peer, the second certifies the first, the third certifies the second, and so on.
-    CertChain(Vec<CertificateParams>),
+    CertOrPublicKey(Vec<u8>),
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct ArcPeerCerts(Arc<Future<Result<Arc<PeerCerts>, Error>>>);
-
-impl TryFrom<&[CertificateDer<'static>]> for PeerCerts {
-    type Error = rcgen::Error;
-
-    fn try_from(certs: &[CertificateDer<'static>]) -> Result<Self, Self::Error> {
-        debug_assert!(!certs.is_empty());
-        if certs.len() == 1 {
-            if let Ok(public_key_info) = SubjectPublicKeyInfo::from_der(&certs[0]) {
-                return Ok(Self::RawPublicKey(public_key_info));
-            }
-        }
-
-        certs
-            .iter()
-            .try_fold(vec![], |mut acc, cert| {
-                acc.push(CertificateParams::from_ca_cert_der(cert)?);
-                Ok(acc)
-            })
-            .map(Self::CertChain)
-    }
-}
+pub struct ArcPeerCerts(Arc<Future<Result<Arc<PeerCert>, Error>>>);
 
 impl ArcPeerCerts {
-    pub fn assign(&self, certs: &[CertificateDer<'static>]) -> Result<Arc<PeerCerts>, Error> {
-        let previous = self.0.assign(Ok(Arc::new(
-            PeerCerts::try_from(certs).expect("Failde to parse peer certificates"),
-        )));
+    pub fn assign(&self, certs: &[CertificateDer<'static>]) -> Result<Arc<PeerCert>, Error> {
+        let previous = self
+            .0
+            .assign(Ok(Arc::new(PeerCert::CertOrPublicKey(certs[0].to_vec()))));
         debug_assert!(previous.is_none());
         self.0
             .try_get()
@@ -53,7 +28,7 @@ impl ArcPeerCerts {
     }
 
     pub fn no_certs(&self) {
-        let previous = self.0.assign(Ok(Arc::new(PeerCerts::None)));
+        let previous = self.0.assign(Ok(Arc::new(PeerCert::None)));
         debug_assert!(previous.is_none())
     }
 
@@ -61,7 +36,7 @@ impl ArcPeerCerts {
         self.0.try_get().is_some()
     }
 
-    pub async fn get(&self) -> Result<Arc<PeerCerts>, Error> {
+    pub async fn get(&self) -> Result<Arc<PeerCert>, Error> {
         let r = self.0.get().await.deref().clone();
         r
     }
