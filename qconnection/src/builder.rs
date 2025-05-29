@@ -626,7 +626,7 @@ impl Components {
                     };
                     let reason: String = tokio::select! {
                         false = validate => "failed to validate".into(),
-                        _ = idle_timeout => "idle timeout".into(),
+                        true = idle_timeout => "idle timeout".into(),
                         Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
                         _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
                     };
@@ -666,7 +666,6 @@ impl Components {
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);
         self.peer_certs.on_conn_error(&error);
-        self.specific.on_conn_error(&error);
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
@@ -683,8 +682,8 @@ impl Components {
 
         let terminator = Arc::new(Terminator::new(ccf, &self));
 
-        // send ccf only if the send gate is permitted.
-        if matches!(self.specific, SpecificComponents::Server(ref s) if s.send_gate.is_permitted())
+        // for server, send ccf only if the send gate is permitted.
+        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
         {
             tokio::spawn(
                 self.spaces
@@ -716,7 +715,6 @@ impl Components {
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);
         self.peer_certs.on_conn_error(&error);
-        self.specific.on_conn_error(&error);
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
@@ -731,8 +729,8 @@ impl Components {
             .in_current_span()
         });
 
-        // send ccf only if the send gate is permitted.
-        if matches!(self.specific, SpecificComponents::Server(ref s) if s.send_gate.is_permitted())
+        // for server, send ccf only if the send gate is permitted.
+        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
         {
             let terminator = Arc::new(Terminator::new(ccf, &self));
             tokio::spawn(

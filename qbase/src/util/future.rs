@@ -86,14 +86,12 @@ pub struct Future<T> {
 impl<T> Future<T> {
     /// Create a new empty [`Future`].
     #[inline]
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Default::default()
     }
 
     /// Create a new [`Future`] with the given value in it.
     #[inline]
-    #[allow(dead_code)]
     pub fn with(item: T) -> Self {
         Self {
             state: Mutex::new(FutureState::Ready(item)),
