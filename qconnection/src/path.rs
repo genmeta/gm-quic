@@ -12,7 +12,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
@@ -53,14 +53,14 @@ pub struct Path {
 impl Path {
     pub fn new(
         proto: &QuicProto,
-        iface_addr: AbstractAddr,
+        virt_addr: VirtualAddr,
         link: Link,
         pathway: Pathway,
         max_ack_delay: Duration,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
     ) -> io::Result<Self> {
-        let interface = proto.get_interface(iface_addr).ok_or(io::Error::new(
+        let interface = proto.get_interface(virt_addr).ok_or(io::Error::new(
             io::ErrorKind::NotConnected,
             "Interface not fount",
         ))?;

@@ -20,8 +20,8 @@ pub use qbase::{
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
-    net::{address::AbstractAddr, tx::ArcSendWakers},
-    param::{ArcParameters, ParameterId, RememberedParameters},
+    net::{address::VirtualAddr, tx::ArcSendWakers},
+    param::{ArcParameters, ParameterId, RememberedParameters, StoreParameterExt},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
     varint::VarInt,
@@ -40,16 +40,17 @@ use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 pub use rustls::crypto::CryptoProvider;
 use tracing::Instrument as _;
 
+pub use crate::tls::AuthClient;
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    FlowController, Handshake, RawHandshake, Termination,
+    FlowController, Handshake, RawHandshake, ServerComponents, SpecificComponents, Termination,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{ArcPathContexts, Path},
     prelude::HeartbeatConfig,
     space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
     termination::Terminator,
-    tls::{self, ArcPeerCerts, ArcServerName, ArcTlsSession},
+    tls::{self, ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers},
 };
 
 impl Connection {
@@ -72,6 +73,8 @@ impl Connection {
         ServerFoundation {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
+            silent_rejection: false,
+            client_authers: vec![],
         }
     }
 }
@@ -113,12 +116,31 @@ impl ClientFoundation {
 pub struct ServerFoundation {
     token_registry: ArcTokenRegistry,
     server_params: ServerParameters,
+    silent_rejection: bool,
+    client_authers: ClientAuthers,
 }
 
 impl ServerFoundation {
     pub fn with_parameters(self, server_params: ServerParameters) -> Self {
         ServerFoundation {
             server_params,
+            ..self
+        }
+    }
+
+    pub fn with_silent_rejection(self, silent_rejection: bool) -> Self {
+        ServerFoundation {
+            silent_rejection,
+            ..self
+        }
+    }
+
+    pub fn with_client_authers(
+        self,
+        client_authers: impl IntoIterator<Item = Arc<dyn AuthClient>>,
+    ) -> Self {
+        ServerFoundation {
+            client_authers: client_authers.into_iter().collect(),
             ..self
         }
     }
@@ -310,6 +332,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             defer_idle_timeout: self.defer_idle_timeout,
             server_name: ArcServerName::from(self.foundation.server_name),
             qlog_span: None,
+            specific: SpecificComponents::Client {},
         }
     }
 }
@@ -395,6 +418,14 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             defer_idle_timeout: self.defer_idle_timeout,
             server_name: ArcServerName::default(),
             qlog_span: None,
+            specific: SpecificComponents::Server(ServerComponents {
+                send_gate: if self.foundation.silent_rejection {
+                    ArcSendGate::new()
+                } else {
+                    ArcSendGate::unrestricted()
+                },
+                client_authers: self.foundation.client_authers,
+            }),
         }
     }
 }
@@ -414,6 +445,7 @@ pub struct ComponentsReady {
     qlog_span: Option<Span>,
 
     server_name: ArcServerName,
+    specific: SpecificComponents,
 }
 
 impl ComponentsReady {
@@ -460,6 +492,7 @@ impl ComponentsReady {
             conn_state,
             peer_certs: ArcPeerCerts::default(),
             server_name: self.server_name,
+            specific: self.specific,
         };
 
         tracing_span.in_scope(|| {
@@ -486,45 +519,45 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
     let role = components.handshake.role();
     let task = async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
-        params.ready().await?;
+        let remote_parameters = params.remote().await?;
 
         match role {
-            sid::Role::Client => params.map_server_parameters(|p| {
+            sid::Role::Client => {
+                let server_parameters = remote_parameters
+                    .as_any()
+                    .downcast_ref()
+                    .expect("convert never failed");
                 qevent::event!(ParametersSet {
                     owner: Owner::Remote,
-                    server_parameters: p,
+                    server_parameters,
                 })
-            }),
-            sid::Role::Server => params.map_client_parameters(|p| {
+            }
+            sid::Role::Server => {
+                let client_parameters = remote_parameters
+                    .as_any()
+                    .downcast_ref()
+                    .expect("convert never failed");
                 qevent::event!(ParametersSet {
                     owner: Owner::Remote,
-                    client_parameters: p,
+                    client_parameters,
                 })
-            }),
-        }
+            }
+        };
 
         // pretend to receive the MAX_STREAM frames
         _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
-            params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamsBidi)
-                .await?,
+            remote_parameters.get_as_ensured::<VarInt>(ParameterId::InitialMaxStreamsBidi),
         )));
         _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
-            params
-                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamsUni)
-                .await?,
+            remote_parameters.get_as_ensured::<VarInt>(ParameterId::InitialMaxStreamsUni),
         )));
 
         flow_ctrl.reset_send_window(
-            params
-                .get_remote_as::<u64>(ParameterId::InitialMaxData)
-                .await?,
+            remote_parameters.get_as_ensured::<u64>(ParameterId::InitialMaxData),
         );
 
         cid_registry.local.set_limit(
-            params
-                .get_remote_as::<u64>(ParameterId::ActiveConnectionIdLimit)
-                .await?,
+            remote_parameters.get_as_ensured::<u64>(ParameterId::ActiveConnectionIdLimit),
         )?;
 
         Result::<_, Error>::Ok(())
@@ -542,7 +575,7 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
 impl Components {
     pub fn get_or_try_create_path(
         &self,
-        iface_addr: AbstractAddr,
+        virt_addr: VirtualAddr,
         link: Link,
         pathway: Pathway,
         is_probed: bool,
@@ -560,7 +593,7 @@ impl Components {
 
             let path = Arc::new(Path::new(
                 &self.proto,
-                iface_addr,
+                virt_addr,
                 link,
                 pathway,
                 max_ack_delay,
@@ -593,7 +626,7 @@ impl Components {
                     };
                     let reason: String = tokio::select! {
                         false = validate => "failed to validate".into(),
-                        _ = idle_timeout => "idle timeout".into(),
+                        true = idle_timeout => "idle timeout".into(),
                         Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
                         _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
                     };
@@ -631,6 +664,8 @@ impl Components {
             self.proto.del_router_entry(&origin_dcid.into());
         }
         self.parameters.on_conn_error(&error);
+        self.server_name.on_conn_error(&error);
+        self.peer_certs.on_conn_error(&error);
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
@@ -646,12 +681,17 @@ impl Components {
         });
 
         let terminator = Arc::new(Terminator::new(ccf, &self));
-        tokio::spawn(
-            self.spaces
-                .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
-                .instrument_in_current()
-                .in_current_span(),
-        );
+
+        // for server, send ccf only if the send gate is permitted.
+        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
+        {
+            tokio::spawn(
+                self.spaces
+                    .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
+                    .instrument_in_current()
+                    .in_current_span(),
+            );
+        }
 
         Termination::closing(error, self.cid_registry.local, self.rcvd_pkt_q)
     }
@@ -673,6 +713,8 @@ impl Components {
             self.proto.del_router_entry(&origin_dcid.into());
         }
         self.parameters.on_conn_error(&error);
+        self.server_name.on_conn_error(&error);
+        self.peer_certs.on_conn_error(&error);
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
@@ -687,13 +729,17 @@ impl Components {
             .in_current_span()
         });
 
-        let terminator = Arc::new(Terminator::new(ccf, &self));
-        tokio::spawn(
-            self.spaces
-                .drain(terminator, self.rcvd_pkt_q)
-                .instrument_in_current()
-                .in_current_span(),
-        );
+        // for server, send ccf only if the send gate is permitted.
+        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
+        {
+            let terminator = Arc::new(Terminator::new(ccf, &self));
+            tokio::spawn(
+                self.spaces
+                    .drain(terminator, self.rcvd_pkt_q)
+                    .instrument_in_current()
+                    .in_current_span(),
+            );
+        }
 
         Termination::draining(error, self.cid_registry.local)
     }

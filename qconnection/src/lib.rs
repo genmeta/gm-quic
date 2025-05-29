@@ -29,7 +29,7 @@ pub mod prelude {
         Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
         path::idle::HeartbeatConfig,
-        tls::PeerCerts,
+        tls::PeerCert,
     };
 }
 
@@ -51,7 +51,7 @@ use qbase::{
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
-        address::AbstractAddr,
+        address::VirtualAddr,
         route::{Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
@@ -72,7 +72,7 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ConnState;
 use termination::Termination;
-use tls::{ArcPeerCerts, ArcServerName, ArcTlsSession, PeerCerts};
+use tls::{ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCert};
 use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
@@ -127,6 +127,19 @@ pub struct Components {
 
     peer_certs: ArcPeerCerts,
     server_name: ArcServerName,
+    specific: SpecificComponents,
+}
+
+#[derive(Clone)]
+enum SpecificComponents {
+    Client,
+    Server(ServerComponents),
+}
+
+#[derive(Clone)]
+struct ServerComponents {
+    send_gate: ArcSendGate,
+    client_authers: ClientAuthers,
 }
 
 impl Components {
@@ -207,7 +220,7 @@ impl Components {
 
     pub fn add_path(
         &self,
-        ifaca_addr: AbstractAddr,
+        ifaca_addr: VirtualAddr,
         link: Link,
         pathway: Pathway,
     ) -> io::Result<()> {
@@ -219,7 +232,7 @@ impl Components {
         self.paths.remove(pathway, "application removed");
     }
 
-    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCerts>, Error>> + Send {
+    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCert>, Error>> + Send {
         let peer_certs = self.peer_certs.clone();
         async move { peer_certs.get().await }
     }
@@ -314,13 +327,8 @@ impl Connection {
             .await
     }
 
-    pub fn add_path(
-        &self,
-        iface_addr: AbstractAddr,
-        link: Link,
-        pathway: Pathway,
-    ) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(iface_addr, link, pathway))?
+    pub fn add_path(&self, virt_addr: VirtualAddr, link: Link, pathway: Pathway) -> io::Result<()> {
+        self.try_map_components(|core_conn| core_conn.add_path(virt_addr, link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
@@ -348,7 +356,7 @@ impl Connection {
         }
     }
 
-    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCerts>> {
+    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCert>> {
         Ok(self
             .try_map_components(|core_conn| core_conn.peer_certs())?
             .await?)

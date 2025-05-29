@@ -7,7 +7,7 @@ use std::{
 use dashmap::DashMap;
 use handy::UdpSocketController;
 use qbase::{
-    net::address::{AbstractAddr, AddrKind, ToAbstractAddrs},
+    net::address::{AddrKind, ToVirtualAddrs, VirtualAddr},
     param::RememberedParameters,
 };
 use qconnection::builder::*;
@@ -25,7 +25,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// A quic client that can initiates connections to servers.
 // be different from QuicServer, QuicClient is not arc
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<AbstractAddr, Arc<dyn QuicInterface>>>,
+    bind_interfaces: Option<DashMap<VirtualAddr, Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
@@ -155,13 +155,13 @@ impl QuicClient {
             Some(bind_interfaces) => bind_interfaces
                 .iter()
                 .map(|entry| entry.key().clone())
-                .filter(|abstract_addr| abstract_addr.kind() == server_ep.kind())
-                .find_map(|iface_addr| {
+                .filter(|virt_addr| virt_addr.kind() == server_ep.kind())
+                .find_map(|virt_addr| {
                     if self.reuse_address {
-                        crate::proto().get_interface(iface_addr)
+                        crate::proto().get_interface(virt_addr)
                     } else {
                         crate::proto()
-                            .get_interface_if(iface_addr, |iface, _| Arc::strong_count(iface) == 1)
+                            .get_interface_if(virt_addr, |iface, _| Arc::strong_count(iface) == 1)
                     }
                 })
                 .ok_or(io::Error::new(
@@ -170,7 +170,7 @@ impl QuicClient {
                 ))?,
         };
 
-        let local_addr = quic_iface.local_addr()?;
+        let local_addr = quic_iface.concrete_addr()?;
         let link = Link::new(local_addr, *server_ep);
         //  TODO: 是否要outer addr，agent addr
         let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
@@ -202,8 +202,8 @@ impl QuicClient {
                     match event {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(iface_addr, ..) => {
-                            crate::proto().try_free_interface(iface_addr);
+                        Event::PathInactivated(virt_addr, ..) => {
+                            crate::proto().try_free_interface(virt_addr);
                         }
                         Event::ApplicationClose => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
@@ -229,7 +229,7 @@ impl QuicClient {
             }
         });
 
-        connection.add_path(quic_iface.abstract_addr(), link, pathway)?;
+        connection.add_path(quic_iface.virt_addr(), link, pathway)?;
         Ok(connection)
     }
 
@@ -295,7 +295,7 @@ impl Drop for QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<AbstractAddr, Arc<dyn QuicInterface>>,
+    bind_interfaces: DashMap<VirtualAddr, Arc<dyn QuicInterface>>,
     reuse_address: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
@@ -344,18 +344,18 @@ impl<T> QuicClientBuilder<T> {
     /// returns an error), only the log will be printed.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl ToAbstractAddrs) -> io::Result<Self> {
+    pub fn bind(self, addrs: impl ToVirtualAddrs) -> io::Result<Self> {
         for entry in self.bind_interfaces.iter() {
             crate::proto().try_free_interface(entry.key().clone());
         }
         self.bind_interfaces.clear();
 
-        for abstract_addr in addrs.to_abstract_addrs()? {
-            if self.bind_interfaces.contains_key(&abstract_addr) {
+        for virt_addr in addrs.to_virtual_addrs()? {
+            if self.bind_interfaces.contains_key(&virt_addr) {
                 continue;
             }
-            let interface = self.quic_iface_factory.bind(abstract_addr.clone())?;
-            self.bind_interfaces.insert(abstract_addr, interface);
+            let interface = self.quic_iface_factory.bind(virt_addr.clone())?;
+            self.bind_interfaces.insert(virt_addr, interface);
         }
 
         Ok(self)
