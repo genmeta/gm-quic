@@ -185,6 +185,8 @@ pub struct QuicListeners {
     ifaces: Arc<DashMap<VirtualAddr, BoundInterface>>,
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
+    silent_rejection: bool,
+    client_authers: Vec<Arc<dyn AuthClient>>,
 }
 
 impl QuicListeners {
@@ -233,6 +235,8 @@ impl QuicListeners {
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
+            silent_rejection: false,
+            client_authers: vec![],
         })
     }
 
@@ -393,6 +397,27 @@ impl Drop for QuicListeners {
     }
 }
 
+struct HostAuther {
+    iface: VirtualAddr,
+    hosts: Arc<DashMap<String, Host>>,
+}
+
+impl AuthClient for HostAuther {
+    fn verify_server_name(&self, server_name: &str) -> bool {
+        self.hosts
+            .get(server_name)
+            .is_some_and(|host| host.bind_addresses.contains(&self.iface))
+    }
+
+    fn verify_client_params(&self, _: &str, _: &ClientParameters) -> bool {
+        true
+    }
+
+    fn verify_client_certs(&self, _: &str, _: &ClientParameters, _: &PeerCerts) -> bool {
+        true
+    }
+}
+
 // internal methods
 impl QuicListeners {
     fn global() -> &'static RwLock<Weak<QuicListeners>> {
@@ -409,11 +434,6 @@ impl QuicListeners {
         let Some(listeners) = Self::global().read().unwrap().upgrade() else {
             return;
         };
-
-        let bound_ifaces = listeners.ifaces.clone();
-        if !bound_ifaces.contains_key(&virt_addr) {
-            return;
-        }
 
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = listeners.backlog.clone().acquire_owned().await else {
@@ -439,11 +459,22 @@ impl QuicListeners {
             .clone()
             .unwrap_or_else(|| Arc::new(NoopTokenRegistry));
 
+        let host_auther: Arc<dyn AuthClient> = Arc::new(HostAuther {
+            iface: virt_addr.clone(),
+            hosts: listeners.hosts.clone(),
+        });
+
+        let client_authers = [host_auther]
+            .into_iter()
+            .chain(listeners.client_authers.iter().cloned());
+
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
         let connection = Arc::new(
             Connection::with_token_provider(token_provider)
                 .with_parameters(listeners.parameters.clone())
+                .with_silent_rejection(listeners.silent_rejection)
+                .with_client_authers(client_authers)
                 .with_tls_config(listeners.tls_config.clone())
                 .with_streams_concurrency_strategy(listeners.stream_strategy_factory.as_ref())
                 .with_proto(crate::proto().clone())
@@ -482,19 +513,6 @@ impl QuicListeners {
 
             match connection.server_name().await {
                 Ok(server_name) => {
-                    if !bound_ifaces
-                        .get(&virt_addr)
-                        .is_some_and(|iface| iface.hosts.contains(&server_name))
-                    {
-                        tracing::warn!(
-                            role = "server",
-                            odcid = format!("{origin_dcid:x}"),
-                            "Connection from {} with server name {server_name} is not allowed.",
-                            link.dst()
-                        );
-                        connection.close("", 1);
-                        return;
-                    }
                     let incoming = (server_name, connection.clone(), pathway, link);
                     if listeners.incomings.send((incoming, premit)).await.is_err() {
                         connection.close("", 1);
@@ -547,6 +565,8 @@ pub struct QuicListenersBuilder<T> {
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
+    silent_rejection: bool,
+    client_authers: Vec<Arc<dyn AuthClient>>,
 }
 
 impl<T> QuicListenersBuilder<T> {
@@ -639,6 +659,75 @@ impl<T> QuicListenersBuilder<T> {
         self.logger = Some(logger);
         self
     }
+
+    /// Enable silent rejection mode for enhanced security.
+    ///
+    /// When silent rejection is enabled, the server will silently drop connections
+    /// that fail validation (e.g., invalid ClientHello, authentication failures)
+    /// without sending any response packets.
+    ///
+    /// This security feature provides the following benefits:
+    /// - Prevents attackers from gaining information about server presence
+    /// - Reduces the attack surface by not revealing server configuration details
+    /// - Protects against network reconnaissance and scanning attacks
+    /// - Makes the server appear "offline" to unauthorized connection attempts
+    ///
+    /// **Security Note:** This feature should be used carefully as it may make
+    /// debugging connection issues more difficult. Consider using it in production
+    /// environments where security is prioritized over observability.
+    ///
+    /// **Tip:** For enhanced security, combine this with [`with_client_authers`] to implement
+    /// custom authentication logic while maintaining stealth behavior for failed connections.
+    ///
+    /// Default: disabled
+    ///
+    /// [`with_client_authers`]: QuicListenersBuilder::with_client_authers
+    pub fn enable_silent_rejection(mut self) -> Self {
+        self.silent_rejection = true;
+        self
+    }
+
+    /// Specify custom client authentication handlers for the server.
+    ///
+    /// Client authers are used to perform additional validation beyond standard TLS
+    /// certificate verification. They can verify server names, client parameters,
+    /// and client certificates according to custom business logic.
+    ///
+    /// Each [`AuthClient`] implementation provides three verification methods:
+    /// - `verify_server_name()`: Validates the requested server name (SNI)
+    /// - `verify_client_params()`: Validates client QUIC transport parameters
+    /// - `verify_client_certs()`: Validates client certificate chains
+    ///
+    /// All provided authers must approve the connection for it to be accepted.
+    /// If any auther rejects the connection, it will be dropped.
+    ///
+    /// If you call this multiple times, only the last `client_authers` will be used.
+    ///
+    /// **Security Enhancement:** When combined with [`enable_silent_rejection`],
+    /// failed authentication attempts will be silently dropped without any response,
+    /// providing enhanced security against reconnaissance attacks.
+    ///
+    /// **TLS Protocol Note:** Due to TLS protocol certificate verification failures
+    /// will still send error responses to clients, as the server has already sent
+    /// its `ServerHello` message at that point. Silent rejection only applies to
+    /// earlier validation failures.
+    ///
+    /// **Built-in Validation:** The server automatically verifies that the interface
+    /// receiving the client connection is configured to listen for the requested
+    /// server name (SNI). This built-in validation ensures proper routing of
+    /// connections to their intended hosts.
+    ///
+    /// Default: empty (only built-in host and interface validation)
+    ///
+    /// [`AuthClient`]: qconnection::tls::AuthClient
+    /// [`enable_silent_rejection`]: QuicListenersBuilder::enable_silent_rejection
+    pub fn with_client_authers(
+        mut self,
+        client_authers: impl IntoIterator<Item = Arc<dyn AuthClient>>,
+    ) -> Self {
+        self.client_authers = client_authers.into_iter().collect();
+        self
+    }
 }
 
 impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
@@ -662,6 +751,8 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
+            silent_rejection: self.silent_rejection,
+            client_authers: self.client_authers,
         }
     }
 
@@ -682,6 +773,8 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
+            silent_rejection: self.silent_rejection,
+            client_authers: self.client_authers,
         }
     }
 }
@@ -815,6 +908,8 @@ impl QuicListenersBuilder<TlsServerConfig> {
             backlog: Arc::new(Semaphore::new(backlog)),
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
+            silent_rejection: self.silent_rejection,
+            client_authers: self.client_authers,
         });
 
         *self.global_guard = Arc::downgrade(&quic_listeners);

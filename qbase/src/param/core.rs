@@ -96,6 +96,10 @@ macro_rules! parameters {
                 }
                 Ok(())
             }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
         }
     };
     (@methods($set:ident)

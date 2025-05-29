@@ -1,16 +1,19 @@
+mod client_auth;
+mod peer_certs;
+mod server_name;
+
 use core::{
     ops::DerefMut,
     task::{Context, Poll, Waker},
 };
 use std::sync::{Arc, Mutex};
 
-mod peer_certs;
+pub use client_auth::{ArcSendGate, AuthClient, ClientAuthers};
 pub use peer_certs::{ArcPeerCerts, PeerCerts};
-mod server_name;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
-    param::ArcParameters,
+    param::{ArcParameters, StoreParameter},
 };
 use qevent::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
@@ -19,7 +22,7 @@ pub use server_name::ArcServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
 
-use crate::{Components, events::Event, prelude::EmitEvent};
+use crate::{Components, SpecificComponents, events::Event, prelude::EmitEvent};
 
 type TlsConnection = rustls::quic::Connection;
 
@@ -53,31 +56,40 @@ impl TlsSession {
         self.tls_conn.write_hs(buf)
     }
 
-    fn try_assign_parameters(&mut self, params: &ArcParameters) -> Result<(), Error> {
+    fn try_assign_parameters(
+        &mut self,
+        params: &ArcParameters,
+    ) -> Result<Option<Arc<dyn StoreParameter>>, Error> {
         self.tls_conn.peer_certificates();
         if !params.has_rcvd_remote_params() {
             if let Some(raw) = self.tls_conn.quic_transport_parameters() {
-                params.recv_remote_params(raw)?;
+                return params.recv_remote_params(raw);
             }
         }
-        Ok(())
+        Ok(None)
     }
 
-    fn try_assign_peer_certs(&mut self, peer_certs: &ArcPeerCerts) {
+    fn try_assign_peer_certs(
+        &mut self,
+        peer_certs: &ArcPeerCerts,
+    ) -> Result<Option<Arc<PeerCerts>>, Error> {
         if !peer_certs.is_ready() {
             if let Some(certs) = self.tls_conn.peer_certificates() {
-                peer_certs.assign(certs);
+                return peer_certs.assign(certs).map(Some);
             }
         }
+        Ok(None)
     }
 
-    fn try_assign_server_name(&mut self, server_name: &ArcServerName) {
+    fn try_assign_server_name(&mut self, server_name: &ArcServerName) -> Option<&str> {
         if !server_name.is_ready() {
             debug_assert!(matches!(self.tls_conn, TlsConnection::Server(_)));
             if let Some(name) = self.server_name() {
                 server_name.assign(name);
+                return Some(name);
             }
         }
+        None
     }
 
     fn alert(&self) -> Option<rustls::AlertDescription> {
@@ -99,10 +111,13 @@ impl TlsSession {
 struct ReadAndProcess<'r> {
     tls_conn: &'r Mutex<Result<TlsSession, Error>>,
     messages: &'r mut Vec<u8>,
-    parameters: &'r ArcParameters,
+    params: &'r ArcParameters,
     peer_certs: &'r ArcPeerCerts,
     server_name: &'r ArcServerName,
+    specific: &'r SpecificComponents,
 }
+
+impl ReadAndProcess<'_> {}
 
 impl futures::Future for ReadAndProcess<'_> {
     type Output = Result<(Option<KeyChange>, bool), Error>;
@@ -121,9 +136,74 @@ impl futures::Future for ReadAndProcess<'_> {
             return Poll::Pending;
         }
 
-        tls_conn.try_assign_parameters(this.parameters)?;
-        tls_conn.try_assign_peer_certs(this.peer_certs);
-        tls_conn.try_assign_server_name(this.server_name);
+        if let Some(server_name) = tls_conn.try_assign_server_name(this.server_name) {
+            if let SpecificComponents::Server(server_spec) = this.specific {
+                if !server_spec
+                    .client_authers
+                    .iter()
+                    .all(|auther| auther.verify_server_name(server_name))
+                {
+                    return Poll::Ready(Err(QuicError::with_default_fty(
+                        ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
+                        "Reject by clinet auther: server name verification failed",
+                    )
+                    .into()));
+                }
+            }
+        }
+
+        if let Some(remote_params) = tls_conn.try_assign_parameters(this.params)? {
+            if let SpecificComponents::Server(server_spec) = this.specific {
+                let host = tls_conn
+                    .server_name()
+                    .expect("server name must be known this time");
+                let client_params = remote_params
+                    .as_any()
+                    .downcast_ref()
+                    .expect("convert never failed");
+                match server_spec
+                    .client_authers
+                    .iter()
+                    .all(|auther| auther.verify_client_params(host, client_params))
+                {
+                    true => server_spec.send_gate.grant_permit(),
+                    false => {
+                        return Poll::Ready(Err(QuicError::with_default_fty(
+                            ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
+                            "Reject by clinet auther: client parameters verification failed",
+                        )
+                        .into()));
+                    }
+                }
+            }
+        }
+
+        if let Ok(Some(peer_certs)) = tls_conn.try_assign_peer_certs(this.peer_certs) {
+            if let SpecificComponents::Server(server_spec) = this.specific {
+                if let Ok(remote_params) = this.params.try_get_remote() {
+                    let host = tls_conn
+                        .server_name()
+                        .expect("server name must be known this time");
+                    let client_params = remote_params
+                        .as_ref()
+                        .expect("remote parameters must be known this time")
+                        .as_any()
+                        .downcast_ref()
+                        .expect("convert never failed");
+                    if !server_spec
+                        .client_authers
+                        .iter()
+                        .all(|auther| auther.verify_client_certs(host, client_params, &peer_certs))
+                    {
+                        return Poll::Ready(Err(QuicError::with_default_fty(
+                            ErrorKind::Crypto(rustls::AlertDescription::AccessDenied.into()),
+                            "Reject by clinet auther: client certificate verification failed",
+                        )
+                        .into()));
+                    }
+                }
+            }
+        };
 
         Poll::Ready(Ok((key_change, !tls_conn.is_handshaking())))
     }
@@ -183,17 +263,19 @@ impl ArcTlsSession {
     fn read_and_process<'r>(
         &'r self,
         buf: &'r mut Vec<u8>,
-        parameters: &'r ArcParameters,
+        params: &'r ArcParameters,
         peer_certs: &'r ArcPeerCerts,
         server_name: &'r ArcServerName,
+        specific: &'r SpecificComponents,
     ) -> ReadAndProcess<'r> {
         buf.clear();
         ReadAndProcess {
             tls_conn: &self.0,
             messages: buf,
-            parameters,
+            params,
             peer_certs,
             server_name,
+            specific,
         }
     }
 
@@ -274,18 +356,19 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
     let handshake_keys = components.spaces.handshake().keys();
     let one_rtt_keys = components.spaces.data().one_rtt_keys();
     let handshake = components.handshake.clone();
-    let parameters = components.parameters.clone();
+    let params = components.parameters.clone();
     let peer_certs = components.peer_certs.clone();
     let server_name = components.server_name.clone();
     let event_broker = components.event_broker.clone();
     let paths = components.paths.clone();
+    let specific = components.specific.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
         let mut cur_epoch = Epoch::Initial;
         loop {
             let (key_upgrade, is_tls_done) = match tls_session
-                .read_and_process(&mut messages, &parameters, &peer_certs, &server_name)
+                .read_and_process(&mut messages, &params, &peer_certs, &server_name, &specific)
                 .await
             {
                 Ok(results) => results,

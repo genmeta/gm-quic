@@ -65,20 +65,35 @@ impl ConnState {
             qevent::event!(ConnectionStarted {
                 socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
+
             match components.handshake.role() {
-                qbase::sid::Role::Client => components.parameters.map_client_parameters(|p| {
-                    qevent::event!(ParametersSet {
-                        owner: Owner::Local,
-                        client_parameters: p,
-                    })
-                }),
-                qbase::sid::Role::Server => components.parameters.map_server_parameters(|p| {
-                    qevent::event!(ParametersSet {
-                        owner: Owner::Local,
-                        server_parameters: p,
-                    })
-                }),
-            }
+                qbase::sid::Role::Client => {
+                    if let Ok(local_parameters) = components.parameters.get_local() {
+                        let client_parameters = local_parameters
+                            .as_any()
+                            .downcast_ref()
+                            .expect("convert never failed");
+
+                        qevent::event!(ParametersSet {
+                            owner: Owner::Local,
+                            client_parameters,
+                        })
+                    }
+                }
+                qbase::sid::Role::Server => {
+                    if let Ok(local_parameters) = components.parameters.get_local() {
+                        let server_parameters = local_parameters
+                            .as_any()
+                            .downcast_ref()
+                            .expect("convert never failed");
+
+                        qevent::event!(ParametersSet {
+                            owner: Owner::Local,
+                            server_parameters,
+                        })
+                    }
+                }
+            };
         }
         Ok(success)
     }

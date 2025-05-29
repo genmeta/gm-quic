@@ -40,11 +40,16 @@ impl TryFrom<&[CertificateDer<'static>]> for PeerCerts {
 }
 
 impl ArcPeerCerts {
-    pub fn assign(&self, certs: &[CertificateDer<'static>]) {
+    pub fn assign(&self, certs: &[CertificateDer<'static>]) -> Result<Arc<PeerCerts>, Error> {
         let previous = self.0.assign(Ok(Arc::new(
             PeerCerts::try_from(certs).expect("Failde to parse peer certificates"),
         )));
-        debug_assert!(previous.is_none())
+        debug_assert!(previous.is_none());
+        self.0
+            .try_get()
+            .expect("PeerCerts has been ready")
+            .deref()
+            .clone()
     }
 
     pub fn no_certs(&self) {

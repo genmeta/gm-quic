@@ -2,13 +2,14 @@ use std::{
     io,
     ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
-    task::{Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use qbase::net::tx::Signals;
 
 use crate::{
-    ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tx::Transaction,
+    ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tls::ArcSendGate,
+    tx::Transaction,
 };
 
 pub struct Burst {
@@ -18,6 +19,7 @@ pub struct Burst {
     spin: bool,
     flow_ctrl: FlowController,
     spaces: Spaces,
+    send_gate: Option<ArcSendGate>,
 }
 
 impl super::Path {
@@ -28,6 +30,12 @@ impl super::Path {
         let path = self.clone();
         let spin = false;
         let spaces = components.spaces.clone();
+        let send_gate = match &components.specific {
+            crate::SpecificComponents::Client => None,
+            crate::SpecificComponents::Server(server_components) => {
+                Some(server_components.send_gate.clone())
+            }
+        };
         Burst {
             path,
             local_cids,
@@ -35,6 +43,7 @@ impl super::Path {
             spin,
             flow_ctrl,
             spaces,
+            send_gate,
         }
     }
 }
@@ -146,6 +155,11 @@ impl Burst {
         cx: &mut Context<'_>,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
+        if let Some(send_gate) = &self.send_gate {
+            if ready!(send_gate.poll_request_permit(cx)).is_err() {
+                return Poll::Pending;
+            }
+        }
         let (buffers, transaction) = match self.prepare(buffers) {
             Ok(Some((buffers, transaction))) => (buffers, transaction),
             Ok(None) => return Poll::Pending, // 发送任务结束。阻止路径因为连接关闭而被移除

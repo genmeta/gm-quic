@@ -72,7 +72,7 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ConnState;
 use termination::Termination;
-use tls::{ArcPeerCerts, ArcServerName, ArcTlsSession, PeerCerts};
+use tls::{ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCerts};
 use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
@@ -127,6 +127,34 @@ pub struct Components {
 
     peer_certs: ArcPeerCerts,
     server_name: ArcServerName,
+    specific: SpecificComponents,
+}
+
+#[derive(Clone)]
+enum SpecificComponents {
+    Client,
+    Server(ServerComponents),
+}
+
+impl SpecificComponents {
+    fn on_conn_error(&self, error: &Error) {
+        match self {
+            SpecificComponents::Client => {}
+            SpecificComponents::Server(server) => server.on_conn_error(error),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ServerComponents {
+    send_gate: ArcSendGate,
+    client_authers: ClientAuthers,
+}
+
+impl ServerComponents {
+    fn on_conn_error(&self, error: &Error) {
+        self.send_gate.on_conn_error(error);
+    }
 }
 
 impl Components {

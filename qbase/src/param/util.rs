@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashMap,
     fmt::Debug,
     net::{SocketAddrV4, SocketAddrV6},
@@ -361,10 +362,12 @@ impl<T: bytes::BufMut> WriteParameter for T {
     }
 }
 
-pub trait StoreParameter {
+pub trait StoreParameter: Any {
     fn get(&self, id: ParameterId) -> Option<ParameterValue>;
 
     fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError>;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub type GeneralParameters = HashMap<ParameterId, ParameterValue>;
@@ -377,6 +380,10 @@ impl StoreParameter for GeneralParameters {
     fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError> {
         self.insert(id, value);
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
