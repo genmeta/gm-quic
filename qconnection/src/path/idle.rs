@@ -59,7 +59,7 @@ impl super::Path {
         }
     }
 
-    pub fn idle_timeout(self: &Arc<Self>, components: &Components) -> impl Future<Output = ()> {
+    pub fn idle_timeout(self: &Arc<Self>, components: &Components) -> impl Future<Output = bool> {
         let parameters = components.parameters.clone();
         let this = self.clone();
         async move {
@@ -67,7 +67,8 @@ impl super::Path {
                 parameters.get_local_as(ParameterId::MaxIdleTimeout),
                 parameters.get_remote_as(ParameterId::MaxIdleTimeout).await,
             ) else {
-                return;
+                // if the connection enter closing state in initial space is not idle_timeout
+                return false;
             };
             let max_idle_timeout = match (local_max_idle_timeout, remote_max_idle_timeout) {
                 (Duration::ZERO, Duration::ZERO) => Duration::MAX,
@@ -78,7 +79,7 @@ impl super::Path {
             loop {
                 let idle_duration = this.last_active_time.lock().unwrap().elapsed();
                 if idle_duration > max_idle_timeout {
-                    return;
+                    return true;
                 } else {
                     tokio::time::sleep(max_idle_timeout.saturating_sub(idle_duration)).await;
                 }
