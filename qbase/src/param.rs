@@ -509,7 +509,6 @@ impl ArcParameters {
             Ok(remote_params) => Ok(remote_params),
             Err(error) => {
                 params.wake_all();
-                *guard = Err(error.clone());
                 Err(error)
             }
         }
@@ -530,6 +529,10 @@ impl ArcParameters {
     /// When some connection error occurred, convert this parameters
     /// into error state.
     pub fn on_conn_error(&self, error: &Error) {
+        tracing::warn!(
+            ?error,
+            "connection error, convert parameters to error state"
+        );
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
             params.wake_all();
