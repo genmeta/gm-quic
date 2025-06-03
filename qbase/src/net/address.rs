@@ -167,6 +167,13 @@ impl FromStr for BindAddr {
     type Err = ParseBindAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(socket_addr) = s.parse::<SocketAddr>() {
+            // If it parses as a SocketAddr, we can convert it to InetBindAddr, then BindAddr
+            return Ok(BindAddr::Socket(SocketBindAddr::Inet(
+                InetBindAddr::try_from(socket_addr).map_err(ParseBindAddrError::InvalidInetAddr)?,
+            )));
+        }
+
         let (scheme, _) = s
             .split_once("://")
             .ok_or(ParseBindAddrError::MissingScheme)?;
