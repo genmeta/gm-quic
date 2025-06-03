@@ -13,14 +13,14 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::net::{
-    address::{ConcreteAddr, VirtualAddr},
+    address::{BindAddr, RealAddr},
     route::PacketHeader,
 };
 
 /// QUIC network interface trait
 ///
 /// Provides a unified interface for different network transport implementations.
-/// Note that some implementations may not support all virtual address types.
+/// Note that some implementations may not support all bind address types.
 ///
 /// `gm-quic` uses [`ProductQuicInterface`] to create (bind) a new [`QuicInterface`] instance.
 /// Read its documentation for more information.
@@ -31,24 +31,23 @@ use qbase::net::{
 /// [`ProductQuicInterface`]: crate::factory::ProductQuicInterface
 /// [`UdpSocketController`]: crate::handy::UdpSocketController
 pub trait QuicInterface: Send + Sync {
-    /// Get the virtual address that this interface is bound to
+    /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
     /// as it is used as the unique identifier for the interface.
-    fn virt_addr(&self) -> VirtualAddr;
+    fn bind_addr(&self) -> BindAddr;
 
     /// Get the actual address that this interface is bound to.
     ///
-    /// For example, if this interface is bound to an [`InterfaceAddr`],
+    /// For example, if this interface is bound to an [`BindAddr`],
     /// this function should return the actual IP address and port address of this interface.
     ///
     /// Just like [`UdpSocket::local_addr`] may return an error,
     /// sometimes an interface cannot get its own actual address,
     /// then the implementation should return an error as well.
     ///
-    /// [`InterfaceAddr`]: qbase::net::address::InterfaceAddr
     /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
-    fn concrete_addr(&self) -> io::Result<ConcreteAddr>;
+    fn read_addr(&self) -> io::Result<RealAddr>;
 
     /// Maximum size of a single network segment in bytes
     fn max_segment_size(&self) -> usize;

@@ -11,7 +11,7 @@ pub mod prelude {
     pub use qbase::{
         cid::ConnectionId,
         frame::ConnectionCloseFrame,
-        net::route::*,
+        net::{address::*, route::*},
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
@@ -51,7 +51,7 @@ use qbase::{
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
-        address::VirtualAddr,
+        address::BindAddr,
         route::{Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
@@ -72,7 +72,9 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ConnState;
 use termination::Termination;
-use tls::{ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCert};
+use tls::{
+    ArcClientName, ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCert,
+};
 use tracing::Instrument as _;
 
 /// The kind of frame which guaratend to be received by peer.
@@ -127,6 +129,7 @@ pub struct Components {
 
     peer_certs: ArcPeerCerts,
     server_name: ArcServerName,
+    client_name: ArcClientName,
     specific: SpecificComponents,
 }
 
@@ -218,12 +221,7 @@ impl Components {
         .in_current_span()
     }
 
-    pub fn add_path(
-        &self,
-        ifaca_addr: VirtualAddr,
-        link: Link,
-        pathway: Pathway,
-    ) -> io::Result<()> {
+    pub fn add_path(&self, ifaca_addr: BindAddr, link: Link, pathway: Pathway) -> io::Result<()> {
         self.get_or_try_create_path(ifaca_addr, link, pathway, false)
             .map(|_| ())
     }
@@ -327,8 +325,8 @@ impl Connection {
             .await
     }
 
-    pub fn add_path(&self, virt_addr: VirtualAddr, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(virt_addr, link, pathway))?
+    pub fn add_path(&self, bind_addr: BindAddr, link: Link, pathway: Pathway) -> io::Result<()> {
+        self.try_map_components(|core_conn| core_conn.add_path(bind_addr, link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {

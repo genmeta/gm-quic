@@ -20,7 +20,7 @@ pub use qbase::{
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
-    net::{address::VirtualAddr, tx::ArcSendWakers},
+    net::{address::BindAddr, tx::ArcSendWakers},
     param::{ArcParameters, ParameterId, RememberedParameters, StoreParameterExt},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
@@ -50,7 +50,10 @@ use crate::{
     space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
     termination::Terminator,
-    tls::{self, ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers},
+    tls::{
+        self, ArcClientName, ArcEndpointName, ArcPeerCerts, ArcSendGate, ArcServerName,
+        ArcTlsSession, ClientAuthers,
+    },
 };
 
 impl Connection {
@@ -311,6 +314,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             ),
         );
 
+        let client_name = ArcClientName::from(&client_params);
         let parameters = ArcParameters::new_client(client_params, remembered, origin_dcid);
 
         let tls_session =
@@ -330,7 +334,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            server_name: ArcServerName::from(self.foundation.server_name),
+            client_name,
+            server_name: ArcEndpointName::from(self.foundation.server_name),
             qlog_span: None,
             specific: SpecificComponents::Client {},
         }
@@ -398,7 +403,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         );
 
         let parameters = ArcParameters::new_server(server_params);
-        _ = parameters.initial_scid_from_peer_need_equal(client_scid);
+        parameters.initial_scid_from_peer_need_equal(client_scid);
 
         let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
 
@@ -416,6 +421,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
+            client_name: ArcClientName::default(),
             server_name: ArcServerName::default(),
             qlog_span: None,
             specific: SpecificComponents::Server(ServerComponents {
@@ -442,10 +448,10 @@ pub struct ComponentsReady {
     raw_handshake: RawHandshake,
     defer_idle_timeout: HeartbeatConfig,
     tx_wakers: ArcSendWakers,
-    qlog_span: Option<Span>,
-
+    client_name: ArcClientName,
     server_name: ArcServerName,
     specific: SpecificComponents,
+    qlog_span: Option<Span>,
 }
 
 impl ComponentsReady {
@@ -490,8 +496,9 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             conn_state,
-            peer_certs: ArcPeerCerts::default(),
+            client_name: self.client_name,
             server_name: self.server_name,
+            peer_certs: ArcPeerCerts::default(),
             specific: self.specific,
         };
 
@@ -575,7 +582,7 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
 impl Components {
     pub fn get_or_try_create_path(
         &self,
-        virt_addr: VirtualAddr,
+        bind_addr: BindAddr,
         link: Link,
         pathway: Pathway,
         is_probed: bool,
@@ -593,7 +600,7 @@ impl Components {
 
             let path = Arc::new(Path::new(
                 &self.proto,
-                virt_addr,
+                bind_addr,
                 link,
                 pathway,
                 max_ack_delay,

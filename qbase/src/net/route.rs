@@ -2,30 +2,23 @@ use std::{fmt, net::SocketAddr, ops::Deref, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use super::address::{ConcreteAddr, ParseConcreteAddrError, ToConcreteAddr};
+use super::address::{ParseRealAddrError, RealAddr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
-    Direct {
-        addr: ConcreteAddr,
-    },
-    Agent {
-        agent: ConcreteAddr,
-        outer: ConcreteAddr,
-    },
+    Direct { addr: RealAddr },
+    Agent { agent: RealAddr, outer: RealAddr },
 }
 
 impl EndpointAddr {
-    pub fn direct(addr: impl ToConcreteAddr) -> Self {
-        EndpointAddr::Direct {
-            addr: addr.to_concrete_addr(),
-        }
+    pub fn direct(addr: impl Into<RealAddr>) -> Self {
+        EndpointAddr::Direct { addr: addr.into() }
     }
 
-    pub fn with_agent(agent: impl ToConcreteAddr, outer: impl ToConcreteAddr) -> Self {
+    pub fn with_agent(agent: impl Into<RealAddr>, outer: impl Into<RealAddr>) -> Self {
         EndpointAddr::Agent {
-            agent: agent.to_concrete_addr(),
-            outer: outer.to_concrete_addr(),
+            agent: agent.into(),
+            outer: outer.into(),
         }
     }
 
@@ -34,7 +27,7 @@ impl EndpointAddr {
     /// Note: Before successful hole punching with this Endpoint, packets should be sent to the addr
     /// returned by deref() to establish communication. Once hole punching is successful or about to
     /// begin, use the addr returned by this function.
-    pub fn addr(&self) -> ConcreteAddr {
+    pub fn addr(&self) -> RealAddr {
         match self {
             EndpointAddr::Direct { addr } => *addr,
             EndpointAddr::Agent { outer, .. } => *outer,
@@ -42,7 +35,7 @@ impl EndpointAddr {
     }
 
     // pub fn encoding_size(&self) -> usize {
-    //     let addr_size = |addr: &ConcreteAddr| {
+    //     let addr_size = |addr: &RealAddr| {
     //         if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
     //     };
     //     match self {
@@ -65,7 +58,7 @@ impl fmt::Display for EndpointAddr {
 }
 
 impl Deref for EndpointAddr {
-    type Target = ConcreteAddr;
+    type Target = RealAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -76,17 +69,17 @@ impl Deref for EndpointAddr {
 }
 
 impl FromStr for EndpointAddr {
-    type Err = ParseConcreteAddrError;
+    type Err = ParseRealAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = s.split_once("-") {
             // Agent format: "inet:1.12.124.56:1234-inet:202.106.68.43:6080"
-            let agent: ConcreteAddr = first.trim().parse()?;
-            let outer: ConcreteAddr = second.trim().parse()?;
+            let agent: RealAddr = first.trim().parse()?;
+            let outer: RealAddr = second.trim().parse()?;
             Ok(EndpointAddr::with_agent(agent, outer))
         } else {
             // Direct format: "1.12.124.56:1234"
-            let addr: ConcreteAddr = s.trim().parse()?;
+            let addr: RealAddr = s.trim().parse()?;
             Ok(EndpointAddr::direct(addr))
         }
     }
@@ -126,12 +119,12 @@ impl FromStr for EndpointAddr {
 //     }
 // }
 
-// pub trait WriteConcreteAddr {
-//     fn put_socket_addr(&mut self, addr: &ConcreteAddr);
+// pub trait WriteRealAddr {
+//     fn put_socket_addr(&mut self, addr: &RealAddr);
 // }
 
-// impl<T: BufMut> WriteConcreteAddr for T {
-//     fn put_socket_addr(&mut self, addr: &ConcreteAddr) {
+// impl<T: BufMut> WriteRealAddr for T {
+//     fn put_socket_addr(&mut self, addr: &RealAddr) {
 //         self.put_u16(addr.port());
 //         match addr.ip() {
 //             IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
@@ -140,9 +133,9 @@ impl FromStr for EndpointAddr {
 //     }
 // }
 
-// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], ConcreteAddr> {
+// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], RealAddr> {
 //     flat_map(be_u16, |port| {
-//         map(be_ip_addr(is_ipv6), move |ip| ConcreteAddr::new(ip, port))
+//         map(be_ip_addr(is_ipv6), move |ip| RealAddr::new(ip, port))
 //     })
 //     .parse(input)
 // }
@@ -164,15 +157,15 @@ impl ToEndpointAddr for EndpointAddr {
     }
 }
 
-impl<T: ToConcreteAddr> ToEndpointAddr for T {
+impl<T: Into<RealAddr>> ToEndpointAddr for T {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::direct(self.to_concrete_addr())
+        EndpointAddr::direct(self.into())
     }
 }
 
-impl<A: ToConcreteAddr, O: ToConcreteAddr> ToEndpointAddr for (A, O) {
+impl<A: Into<RealAddr>, O: Into<RealAddr>> ToEndpointAddr for (A, O) {
     fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::with_agent(self.0.to_concrete_addr(), self.1.to_concrete_addr())
+        EndpointAddr::with_agent(self.0.into(), self.1.into())
     }
 }
 
@@ -216,8 +209,8 @@ impl Pathway {
 /// Network way, representing the quadruple of source and destination addres.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Link {
-    src: ConcreteAddr,
-    dst: ConcreteAddr,
+    src: RealAddr,
+    dst: RealAddr,
 }
 
 impl fmt::Display for Link {
@@ -228,20 +221,20 @@ impl fmt::Display for Link {
 
 impl Link {
     #[inline]
-    pub fn new(src: impl ToConcreteAddr, dst: impl ToConcreteAddr) -> Self {
+    pub fn new(src: impl Into<RealAddr>, dst: impl Into<RealAddr>) -> Self {
         Self {
-            src: src.to_concrete_addr(),
-            dst: dst.to_concrete_addr(),
+            src: src.into(),
+            dst: dst.into(),
         }
     }
 
     #[inline]
-    pub fn src(&self) -> ConcreteAddr {
+    pub fn src(&self) -> RealAddr {
         self.src
     }
 
     #[inline]
-    pub fn dst(&self) -> ConcreteAddr {
+    pub fn dst(&self) -> RealAddr {
         self.dst
     }
 
@@ -311,17 +304,17 @@ mod tests {
     #[test]
     fn test_endpoint_addr_from_str() {
         // Test direct format
-        let addr = "inet:127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
+        let addr = "inet://127.0.0.1/8080".parse::<EndpointAddr>().unwrap();
         assert!(matches!(addr, EndpointAddr::Direct { .. }));
 
         // Test agent format
-        let addr = "inet:127.0.0.1:8080-inet:192.168.1.1:9000"
+        let addr = "inet://127.0.0.1/8080-inet://192.168.1.1/9000"
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));
 
         // Test with whitespace
-        let addr = "  inet:127.0.0.1:8080  -  inet:192.168.1.1:9000  "
+        let addr = "  inet://127.0.0.1/8080  -  inet://192.168.1.1/9000  "
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));

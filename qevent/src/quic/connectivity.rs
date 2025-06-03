@@ -4,7 +4,7 @@ use derive_builder::Builder;
 use derive_more::From;
 use qbase::{
     frame::{ConnectionCloseFrame, QuicCloseFrame},
-    net::address::ConcreteAddr,
+    net::address::RealAddr,
 };
 
 use super::{
@@ -37,12 +37,12 @@ pub struct ServerListening {
 }
 
 impl ServerListeningBuilder {
-    pub fn address(&mut self, socket_addr: ConcreteAddr) -> &mut Self {
+    pub fn address(&mut self, socket_addr: RealAddr) -> &mut Self {
         match socket_addr {
-            ConcreteAddr::Inet(SocketAddr::V4(addr)) => {
+            RealAddr::Inet(SocketAddr::V4(addr)) => {
                 self.ip_v4(addr.ip().to_string()).port_v4(addr.port())
             }
-            ConcreteAddr::Inet(SocketAddr::V6(addr)) => {
+            RealAddr::Inet(SocketAddr::V6(addr)) => {
                 self.ip_v6(addr.ip().to_string()).port_v6(addr.port())
             }
             _ => self,
@@ -82,9 +82,9 @@ pub struct ConnectionStarted {
 
 impl ConnectionStartedBuilder {
     /// helper method to set the source and destination socket addresses
-    pub fn socket(&mut self, (src, dst): (ConcreteAddr, ConcreteAddr)) -> &mut Self {
+    pub fn socket(&mut self, (src, dst): (RealAddr, RealAddr)) -> &mut Self {
         match (src, dst) {
-            (ConcreteAddr::Inet(src), ConcreteAddr::Inet(dst)) => {
+            (RealAddr::Inet(src), RealAddr::Inet(dst)) => {
                 debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
                 self.ip_version(if src.is_ipv4() {
                     IpVersion::V4

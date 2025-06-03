@@ -61,26 +61,6 @@ impl<T> Channel<T> {
         }
     }
 
-    /// Send an item to the channel, if the channel is full, the oldest item will be removed and returned.
-    pub fn send_force(&self, item: T) -> Result<Option<T>, T> {
-        let mut deque_guard = self.deque.lock().unwrap();
-
-        match deque_guard.as_mut() {
-            Some(deque) => {
-                if deque.len() < deque.capacity() {
-                    deque.push_back(item);
-                    self.recv_notify.notify_one();
-                    Ok(None)
-                } else {
-                    let front = deque.pop_front();
-                    deque.push_back(item);
-                    Ok(front)
-                }
-            }
-            None => Err(item),
-        }
-    }
-
     /// Close the channel, return all unrecieved items.
     ///
     /// All unrecieved items will be dropped, and all pending [`Channel::recv`] calls will return [`None`].

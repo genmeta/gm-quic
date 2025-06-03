@@ -238,6 +238,15 @@ impl TryFrom<ParameterValue> for u64 {
     }
 }
 
+impl TryFrom<ParameterValue> for String {
+    type Error = <Bytes as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        Bytes::try_from(value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
 pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, ParameterValue)> {
     use nom::{bytes::streaming::take, combinator::map};
 
@@ -279,6 +288,7 @@ pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, Parameter
         ParameterId::PreferredAddress => {
             map(be_preferred_address, ParameterValue::PreferredAddress).parse(remain)?
         }
+        // custom bytes
         ParameterId::Value(_) => map(take(len.into_inner() as usize), |bytes| {
             Bytes::copy_from_slice(bytes).into()
         })

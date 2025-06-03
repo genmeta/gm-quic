@@ -3,21 +3,19 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::{param::ClientParameters, util::Future};
+use qbase::util::Future;
 
 use crate::prelude::PeerCert;
 
 pub type ClientAuthers = Vec<Arc<dyn AuthClient>>;
 
 pub trait AuthClient: Send + Sync {
-    fn verify_server_name(&self, server_name: &str) -> bool;
-
-    fn verify_client_params(&self, host: &str, clinet_params: &ClientParameters) -> bool;
+    fn verify_client_params(&self, host: &str, client_name: Option<&str>) -> bool;
 
     fn verify_client_certs(
         &self,
         host: &str,
-        clinet_params: &ClientParameters,
+        client_name: Option<&str>,
         clinet_certs: &PeerCert,
     ) -> bool;
 }

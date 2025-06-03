@@ -10,7 +10,7 @@ use qbase::{
         ReceiveFrame, SendFrame,
     },
     net::{
-        address::VirtualAddr,
+        address::BindAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -56,11 +56,11 @@ use crate::{
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedZeroRttFrom = (VirtualAddr, CipherZeroRttPacket, Pathway, Link);
+pub type ReceivedZeroRttFrom = (BindAddr, CipherZeroRttPacket, Pathway, Link);
 
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
-pub type ReceivedOneRttFrom = (VirtualAddr, CipherOneRttPacket, Pathway, Link);
+pub type ReceivedOneRttFrom = (BindAddr, CipherOneRttPacket, Pathway, Link);
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -487,12 +487,12 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
-            while let Some((virt_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
+            while let Some((bind_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                         let path = match components
-                            .get_or_try_create_path(virt_addr, link, pathway, true)
+                            .get_or_try_create_path(bind_addr, link, pathway, true)
                         {
                             Ok(path) => path,
                             Err(_) => {
@@ -539,12 +539,12 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
-            while let Some((virt_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
+            while let Some((bind_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
                         let path = match components
-                            .get_or_try_create_path(virt_addr, link, pathway, true)
+                            .get_or_try_create_path(bind_addr, link, pathway, true)
                         {
                             Ok(path) => path,
                             Err(_) => {

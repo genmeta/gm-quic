@@ -20,7 +20,7 @@ use crate::{handy::*, *};
 
 fn qlogger() -> Arc<dyn Log + Send + Sync> {
     static QLOGGER: OnceLock<Arc<dyn Log + Send + Sync>> = OnceLock::new();
-    QLOGGER.get_or_init(|| Arc::new(NullLogger)).clone()
+    QLOGGER.get_or_init(|| Arc::new(NoopLogger)).clone()
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -56,7 +56,7 @@ where
 
         let (listeners, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = listeners.hosts()["localhost"]
+        let server_addr = listeners.servers()["localhost"]
             .iter()
             .next()
             .expect("Server should bind at least one address")
@@ -65,6 +65,7 @@ where
             .try_into()
             .expect("This test support only SocketAddr");
         let result = time::timeout(Duration::from_secs(10), launch_client(server_addr)).await;
+
         listeners.shutdown();
         server_task.abort();
 
@@ -86,12 +87,12 @@ fn server_bind_no_interfaces() -> Result<(), Error> {
         || {
             let listeners = QuicListeners::builder()?
                 .without_client_cert_verifier()
-                .add_host("localhost", Host::with_cert_key(SERVER_CERT, SERVER_KEY)?)?
-                .listen(128)?;
+                .listen(128);
+            listeners.add_server("localhost", SERVER_CERT, SERVER_KEY, [] as [&str; 0], None)?;
             // bind interface then add interface
             listeners.add_interface(
                 "localhost",
-                Arc::new(UdpSocketController::bind("inet:127.0.0.1:0".parse()?)?),
+                Arc::new(UdpSocketController::bind("inet://127.0.0.1/alloc".into())?),
             )?;
             Ok((listeners, async {}))
         },
@@ -109,7 +110,7 @@ async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::
 
 pub async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
     loop {
-        let (server, connection, pathway, _link) = listeners.accept().await?;
+        let (connection, server, pathway, _link) = listeners.accept().await?;
         assert_eq!(server, "localhost");
         tracing::info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
@@ -147,14 +148,16 @@ fn launch_echo_server(
 ) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), Error> {
     let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
-        .add_host(
-            "localhost",
-            Host::with_cert_key(SERVER_CERT, SERVER_KEY)?
-                .bind_addresses("127.0.0.1:0".parse::<SocketAddr>()?)?,
-        )?
         .with_parameters(parameters)
         .with_qlog(qlogger())
-        .listen(128)?;
+        .listen(128);
+    listeners.add_server(
+        "localhost",
+        SERVER_CERT,
+        SERVER_KEY,
+        ["inet://127.0.0.1/alloc"],
+        None,
+    )?;
     Ok((listeners.clone(), serve_echo(listeners)))
 }
 
@@ -212,7 +215,7 @@ fn empty_stream() -> Result<(), Error> {
 fn shutdown() -> Result<(), Error> {
     async fn serve_only_one_stream(listeners: Arc<QuicListeners>) -> io::Result<()> {
         loop {
-            let (_server, connection, pathway, _link) = listeners.accept().await?;
+            let (connection, _server, pathway, _link) = listeners.accept().await?;
             tracing::info!(source = ?pathway.remote(), "accepted new connection");
             tokio::spawn(async move {
                 let (_sid, (reader, writer)) = connection.accept_bi_stream().await?.unwrap();
@@ -226,13 +229,16 @@ fn shutdown() -> Result<(), Error> {
     let launch_server = || {
         let listeners = QuicListeners::builder()?
             .without_client_cert_verifier()
-            .add_host(
-                "localhost",
-                Host::with_cert_key(SERVER_CERT, SERVER_KEY)?.bind_addresses("inet:127.0.0.1:0")?,
-            )?
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128)?;
+            .listen(128);
+        listeners.add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            ["inet://127.0.0.1/alloc"],
+            None,
+        )?;
         Ok((listeners.clone(), serve_only_one_stream(listeners)))
     };
     let launch_client = |server_addr| async move {
@@ -273,6 +279,32 @@ fn idle_timeout() {
         Result::Ok(())
     };
     test_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+}
+
+#[test]
+fn double_connections() -> Result<(), Error> {
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+
+        let mut connections = JoinSet::new();
+
+        for conn_idx in 0..2 {
+            let connection = client.connect("localhost", server_addr)?;
+            connections.spawn(
+                async move { send_and_verify_echo(&connection, TEST_DATA).await }
+                    .instrument(tracing::info_span!("stream", conn_idx)),
+            );
+        }
+
+        connections
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<(), Error>>()?;
+
+        Ok(())
+    };
+    test_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
 const PARALLEL_ECHO_CONNS: usize = 20;
@@ -393,10 +425,32 @@ fn limited_streams() -> Result<(), Error> {
 }
 
 #[test]
+fn client_without_verify() -> Result<(), Error> {
+    let launch_client = |server_addr| async move {
+        let client = {
+            let parameters = client_parameters();
+            let client = QuicClient::builder()
+                .without_verifier()
+                .with_parameters(parameters)
+                .without_cert()
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", server_addr)?;
+        send_and_verify_echo(&connection, TEST_DATA).await?;
+
+        Ok(())
+    };
+    test_serially(|| launch_echo_server(server_parameters()), launch_client)
+}
+
+#[test]
 fn client_auth() -> Result<(), Error> {
     pub async fn auth_client(listeners: Arc<QuicListeners>) -> io::Result<()> {
         loop {
-            let (server, connection, _pathway, _link) = listeners.accept().await?;
+            let (connection, server, _pathway, _link) = listeners.accept().await?;
             assert_eq!(server, "localhost");
 
             match connection.peer_certs().await?.as_ref() {
@@ -433,14 +487,16 @@ fn client_auth() -> Result<(), Error> {
                     .build()
                     .unwrap(),
             )
-            .add_host(
-                "localhost",
-                Host::with_cert_key(SERVER_CERT, SERVER_KEY)?
-                    .bind_addresses("127.0.0.1:0".parse::<SocketAddr>()?)?,
-            )?
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128)?;
+            .listen(128);
+        listeners.add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            ["inet://127.0.0.1/alloc"],
+            None,
+        )?;
         Ok((listeners.clone(), auth_client(listeners)))
     };
     test_serially(launch_server, |server_addr| async move {

@@ -10,7 +10,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
-        address::VirtualAddr,
+        address::BindAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -52,7 +52,7 @@ use crate::{
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
-pub type ReceivedFrom = (VirtualAddr, CipherInitialPacket, Pathway, Link);
+pub type ReceivedFrom = (BindAddr, CipherInitialPacket, Pathway, Link);
 
 pub struct InitialSpace {
     keys: ArcKeys,
@@ -232,7 +232,7 @@ pub fn spawn_deliver_and_parse(
     let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let deliver_and_parse = async move {
-        while let Some((virt_addr, packet, pathway, link)) = packets.recv().await {
+        while let Some((bind_addr, packet, pathway, link)) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 // rfc9000 7.2:
@@ -250,7 +250,7 @@ pub fn spawn_deliver_and_parse(
 
                 if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
                     let path =
-                        match components.get_or_try_create_path(virt_addr, link, pathway, true) {
+                        match components.get_or_try_create_path(bind_addr, link, pathway, true) {
                             Ok(path) => path,
                             Err(_) => {
                                 packet.drop_on_conenction_closed();
@@ -283,7 +283,7 @@ pub fn spawn_deliver_and_parse(
                         remote_cids.revise_initial_dcid(*packet.scid());
                         components
                             .parameters
-                            .initial_scid_from_peer_need_equal(*packet.scid())?;
+                            .initial_scid_from_peer_need_equal(*packet.scid());
                     }
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // A server might wish to validate the client address before starting the cryptographic handshake.
