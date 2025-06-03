@@ -1,17 +1,13 @@
-use std::{
-    io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
-};
+use std::{io, sync::Arc};
 
 use dashmap::DashMap;
 use handy::UdpSocketController;
 use qbase::{
-    net::address::{AddrKind, ToVirtualAddrs, VirtualAddr},
+    net::address::{AddrKind, BindAddr, IpFamily},
     param::RememberedParameters,
 };
 use qconnection::builder::*;
-use qevent::telemetry::{Log, handy::NullLogger};
+use qevent::telemetry::{Log, handy::NoopLogger};
 use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
@@ -22,10 +18,26 @@ use crate::*;
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
-/// A quic client that can initiates connections to servers.
-// be different from QuicServer, QuicClient is not arc
+/// A QUIC client for initiating connections to servers.
+///
+/// ## Creating Clients
+///
+/// Use [`QuicClient::builder`] to configure and create a client instance.
+/// Configure interfaces, TLS settings, and connection behavior before building.
+///
+/// ## Interface Management
+///
+/// - **Automatic binding**: If no interfaces are bound, the client automatically binds to system-assigned addresses
+/// - **Manual binding**: Use [`QuicClientBuilder::bind`] to bind specific interfaces
+/// - **Interface reuse**: Enable with [`QuicClientBuilder::reuse_address`] to share interfaces between connections
+///
+/// ## Connection Handling
+///
+/// Call [`QuicClient::connect`] to establish connections. The client supports:
+/// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
+/// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<VirtualAddr, Arc<dyn QuicInterface>>>,
+    bind_interfaces: Option<DashMap<BindAddr, Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
@@ -49,69 +61,28 @@ impl QuicClient {
         REUSEABLE_CONNECTIONS.get_or_init(Default::default)
     }
 
-    /// Start to build a QuicClient.
-    ///
-    /// Make sure that you have installed the rustls crypto provider before calling this method. If you dont want to use
-    /// the default crypto provider, you can use [`QuicClient::builder_with_crypto_provieder`] to specify the crypto provider.
-    ///
-    /// You can also use [`QuicClient::builder_with_tls`] to specify the TLS configuration.
-    ///
-    /// # Examples
-    /// ```
-    /// use gm_quic::QuicClient;
-    /// use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-    ///
-    /// rustls::crypto::ring::default_provider()
-    ///     .install_default()
-    ///     .expect("Failed to install rustls crypto provider");
-    ///
-    /// let client_builder = QuicClient::builder()
-    ///     .reuse_connection()
-    ///     .prefer_versions([0x00000001u32]);
-    /// ```
+    /// Create a new [`QuicClient`] builder.
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-        QuicClientBuilder {
-            bind_interfaces: DashMap::new(),
-            reuse_address: false,
-            reuse_connection: false,
-            enable_happy_eyepballs: false,
-            prefer_versions: vec![1],
-            quic_iface_factory: Box::new(UdpSocketController::bind),
-            defer_idle_timeout: HeartbeatConfig::default(),
-            parameters: ClientParameters::default(),
-            tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            logger: None,
-            token_sink: None,
-        }
+        Self::builder_with_tls(TlsClientConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ]))
     }
 
-    /// Start to build a QuicClient with the given tls crypto provider.
+    /// Create a [`QuicClient`] builder with custom crypto provider.
     pub fn builder_with_crypto_provieder(
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-        QuicClientBuilder {
-            bind_interfaces: DashMap::new(),
-            reuse_address: false,
-            reuse_connection: false,
-            enable_happy_eyepballs: false,
-            prefer_versions: vec![1],
-            quic_iface_factory: Box::new(UdpSocketController::bind),
-            defer_idle_timeout: HeartbeatConfig::default(),
-            parameters: ClientParameters::default(),
-            tls_config: TlsClientConfig::builder_with_provider(provider)
+        Self::builder_with_tls(
+            TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
-            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            logger: None,
-            token_sink: None,
-        }
+        )
     }
 
     /// Start to build a QuicClient with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
+    pub fn builder_with_tls<T>(tls_config: T) -> QuicClientBuilder<T> {
         QuicClientBuilder {
             bind_interfaces: DashMap::new(),
             reuse_address: false,
@@ -135,33 +106,29 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let quic_iface = match &self.bind_interfaces {
             None => {
-                let quic_iface = match server_ep.kind() {
-                    AddrKind::Inet4 => self
-                        .quic_iface_factory
-                        .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).into())?,
-                    AddrKind::Inet6 => self
-                        .quic_iface_factory
-                        .bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).into())?,
+                let bind_addr = match server_ep.kind() {
+                    AddrKind::Ip(IpFamily::V4) => "inet://0.0.0.0/alloc".into(),
+                    AddrKind::Ip(IpFamily::V6) => "inet://::/alloc".into(),
                     _ => {
                         return Err(io::Error::other(
                             "Failed to bind an unspecified address for this kind of endpoint address",
                         ));
                     }
                 };
-
+                let quic_iface = self.quic_iface_factory.bind(bind_addr)?;
                 crate::proto().add_interface(quic_iface.clone());
                 quic_iface
             }
             Some(bind_interfaces) => bind_interfaces
                 .iter()
                 .map(|entry| entry.key().clone())
-                .filter(|virt_addr| virt_addr.kind() == server_ep.kind())
-                .find_map(|virt_addr| {
+                .filter(|bind_addr| bind_addr.kind() == server_ep.kind())
+                .find_map(|bind_addr| {
                     if self.reuse_address {
-                        crate::proto().get_interface(virt_addr)
+                        crate::proto().get_interface(bind_addr)
                     } else {
                         crate::proto()
-                            .get_interface_if(virt_addr, |iface, _| Arc::strong_count(iface) == 1)
+                            .get_interface_if(bind_addr, |iface, _| Arc::strong_count(iface) == 1)
                     }
                 })
                 .ok_or(io::Error::new(
@@ -170,7 +137,7 @@ impl QuicClient {
                 ))?,
         };
 
-        let local_addr = quic_iface.concrete_addr()?;
+        let local_addr = quic_iface.read_addr()?;
         let link = Link::new(local_addr, *server_ep);
         //  TODO: 是否要outer addr，agent addr
         let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
@@ -202,8 +169,8 @@ impl QuicClient {
                     match event {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(virt_addr, ..) => {
-                            crate::proto().try_free_interface(virt_addr);
+                        Event::PathInactivated(bind_addr, ..) => {
+                            crate::proto().try_free_interface(bind_addr);
                         }
                         Event::ApplicationClose => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
@@ -229,7 +196,7 @@ impl QuicClient {
             }
         });
 
-        connection.add_path(quic_iface.virt_addr(), link, pathway)?;
+        connection.add_path(quic_iface.bind_addr(), link, pathway)?;
         Ok(connection)
     }
 
@@ -295,7 +262,7 @@ impl Drop for QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<VirtualAddr, Arc<dyn QuicInterface>>,
+    bind_interfaces: DashMap<BindAddr, Arc<dyn QuicInterface>>,
     reuse_address: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
@@ -344,18 +311,18 @@ impl<T> QuicClientBuilder<T> {
     /// returns an error), only the log will be printed.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl ToVirtualAddrs) -> io::Result<Self> {
+    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindAddr>>) -> io::Result<Self> {
         for entry in self.bind_interfaces.iter() {
             crate::proto().try_free_interface(entry.key().clone());
         }
         self.bind_interfaces.clear();
 
-        for virt_addr in addrs.to_virtual_addrs()? {
-            if self.bind_interfaces.contains_key(&virt_addr) {
+        for bind_addr in addrs.into_iter().map(Into::into) {
+            if self.bind_interfaces.contains_key(&bind_addr) {
                 continue;
             }
-            let interface = self.quic_iface_factory.bind(virt_addr.clone())?;
-            self.bind_interfaces.insert(virt_addr, interface);
+            let interface = self.quic_iface_factory.bind(bind_addr.clone())?;
+            self.bind_interfaces.insert(bind_addr, interface);
         }
 
         Ok(self)
@@ -691,7 +658,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _remembered: None,
             tls_config: Arc::new(self.tls_config),
             stream_strategy_factory: self.stream_strategy_factory,
-            logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
+            logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),
             token_sink: self.token_sink,
         }
     }

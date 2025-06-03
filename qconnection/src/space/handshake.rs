@@ -7,7 +7,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
-        address::VirtualAddr,
+        address::BindAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -49,7 +49,7 @@ use crate::{
 
 pub type CipherHanshakePacket = CipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
-pub type ReceivedFrom = (VirtualAddr, CipherHanshakePacket, Pathway, Link);
+pub type ReceivedFrom = (BindAddr, CipherHanshakePacket, Pathway, Link);
 
 pub struct HandshakeSpace {
     keys: ArcKeys,
@@ -200,12 +200,12 @@ pub fn spawn_deliver_and_parse(
     let role = components.handshake.role();
     let conn_state = components.conn_state.clone();
     let deliver_and_parse = async move {
-        while let Some((virt_addr, packet, pathway, link)) = packets.recv().await {
+        while let Some((bind_addr, packet, pathway, link)) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                 if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
                     let path =
-                        match components.get_or_try_create_path(virt_addr, link, pathway, true) {
+                        match components.get_or_try_create_path(bind_addr, link, pathway, true) {
                             Ok(path) => path,
                             Err(_) => {
                                 packet.drop_on_conenction_closed();

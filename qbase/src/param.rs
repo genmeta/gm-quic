@@ -157,14 +157,15 @@ impl Parameters {
         }
     }
 
-    fn has_rcvd_remote_params(&self) -> bool {
+    fn is_remote_params_ready(&self) -> bool {
         self.state == Self::CLIENT_READY | Self::SERVER_READY
     }
 
     fn recv_remote_params(
         &mut self,
         params: &[u8],
-    ) -> Result<Option<Arc<dyn StoreParameter>>, Error> {
+        extra_auth: impl FnOnce(&dyn StoreParameter) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.parse_and_validate_remote_params(params)?;
         // Because TLS and packet parsing are in parallel,
@@ -172,15 +173,16 @@ impl Parameters {
         // Therefore, if the scid of the other end is not set, authentication will not be performed first,
         // and authentication will be performed when it is set.
         if self.authenticate_cids()? {
+            extra_auth(match self.role() {
+                Role::Client => self.server.as_ref(),
+                Role::Server => self.client.as_ref(),
+            })?;
             self.state = Self::CLIENT_READY | Self::SERVER_READY;
             self.wake_all();
-            return Ok(Some(match self.role() {
-                Role::Client => self.server.clone(),
-                Role::Server => self.client.clone(),
-            }));
+            return Ok(());
         }
 
-        Ok(None)
+        Ok(())
     }
 
     fn wake_all(&mut self) {
@@ -197,28 +199,12 @@ impl Parameters {
         Ok(())
     }
 
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), QuicError> {
-        let (initial_scid, remote_ready) = match &mut self.requirements {
-            Requirements::Client { initial_scid, .. } => {
-                (initial_scid, self.state & Self::SERVER_READY != 0)
-            }
-            Requirements::Server { initial_scid } => {
-                (initial_scid, self.state & Self::CLIENT_READY != 0)
-            }
+    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
+        let initial_scid = match &mut self.requirements {
+            Requirements::Client { initial_scid, .. } => initial_scid,
+            Requirements::Server { initial_scid } => initial_scid,
         };
-        let do_validata = initial_scid.is_none() && remote_ready;
-        *initial_scid = Some(cid);
-        if do_validata {
-            // Because TLS and packet parsing are in parallel,
-            // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
-            // Therefore, if the scid of the other end is not set, authentication will not be performed first,
-            // and authentication will be performed when it is set.
-            let authenticated = self.authenticate_cids()?;
-            debug_assert!(authenticated);
-            self.state = Self::CLIENT_READY | Self::SERVER_READY;
-            self.wake_all();
-        }
-        Ok(())
+        assert!(initial_scid.replace(cid).is_none());
     }
 
     fn retry_scid_from_server_need_equal(&mut self, cid: ConnectionId) {
@@ -384,7 +370,7 @@ impl ArcParameters {
     pub fn try_get_remote(&self) -> Result<Option<Arc<dyn StoreParameter + Send + Sync>>, Error> {
         match self.0.lock().unwrap().as_ref() {
             Ok(params) => Ok(params
-                .has_rcvd_remote_params()
+                .is_remote_params_ready()
                 .then(|| match params.role() {
                     Role::Client => params.server.clone() as Arc<dyn StoreParameter + Send + Sync>,
                     Role::Server => params.client.clone() as Arc<dyn StoreParameter + Send + Sync>,
@@ -490,12 +476,11 @@ impl ArcParameters {
     /// If the peer's transmission parameters have not been verified,
     /// it will be verified here. If verification fails, this method will
     /// return Err.
-    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) -> Result<(), Error> {
+    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
-            params.initial_scid_from_peer_need_equal(cid)?;
+            params.initial_scid_from_peer_need_equal(cid);
         }
-        Ok(())
     }
 
     /// After receiving the Retry packet from the server, the
@@ -515,11 +500,12 @@ impl ArcParameters {
     pub fn recv_remote_params(
         &self,
         bytes: &[u8],
-    ) -> Result<Option<Arc<dyn StoreParameter>>, Error> {
+        extra_auth: impl FnOnce(&dyn StoreParameter) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
         let params = guard.as_mut().map_err(|e| e.clone())?;
         // 避免外界拿到错误的参数
-        match params.recv_remote_params(bytes) {
+        match params.recv_remote_params(bytes, extra_auth) {
             Ok(remote_params) => Ok(remote_params),
             Err(error) => {
                 params.wake_all();
@@ -529,14 +515,14 @@ impl ArcParameters {
         }
     }
 
-    /// Returns true if the remote transport parameters have been received.
+    /// Returns true if the remote transport parameters have been received and authed.
     ///
     /// It is usually used to avoid processing remote transport parameters
     /// more than once.
-    pub fn has_rcvd_remote_params(&self) -> bool {
+    pub fn is_remote_params_ready(&self) -> bool {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
-            Ok(params) => params.has_rcvd_remote_params(),
+            Ok(params) => params.is_remote_params_ready(),
             Err(_) => false,
         }
     }
@@ -595,7 +581,7 @@ mod tests {
         let mut params = Parameters::new_client(client_params, None, odcid);
 
         let server_cid = ConnectionId::from_slice(b"server_test");
-        _ = params.initial_scid_from_peer_need_equal(server_cid);
+        params.initial_scid_from_peer_need_equal(server_cid);
 
         params.server = Arc::new({
             let mut server_params = ServerParameters::default();
@@ -633,21 +619,25 @@ mod tests {
     fn test_validate_remote_params() {
         // Test invalid max_udp_payload_size
         let mut params = Parameters::new_server(create_test_server_params());
-        let result = params.recv_remote_params(&[
-            1, 1, 0, // max_idle_timeout
-            3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
-            4, 1, 0, // initial_max_data
-            5, 1, 0, // initial_max_stream_data_bidi_local
-            6, 1, 0, // initial_max_stream_data_bidi_remote
-            7, 1, 0, // initial_max_stream_data_uni
-            8, 1, 0, // initial_max_streams_bidi
-            9, 1, 0, // initial_max_streams_uni
-            10, 1, 3, // ack_delay_exponent
-            11, 1, 25, // max_ack_delay
-            14, 1, 2, // active_connection_id_limit
-            15, 0, // initial_source_connection_id
-            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
-        ]);
+        let result = params.recv_remote_params(
+            &[
+                1, 1, 0, // max_idle_timeout
+                3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
+                4, 1, 0, // initial_max_data
+                5, 1, 0, // initial_max_stream_data_bidi_local
+                6, 1, 0, // initial_max_stream_data_bidi_remote
+                7, 1, 0, // initial_max_stream_data_uni
+                8, 1, 0, // initial_max_streams_bidi
+                9, 1, 0, // initial_max_streams_uni
+                10, 1, 3, // ack_delay_exponent
+                11, 1, 25, // max_ack_delay
+                14, 1, 2, // active_connection_id_limit
+                15, 0, // initial_source_connection_id
+                32, 4, 128, 0, 255, 255, // max_datagram_frame_size
+            ],
+            // no extra auth
+            |_| Ok(()),
+        );
         assert_eq!(
             result.err(),
             Some(

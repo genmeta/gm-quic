@@ -2,12 +2,13 @@
 mod qudp {
     use std::{
         io::{self, IoSliceMut},
+        net::SocketAddr,
         task::{Context, Poll, ready},
     };
 
     use bytes::BytesMut;
     use qbase::net::{
-        address::{ConcreteAddr, VirtualAddr},
+        address::{BindAddr, RealAddr, SocketBindAddr},
         route::{Link, Pathway, ToEndpointAddr},
     };
     use qudp::BATCH_SIZE;
@@ -16,37 +17,39 @@ mod qudp {
 
     pub struct UdpSocketController {
         inner: qudp::UdpSocketController,
-        address: VirtualAddr,
+        bind_addr: BindAddr,
     }
 
     impl UdpSocketController {
-        pub fn bind(addr: VirtualAddr) -> io::Result<Self> {
-            let addr = match addr {
-                VirtualAddr::Concrete(ConcreteAddr::Inet(socket_addr)) => socket_addr,
+        pub fn bind(bind_addr: BindAddr) -> io::Result<Self> {
+            let socket_addr = match &bind_addr {
+                BindAddr::Socket(SocketBindAddr::Inet(inet_bind_addr)) => {
+                    SocketAddr::from(*inet_bind_addr)
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
                         format!(
-                            "USC can only bind to specific addresses (SocketAddr), got: {addr:?}"
+                            "USC can only bind to specific addresses (SocketAddr), got: {bind_addr:?}"
                         ),
                     ));
                 }
             };
-            let usc = qudp::UdpSocketController::bind(addr)?;
+            let usc = qudp::UdpSocketController::bind(socket_addr)?;
             Ok(Self {
-                address: VirtualAddr::Concrete(usc.local_addr()?.into()),
+                bind_addr,
                 inner: usc,
             })
         }
     }
 
     impl QuicInterface for UdpSocketController {
-        fn virt_addr(&self) -> VirtualAddr {
-            self.address.clone()
+        fn bind_addr(&self) -> BindAddr {
+            self.bind_addr.clone()
         }
 
-        fn concrete_addr(&self) -> io::Result<ConcreteAddr> {
-            self.inner.local_addr().map(ConcreteAddr::Inet)
+        fn read_addr(&self) -> io::Result<RealAddr> {
+            self.inner.local_addr().map(RealAddr::Inet)
         }
 
         fn max_segments(&self) -> usize {
@@ -64,7 +67,7 @@ mod qudp {
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
             debug_assert_eq!(hdr.ecn(), None);
-            debug_assert_eq!(hdr.link().src(), self.concrete_addr()?);
+            debug_assert_eq!(hdr.link().src(), self.read_addr()?);
             let hdr = qudp::DatagramHeader::new(
                 hdr.link().src().try_into().expect("Must be SocketAddr"),
                 hdr.link().dst().try_into().expect("Must be SocketAddr"),
@@ -92,7 +95,7 @@ mod qudp {
             let rcvd = ready!(self.inner.poll_recv(cx, &mut bufs, &mut hdrs))?;
 
             for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
-                let dst = self.concrete_addr()?;
+                let dst = self.read_addr()?;
                 let way = Pathway::new(qudp_hdr.src.to_endpoint_addr(), dst.to_endpoint_addr());
                 let link = Link::new(qudp_hdr.src, self.inner.local_addr()?);
                 qbase_hdrs[idx] = PacketHeader::new(

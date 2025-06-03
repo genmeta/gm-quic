@@ -1,6 +1,6 @@
 use qbase::{
     net::{
-        address::VirtualAddr,
+        address::BindAddr,
         route::{Link, Pathway},
     },
     packet::{
@@ -12,7 +12,7 @@ use qbase::{
 
 use crate::packet::CipherPacket;
 
-type PacketQueue<P> = BoundQueue<(VirtualAddr, CipherPacket<P>, Pathway, Link)>;
+type PacketQueue<P> = BoundQueue<(BindAddr, CipherPacket<P>, Pathway, Link)>;
 
 // 需要一个四元组，pathway + src + dst
 pub struct RcvdPacketQueue {
@@ -64,7 +64,7 @@ impl RcvdPacketQueue {
 
     pub async fn deliver(
         &self,
-        virt_addr: VirtualAddr,
+        bind_addr: BindAddr,
         packet: Packet,
         pathway: Pathway,
         socket: Link,
@@ -75,28 +75,28 @@ impl RcvdPacketQueue {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .initial
-                        .send((virt_addr, packet, pathway, socket))
+                        .send((bind_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .handshake
-                        .send((virt_addr, packet, pathway, socket))
+                        .send((bind_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .zero_rtt
-                        .send((virt_addr, packet, pathway, socket))
+                        .send((bind_addr, packet, pathway, socket))
                         .await;
                 }
                 DataHeader::Short(header) => {
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
                     _ = self
                         .one_rtt
-                        .send((virt_addr, packet, pathway, socket))
+                        .send((bind_addr, packet, pathway, socket))
                         .await;
                 }
             },

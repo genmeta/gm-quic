@@ -13,9 +13,9 @@ use tokio::{
 use super::{ExportEvent, Log, Span};
 use crate::{Event, GroupID, QlogFileSeq, VantagePoint, VantagePointType};
 
-pub struct NullExporter;
+pub struct NoopExporter;
 
-impl ExportEvent for NullExporter {
+impl ExportEvent for NoopExporter {
     fn emit(&self, event: Event) {
         _ = event;
     }
@@ -73,12 +73,12 @@ impl ExportEvent for IoExpoter {
     }
 }
 
-pub struct NullLogger;
+pub struct NoopLogger;
 
-impl Log for NullLogger {
+impl Log for NoopLogger {
     #[inline]
     fn new_trace(&self, _: VantagePointType, _: GroupID) -> Span {
-        Span::new(Arc::new(NullExporter), Default::default())
+        Span::new(Arc::new(NoopExporter), Default::default())
     }
 }
 

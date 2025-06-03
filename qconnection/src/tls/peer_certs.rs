@@ -1,7 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
 use qbase::{error::Error, util::Future};
-use rustls::pki_types::CertificateDer;
 
 /// The certificate chain or the raw public key used by the peer to authenticate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,16 +14,9 @@ pub enum PeerCert {
 pub struct ArcPeerCerts(Arc<Future<Result<Arc<PeerCert>, Error>>>);
 
 impl ArcPeerCerts {
-    pub fn assign(&self, certs: &[CertificateDer<'static>]) -> Result<Arc<PeerCert>, Error> {
-        let previous = self
-            .0
-            .assign(Ok(Arc::new(PeerCert::CertOrPublicKey(certs[0].to_vec()))));
+    pub fn assign(&self, cert: PeerCert) {
+        let previous = self.0.assign(Ok(Arc::new(cert)));
         debug_assert!(previous.is_none());
-        self.0
-            .try_get()
-            .expect("PeerCerts has been ready")
-            .deref()
-            .clone()
     }
 
     pub fn no_certs(&self) {

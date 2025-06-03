@@ -1,59 +1,65 @@
-//! Network address abstraction module
+//! Network address abstraction for QUIC interface management
 //!
-//! This module provides a unified network address abstraction supporting multiple types of network addresses:
+//! This module provides address types for creating and managing QUIC network interfaces.
+//! Each [`BindAddr`] serves as a unique identifier for a QUIC interface.
 //!
-//! - **Virtual Address** ([`VirtualAddr`]): Abstract representation of an address that can be bound, corresponding to a `QuicInterface`
-//! - **Interface Address** ([`InterfaceAddr`]): Address bound to a specific network interface
-//! - **Concrete Address** ([`ConcreteAddr`]): Concrete network addresses, such as IPv4/IPv6 socket addresses
+//! ## Address Types
 //!
-//! These addresses are used to create and bind a `QuicInterface`.
-//! You can refer to the `qinterface` crate for more information.
+//! - [`BindAddr`]: Abstract address that uniquely identifies a QUIC interface binding
+//! - [`IfaceBindAddr`]: Binds to a specific network interface by device name  
+//! - [`InetBindAddr`]: Binds to a specific IP address and port
+//! - [`RealAddr`]: Concrete network addresses after successful binding
 //!
 //! ## Address Formats
 //!
-//! ### Interface Address Format
+//! ### Interface Addresses
 //! ```text
-//! iface:<device_name>:<ip_family>:<port>
+//! iface://eth0/v4/8080     # Bind to eth0 interface, IPv4, port 8080
+//! iface://lo/v4/any        # Any available port (reusable identifier)
+//! iface://eth0/v6/alloc    # Allocated port (unique identifier each time)
 //! ```
 //!
-//! Examples:
-//! - `iface:enp17s0:v4:8080` - Bind to enp17s0 interface with IPv4, port 8080
-//! - `iface:wlp18s0:v6:443` - Bind to wlp18s0 interface with IPv6, port 443
-//!
-//! ### Concrete Address Format
+//! ### Internet Addresses  
 //! ```text
-//! inet:<socket_addr>
+//! inet://127.0.0.1/8080    # Bind to localhost IPv4, port 8080
+//! inet://127.0.0.1/any     # Any port (reusable identifier)
+//! inet://10.0.0.1/alloc    # Allocated port (unique identifier)
+//! 127.0.0.1:8080           # Socket address format (legacy compatibility)
 //! ```
 //!
-//! Examples:
-//! - `inet:127.0.0.1:8080` - IPv4 localhost address
-//! - `inet:[::1]:8080` - IPv6 localhost address
+//! **Note**: Socket address strings (`ip:port`) do not support port 0.
+//! Use `inet://` format with `any` or `alloc` for dynamic port allocation.
 //!
-//! ## Usage Examples
+//! ## Port Types
+//!
+//! - **Numeric ports** (`8080`, `443`): Fixed port numbers
+//! - **`any` port**: System-assigned port with reusable identifier semantics
+//! - **`alloc` port**: System-assigned port with unique identifier semantics
+//!
+//! ### `any` vs `alloc` Ports
 //!
 //! ```rust
-//! use std::str::FromStr;
-//! use std::net::SocketAddr;
-//! use qbase::net::address::{ToConcreteAddr, ToVirtualAddrs, ConcreteAddr, VirtualAddr};
+//! # use qbase::net::address::BindAddr;
+//! // 'any' port: Same string → Same BindAddr (reusable)
+//! let addr1: BindAddr = "inet://127.0.0.1/any".parse().unwrap();
+//! let addr2: BindAddr = "inet://127.0.0.1/any".parse().unwrap();
+//! assert_eq!(addr1, addr2);
 //!
-//! // Parse interface address
-//! let iface_addr: VirtualAddr = "iface:enp17s0:v4:8080".parse().unwrap();
-//! let iface_addr: VirtualAddr = "iface:enp17s0:v4:8080".to_virtual_addrs().unwrap().next().unwrap();
-//!
-//! // Parse concrete address
-//! let inet_addr: ConcreteAddr = "inet:192.168.1.1:80".parse().unwrap();
-//! let inet_addr: ConcreteAddr = "inet:192.168.1.1:80".to_concrete_addr();
-//!
-//! // Create from SocketAddr
-//! let socket_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-//! let virt_addr = VirtualAddr::from(socket_addr);
+//! // 'alloc' port: Same string → Different BindAddr (unique)
+//! let addr3: BindAddr = "inet://127.0.0.1/alloc".parse().unwrap();
+//! let addr4: BindAddr = "inet://127.0.0.1/alloc".parse().unwrap();
+//! assert_ne!(addr3, addr4);
 //! ```
+//!
+//! Use `any` for interface reuse and configuration-driven binding.
+//! Use `alloc` for multiple instances and testing isolation.
 
 use std::{
-    fmt::Display,
-    io,
-    net::{AddrParseError, SocketAddr},
+    fmt::{Debug, Display},
+    net::{AddrParseError, IpAddr, SocketAddr},
+    num::{IntErrorKind, NonZeroU16, ParseIntError},
     str::FromStr,
+    sync::{Mutex, OnceLock},
 };
 
 use derive_more::{From, TryInto};
@@ -64,209 +70,197 @@ use thiserror::Error;
 ///
 /// Represents different IP protocol family types.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AddrKind {
-    /// IPv4 address family
-    Inet4,
-    /// IPv6 address family
-    Inet6,
+    /// IP address
+    Ip(IpFamily),
+    /// Bluetooth address
+    Ble,
 }
 
 /// Abstract representation of an address that can be bound, corresponding to a `QuicInterface`
 ///
 /// ```rust
 /// use std::str::FromStr;
-/// use qbase::net::address::{AddrKind ,VirtualAddr};
+/// use qbase::net::address::{AddrKind, BindAddr, IpFamily};
 ///
 /// // Create interface address
-/// let virt_addr: VirtualAddr = "iface:enp17s0:v4:8080".parse().unwrap();
+/// let bind_addr: BindAddr = "iface://enp17s0/v4/8080".parse().unwrap();
 ///
 /// // Check address type
-/// assert_eq!(virt_addr.kind(), AddrKind::Inet4);
+/// assert_eq!(bind_addr.kind(), AddrKind::Ip(IpFamily::V4));
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum VirtualAddr {
-    /// Interface address variant
-    Iface(InterfaceAddr),
-    /// Concrete address variant
-    Concrete(ConcreteAddr),
-    // Future: Bluetooth, UnixSocket, etc.
+#[derive(Debug, Clone, From, PartialEq, Eq, Hash)]
+pub enum BindAddr {
+    Socket(SocketBindAddr),
+    Bluetooth([u8; 6]),
 }
 
-impl VirtualAddr {
-    /// Get the IP protocol family type of the address
+impl BindAddr {
+    /// Get the address type
     ///
-    /// Returns [`AddrKind::Inet4`] or [`AddrKind::Inet6`]
+    /// Returns the address kind indicating the protocol family and address type.
     pub fn kind(&self) -> AddrKind {
         match self {
-            VirtualAddr::Iface(iface) => iface.kind(),
-            VirtualAddr::Concrete(addr) => addr.kind(),
+            BindAddr::Socket(addr) => addr.ip_family().into(),
+            BindAddr::Bluetooth(_) => AddrKind::Ble,
         }
     }
 }
 
-impl Display for VirtualAddr {
+impl Display for BindAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VirtualAddr::Iface(iface) => write!(f, "iface:{iface}"),
-            VirtualAddr::Concrete(addr) => write!(f, "{addr}"),
+            BindAddr::Socket(addr) => {
+                write!(f, "{addr}",)
+            }
+            BindAddr::Bluetooth(addr) => {
+                write!(f, "ble://{addr:02x?}")
+            }
         }
     }
 }
 
-/// Possible errors when parsing virtual addresses
+impl From<IfaceBindAddr> for BindAddr {
+    fn from(addr: IfaceBindAddr) -> Self {
+        BindAddr::Socket(SocketBindAddr::Iface(addr))
+    }
+}
+
+impl From<InetBindAddr> for BindAddr {
+    fn from(addr: InetBindAddr) -> Self {
+        BindAddr::Socket(SocketBindAddr::Inet(addr))
+    }
+}
+
+impl From<SocketAddr> for BindAddr {
+    fn from(addr: SocketAddr) -> Self {
+        // This will panic if the port is 0
+        match InetBindAddr::try_from(addr) {
+            Ok(inet_addr) => BindAddr::from(inet_addr),
+            Err(e) => {
+                panic!("Failed to convert SocketAddr to BindAddr: {e}");
+            }
+        }
+    }
+}
+
+/// Possible errors when parsing bind addresses
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum ParseVirtualAddrError {
+pub enum ParseBindAddrError {
     /// Missing scheme in address string (e.g., "iface:" or "inet:")
-    #[error("Missing scheme in virtual addr")]
+    #[error("Missing scheme in bind addr")]
     MissingScheme,
     /// Unsupported scheme
-    #[error("Invalid scheme in virtual addr: {0}")]
-    InvalidScheme(String),
+    #[error("Invalid scheme in bind addr")]
+    InvalidScheme,
     /// Invalid interface address format
     #[error("Invalid interface addr: {0}")]
-    InvalidIfaceAddr(ParseInterfaceAddrError),
+    InvalidIfaceAddr(ParseIfaceBindAddrError),
     /// Invalid network address format
-    #[error("Invalid inet addr: {0}")]
-    InvalidInetAddr(AddrParseError),
+    #[error("Invalid internet addr: {0}")]
+    InvalidInetAddr(ParseInetBindAddrError),
 }
 
-impl From<ParseConcreteAddrError> for ParseVirtualAddrError {
-    fn from(value: ParseConcreteAddrError) -> Self {
-        match value {
-            ParseConcreteAddrError::InvalidScheme => ParseVirtualAddrError::MissingScheme,
-            ParseConcreteAddrError::InvalidInetAddr(e) => ParseVirtualAddrError::InvalidInetAddr(e),
-        }
-    }
-}
-
-impl FromStr for VirtualAddr {
-    type Err = ParseVirtualAddrError;
+impl FromStr for BindAddr {
+    type Err = ParseBindAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (scheme, addr) = s
-            .split_once(':')
-            .ok_or(ParseVirtualAddrError::MissingScheme)?;
+        let (scheme, _) = s
+            .split_once("://")
+            .ok_or(ParseBindAddrError::MissingScheme)?;
         match scheme {
-            "iface" => addr
+            IfaceBindAddr::SCHEME => s
                 .parse()
-                .map(VirtualAddr::Iface)
-                .map_err(ParseVirtualAddrError::InvalidIfaceAddr),
-            "inet" => s
+                .map(SocketBindAddr::Iface)
+                .map(BindAddr::Socket)
+                .map_err(ParseBindAddrError::InvalidIfaceAddr),
+            InetBindAddr::SCHEME => s
                 .parse()
-                .map(VirtualAddr::Concrete)
-                .map_err(ParseVirtualAddrError::from),
-            invalid => Err(ParseVirtualAddrError::InvalidScheme(invalid.to_string())),
+                .map(SocketBindAddr::Inet)
+                .map(BindAddr::Socket)
+                .map_err(ParseBindAddrError::InvalidInetAddr),
+            "ble" => todo!("Bluetooth addresses are not yet supported"),
+            _ => Err(ParseBindAddrError::InvalidScheme),
         }
     }
 }
 
-impl From<SocketAddr> for VirtualAddr {
-    fn from(value: SocketAddr) -> Self {
-        VirtualAddr::Concrete(value.to_concrete_addr())
+impl From<&str> for BindAddr {
+    fn from(value: &str) -> Self {
+        value
+            .parse()
+            .unwrap_or_else(|e| panic!("Failed to parse BindAddr from '{value}': {e}"))
     }
 }
 
-/// Convert types to an iterator of virtual addresses, like [`ToSocketAddrs`]
-///
-/// This trait provides a unified way to generate virtual addresses from various types.
-///
-/// ```rust
-/// use qbase::net::address::{ToVirtualAddrs, VirtualAddr};
-///
-/// // Create from string
-/// let addrs: Vec<VirtualAddr> = "inet:127.0.0.1:8080"
-///     .to_virtual_addrs()
-///     .unwrap()
-///     .collect();
-///
-/// // Create from array
-/// let addr_array = ["inet:127.0.0.1:8080", "iface:enp17s0:v4:8080"];
-/// let addrs: Vec<VirtualAddr> = addr_array
-///     .to_virtual_addrs()
-///     .unwrap()
-///     .collect();
-/// ```
-///
-/// [`ToSocketAddrs`]: std::net::ToSocketAddrs
-pub trait ToVirtualAddrs {
-    /// Convert current value to an iterator of virtual addresses
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>>;
-}
-
-impl<T: Into<VirtualAddr> + Clone> ToVirtualAddrs for T {
-    #[inline]
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>> {
-        Ok(std::iter::once(self.clone().into()))
+impl<T> From<&T> for BindAddr
+where
+    Self: From<T>,
+    T: Copy,
+{
+    fn from(value: &T) -> Self {
+        Self::from(*value)
     }
 }
 
-impl ToVirtualAddrs for &str {
-    #[inline]
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>> {
-        self.parse::<VirtualAddr>()
-            .map(std::iter::once)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid abstract address"))
+#[derive(Debug, Clone, From, PartialEq, Eq, Hash)]
+pub enum SocketBindAddr {
+    Iface(IfaceBindAddr),
+    Inet(InetBindAddr),
+}
+
+impl SocketBindAddr {
+    pub fn ip_family(&self) -> IpFamily {
+        match self {
+            SocketBindAddr::Iface(iface) => iface.ip_family(),
+            SocketBindAddr::Inet(inet) => inet.ip_family(),
+        }
     }
 }
 
-impl ToVirtualAddrs for () {
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>> {
-        Ok(std::iter::empty())
+impl Display for SocketBindAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketBindAddr::Iface(iface) => write!(f, "{iface}"),
+            SocketBindAddr::Inet(inet) => write!(f, "{inet}"),
+        }
     }
 }
 
-impl<T: ToVirtualAddrs, const N: usize> ToVirtualAddrs for [T; N] {
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>> {
-        self.iter()
-            .try_fold(vec![], |mut acc, item| {
-                acc.extend(item.to_virtual_addrs()?);
-                Ok(acc)
-            })
-            .map(Vec::into_iter)
-    }
-}
-
-impl<T: ToVirtualAddrs> ToVirtualAddrs for &[T] {
-    fn to_virtual_addrs(&self) -> io::Result<impl Iterator<Item = VirtualAddr>> {
-        self.iter()
-            .try_fold(vec![], |mut acc, item| {
-                acc.extend(item.to_virtual_addrs()?);
-                Ok(acc)
-            })
-            .map(Vec::into_iter)
-    }
-}
-
-/// Network interface address
+/// Network interface bind address
 ///
-/// Represents an address bound to a specific network interface, containing device name, IP protocol family, and port number.
+/// Represents an address bound to a specific network interface by name, containing device name,
+/// IP protocol family, and port number.
 ///
-/// Interface address string format: `<device_name>:<ip_family>:<port>`
+/// Interface address URI format: `iface://<device_name>/<ip_family>/<port>`
 ///
 /// ```rust
 /// use std::str::FromStr;
-/// use qbase::net::address::{InterfaceAddr, IpFamily};
+/// use std::num::NonZeroU16;
+/// use qbase::net::address::{IfaceBindAddr, IpFamily, Port};
 ///
-/// let addr = InterfaceAddr::new("lo", IpFamily::V4, 8080);
-/// assert_eq!(addr.to_string(), "lo:v4:8080");
+/// let addr = IfaceBindAddr::new("lo", IpFamily::V4, Port::Special(NonZeroU16::new(8080).unwrap()));
+/// assert_eq!(addr.to_string(), "iface://lo/v4/8080");
 ///
 /// // Parse from string
-/// let addr: InterfaceAddr = "wlp18s0:v6:443".parse().unwrap();
+/// let addr: IfaceBindAddr = "iface://wlp18s0/v6/443".parse().unwrap();
 /// assert_eq!(addr.device_name(), "wlp18s0");
 /// assert_eq!(addr.ip_family(), IpFamily::V6);
-/// assert_eq!(addr.port(), 443);
+/// assert_eq!(addr.port(), Port::Special(NonZeroU16::new(443).unwrap()));
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct InterfaceAddr {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IfaceBindAddr {
     device_name: String,
     ip_family: IpFamily,
-    port: u16,
+    port: Port,
 }
 
-impl InterfaceAddr {
-    pub fn new(device_name: impl Into<String>, ip_family: IpFamily, port: u16) -> Self {
+impl IfaceBindAddr {
+    pub const SCHEME: &'static str = "iface";
+
+    pub fn new(device_name: impl Into<String>, ip_family: IpFamily, port: Port) -> Self {
         Self {
             device_name: device_name.into(),
             ip_family,
@@ -276,10 +270,7 @@ impl InterfaceAddr {
 
     /// Get the IP protocol family type of the interface address
     pub fn kind(&self) -> AddrKind {
-        match self.ip_family {
-            IpFamily::V4 => AddrKind::Inet4,
-            IpFamily::V6 => AddrKind::Inet6,
-        }
+        AddrKind::Ip(self.ip_family)
     }
 
     pub fn device_name(&self) -> &str {
@@ -290,20 +281,62 @@ impl InterfaceAddr {
         self.ip_family
     }
 
-    pub fn port(&self) -> u16 {
+    pub fn port(&self) -> Port {
         self.port
     }
 }
 
-impl Display for InterfaceAddr {
+impl Display for IfaceBindAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.device_name, self.ip_family, self.port)
+        write!(
+            f,
+            "{}://{}/{}/{}",
+            Self::SCHEME,
+            self.device_name,
+            self.ip_family,
+            self.port
+        )
+    }
+}
+
+impl FromStr for IfaceBindAddr {
+    type Err = ParseIfaceBindAddrError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (scheme, s) = s
+            .split_once("://")
+            .ok_or(ParseIfaceBindAddrError::MissingScheme)?;
+        if scheme != Self::SCHEME {
+            return Err(ParseIfaceBindAddrError::IncorrectScheme);
+        }
+        if s.is_empty() {
+            return Err(ParseIfaceBindAddrError::MissingDeviceName);
+        }
+        let (device_name, ip_port) = s
+            .split_once('/')
+            .ok_or(ParseIfaceBindAddrError::MissingIpFamily)?;
+        let (ip_family, port) = ip_port
+            .rsplit_once('/')
+            .ok_or(ParseIfaceBindAddrError::MissingPort)?;
+        Ok(Self {
+            device_name: device_name.to_owned(),
+            ip_family: ip_family
+                .parse()
+                .map_err(ParseIfaceBindAddrError::InvalidIpFamily)?,
+            port: port.parse().map_err(ParseIfaceBindAddrError::InvalidPort)?,
+        })
     }
 }
 
 /// Possible errors when parsing interface addresses
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum ParseInterfaceAddrError {
+pub enum ParseIfaceBindAddrError {
+    /// Invalid interface address format
+    #[error("Missing scheme `{}` in interface addr", IfaceBindAddr::SCHEME)]
+    MissingScheme,
+    /// Invalid scheme in interface address
+    #[error("Invalid scheme in interface addr, expect `{}`", IfaceBindAddr::SCHEME)]
+    IncorrectScheme,
     /// Missing device name
     #[error("Missing device name in interface addr")]
     MissingDeviceName,
@@ -318,31 +351,197 @@ pub enum ParseInterfaceAddrError {
     MissingPort,
     /// Invalid port number
     #[error("Invalid port in interface addr: {0}")]
-    InvalidPort(<u16 as FromStr>::Err),
+    InvalidPort(ParsePortError),
 }
 
-impl FromStr for InterfaceAddr {
-    type Err = ParseInterfaceAddrError;
+#[derive(Debug, Clone, Copy, From, PartialEq, Eq, Hash)]
+pub struct InetBindAddr {
+    ip: IpAddr,
+    port: Port,
+}
+
+impl InetBindAddr {
+    pub const SCHEME: &'static str = "inet";
+
+    pub fn new(ip: IpAddr, port: Port) -> Self {
+        Self { ip, port }
+    }
+
+    pub fn ip_family(&self) -> IpFamily {
+        match self.ip {
+            IpAddr::V4(_) => IpFamily::V4,
+            IpAddr::V6(_) => IpFamily::V6,
+        }
+    }
+
+    pub fn ip(&self) -> IpAddr {
+        self.ip
+    }
+
+    pub fn port(&self) -> Port {
+        self.port
+    }
+}
+
+impl From<InetBindAddr> for SocketAddr {
+    fn from(addr: InetBindAddr) -> Self {
+        SocketAddr::new(addr.ip, u16::from(addr.port))
+    }
+}
+
+impl Display for InetBindAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}://{}/{}", Self::SCHEME, self.ip, self.port)
+    }
+}
+
+impl FromStr for InetBindAddr {
+    type Err = ParseInetBindAddrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Err(ParseInterfaceAddrError::MissingDeviceName);
+        let parse_uri = |s: &str| -> Result<InetBindAddr, ParseInetBindAddrError> {
+            let (scheme, s) = s
+                .split_once("://")
+                .ok_or(ParseInetBindAddrError::MissingScheme)?;
+            if scheme != Self::SCHEME {
+                return Err(ParseInetBindAddrError::IncorrectScheme);
+            }
+            let (ip, port) = s
+                .split_once('/')
+                .ok_or(ParseInetBindAddrError::MissingPort)?;
+            let ip = ip.parse().map_err(ParseInetBindAddrError::InvalidIp)?;
+            let port = port.parse().map_err(ParseInetBindAddrError::InvalidPort)?;
+            Ok(Self { ip, port })
+        };
+        match s.parse::<SocketAddr>() {
+            Ok(socket_addr) => socket_addr.try_into(),
+            Err(_) => parse_uri(s),
         }
-        let (device_name, ip_port) = s
-            .split_once(':')
-            .ok_or(ParseInterfaceAddrError::MissingIpFamily)?;
-        let (ip_family, port) = ip_port
-            .rsplit_once(':')
-            .ok_or(ParseInterfaceAddrError::MissingPort)?;
-        let ip_family = ip_family
-            .parse()
-            .map_err(ParseInterfaceAddrError::InvalidIpFamily)?;
-        let port = port.parse().map_err(ParseInterfaceAddrError::InvalidPort)?;
-        Ok(Self {
-            device_name: device_name.to_owned(),
-            ip_family,
-            port,
-        })
+    }
+}
+
+impl TryFrom<SocketAddr> for InetBindAddr {
+    type Error = ParseInetBindAddrError;
+
+    fn try_from(addr: SocketAddr) -> Result<Self, Self::Error> {
+        let ip = addr.ip();
+        let port = NonZeroU16::try_from(addr.port())
+            .map(Port::Special)
+            .map_err(|_| ParseInetBindAddrError::InvalidPort(ParsePortError::ZeroPort))?;
+        Ok(Self { ip, port })
+    }
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum ParseInetBindAddrError {
+    /// Missing scheme in inet address
+    #[error("Missing scheme `{}` in internet addr", InetBindAddr::SCHEME)]
+    MissingScheme,
+    /// Invalid scheme in inet address
+    #[error("Invalid scheme in internet addr, expect `{}`", InetBindAddr::SCHEME)]
+    IncorrectScheme,
+    /// Invalid IP address format
+    #[error("Invalid IP address: {0}")]
+    InvalidIp(AddrParseError),
+    /// Missing port number
+    #[error("Missing port in internet addr")]
+    MissingPort,
+    /// Invalid port number
+    #[error("Invalid port number: {0}")]
+    InvalidPort(ParsePortError),
+}
+
+#[derive(Debug, Clone, Copy, From, PartialEq, Eq, Hash)]
+pub enum Port {
+    Special(NonZeroU16),
+    /// Reuse port 0
+    Any,
+    Alloc(AllocPort),
+}
+
+impl Port {
+    pub const ANY: &'static str = "any";
+    pub const ALLOC: &'static str = "alloc";
+
+    /// Check if this is a specific port number
+    pub fn is_specific(&self) -> bool {
+        matches!(self, Port::Special(_))
+    }
+
+    /// Check if this is the "any" port (port 0)
+    pub fn is_any(&self) -> bool {
+        matches!(self, Port::Any)
+    }
+
+    /// Check if this is an allocated port
+    pub fn is_alloc(&self) -> bool {
+        matches!(self, Port::Alloc(_))
+    }
+}
+
+impl From<Port> for u16 {
+    fn from(port: Port) -> Self {
+        match port {
+            Port::Special(non_zero) => non_zero.into(),
+            Port::Any | Port::Alloc(..) => 0,
+        }
+    }
+}
+
+impl Display for Port {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Port::Special(port) => write!(f, "{}", port.get()),
+            Port::Any => write!(f, "any"),
+            Port::Alloc(..) => write!(f, "alloc"),
+        }
+    }
+}
+
+impl FromStr for Port {
+    type Err = ParsePortError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            Self::ALLOC => Ok(Self::Alloc(AllocPort::default())),
+            Self::ANY => Ok(Self::Any),
+            number => NonZeroU16::from_str(number)
+                .map(Self::Special)
+                .map_err(|e| {
+                    if e.kind() == &IntErrorKind::Zero {
+                        ParsePortError::ZeroPort
+                    } else {
+                        ParsePortError::InvalidPort(e)
+                    }
+                }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum ParsePortError {
+    #[error("Invalid port number: {0}")]
+    InvalidPort(ParseIntError),
+    #[error("Port number cannot be zero")]
+    ZeroPort,
+}
+
+/// An opaque ID that uniquely identifies a alloc port.
+#[derive(Debug, Clone, Copy, From, PartialEq, Eq, Hash)]
+pub struct AllocPort(u128);
+
+impl AllocPort {
+    pub fn new() -> AllocPort {
+        static ALLOCATED: OnceLock<Mutex<u128>> = OnceLock::new();
+        let mut allocated = ALLOCATED.get_or_init(Mutex::default).lock().unwrap();
+        *allocated += 1;
+        AllocPort(*allocated - 1)
+    }
+}
+
+impl Default for AllocPort {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -389,222 +588,403 @@ impl FromStr for IpFamily {
 
 /// Concrete network address
 ///
-/// Represents concrete network addresses, currently supporting Internet socket addresses.
+/// Represents concrete network addresses, currently supporting Internet socket addresses and Bluetooth addresses.
 ///
 /// ```rust
 /// use std::str::FromStr;
-/// use qbase::net::address::{AddrKind, ConcreteAddr};
+/// use qbase::net::address::{AddrKind, RealAddr, IpFamily};
 ///
 /// // Parse from string
-/// let addr: ConcreteAddr = "inet:192.168.1.1:80".parse().unwrap();
+/// let addr: RealAddr = "inet://192.168.1.1/80".parse().unwrap();
 ///
 /// // Check address type
-/// assert_eq!(addr.kind(), AddrKind::Inet4);
+/// assert_eq!(addr.kind(), AddrKind::Ip(IpFamily::V4));
 /// ```
 #[non_exhaustive]
-#[doc(alias = "SpecificAddress")]
 #[derive(Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum ConcreteAddr {
+pub enum RealAddr {
     /// Internet socket address (IPv4 or IPv6)
     // Iface/Inet => Inet
     Inet(SocketAddr),
-    // Future: Bluetooth, UnixSocket, etc.
+    // TODO
+    Ble([u8; 6]),
 }
 
-impl ConcreteAddr {
+impl RealAddr {
     /// Get the IP protocol family type of the concrete address
     pub fn kind(&self) -> AddrKind {
         match self {
-            ConcreteAddr::Inet(SocketAddr::V4(_)) => AddrKind::Inet4,
-            ConcreteAddr::Inet(SocketAddr::V6(_)) => AddrKind::Inet6,
+            RealAddr::Inet(SocketAddr::V4(_)) => AddrKind::Ip(IpFamily::V4),
+            RealAddr::Inet(SocketAddr::V6(_)) => AddrKind::Ip(IpFamily::V6),
+            RealAddr::Ble(_) => AddrKind::Ble,
         }
     }
 }
 
-impl Display for ConcreteAddr {
+impl Display for RealAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConcreteAddr::Inet(addr) => write!(f, "inet:{addr}"),
+            RealAddr::Inet(addr) => write!(f, "inet://{}/{}", addr.ip(), addr.port()),
+            RealAddr::Ble(addr) => write!(f, "ble://{addr:02x?}"),
+        }
+    }
+}
+
+impl FromStr for RealAddr {
+    type Err = ParseRealAddrError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(ParseRealAddrError::MissingScheme);
+        }
+
+        // Try parsing as socket address first (e.g., "127.0.0.1:8080", "[::1]:8080")
+        if let Ok(socket_addr) = s.parse::<SocketAddr>() {
+            return Ok(RealAddr::Inet(socket_addr));
+        }
+
+        // Fall back to URI format parsing
+        let (scheme, addr) = s
+            .split_once("://")
+            .ok_or(ParseRealAddrError::MissingScheme)?;
+
+        match scheme {
+            "inet" => {
+                if addr.is_empty() {
+                    return Err(ParseRealAddrError::MissingInetPort);
+                }
+
+                let (ip, port) = addr
+                    .split_once('/')
+                    .ok_or(ParseRealAddrError::MissingInetPort)?;
+
+                let ip = ip
+                    .parse::<IpAddr>()
+                    .map_err(ParseRealAddrError::InvalidInetAddr)?;
+                let port = port
+                    .parse::<u16>()
+                    .map_err(ParseRealAddrError::InvalidInetPort)?;
+                Ok(RealAddr::Inet(SocketAddr::new(ip, port)))
+            }
+            "ble" => {
+                // TODO: Implement Bluetooth address parsing
+                Err(ParseRealAddrError::InvalidScheme)
+            }
+            _ => Err(ParseRealAddrError::InvalidScheme),
         }
     }
 }
 
 /// Possible errors when parsing concrete addresses
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum ParseConcreteAddrError {
-    /// Missing or invalid protocol scheme
-    #[error("Missing scheme in QUIC addr")]
+pub enum ParseRealAddrError {
+    /// Missing protocol scheme (e.g., "inet://")
+    #[error("Missing scheme in real addr")]
+    MissingScheme,
+    /// Invalid scheme
+    #[error("Invalid scheme in real addr")]
     InvalidScheme,
     /// Invalid network address format
     #[error("Invalid inet addr: {0}")]
     InvalidInetAddr(AddrParseError),
-}
-
-impl FromStr for ConcreteAddr {
-    type Err = ParseConcreteAddrError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (scheme, addr) = s
-            .split_once(':')
-            .ok_or(ParseConcreteAddrError::InvalidScheme)?;
-        match scheme {
-            "inet" => addr
-                .parse()
-                .map(ConcreteAddr::Inet)
-                .map_err(ParseConcreteAddrError::InvalidInetAddr),
-            _ => Err(ParseConcreteAddrError::InvalidScheme),
-        }
-    }
-}
-
-/// Trait for converting to concrete addresses
-///
-/// Provides a unified interface for converting various types to concrete addresses.
-///
-/// ```rust
-/// use std::net::SocketAddr;
-/// use qbase::net::address::ToConcreteAddr;
-///
-/// // Convert from SocketAddr
-/// let socket_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-/// let concrete_addr = socket_addr.to_concrete_addr();
-///
-/// // Convert from string
-/// let concrete_addr = "inet:192.168.1.1:80".to_concrete_addr();
-/// ```
-pub trait ToConcreteAddr {
-    /// Convert current value to a concrete address
-    fn to_concrete_addr(&self) -> ConcreteAddr;
-}
-
-impl ToConcreteAddr for ConcreteAddr {
-    fn to_concrete_addr(&self) -> ConcreteAddr {
-        *self
-    }
-}
-
-impl ToConcreteAddr for SocketAddr {
-    fn to_concrete_addr(&self) -> ConcreteAddr {
-        ConcreteAddr::Inet(*self)
-    }
-}
-
-impl ToConcreteAddr for &str {
-    fn to_concrete_addr(&self) -> ConcreteAddr {
-        ConcreteAddr::from_str(self)
-            .unwrap_or_else(|e| panic!("Invalid ConcreteAddr {self}: {e:?}"))
-    }
-}
-
-impl ToConcreteAddr for String {
-    fn to_concrete_addr(&self) -> ConcreteAddr {
-        self.as_str().to_concrete_addr()
-    }
+    /// Missing port number in inet address
+    #[error("Missing port in inet addr")]
+    MissingInetPort,
+    /// Invalid port number in inet address
+    #[error("Invalid inet port number: {0}")]
+    InvalidInetPort(ParseIntError),
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+        num::NonZeroU16,
+    };
 
     use super::*;
 
     #[test]
-    fn test_virtual_addr_display() {
-        let iface = VirtualAddr::Iface(InterfaceAddr {
-            device_name: "enp17s0".to_string(),
-            ip_family: IpFamily::V4,
-            port: 1234,
-        });
-        assert_eq!(iface.to_string(), "iface:enp17s0:v4:1234");
+    fn test_bind_addr_display() {
+        // Test interface address display
+        let iface = BindAddr::Socket(SocketBindAddr::Iface(IfaceBindAddr::new(
+            "enp17s0",
+            IpFamily::V4,
+            Port::Special(NonZeroU16::new(1234).unwrap()),
+        )));
+        assert_eq!(iface.to_string(), "iface://enp17s0/v4/1234");
 
-        let inet = VirtualAddr::Concrete(
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080).to_concrete_addr(),
-        );
-        assert_eq!(inet.to_string(), "inet:127.0.0.1:8080");
+        // Test internet address display
+        let inet = BindAddr::Socket(SocketBindAddr::Inet(InetBindAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            Port::Special(NonZeroU16::new(8080).unwrap()),
+        )));
+        assert_eq!(inet.to_string(), "inet://127.0.0.1/8080");
+
+        // Test special ports
+        let any_port = BindAddr::Socket(SocketBindAddr::Inet(InetBindAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            Port::Any,
+        )));
+        assert_eq!(any_port.to_string(), "inet://127.0.0.1/any");
+
+        let alloc_port = BindAddr::Socket(SocketBindAddr::Inet(InetBindAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            Port::Alloc(AllocPort::new()),
+        )));
+        assert_eq!(alloc_port.to_string(), "inet://127.0.0.1/alloc");
+
+        // Test Bluetooth address (when supported)
+        let ble = BindAddr::Bluetooth([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        assert_eq!(ble.to_string(), "ble://[aa, bb, cc, dd, ee, ff]");
     }
 
     #[test]
-    fn test_virtual_addr_from_str() {
-        let iface: VirtualAddr = "iface:enp17s0:v4:5678".parse().unwrap();
-        assert_eq!(
-            iface,
-            VirtualAddr::Iface(InterfaceAddr {
-                device_name: "enp17s0".to_string(),
-                ip_family: IpFamily::V4,
-                port: 5678,
-            })
-        );
+    fn test_bind_addr_from_str() {
+        // Test interface address parsing
+        let iface: BindAddr = "iface://enp17s0/v4/5678".parse().unwrap();
+        if let BindAddr::Socket(SocketBindAddr::Iface(iface_addr)) = iface {
+            assert_eq!(iface_addr.device_name(), "enp17s0");
+            assert_eq!(iface_addr.ip_family(), IpFamily::V4);
+            assert_eq!(
+                iface_addr.port(),
+                Port::Special(NonZeroU16::new(5678).unwrap())
+            );
+        } else {
+            panic!("Expected IfaceBindAddr");
+        }
 
-        let inet: VirtualAddr = "inet:127.0.0.1:8080".parse().unwrap();
-        assert_eq!(
-            inet,
-            VirtualAddr::Concrete(
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080).to_concrete_addr()
-            )
-        );
+        // Test internet address parsing
+        let inet: BindAddr = "inet://127.0.0.1/8080".parse().unwrap();
+        if let BindAddr::Socket(SocketBindAddr::Inet(inet_addr)) = inet {
+            assert_eq!(inet_addr.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            assert_eq!(
+                inet_addr.port(),
+                Port::Special(NonZeroU16::new(8080).unwrap())
+            );
+        } else {
+            panic!("Expected InetBindAddr");
+        }
 
-        let inet: VirtualAddr = "inet:[fe80::1]:8081".parse().unwrap();
-        assert_eq!(
-            inet,
-            VirtualAddr::Concrete(
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 8081)
-                    .to_concrete_addr()
-            )
-        );
+        // Test IPv6 address parsing
+        let inet6: BindAddr = "inet://fe80::1/8081".parse().unwrap();
+        if let BindAddr::Socket(SocketBindAddr::Inet(inet_addr)) = inet6 {
+            assert_eq!(
+                inet_addr.ip(),
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))
+            );
+            assert_eq!(
+                inet_addr.port(),
+                Port::Special(NonZeroU16::new(8081).unwrap())
+            );
+        } else {
+            panic!("Expected InetBindAddr");
+        }
+
+        // Test special port parsing
+        let any_port: BindAddr = "inet://127.0.0.1/any".parse().unwrap();
+        if let BindAddr::Socket(SocketBindAddr::Inet(inet_addr)) = any_port {
+            assert_eq!(inet_addr.port(), Port::Any);
+        } else {
+            panic!("Expected InetBindAddr with any port");
+        }
+
+        let alloc_port: BindAddr = "iface://eth0/v4/alloc".parse().unwrap();
+        if let BindAddr::Socket(SocketBindAddr::Iface(iface_addr)) = alloc_port {
+            assert!(matches!(iface_addr.port(), Port::Alloc(_)));
+        } else {
+            panic!("Expected IfaceBindAddr with alloc port");
+        }
 
         // Test error cases
         assert!(matches!(
-            "".parse::<VirtualAddr>(),
-            Err(ParseVirtualAddrError::MissingScheme)
+            "".parse::<BindAddr>(),
+            Err(ParseBindAddrError::MissingScheme)
         ));
 
         assert!(matches!(
-            "unknown:value".parse::<VirtualAddr>(),
-            Err(ParseVirtualAddrError::InvalidScheme(_))
+            "unknown://value".parse::<BindAddr>(),
+            Err(ParseBindAddrError::InvalidScheme)
         ));
 
         assert!(matches!(
-            "iface:".parse::<VirtualAddr>(),
-            Err(ParseVirtualAddrError::InvalidIfaceAddr(_))
+            "iface://".parse::<BindAddr>(),
+            Err(ParseBindAddrError::InvalidIfaceAddr(_))
         ));
 
         assert!(matches!(
-            "inet:invalid".parse::<VirtualAddr>(),
-            Err(ParseVirtualAddrError::InvalidInetAddr(_))
+            "inet://invalid".parse::<BindAddr>(),
+            Err(ParseBindAddrError::InvalidInetAddr(_))
         ));
     }
 
     #[test]
-    fn test_interface_addr_display_and_parse() {
-        let iface = InterfaceAddr {
-            device_name: "wlp18s0".to_string(),
-            ip_family: IpFamily::V6,
-            port: 0,
-        };
-        assert_eq!(iface.to_string(), "wlp18s0:v6:0");
+    fn test_bind_addr_from_socket_addr() {
+        // Test conversion from SocketAddr with non-zero port
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+        let bind_addr = BindAddr::from(socket_addr);
 
-        let parsed: InterfaceAddr = "wlp18s0:v6:0".parse().unwrap();
-        assert_eq!(parsed, iface);
+        if let BindAddr::Socket(SocketBindAddr::Inet(inet_addr)) = bind_addr {
+            assert_eq!(inet_addr.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            assert_eq!(
+                inet_addr.port(),
+                Port::Special(NonZeroU16::new(8080).unwrap())
+            );
+        } else {
+            panic!("Expected InetBindAddr");
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_bind_addr_from_socket_addr_port_0() {
+        // Test conversion from SocketAddr with port 0
+        let socket_addr_zero = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
+        _ = BindAddr::from(socket_addr_zero);
+    }
+
+    #[test]
+    fn test_iface_bind_addr_display_and_parse() {
+        let iface = IfaceBindAddr::new(
+            "wlp18s0",
+            IpFamily::V6,
+            Port::Special(NonZeroU16::new(443).unwrap()),
+        );
+        assert_eq!(iface.to_string(), "iface://wlp18s0/v6/443");
+
+        let parsed: IfaceBindAddr = "iface://wlp18s0/v6/443".parse().unwrap();
+        assert_eq!(parsed.device_name(), iface.device_name());
+        assert_eq!(parsed.ip_family(), iface.ip_family());
+        assert_eq!(parsed.port(), iface.port());
+
+        // Test with special ports
+        let any_port: IfaceBindAddr = "iface://eth0/v4/any".parse().unwrap();
+        assert_eq!(any_port.port(), Port::Any);
+
+        let alloc_port: IfaceBindAddr = "iface://eth0/v4/alloc".parse().unwrap();
+        assert!(matches!(alloc_port.port(), Port::Alloc(_)));
 
         // Test error cases
         assert!(matches!(
-            "".parse::<InterfaceAddr>(),
-            Err(ParseInterfaceAddrError::MissingDeviceName)
+            "".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::MissingScheme)
         ));
 
         assert!(matches!(
-            "enp17s0".parse::<InterfaceAddr>(),
-            Err(ParseInterfaceAddrError::MissingIpFamily)
+            "inet://enp17s0/v4/8080".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::IncorrectScheme)
         ));
 
         assert!(matches!(
-            "enp17s0:v7".parse::<InterfaceAddr>(),
-            Err(ParseInterfaceAddrError::MissingPort)
+            "iface://".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::MissingDeviceName)
         ));
 
         assert!(matches!(
-            "enp17s0:v7:0".parse::<InterfaceAddr>(),
-            Err(ParseInterfaceAddrError::InvalidIpFamily(..))
+            "iface://enp17s0".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::MissingIpFamily)
+        ));
+
+        assert!(matches!(
+            "iface://enp17s0/v4".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::MissingPort)
+        ));
+
+        assert!(matches!(
+            "iface://enp17s0/v7/8080".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::InvalidIpFamily(_))
+        ));
+
+        assert!(matches!(
+            "iface://enp17s0/v4/invalid".parse::<IfaceBindAddr>(),
+            Err(ParseIfaceBindAddrError::InvalidPort(_))
+        ));
+    }
+
+    #[test]
+    fn test_inet_bind_addr_display_and_parse() {
+        let inet = InetBindAddr::new(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            Port::Special(NonZeroU16::new(80).unwrap()),
+        );
+        assert_eq!(inet.to_string(), "inet://192.168.1.1/80");
+
+        let parsed: InetBindAddr = "inet://192.168.1.1/80".parse().unwrap();
+        assert_eq!(parsed.ip(), inet.ip());
+        assert_eq!(parsed.port(), inet.port());
+
+        // Test socket address parsing
+        let from_socket: InetBindAddr = "127.0.0.1:8080".parse().unwrap();
+        assert_eq!(from_socket.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert_eq!(
+            from_socket.port(),
+            Port::Special(NonZeroU16::new(8080).unwrap())
+        );
+
+        // Test IPv6 parsing
+        let ipv6: InetBindAddr = "inet://::1/443".parse().unwrap();
+        assert_eq!(ipv6.ip(), IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)));
+
+        // Test error cases
+        assert!(matches!(
+            "".parse::<InetBindAddr>(),
+            Err(ParseInetBindAddrError::MissingScheme)
+        ));
+
+        assert!(matches!(
+            "iface://127.0.0.1/8080".parse::<InetBindAddr>(),
+            Err(ParseInetBindAddrError::IncorrectScheme)
+        ));
+
+        assert!(matches!(
+            "inet://invalid_ip/8080".parse::<InetBindAddr>(),
+            Err(ParseInetBindAddrError::InvalidIp(_))
+        ));
+
+        assert!(matches!(
+            "inet://127.0.0.1".parse::<InetBindAddr>(),
+            Err(ParseInetBindAddrError::MissingPort)
+        ));
+
+        assert!(matches!(
+            "inet://127.0.0.1/invalid_port".parse::<InetBindAddr>(),
+            Err(ParseInetBindAddrError::InvalidPort(_))
+        ));
+    }
+
+    #[test]
+    fn test_port_display_and_parse() {
+        // Test special port numbers
+        let port = Port::Special(NonZeroU16::new(8080).unwrap());
+        assert_eq!(port.to_string(), "8080");
+        assert_eq!("8080".parse::<Port>().unwrap(), port);
+
+        // Test any port
+        let any_port = Port::Any;
+        assert_eq!(any_port.to_string(), "any");
+        assert_eq!("any".parse::<Port>().unwrap(), any_port);
+
+        // Test alloc port
+        let alloc_port = Port::Alloc(AllocPort::new());
+        assert_eq!(alloc_port.to_string(), "alloc");
+        assert!(matches!("alloc".parse::<Port>().unwrap(), Port::Alloc(_)));
+
+        // Test conversion to u16
+        assert_eq!(u16::from(port), 8080);
+        assert_eq!(u16::from(any_port), 0);
+        assert_eq!(u16::from(alloc_port), 0);
+
+        // Test error cases
+        assert!(matches!("0".parse::<Port>(), Err(ParsePortError::ZeroPort)));
+
+        assert!(matches!(
+            "invalid".parse::<Port>(),
+            Err(ParsePortError::InvalidPort(_))
+        ));
+
+        assert!(matches!(
+            "65536".parse::<Port>(),
+            Err(ParsePortError::InvalidPort(_))
         ));
     }
 
@@ -619,5 +999,102 @@ mod tests {
         assert_eq!("V6".parse::<IpFamily>().unwrap(), IpFamily::V6);
 
         assert!(matches!("v7".parse::<IpFamily>(), Err(InvalidIpFamily(_))));
+        assert!(matches!(
+            "invalid".parse::<IpFamily>(),
+            Err(InvalidIpFamily(_))
+        ));
+    }
+
+    #[test]
+    fn test_real_addr_display_and_parse() {
+        let inet = RealAddr::Inet(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            80,
+        ));
+        assert_eq!(inet.to_string(), "inet://192.168.1.1/80");
+
+        // Test URI format parsing
+        let parsed: RealAddr = "inet://192.168.1.1/80".parse().unwrap();
+        assert_eq!(parsed, inet);
+
+        // Test socket address literal format parsing
+        let socket_parsed: RealAddr = "192.168.1.1:80".parse().unwrap();
+        assert_eq!(socket_parsed, inet);
+
+        // Test IPv6 socket address literal format
+        let ipv6_inet = RealAddr::Inet(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            8080,
+        ));
+        let ipv6_socket_parsed: RealAddr = "[fe80::1]:8080".parse().unwrap();
+        assert_eq!(ipv6_socket_parsed, ipv6_inet);
+
+        // Test port 0 support (not available in socket address format, only URI)
+        let port_zero_uri: RealAddr = "inet://127.0.0.1/0".parse().unwrap();
+        assert_eq!(
+            port_zero_uri,
+            RealAddr::Inet(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
+        );
+
+        // Test port 0 with socket address format (should work with RealAddr, unlike BindAddr)
+        let port_zero_socket: RealAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(port_zero_socket, port_zero_uri);
+
+        let ble = RealAddr::Ble([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        assert_eq!(ble.to_string(), "ble://[aa, bb, cc, dd, ee, ff]");
+
+        // Test kind method
+        assert_eq!(inet.kind(), AddrKind::Ip(IpFamily::V4));
+        assert_eq!(ble.kind(), AddrKind::Ble);
+
+        // Test error cases
+        assert!(matches!(
+            "invalid://addr".parse::<RealAddr>(),
+            Err(ParseRealAddrError::InvalidScheme)
+        ));
+
+        assert!(matches!(
+            "inet://invalid_ip/80".parse::<RealAddr>(),
+            Err(ParseRealAddrError::InvalidInetAddr(_))
+        ));
+
+        assert!(matches!(
+            "inet://127.0.0.1".parse::<RealAddr>(),
+            Err(ParseRealAddrError::MissingInetPort)
+        ));
+
+        // Test invalid socket address format
+        assert!("invalid:port".parse::<RealAddr>().is_err());
+        assert!("256.256.256.256:8080".parse::<RealAddr>().is_err());
+    }
+
+    #[test]
+    fn test_addr_kind() {
+        let v4_iface = BindAddr::Socket(SocketBindAddr::Iface(IfaceBindAddr::new(
+            "eth0",
+            IpFamily::V4,
+            Port::Any,
+        )));
+        assert_eq!(v4_iface.kind(), AddrKind::Ip(IpFamily::V4));
+
+        let v6_inet = BindAddr::Socket(SocketBindAddr::Inet(InetBindAddr::new(
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            Port::Special(NonZeroU16::new(8080).unwrap()),
+        )));
+        assert_eq!(v6_inet.kind(), AddrKind::Ip(IpFamily::V6));
+
+        let ble = BindAddr::Bluetooth([0; 6]);
+        assert_eq!(ble.kind(), AddrKind::Ble);
+    }
+
+    #[test]
+    fn test_alloc_port_uniqueness() {
+        let port1 = AllocPort::new();
+        let port2 = AllocPort::new();
+        assert_ne!(port1, port2);
+
+        let port3 = AllocPort::default();
+        let port4 = AllocPort::default();
+        assert_ne!(port3, port4);
     }
 }

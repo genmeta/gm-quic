@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::{handy::*, *};
-use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
+use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;
 
@@ -58,21 +58,23 @@ async fn main() {
 async fn run(options: Options) -> io::Result<()> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
-        None => Arc::new(NullLogger),
+        None => Arc::new(NoopLogger),
     };
 
     let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
-        .add_host(
-            options.certs.server_name.as_str(),
-            Host::with_cert_key(options.certs.cert.as_path(), options.certs.key.as_path())?
-                .bind_addresses(options.listen.as_slice())?,
-        )?
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
-        .listen(128)?;
+        .listen(128);
+    listeners.add_server(
+        options.certs.server_name.as_str(),
+        options.certs.cert.as_path(),
+        options.certs.key.as_path(),
+        options.listen.as_slice(),
+        None,
+    )?;
 
-    info!("listening on {:?}", listeners.hosts());
+    info!("listening on {:?}", listeners.servers());
 
     serve_echo(listeners).await
 }
@@ -87,7 +89,7 @@ async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
     }
 
     loop {
-        let (_, connection, pathway, ..) = listeners.accept().await?;
+        let (connection, _server, pathway, ..) = listeners.accept().await?;
         info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
             while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {

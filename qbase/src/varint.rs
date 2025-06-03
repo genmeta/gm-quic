@@ -32,13 +32,13 @@ impl VarInt {
     pub const MAX_SIZE: usize = 8;
 
     /// Construct a `VarInt` from a [`u32`].
-    pub fn from_u32(x: u32) -> Self {
+    pub const fn from_u32(x: u32) -> Self {
         Self(x as u64)
     }
 
     /// Construct a `VarInt` from a [`u64`].
     /// Succeeds if `x` < 2^62.
-    pub fn from_u64(x: u64) -> Result<Self, err::Overflow> {
+    pub const fn from_u64(x: u64) -> Result<Self, err::Overflow> {
         if x < (1 << 62) {
             Ok(Self(x))
         } else {

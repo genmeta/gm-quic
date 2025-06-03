@@ -88,7 +88,7 @@ impl ArcPathContexts {
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
         if let Some((_, path)) = self.paths.remove(pathway) {
             self.broker.emit(Event::PathInactivated(
-                path.interface.virt_addr(),
+                path.interface.bind_addr(),
                 path.pathway,
                 path.link,
             ));

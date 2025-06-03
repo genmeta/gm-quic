@@ -42,7 +42,7 @@ where
 
         let (listeners, server_task) = launch_server()?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = listeners.hosts()["localhost"]
+        let server_addr = listeners.servers()["localhost"]
             .iter()
             .next()
             .expect("Server should bind at least one address")

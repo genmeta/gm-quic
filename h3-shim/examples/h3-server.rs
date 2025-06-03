@@ -2,10 +2,10 @@ use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::{Host, handy::server_parameters};
+use gm_quic::handy::server_parameters;
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
-use qevent::telemetry::handy::{DefaultSeqLogger, NullLogger};
+use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::{fs::File, io::AsyncReadExt};
 
 #[derive(Parser, Debug)]
@@ -90,7 +90,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
 
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
-        None => Arc::new(NullLogger),
+        None => Arc::new(NoopLogger),
     };
 
     let Certs {
@@ -103,17 +103,19 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .with_qlog(qlogger)
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
-        .add_host(
-            server_name,
-            Host::with_cert_key(cert.as_path(), key.as_path())?
-                .bind_addresses(options.listen.as_slice())?,
-        )?
         .with_alpns(options.alpns)
-        .listen(128)?;
-    tracing::info!("listen {:?}", listeners.hosts());
+        .listen(128);
+    listeners.add_server(
+        server_name.as_str(),
+        cert.as_path(),
+        key.as_path(),
+        options.listen.as_slice(),
+        None,
+    )?;
+    tracing::info!("listen {:?}", listeners.servers());
 
     // handle incoming connections and requests
-    while let Ok((_server, new_conn, _pathway, _link)) = listeners.accept().await {
+    while let Ok((new_conn, _server, _pathway, _link)) = listeners.accept().await {
         let h3_conn =
             match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn)).await {
                 Ok(h3_conn) => {

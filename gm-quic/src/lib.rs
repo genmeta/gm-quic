@@ -12,7 +12,7 @@ pub use qinterface::factory::ProductQuicInterface;
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
-    server::{Host, HostBuilder, QuicListeners, QuicListenersBuilder},
+    server::{QuicListeners, QuicListenersBuilder},
 };
 
 mod cert;
@@ -28,10 +28,10 @@ pub fn proto() -> &'static Arc<QuicProto> {
         let handle_unrouted_packets = {
             let proto = proto.clone();
             async move {
-                while let Some((virt_addr, packet, pathway, ink)) =
+                while let Some((bind_addr, packet, pathway, ink)) =
                     proto.recv_unrouted_packet().await
                 {
-                    QuicListeners::try_accept_connection(virt_addr, packet, pathway, ink).await;
+                    QuicListeners::try_accept_connection(bind_addr, packet, pathway, ink).await;
                 }
             }
         };

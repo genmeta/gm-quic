@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use handy::NullExporter;
+use handy::NoopExporter;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -116,7 +116,7 @@ impl PartialEq for Span {
 
 impl Default for Span {
     fn default() -> Self {
-        Self::new(Arc::new(NullExporter), HashMap::new())
+        Self::new(Arc::new(NoopExporter), HashMap::new())
     }
 }
 
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn span_fields() {
-        let exporter = Arc::new(NullExporter);
+        let exporter = Arc::new(NoopExporter);
         let _span = span!(exporter.clone());
         let a = 0i32;
         let c = 123456789usize;
