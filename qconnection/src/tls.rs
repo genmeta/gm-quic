@@ -14,7 +14,9 @@ pub use peer_name::{ArcClientName, ArcEndpointName, ArcServerName};
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
-    param::{ArcParameters, ParameterId, StoreParameter, StoreParameterExt},
+    param::{
+        ArcParameters, ParameterId, PeerParameters, be_client_parameters, be_server_parameters,
+    },
     varint::VarInt,
 };
 use qevent::telemetry::Instrument;
@@ -93,45 +95,47 @@ impl ReadAndProcess<'_> {
             Err(e) => return Err(e.clone()),
         };
 
-        let extra_auth = |params: &dyn StoreParameter| {
-            match self.specific {
-                SpecificComponents::Client => { /* no extra auth */ }
-                SpecificComponents::Server(server_components) => {
-                    let host = tls_session
-                        .server_name()
-                        .ok_or(QuicError::with_default_fty(
-                            ErrorKind::ConnectionRefused,
-                            "Missing SNI in client hello",
-                        ))?;
-                    let client_name = params.get_as::<String>(CLIENT_NAME_PARAM_ID);
-                    if (server_components.client_authers.iter())
-                        .all(|auther| auther.verify_client_params(host, client_name.as_deref()))
-                    {
-                        self.server_name.assign(host.to_owned());
-                        self.client_name.assign(client_name.clone());
-                        server_components.send_gate.grant_permit();
-                        // remote_params will be assigned in recv_remote_params(if this closure return Ok(()))
-                    } else {
-                        tracing::warn!(
-                            host,
-                            ?client_name,
-                            "Client SNI or client name verification failed"
-                        );
-                        return Err(Error::Quic(QuicError::with_default_fty(
-                            ErrorKind::ConnectionRefused,
-                            "",
-                        )));
-                    }
-                }
-            }
-            Ok(())
-        };
-        if !self.params.is_remote_params_ready() {
-            if let Some(raw) = tls_session.tls_conn.quic_transport_parameters() {
-                return self.params.recv_remote_params(raw, extra_auth);
-            }
+        if matches!(self.params.is_remote_params_received(), None | Some(true)) {
+            return Ok(());
         }
-        Ok(())
+        let Some(raw_params) = tls_session.tls_conn.quic_transport_parameters() else {
+            return Ok(());
+        };
+        let params: PeerParameters = match self.specific {
+            SpecificComponents::Client => {
+                let params = be_server_parameters(raw_params)?;
+                /* no extra auth */
+                params.into()
+            }
+            SpecificComponents::Server(server_components) => {
+                let params = be_client_parameters(raw_params)?;
+                let host = tls_session
+                    .server_name()
+                    .ok_or(QuicError::with_default_fty(
+                        ErrorKind::ConnectionRefused,
+                        "Missing SNI in client hello",
+                    ))?;
+                let client_name = params.get_as::<String>(CLIENT_NAME_PARAM_ID);
+                if !(server_components.client_authers.iter())
+                    .all(|auther| auther.verify_client_params(host, client_name.as_deref()))
+                {
+                    tracing::warn!(
+                        host,
+                        ?client_name,
+                        "Client SNI or client name verification failed"
+                    );
+                    return Err(Error::Quic(QuicError::with_default_fty(
+                        ErrorKind::ConnectionRefused,
+                        "",
+                    )));
+                }
+                self.server_name.assign(host.to_owned());
+                self.client_name.assign(client_name.clone());
+                server_components.send_gate.grant_permit();
+                params.into()
+            }
+        };
+        self.params.recv_remote_params(params)
     }
 
     fn try_parse_certs(&mut self) -> Result<(), Error> {

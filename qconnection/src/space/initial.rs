@@ -282,7 +282,7 @@ pub fn spawn_deliver_and_parse(
                         remote_cids.revise_initial_dcid(*packet.scid());
                         components
                             .parameters
-                            .initial_scid_from_peer_need_equal(*packet.scid());
+                            .initial_scid_from_peer_need_equal(*packet.scid())?;
                     }
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // A server might wish to validate the client address before starting the cryptographic handshake.

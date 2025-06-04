@@ -2,7 +2,6 @@ use std::{
     future::Future,
     io,
     sync::{Arc, RwLock},
-    time::Duration,
 };
 
 pub use qbase::{
@@ -21,7 +20,7 @@ use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
     net::{address::BindAddr, tx::ArcSendWakers},
-    param::{ArcParameters, ParameterId, RememberedParameters, StoreParameterExt},
+    param::{ArcParameters, ParameterId, RememberedParameters},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
     varint::VarInt,
@@ -196,8 +195,12 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         F: ?Sized + ProductStreamsConcurrencyController,
     {
         let client_params = &self.foundation.client_params;
-        let init_max_bidi_streams = client_params.initial_max_streams_bidi().into_inner();
-        let init_max_uni_streams = client_params.initial_max_streams_uni().into_inner();
+        let init_max_bidi_streams = client_params
+            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .expect("unreachable: default value will be got if the value unset");
+        let init_max_uni_streams = client_params
+            .get_as(ParameterId::InitialMaxStreamsUni)
+            .expect("unreachable: default value will be got if the value unset");
         TlsReady {
             streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
             ..self
@@ -226,8 +229,12 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         F: ?Sized + ProductStreamsConcurrencyController,
     {
         let server_params = &self.foundation.server_params;
-        let init_max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
-        let init_max_uni_streams = server_params.initial_max_streams_uni().into_inner();
+        let init_max_bidi_streams = server_params
+            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .expect("unreachable: default value will be got if the value unset");
+        let init_max_uni_streams = server_params
+            .get_as(ParameterId::InitialMaxStreamsUni)
+            .expect("unreachable: default value will be got if the value unset");
         TlsReady {
             streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
             ..self
@@ -283,13 +290,17 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
-        client_params.set_initial_source_connection_id(initial_scid);
+        client_params
+            .set(ParameterId::InitialSourceConnectionId, initial_scid)
+            .unwrap();
 
         let cid_registry = CidRegistry::new(
             ArcLocalCids::new(initial_scid, router_registry),
             ArcRemoteCids::new(
                 origin_dcid,
-                client_params.active_connection_id_limit().into(),
+                client_params
+                    .get_as(ParameterId::ActiveConnectionIdLimit)
+                    .expect("unreachable: default value will be got if the value unset"),
                 reliable_frames.clone(),
             ),
         );
@@ -302,13 +313,17 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         );
 
         let flow_ctrl = FlowController::new(
-            0, // TODO: 0rtt
-            client_params.initial_max_data().into_inner(),
+            0,
+            client_params
+                .get_as(ParameterId::InitialMaxData)
+                .expect("unreachable: default value will be got if the value unset"),
             reliable_frames.clone(),
             tx_wakers.clone(),
         );
 
-        let max_ack_delay = client_params.max_ack_delay();
+        let max_ack_delay = client_params
+            .get_as(ParameterId::MaxAckDelay)
+            .expect("unreachable: default value will be got if the value unset");
 
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, self.foundation.token, tx_wakers.clone()),
@@ -369,15 +384,21 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
-        server_params.set_initial_source_connection_id(initial_scid);
+        server_params
+            .set(ParameterId::InitialSourceConnectionId, initial_scid)
+            .unwrap();
+        server_params
+            .set(ParameterId::OriginalDestinationConnectionId, origin_dcid)
+            .unwrap();
         let odcid_router_entry = self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
-        server_params.set_original_destination_connection_id(origin_dcid);
 
         let cid_registry = CidRegistry::new(
             ArcLocalCids::new(initial_scid, router_registry),
             ArcRemoteCids::new(
                 client_scid,
-                server_params.active_connection_id_limit().into(),
+                server_params
+                    .get_as(ParameterId::ActiveConnectionIdLimit)
+                    .expect("unreachable: default value will be got if the value unset"),
                 reliable_frames.clone(),
             ),
         );
@@ -391,12 +412,16 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
         let flow_ctrl = FlowController::new(
             0,
-            server_params.initial_max_data().into_inner(),
+            server_params
+                .get_as(ParameterId::InitialMaxData)
+                .expect("unreachable: default value will be got if the value unset"),
             reliable_frames.clone(),
             tx_wakers.clone(),
         );
 
-        let max_ack_delay = server_params.max_ack_delay();
+        let max_ack_delay = server_params
+            .get_as(ParameterId::MaxAckDelay)
+            .expect("unreachable: default value will be got if the value unset");
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, Vec::with_capacity(0), tx_wakers.clone()),
             HandshakeSpace::new(tx_wakers.clone()),
@@ -411,7 +436,9 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         );
 
         let parameters = ArcParameters::new_server(server_params);
-        parameters.initial_scid_from_peer_need_equal(client_scid);
+        parameters
+            .initial_scid_from_peer_need_equal(client_scid)
+            .unwrap();
 
         let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
 
@@ -539,41 +566,41 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
 
         match role {
             sid::Role::Client => {
-                let server_parameters = remote_parameters
-                    .as_any()
-                    .downcast_ref()
-                    .expect("convert never failed");
                 qevent::event!(ParametersSet {
                     owner: Owner::Remote,
-                    server_parameters,
+                    server_parameters: remote_parameters.as_ref(),
                 })
             }
             sid::Role::Server => {
-                let client_parameters = remote_parameters
-                    .as_any()
-                    .downcast_ref()
-                    .expect("convert never failed");
                 qevent::event!(ParametersSet {
                     owner: Owner::Remote,
-                    client_parameters,
+                    client_parameters: remote_parameters.as_ref(),
                 })
             }
         };
 
         // pretend to receive the MAX_STREAM frames
         _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
-            remote_parameters.get_as_ensured::<VarInt>(ParameterId::InitialMaxStreamsBidi),
+            remote_parameters
+                .get_as::<VarInt>(ParameterId::InitialMaxStreamsBidi)
+                .expect("unreachable: default value will be got if the value unset"),
         )));
         _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
-            remote_parameters.get_as_ensured::<VarInt>(ParameterId::InitialMaxStreamsUni),
+            remote_parameters
+                .get_as::<VarInt>(ParameterId::InitialMaxStreamsUni)
+                .expect("unreachable: default value will be got if the value unset"),
         )));
 
         flow_ctrl.reset_send_window(
-            remote_parameters.get_as_ensured::<u64>(ParameterId::InitialMaxData),
+            remote_parameters
+                .get_as::<u64>(ParameterId::InitialMaxData)
+                .expect("unreachable: default value will be got if the value unset"),
         );
 
         cid_registry.local.set_limit(
-            remote_parameters.get_as_ensured::<u64>(ParameterId::ActiveConnectionIdLimit),
+            remote_parameters
+                .get_as::<u64>(ParameterId::ActiveConnectionIdLimit)
+                .expect("unreachable: default value will be got if the value unset"),
         )?;
 
         Result::<_, Error>::Ok(())
@@ -603,7 +630,9 @@ impl Components {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
             let max_ack_delay = self
                 .parameters
-                .get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
+                .local()?
+                .get_as(ParameterId::MaxAckDelay)
+                .expect("unreachable: default value will be got if the value unset");
 
             let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
             qevent::event!(PathAssigned {

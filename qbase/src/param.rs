@@ -81,8 +81,8 @@ enum Requirements {
 #[derive(Debug)]
 pub struct Parameters {
     state: u8,
-    client: Arc<ClientParameters>,
-    server: Arc<ServerParameters>,
+    client: Arc<GeneralParameters>,
+    server: Arc<GeneralParameters>,
     remembered: Option<RememberedParameters>,
     requirements: Requirements,
     wakers: Vec<Waker>,
@@ -104,7 +104,7 @@ impl Parameters {
     ) -> Self {
         Self {
             state: Self::CLIENT_READY,
-            client: Arc::new(client),
+            client: Arc::new(client.into()),
             server: Arc::default(),
             remembered,
             requirements: Requirements::Client {
@@ -125,7 +125,7 @@ impl Parameters {
         Self {
             state: Self::SERVER_READY,
             client: Arc::default(),
-            server: Arc::new(server),
+            server: Arc::new(server.into()),
             remembered: None,
             requirements: Requirements::Server { initial_scid: None },
             wakers: Vec::with_capacity(2),
@@ -157,26 +157,36 @@ impl Parameters {
         }
     }
 
+    fn is_remote_params_received(&self) -> bool {
+        match self.role() {
+            Role::Client => !self.server.is_empty(),
+            Role::Server => !self.client.is_empty(),
+        }
+    }
+
     fn is_remote_params_ready(&self) -> bool {
         self.state == Self::CLIENT_READY | Self::SERVER_READY
     }
 
-    fn recv_remote_params(
-        &mut self,
-        params: &[u8],
-        extra_auth: impl FnOnce(&dyn StoreParameter) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        self.state = Self::CLIENT_READY | Self::SERVER_READY;
-        self.parse_and_validate_remote_params(params)?;
+    fn recv_remote_params(&mut self, params: impl Into<PeerParameters>) -> Result<(), Error> {
+        match params.into() {
+            PeerParameters::Clinet(p) => {
+                assert_eq!(self.role(), Role::Server);
+                assert!(self.client.is_empty());
+                self.client = Arc::new(p.into());
+            }
+            PeerParameters::Server(p) => {
+                assert_eq!(self.role(), Role::Client);
+                assert!(self.server.is_empty());
+                self.server = Arc::new(p.into());
+            }
+        }
+
         // Because TLS and packet parsing are in parallel,
         // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
         // Therefore, if the scid of the other end is not set, authentication will not be performed first,
         // and authentication will be performed when it is set.
         if self.authenticate_cids()? {
-            extra_auth(match self.role() {
-                Role::Client => self.server.as_ref(),
-                Role::Server => self.client.as_ref(),
-            })?;
             self.state = Self::CLIENT_READY | Self::SERVER_READY;
             self.wake_all();
             return Ok(());
@@ -191,20 +201,24 @@ impl Parameters {
         }
     }
 
-    fn parse_and_validate_remote_params(&mut self, input: &[u8]) -> Result<(), QuicError> {
-        match self.role() {
-            Role::Client => self.server = Arc::new(be_server_parameters(input)?),
-            Role::Server => self.client = Arc::new(be_client_parameters(input)?),
-        }
-        Ok(())
-    }
-
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
+    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), QuicError> {
         let initial_scid = match &mut self.requirements {
             Requirements::Client { initial_scid, .. } => initial_scid,
             Requirements::Server { initial_scid } => initial_scid,
         };
         assert!(initial_scid.replace(cid).is_none());
+
+        // Because the TLS handshak and packet parsing are in parallel,
+        // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
+        // Therefore, if the scid of the other end is not set, authentication will not be performed first,
+        // and authentication will be performed when it is set.
+        if self.is_remote_params_received() && self.authenticate_cids()? {
+            self.state = Self::CLIENT_READY | Self::SERVER_READY;
+            self.wake_all();
+            return Ok(());
+        }
+
+        Ok(())
     }
 
     fn retry_scid_from_server_need_equal(&mut self, cid: ConnectionId) {
@@ -217,7 +231,10 @@ impl Parameters {
     fn get_origin_dcid(&self) -> ConnectionId {
         match self.requirements {
             Requirements::Client { origin_dcid, .. } => origin_dcid,
-            Requirements::Server { .. } => self.server.original_destination_connection_id(),
+            Requirements::Server { .. } => self
+                .server
+                .get_as(ParameterId::OriginalDestinationConnectionId)
+                .expect("this value must be set"),
         }
     }
 
@@ -240,14 +257,15 @@ impl Parameters {
                 retry_scid: _,
                 origin_dcid,
             } => {
-                // Because TLS and packet parsing are in parallel,
-                // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
-                // Therefore, if the scid of the other end is not set, authentication will not be performed first,
-                // and authentication will be performed when it is set.
                 let Some(initial_scid) = initial_scid else {
                     return Ok(false);
                 };
-                if self.server.initial_source_connection_id() != initial_scid {
+                if self
+                    .server
+                    .get_as::<ConnectionId>(ParameterId::InitialSourceConnectionId)
+                    .expect("this value must be set")
+                    != initial_scid
+                {
                     return Err(param_error(
                         "Initial Source Connection ID from server mismatch",
                     ));
@@ -256,7 +274,12 @@ impl Parameters {
                 // if self.server.retry_source_connection_id() != retry_scid {
                 //     return Err(param_error("Retry Source Connection ID mismatch"));
                 // }
-                if self.server.original_destination_connection_id() != origin_dcid {
+                if self
+                    .server
+                    .get_as::<ConnectionId>(ParameterId::OriginalDestinationConnectionId)
+                    .expect("this value must be set")
+                    != origin_dcid
+                {
                     return Err(param_error("Original Destination Connection ID mismatch"));
                 }
                 Ok(true)
@@ -265,7 +288,12 @@ impl Parameters {
                 let Some(initial_scid) = initial_scid else {
                     return Ok(false);
                 };
-                if self.client.initial_source_connection_id() != initial_scid {
+                if self
+                    .client
+                    .get_as::<ConnectionId>(ParameterId::InitialSourceConnectionId)
+                    .expect("this value must be set")
+                    != initial_scid
+                {
                     return Err(param_error(
                         "Initial Source Connection ID from client mismatch",
                     ));
@@ -319,7 +347,7 @@ impl ArcParameters {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
     }
 
-    pub fn get_local(&self) -> Result<Arc<dyn StoreParameter + Send + Sync>, Error> {
+    pub fn local(&self) -> Result<Arc<GeneralParameters>, Error> {
         match self.0.lock().unwrap().as_ref() {
             Ok(params) => Ok(match params.role() {
                 Role::Client => params.client.clone(),
@@ -329,37 +357,12 @@ impl ArcParameters {
         }
     }
 
-    /// Get the local transport parameter by id.
-    ///
-    /// Returns Err if some connection error occurred, or the parameter not exist
-    pub fn get_local_as<V>(&self, id: ParameterId) -> Result<V, Error>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        match self.0.lock().unwrap().as_ref() {
-            Ok(params) => match params.role() {
-                Role::Client => params.client.get_as::<V>(id),
-                Role::Server => params.server.get_as::<V>(id),
-            }
-            .ok_or_else(|| {
-                QuicError::new(
-                    ErrorKind::TransportParameter,
-                    FrameType::Crypto.into(),
-                    format!("access unknow parameter 0x{id:x}",),
-                )
-                .into()
-            }),
-            Err(e) => Err(e.clone()),
-        }
-    }
-
-    pub async fn remote(&self) -> Result<Arc<dyn StoreParameter + Send + Sync>, Error> {
+    pub async fn remote(&self) -> Result<Arc<GeneralParameters>, Error> {
         std::future::poll_fn(|cx| match self.0.lock().unwrap().as_mut() {
             Ok(params) => params.poll_ready(cx).map(|()| {
                 Ok(match params.role() {
-                    Role::Client => params.server.clone() as Arc<dyn StoreParameter + Send + Sync>,
-                    Role::Server => params.client.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                    Role::Client => params.server.clone(),
+                    Role::Server => params.client.clone(),
                 })
             }),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -367,44 +370,16 @@ impl ArcParameters {
         .await
     }
 
-    pub fn try_get_remote(&self) -> Result<Option<Arc<dyn StoreParameter + Send + Sync>>, Error> {
+    pub fn try_get_remote(&self) -> Result<Option<Arc<GeneralParameters>>, Error> {
         match self.0.lock().unwrap().as_ref() {
             Ok(params) => Ok(params
                 .is_remote_params_ready()
                 .then(|| match params.role() {
-                    Role::Client => params.server.clone() as Arc<dyn StoreParameter + Send + Sync>,
-                    Role::Server => params.client.clone() as Arc<dyn StoreParameter + Send + Sync>,
+                    Role::Client => params.server.clone(),
+                    Role::Server => params.client.clone(),
                 })),
             Err(e) => Err(e.clone()),
         }
-    }
-
-    /// Get the remote transport parameter by id.
-    ///
-    /// Returns Err if some connection error occurred, or the parameter not exist
-    pub async fn get_remote_as<V>(&self, id: ParameterId) -> Result<V, Error>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        std::future::poll_fn(|cx| match self.0.lock().unwrap().as_mut() {
-            Ok(params) => params.poll_ready(cx).map(|()| {
-                match params.role() {
-                    Role::Client => params.server.get_as::<V>(id),
-                    Role::Server => params.client.get_as::<V>(id),
-                }
-                .ok_or_else(|| {
-                    QuicError::new(
-                        ErrorKind::TransportParameter,
-                        FrameType::Crypto.into(),
-                        format!("access unknow parameter 0x{id:x}",),
-                    )
-                    .into()
-                })
-            }),
-            Err(e) => Poll::Ready(Err(e.clone())),
-        })
-        .await
     }
 
     /// Returns the remembered server transport parameters if exist,
@@ -453,8 +428,8 @@ impl ArcParameters {
         let guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref() {
             match params.role() {
-                Role::Client => buf.put_parameters(params.client.as_ref().as_ref()),
-                Role::Server => buf.put_parameters(params.server.as_ref().as_ref()),
+                Role::Client => buf.put_parameters(params.client.as_ref()),
+                Role::Server => buf.put_parameters(params.server.as_ref()),
             }
         }
     }
@@ -476,11 +451,12 @@ impl ArcParameters {
     /// If the peer's transmission parameters have not been verified,
     /// it will be verified here. If verification fails, this method will
     /// return Err.
-    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) {
+    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) -> Result<(), QuicError> {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
-            params.initial_scid_from_peer_need_equal(cid);
+            params.initial_scid_from_peer_need_equal(cid)?;
         }
+        Ok(())
     }
 
     /// After receiving the Retry packet from the server, the
@@ -497,20 +473,24 @@ impl ArcParameters {
     /// It will parse and check the remote transport parameters,
     /// and wake all the wakers waiting for the remote transport parameters
     /// if the remote transport parameters are valid.
-    pub fn recv_remote_params(
-        &self,
-        bytes: &[u8],
-        extra_auth: impl FnOnce(&dyn StoreParameter) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+    pub fn recv_remote_params(&self, peer_params: impl Into<PeerParameters>) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
         let params = guard.as_mut().map_err(|e| e.clone())?;
         // 避免外界拿到错误的参数
-        match params.recv_remote_params(bytes, extra_auth) {
+        match params.recv_remote_params(peer_params) {
             Ok(remote_params) => Ok(remote_params),
             Err(error) => {
                 params.wake_all();
                 Err(error)
             }
+        }
+    }
+
+    pub fn is_remote_params_received(&self) -> Option<bool> {
+        let guard = self.0.lock().unwrap();
+        match guard.deref() {
+            Ok(params) => Some(params.is_remote_params_received()),
+            Err(_) => None,
         }
     }
 
@@ -550,14 +530,29 @@ mod tests {
 
     fn create_test_client_params() -> ClientParameters {
         let mut params = ClientParameters::default();
-        params.set_initial_source_connection_id(ConnectionId::from_slice(b"client_test"));
+        params
+            .set(
+                ParameterId::InitialSourceConnectionId,
+                ConnectionId::from_slice(b"client_test"),
+            )
+            .unwrap();
         params
     }
 
     fn create_test_server_params() -> ServerParameters {
         let mut params = ServerParameters::default();
-        params.set_initial_source_connection_id(ConnectionId::from_slice(b"server_test"));
-        params.set_original_destination_connection_id(ConnectionId::from_slice(b"original"));
+        params
+            .set(
+                ParameterId::InitialSourceConnectionId,
+                ConnectionId::from_slice(b"server_test"),
+            )
+            .unwrap();
+        params
+            .set(
+                ParameterId::OriginalDestinationConnectionId,
+                ConnectionId::from_slice(b"original"),
+            )
+            .unwrap();
         params
     }
 
@@ -584,16 +579,22 @@ mod tests {
         let mut params = Parameters::new_client(client_params, None, odcid);
 
         let server_cid = ConnectionId::from_slice(b"server_test");
-        params.initial_scid_from_peer_need_equal(server_cid);
+        params
+            .initial_scid_from_peer_need_equal(server_cid)
+            .unwrap();
 
         params.server = Arc::new({
             let mut server_params = ServerParameters::default();
-            server_params.set_initial_source_connection_id(server_cid);
-            server_params.set_original_destination_connection_id(odcid);
             server_params
+                .set(ParameterId::InitialSourceConnectionId, server_cid)
+                .unwrap();
+            server_params
+                .set(ParameterId::OriginalDestinationConnectionId, odcid)
+                .unwrap();
+            server_params.into()
         });
 
-        assert!(dbg!(params.authenticate_cids()).is_ok());
+        assert!(params.authenticate_cids().is_ok());
     }
 
     #[test]
@@ -603,8 +604,13 @@ mod tests {
             ArcParameters::new_client(client_params, None, ConnectionId::from_slice(b"odcid"));
 
         // Test local params
-        let local = arc_params.get_local_as::<VarInt>(ParameterId::MaxUdpPayloadSize);
-        assert!(matches!(local, Ok(value) if value.into_inner() >= 1200));
+        assert!(matches!(
+            arc_params
+                .local()
+                .unwrap()
+                .get_as::<VarInt>(ParameterId::MaxUdpPayloadSize),
+            Some(value) if value.into_inner() >= 1200
+        ));
 
         // Test remembered params
         assert_eq!(
@@ -621,9 +627,8 @@ mod tests {
     #[test]
     fn test_validate_remote_params() {
         // Test invalid max_udp_payload_size
-        let mut params = Parameters::new_server(create_test_server_params());
-        let result = params.recv_remote_params(
-            &[
+        assert_eq!(
+            be_client_parameters(&[
                 1, 1, 0, // max_idle_timeout
                 3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
                 4, 1, 0, // initial_max_data
@@ -637,20 +642,12 @@ mod tests {
                 14, 1, 2, // active_connection_id_limit
                 15, 0, // initial_source_connection_id
                 32, 4, 128, 0, 255, 255, // max_datagram_frame_size
-            ],
-            // no extra auth
-            |_| Ok(()),
-        );
-        assert_eq!(
-            result.err(),
-            Some(
-                QuicError::new(
-                    ErrorKind::TransportParameter,
-                    FrameType::Crypto.into(),
-                    "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
-                )
-                .into()
-            )
+            ]),
+            Err(QuicError::new(
+                ErrorKind::TransportParameter,
+                FrameType::Crypto.into(),
+                "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
+            ))
         );
     }
 
@@ -682,10 +679,6 @@ mod tests {
         .into();
         arc_params.on_conn_error(&error);
 
-        assert!(
-            arc_params
-                .get_local_as::<bool>(ParameterId::GreaseQuicBit)
-                .is_err()
-        );
+        assert!(arc_params.local().is_err());
     }
 }

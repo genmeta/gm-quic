@@ -9,7 +9,7 @@ use qbase::{
     },
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
-    param::{ParameterId, StoreParameter, StoreParameterExt},
+    param::{GeneralParameters, ParameterId},
     sid::{
         ControlStreamsConcurrency, Dir, Role, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
@@ -542,19 +542,27 @@ where
 {
     pub(super) fn new(
         role: Role,
-        local_params: &impl StoreParameter,
+        local_params: &GeneralParameters,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
     ) -> Self {
         use ParameterId::*;
-        let max_bi_streams = local_params.get_as_ensured::<u64>(InitialMaxStreamsBidi);
-        let max_uni_streams = local_params.get_as_ensured::<u64>(InitialMaxStreamsUni);
-        let uni_stream_rcvbuf_size = local_params.get_as_ensured::<u64>(InitialMaxStreamDataUni);
-        let local_bi_stream_rcvbuf_size =
-            local_params.get_as_ensured::<u64>(InitialMaxStreamDataBidiLocal);
-        let remote_bi_stream_rcvbuf_size =
-            local_params.get_as_ensured::<u64>(InitialMaxStreamDataBidiRemote);
+        let max_bi_streams = local_params
+            .get_as::<u64>(InitialMaxStreamsBidi)
+            .expect("unreachable: default will be used");
+        let max_uni_streams = local_params
+            .get_as::<u64>(InitialMaxStreamsUni)
+            .expect("unreachable: default will be used");
+        let uni_stream_rcvbuf_size = local_params
+            .get_as::<u64>(InitialMaxStreamDataUni)
+            .expect("unreachable: default will be used");
+        let local_bi_stream_rcvbuf_size = local_params
+            .get_as::<u64>(InitialMaxStreamDataBidiLocal)
+            .expect("unreachable: default will be used");
+        let remote_bi_stream_rcvbuf_size = local_params
+            .get_as::<u64>(InitialMaxStreamDataBidiRemote)
+            .expect("unreachable: default will be used");
 
         Self {
             role,

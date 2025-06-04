@@ -12,6 +12,7 @@ pub mod prelude {
         cid::ConnectionId,
         frame::ConnectionCloseFrame,
         net::{address::*, route::*},
+        param::ParameterId,
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
@@ -156,8 +157,10 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
-                .await?;
+                .remote()
+                .await?
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .expect("unreachable: default value will be got if the value unset");
             Ok(streams.open_bi(snd_wnd_size).await?)
         }
         .instrument_in_current()
@@ -171,8 +174,10 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataUni)
-                .await?;
+                .remote()
+                .await?
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
+                .expect("unreachable: default value will be got if the value unset");
             Ok(streams.open_uni(snd_wnd_size).await?)
         }
         .instrument_in_current()
@@ -187,8 +192,10 @@ impl Components {
         let streams = self.spaces.data().streams().clone();
         async move {
             let snd_wnd_size = params
-                .get_remote_as::<u64>(ParameterId::InitialMaxStreamDataBidiLocal)
-                .await?;
+                .remote()
+                .await?
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiLocal)
+                .expect("unreachable: default value will be got if the value unset");
             Ok(Some(streams.accept_bi(snd_wnd_size).await?))
         }
         .instrument_in_current()
@@ -215,8 +222,10 @@ impl Components {
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
             let max_datagram_frame_size = params
-                .get_remote_as::<u64>(ParameterId::MaxDatagramFrameSize)
-                .await?;
+                .remote()
+                .await?
+                .get_as::<u64>(ParameterId::MaxDatagramFrameSize)
+                .expect("unreachable: default value will be got if the value unset");
             datagrams.writer(max_datagram_frame_size)
         }
         .instrument_in_current()

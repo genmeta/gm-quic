@@ -248,15 +248,10 @@ fn shutdown() -> Result<(), Error> {
 #[test]
 fn idle_timeout() {
     fn server_parameters() -> ServerParameters {
-        let mut params = ServerParameters::default();
-
-        params.set_initial_max_streams_bidi(2u32);
-        params.set_initial_max_streams_uni(0u32);
-        params.set_initial_max_data(1u32 << 10);
-        params.set_initial_max_stream_data_uni(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
-        params.set_max_idle_timeout(Duration::from_secs(1)); // from 10s to 1s
+        let mut params = handy::server_parameters();
+        params
+            .set(ParameterId::MaxIdleTimeout, Duration::from_secs(1))
+            .expect("unreachable");
 
         params
     }
@@ -359,29 +354,39 @@ fn parallel_big_stream() -> Result<(), Error> {
 
 #[test]
 fn limited_streams() -> Result<(), Error> {
-    fn client_parameters() -> ClientParameters {
-        let mut params = ClientParameters::default();
+    pub fn client_parameters() -> super::ClientParameters {
+        let mut params = super::ClientParameters::default();
 
-        params.set_initial_max_streams_bidi(2u32);
-        params.set_initial_max_streams_uni(0u32);
-        params.set_initial_max_data(1u32 << 10);
-        params.set_initial_max_stream_data_uni(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
+        for (id, value) in [
+            (ParameterId::InitialMaxStreamsBidi, 2u32),
+            (ParameterId::InitialMaxStreamsUni, 0u32),
+            (ParameterId::InitialMaxData, 1u32 << 10),
+            (ParameterId::InitialMaxStreamDataBidiLocal, 1u32 << 10),
+            (ParameterId::InitialMaxStreamDataBidiRemote, 1u32 << 10),
+            (ParameterId::InitialMaxStreamDataUni, 1u32 << 10),
+        ] {
+            params.set(id, value).expect("unreachable");
+        }
 
         params
     }
 
-    fn server_parameters() -> ServerParameters {
-        let mut params = ServerParameters::default();
+    pub fn server_parameters() -> super::ServerParameters {
+        let mut params = super::ServerParameters::default();
 
-        params.set_initial_max_streams_bidi(2u32);
-        params.set_initial_max_streams_uni(0u32);
-        params.set_initial_max_data(1u32 << 10);
-        params.set_initial_max_stream_data_uni(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
-        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
-        params.set_max_idle_timeout(Duration::from_secs(10));
+        for (id, value) in [
+            (ParameterId::InitialMaxStreamsBidi, 2u32),
+            (ParameterId::InitialMaxStreamsUni, 2u32),
+            (ParameterId::InitialMaxData, 1u32 << 20),
+            (ParameterId::InitialMaxStreamDataBidiLocal, 1u32 << 10),
+            (ParameterId::InitialMaxStreamDataBidiRemote, 1u32 << 10),
+            (ParameterId::InitialMaxStreamDataUni, 1u32 << 10),
+        ] {
+            params.set(id, value).expect("unreachable");
+        }
+        params
+            .set(ParameterId::MaxIdleTimeout, Duration::from_secs(30))
+            .expect("unreachable");
 
         params
     }

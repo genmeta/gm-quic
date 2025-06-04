@@ -68,28 +68,18 @@ impl ConnState {
 
             match components.handshake.role() {
                 qbase::sid::Role::Client => {
-                    if let Ok(local_parameters) = components.parameters.get_local() {
-                        let client_parameters = local_parameters
-                            .as_any()
-                            .downcast_ref()
-                            .expect("convert never failed");
-
+                    if let Ok(local_parameters) = components.parameters.local() {
                         qevent::event!(ParametersSet {
                             owner: Owner::Local,
-                            client_parameters,
+                            client_parameters: local_parameters.as_ref(),
                         })
                     }
                 }
                 qbase::sid::Role::Server => {
-                    if let Ok(local_parameters) = components.parameters.get_local() {
-                        let server_parameters = local_parameters
-                            .as_any()
-                            .downcast_ref()
-                            .expect("convert never failed");
-
+                    if let Ok(local_parameters) = components.parameters.local() {
                         qevent::event!(ParametersSet {
                             owner: Owner::Local,
-                            server_parameters,
+                            server_parameters: local_parameters.as_ref(),
                         })
                     }
                 }
