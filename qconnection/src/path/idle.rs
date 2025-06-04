@@ -64,8 +64,16 @@ impl super::Path {
         let this = self.clone();
         async move {
             let (Ok(local_max_idle_timeout), Ok(remote_max_idle_timeout)) = (
-                parameters.get_local_as(ParameterId::MaxIdleTimeout),
-                parameters.get_remote_as(ParameterId::MaxIdleTimeout).await,
+                parameters.local().map(|local| {
+                    local
+                        .get_as(ParameterId::MaxIdleTimeout)
+                        .expect("unreachable: default value will be got if the value unset")
+                }),
+                parameters.remote().await.map(|remote| {
+                    remote
+                        .get_as(ParameterId::MaxIdleTimeout)
+                        .expect("unreachable: default value will be got if the value unset")
+                }),
             ) else {
                 // if the connection enter closing state in initial space is not idle_timeout
                 return false;

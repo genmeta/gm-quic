@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     collections::HashMap,
     fmt::Debug,
     net::{SocketAddrV4, SocketAddrV6},
@@ -13,93 +12,225 @@ use nom::Parser;
 
 use crate::{
     cid::{ConnectionId, WriteConnectionId, be_connection_id, be_connection_id_with_len},
-    error::QuicError,
+    error::{ErrorKind, QuicError},
+    frame::FrameType,
     token::{ResetToken, WriteResetToken, be_reset_token},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
+bitflags::bitflags! {
+    pub struct ParameterFlags: u8 {
+        const NOT_CLIENT = 1 << 0;
+        const NOT_SERVER = 1 << 1;
+        /// A client MUST NOT use remembered values for the following parameters: ack_delay_exponent, max_ack_delay,
+        /// initial_source_connection_id, original_destination_connection_id, preferred_address,
+        /// retry_source_connection_id, and stateless_reset_token. The client MUST use the server's new values in the
+        /// handshake instead; if the server does not provide new values, the default values are used.
+        const NOT_RESUME = 1 << 2;
+        const NOT_REDUCE = 1 << 3;
+        const CLIENT_REQUIRED = 1 << 4;
+        const SERVER_REQUIRED = 1 << 5;
+    }
+}
+
+impl ParameterFlags {
+    pub fn is_client(&self) -> bool {
+        !self.contains(ParameterFlags::NOT_CLIENT)
+    }
+
+    pub fn is_server(&self) -> bool {
+        !self.contains(ParameterFlags::NOT_SERVER)
+    }
+
+    pub fn is_resume(&self) -> bool {
+        !self.contains(ParameterFlags::NOT_RESUME)
+    }
+}
+
+macro_rules! parameter_ids {
+    /*
+    id: ty (cast)? in bound {
+        value = id_value,
+        (default = default_value)?,
+        (flags = flgas_value)?,
+    }
+    */
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum ParameterId { $(
+            $name:ident: $ty:ident $(.$cast:ident() in $bound:expr)? => {
+                value = $value:expr
+                $(,default = $default:expr)?
+                $(,flags = $($flag:ident)|*)?
+            }
+        ),* $(,)? }
+    ) => {
+        $(#[$meta])*
+        $vis enum ParameterId {
+            $($name,)*
+            Value(VarInt),
+        }
+
+        impl ParameterId{
+            pub const KNOWNS: &[Self] = &[
+                $(ParameterId::$name,)*
+            ];
+
+            pub fn flags(&self) -> ParameterFlags {
+                match self {
+                    $(ParameterId::$name => ParameterFlags::empty() $($(| ParameterFlags::$flag)*)? ,)*
+                    ParameterId::Value(_) => ParameterFlags::empty(),
+                }
+            }
+
+            pub fn default_value(&self) -> Option<ParameterValue> {
+                $( $(
+                if let ParameterId::$name = self {
+                    return Some(ParameterValue::from($default));
+                }
+                )? )*
+                None
+            }
+
+            pub fn check_value(&self, value: ParameterValue) -> Result<ParameterValue, QuicError> {
+                fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> QuicError {
+                    QuicError::new(
+                        ErrorKind::TransportParameter,
+                        FrameType::Crypto.into(),
+                        format!("parameter 0x{id:x}: {ne}"),
+                    )
+                }
+                $( $(
+                if let ParameterId::$name = self {
+                    let value = $ty::try_from(value).map_err(|_| parameter_error(*self, "Invalid parameter value: type unmatch"))?;
+                    if !$bound.contains(&value.$cast()) {
+                        return Err(parameter_error(*self, format!("Invalid parameter value: out of bound {:?}", $bound)).into());
+                    }
+                    return Ok(ParameterValue::from(value));
+                }
+                )? )*
+                Ok(value)
+            }
+        }
+
+        impl From<VarInt> for ParameterId {
+            fn from(id: VarInt) -> Self {
+                match id.into_inner() {
+                    $($value => ParameterId::$name,)*
+                    _ => ParameterId::Value(id),
+                }
+            }
+        }
+
+        impl From<ParameterId> for VarInt {
+            fn from(id: ParameterId) -> Self {
+                match id {
+                    $(ParameterId::$name => VarInt::from_u32($value),)*
+                    ParameterId::Value(id) => id,
+                }
+            }
+        }
+    };
+}
+
+parameter_ids! {
+
 /// The parameter id in the transport parameters.
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub enum ParameterId {
-    OriginalDestinationConnectionId,
-    MaxIdleTimeout,
-    StatelssResetToken,
-    MaxUdpPayloadSize,
-    InitialMaxData,
-    InitialMaxStreamDataBidiLocal,
-    InitialMaxStreamDataBidiRemote,
-    InitialMaxStreamDataUni,
-    InitialMaxStreamsBidi,
-    InitialMaxStreamsUni,
-    AckDelayExponent,
-    MaxAckDelay,
-    DisableActiveMigration,
-    PreferredAddress,
-    ActiveConnectionIdLimit,
-    InitialSourceConnectionId,
-    RetrySourceConnectionId,
-    MaxDatagramFrameSize,
-    GreaseQuicBit,
-    Value(VarInt),
+    OriginalDestinationConnectionId: ConnectionId => {
+        value = 0x00,
+        flags = NOT_CLIENT | NOT_RESUME | SERVER_REQUIRED
+    },
+    MaxIdleTimeout: Duration => {
+        value = 0x01,
+        default = Duration::ZERO
+    },
+    StatelessResetToken: ResetToken => {
+        value = 0x02,
+        flags = NOT_CLIENT | NOT_RESUME
+    },
+    MaxUdpPayloadSize: VarInt .into_inner() in 1200..=65527 => {
+        value = 0x03,
+        default = VarInt::from_u32(65527)
+    },
+    InitialMaxData: VarInt => {
+        value = 0x04,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    InitialMaxStreamDataBidiLocal: VarInt => {
+        value = 0x05,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    InitialMaxStreamDataBidiRemote: VarInt => {
+        value = 0x06,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    InitialMaxStreamDataUni: VarInt => {
+        value = 0x07,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    InitialMaxStreamsBidi: VarInt => {
+        value = 0x08,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    InitialMaxStreamsUni: VarInt => {
+        value =  0x09,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    AckDelayExponent: VarInt .into_inner() in 0..=20 => {
+        value = 0x0a,
+        default = VarInt::from_u32(3),
+        flags = NOT_RESUME
+    },
+    MaxAckDelay: Duration .as_millis() in 0..=(1 << 14) => {
+        value = 0x0b,
+        default = Duration::from_millis(25),
+        flags = NOT_RESUME
+    },
+    DisableActiveMigration: bool => {
+        value = 0x0c,
+        default = false
+    },
+    PreferredAddress: PreferredAddress => {
+        value = 0x0d,
+        flags = NOT_CLIENT | NOT_RESUME
+    },
+    ActiveConnectionIdLimit: VarInt .into_inner() in 2.. => {
+        value = 0x0e,
+        default = VarInt::from_u32(2),
+        flags = NOT_REDUCE
+    },
+    InitialSourceConnectionId: ConnectionId => {
+        value = 0x0f,
+        flags = NOT_RESUME | CLIENT_REQUIRED | SERVER_REQUIRED
+    },
+    RetrySourceConnectionId: ConnectionId => {
+        value = 0x10,
+        flags = NOT_CLIENT | NOT_RESUME
+    },
+    MaxDatagramFrameSize: VarInt .into_inner() in 8..=65535 => {
+        value = 0x20,
+        default = VarInt::from_u32(0),
+        flags = NOT_REDUCE
+    },
+    GreaseQuicBit: bool => {
+        value = 0x2a_b2,
+        default = false
+    }
+}
+
 }
 
 impl std::fmt::LowerHex for ParameterId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:x}", VarInt::from(*self).into_inner())
-    }
-}
-
-impl From<ParameterId> for VarInt {
-    fn from(id: ParameterId) -> Self {
-        VarInt::from_u32(match id {
-            ParameterId::OriginalDestinationConnectionId => 0x00,
-            ParameterId::MaxIdleTimeout => 0x01,
-            ParameterId::StatelssResetToken => 0x02,
-            ParameterId::MaxUdpPayloadSize => 0x03,
-            ParameterId::InitialMaxData => 0x04,
-            ParameterId::InitialMaxStreamDataBidiLocal => 0x05,
-            ParameterId::InitialMaxStreamDataBidiRemote => 0x06,
-            ParameterId::InitialMaxStreamDataUni => 0x07,
-            ParameterId::InitialMaxStreamsBidi => 0x08,
-            ParameterId::InitialMaxStreamsUni => 0x09,
-            ParameterId::AckDelayExponent => 0x0a,
-            ParameterId::MaxAckDelay => 0x0b,
-            ParameterId::DisableActiveMigration => 0x0c,
-            ParameterId::PreferredAddress => 0x0d,
-            ParameterId::ActiveConnectionIdLimit => 0x0e,
-            ParameterId::InitialSourceConnectionId => 0x0f,
-            ParameterId::RetrySourceConnectionId => 0x10,
-            ParameterId::MaxDatagramFrameSize => 0x20,
-            ParameterId::GreaseQuicBit => 0x2a_b2,
-            ParameterId::Value(id) => return id,
-        })
-    }
-}
-
-impl From<VarInt> for ParameterId {
-    fn from(id: VarInt) -> Self {
-        match id.into_inner() {
-            0x00 => ParameterId::OriginalDestinationConnectionId,
-            0x01 => ParameterId::MaxIdleTimeout,
-            0x02 => ParameterId::StatelssResetToken,
-            0x03 => ParameterId::MaxUdpPayloadSize,
-            0x04 => ParameterId::InitialMaxData,
-            0x05 => ParameterId::InitialMaxStreamDataBidiLocal,
-            0x06 => ParameterId::InitialMaxStreamDataBidiRemote,
-            0x07 => ParameterId::InitialMaxStreamDataUni,
-            0x08 => ParameterId::InitialMaxStreamsBidi,
-            0x09 => ParameterId::InitialMaxStreamsUni,
-            0x0a => ParameterId::AckDelayExponent,
-            0x0b => ParameterId::MaxAckDelay,
-            0x0c => ParameterId::DisableActiveMigration,
-            0x0d => ParameterId::PreferredAddress,
-            0x0e => ParameterId::ActiveConnectionIdLimit,
-            0x0f => ParameterId::InitialSourceConnectionId,
-            0x10 => ParameterId::RetrySourceConnectionId,
-            0x20 => ParameterId::MaxDatagramFrameSize,
-            0x2a_b2 => ParameterId::GreaseQuicBit,
-            _ => ParameterId::Value(id),
-        }
     }
 }
 
@@ -217,7 +348,7 @@ impl<T: bytes::BufMut> WirtePreferredAddress for T {
     }
 }
 
-#[derive(Debug, Clone, From, TryInto)]
+#[derive(Debug, Clone, From, TryInto, PartialEq)]
 pub enum ParameterValue {
     // for custom
     Bytes(Bytes),
@@ -229,12 +360,37 @@ pub enum ParameterValue {
     VarInt(VarInt),
 }
 
+impl From<u32> for ParameterValue {
+    #[inline]
+    fn from(value: u32) -> Self {
+        ParameterValue::VarInt(VarInt::from_u32(value))
+    }
+}
+
 impl TryFrom<ParameterValue> for u64 {
     type Error = <VarInt as TryFrom<ParameterValue>>::Error;
 
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
         VarInt::try_from(value).map(|value| value.into_inner())
+    }
+}
+
+impl TryFrom<ParameterValue> for u32 {
+    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        u64::try_from(value).map(|value| value as _)
+    }
+}
+
+impl TryFrom<ParameterValue> for u16 {
+    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        u64::try_from(value).map(|value| value as _)
     }
 }
 
@@ -268,7 +424,7 @@ pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, Parameter
         .parse(remain)?,
         // flag
         ParameterId::DisableActiveMigration | ParameterId::GreaseQuicBit => (remain, true.into()),
-        ParameterId::StatelssResetToken => {
+        ParameterId::StatelessResetToken => {
             map(be_reset_token, ParameterValue::ResetToken).parse(remain)?
         }
         // varint
@@ -372,60 +528,42 @@ impl<T: bytes::BufMut> WriteParameter for T {
     }
 }
 
-pub trait StoreParameter: Any {
-    fn get(&self, id: ParameterId) -> Option<ParameterValue>;
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct GeneralParameters(HashMap<ParameterId, ParameterValue>);
 
-    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError>;
-
-    fn as_any(&self) -> &dyn Any;
-}
-
-pub type GeneralParameters = HashMap<ParameterId, ParameterValue>;
-
-impl StoreParameter for GeneralParameters {
-    fn get(&self, id: ParameterId) -> Option<ParameterValue> {
-        self.get(&id).cloned()
-    }
-
-    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), QuicError> {
-        self.insert(id, value);
-        Ok(())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-pub trait StoreParameterExt: StoreParameter {
+impl GeneralParameters {
     #[inline]
-    fn get_as<V>(&self, id: ParameterId) -> Option<V>
+    pub fn get(&self, id: ParameterId) -> Option<ParameterValue> {
+        self.0.get(&id).cloned().or_else(|| id.default_value())
+    }
+
+    #[inline]
+    pub fn get_as<V>(&self, id: ParameterId) -> Option<V>
     where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
+        V: TryFrom<ParameterValue, Error: Debug>,
     {
         self.get(id).map(|v| v.try_into().expect("type mismatch"))
     }
 
     #[inline]
-    fn get_as_ensured<V>(&self, id: ParameterId) -> V
+    pub fn set<V>(&mut self, id: ParameterId, value: V) -> Result<(), QuicError>
     where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
+        V: Into<ParameterValue>,
     {
-        self.get_as(id).expect("parameter not found")
+        self.0.insert(id, id.check_value(value.into())?);
+        Ok(())
     }
 
     #[inline]
-    fn set_as<V>(&mut self, id: ParameterId, value: V) -> Result<(), QuicError>
-    where
-        ParameterValue: From<V>,
-    {
-        self.set(id, value.into())
+    pub fn contains(&self, id: ParameterId) -> bool {
+        self.0.contains_key(&id)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
-
-impl<S: ?Sized + StoreParameter> StoreParameterExt for S {}
 
 pub trait WriteParameters {
     fn put_parameters(&mut self, params: &GeneralParameters);
@@ -433,7 +571,7 @@ pub trait WriteParameters {
 
 impl<T: bytes::BufMut> WriteParameters for T {
     fn put_parameters(&mut self, params: &GeneralParameters) {
-        for (id, value) in params {
+        for (id, value) in &params.0 {
             self.put_parameter(*id, value);
         }
     }

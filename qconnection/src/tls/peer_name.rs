@@ -1,10 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
-use qbase::{
-    error::Error,
-    param::{ClientParameters, StoreParameterExt},
-    util::Future,
-};
+use qbase::{error::Error, param::ClientParameters, util::Future};
 
 #[derive(Default, Debug, Clone)]
 pub struct ArcEndpointName<T>(Arc<Future<Result<T, Error>>>);
