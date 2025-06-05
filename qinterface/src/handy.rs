@@ -81,7 +81,7 @@ mod qudp {
         fn poll_recv(
             &self,
             cx: &mut Context,
-            pkts: &mut Vec<BytesMut>,
+            pkts: &mut [BytesMut],
             qbase_hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
             let len = qbase_hdrs.len().min(pkts.len());

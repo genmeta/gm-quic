@@ -153,19 +153,14 @@ impl Path {
         self.pmtu.load(Ordering::Acquire)
     }
 
-    pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
+    pub async fn send_packets(&self, segments: &[io::IoSlice<'_>]) -> io::Result<()> {
         self.anti_amplifier
             .on_sent(segments.iter().map(|s| s.len()).sum());
         if self.anti_amplifier.balance().is_err() {
             self.status.enter_anti_amplification_limit();
         }
-        while !segments.is_empty() {
-            let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
-            let sent =
-                core::future::poll_fn(|cx| self.interface.poll_send(cx, segments, hdr)).await?;
-            segments = &segments[sent..];
-        }
-        Ok(())
+        let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
+        self.interface.sendmsgs(segments, hdr).await
     }
 }
 

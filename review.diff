@@ -1,0 +1,183 @@
+diff --git a/gm-quic/src/client.rs b/gm-quic/src/client.rs
+index ae3125b..a4b7130 100644
+--- a/gm-quic/src/client.rs
++++ b/gm-quic/src/client.rs
+@@ -37,17 +37,22 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
+ /// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
+ /// - **Automatic interface selection**: Matches interface with server endpoint address
+ pub struct QuicClient {
++    // Set<BindAddr>
+     bind_interfaces: Option<DashMap<BindAddr, Arc<dyn QuicInterface>>>,
+     defer_idle_timeout: HeartbeatConfig,
+     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
+     //       然后看谁先收到服务器的响应比较好
++    // TODO: 干掉，支持握手多链路
+     _enable_happy_eyepballs: bool,
+     parameters: ClientParameters,
++    // 改成 enum
+     _prefer_versions: Vec<u32>,
+     quic_iface_factory: Box<dyn ProductQuicInterface>,
+     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
++    // TODO: 干掉
+     _remembered: Option<RememberedParameters>,
+     reuse_connection: bool,
++    // TODO: 干掉
+     reuse_address: bool,
+     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
+     logger: Arc<dyn Log + Send + Sync>,
+@@ -104,6 +109,7 @@ impl QuicClient {
+         server_name: String,
+         server_ep: EndpointAddr,
+     ) -> io::Result<Arc<Connection>> {
++        // TODO: bind all 时，连接时扫描网卡
+         let quic_iface = match &self.bind_interfaces {
+             None => {
+                 let bind_addr = match server_ep.kind() {
+@@ -124,6 +130,7 @@ impl QuicClient {
+                 .map(|entry| entry.key().clone())
+                 .filter(|bind_addr| bind_addr.kind() == server_ep.kind())
+                 .find_map(|bind_addr| {
++                    // TODO: 移除 reuse_address
+                     if self.reuse_address {
+                         crate::proto().get_interface(bind_addr)
+                     } else {
+diff --git a/gm-quic/src/lib.rs b/gm-quic/src/lib.rs
+index ff4d554..114e48e 100644
+--- a/gm-quic/src/lib.rs
++++ b/gm-quic/src/lib.rs
+@@ -21,6 +21,7 @@ mod server;
+ #[cfg(test)]
+ mod tests;
+ 
++// 1. 不pub
+ pub fn proto() -> &'static Arc<QuicProto> {
+     static PROTO: OnceLock<Arc<QuicProto>> = OnceLock::new();
+     PROTO.get_or_init(|| {
+diff --git a/qinterface/src/lib.rs b/qinterface/src/lib.rs
+index bda08e6..e237a1d 100644
+--- a/qinterface/src/lib.rs
++++ b/qinterface/src/lib.rs
+@@ -47,6 +47,7 @@ pub trait QuicInterface: Send + Sync {
+     /// then the implementation should return an error as well.
+     ///
+     /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
++    /// real
+     fn read_addr(&self) -> io::Result<RealAddr>;
+ 
+     /// Maximum size of a single network segment in bytes
+diff --git a/qinterface/src/router.rs b/qinterface/src/router.rs
+index bd3e698..b247c54 100644
+--- a/qinterface/src/router.rs
++++ b/qinterface/src/router.rs
+@@ -57,10 +57,15 @@ impl Drop for InterfaceContext {
+ 
+ #[doc(alias = "RouterInterface")]
+ pub struct QuicProto {
++    // 1. iface 异常
++    // 2. 扫描网卡，新增，减少
+     interfaces: DashMap<BindAddr, InterfaceContext>,
++
++    // 路由拆出来，使用全局变量或者参数依赖
+     router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
+-    //
++    // TODO: 拆出来一个全局变量
+     unrouted_packets: Channel<(BindAddr, Packet, Pathway, Link)>,
++    // TODO：可以删掉
+     broken_interfaces: Channel<(BindAddr, Weak<dyn QuicInterface>, io::Error)>,
+ }
+ 
+@@ -112,9 +117,14 @@ impl QuicProto {
+     /// on interface(if exist) will be aborted.
+     ///
+     /// Though the interface is replaced, the connections that are using the old interface will not be affected.
++    /// TODO: insert_interface
++    ///
+     pub fn add_interface(
+         self: &Arc<Self>,
+         interface: Arc<dyn QuicInterface>,
++        // TODO: 参数改成，返回 Result
++        //  factory: Arc<dyn Product>,
++        //  binad_addr: BindAddr,
+     ) -> JoinHandle<io::Error> {
+         let bind_addr = interface.bind_addr();
+         let entry = self
+@@ -132,6 +142,8 @@ impl QuicProto {
+ 
+             loop {
+                 // way: local -> peer
++                // TODO: 放到 iface
++                // let ret = iface.recvmsg(recv_bufs, recv_hdrs).await;
+                 let receive = core::future::poll_fn(|cx| {
+                     let interface = this.interfaces.get(&bind_addr).ok_or_else(|| {
+                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
+@@ -147,6 +159,8 @@ impl QuicProto {
+                         .poll_recv(cx, &mut recv_bufs, &mut recv_hdrs)
+                 });
+ 
++                // let n = iface.recvmsg(recv_bufs, recv_hdrs).await;
++                // router.deliver(bind_addr, packet, pathway, link)
+                 for (datagram, header) in receive
+                     .await
+                     .map(|rcvd| recv_bufs.drain(..rcvd).zip(recv_hdrs.drain(..rcvd)))?
+@@ -178,6 +192,7 @@ impl QuicProto {
+         let bind_addr = interface.bind_addr();
+         let weak_iface = Arc::downgrade(&interface);
+ 
++        // TODO: 干掉
+         let recv_task = tokio::spawn(async move {
+             let task_failed: io::Result<()> = recv_task.await;
+             let error = task_failed.expect_err("receive task never failed without error");
+@@ -202,6 +217,7 @@ impl QuicProto {
+         self.interfaces.get(&bind_addr).map(|ctx| ctx.inner.clone())
+     }
+ 
++    // TODO: 移除
+     pub fn get_interface_if<P>(&self, bind_addr: BindAddr, f: P) -> Option<Arc<dyn QuicInterface>>
+     where
+         P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
+@@ -217,13 +233,16 @@ impl QuicProto {
+     /// Remove the interface by the local address.
+     ///
+     /// If the interface exist, it will be removed, and the receive task on the interface will be aborted.
++    /// TODO: remove 返回值
+     pub fn del_interface(&self, bind_addr: BindAddr) {
++        // TODO: 判断引用计数是否为0
+         self.interfaces.remove(&bind_addr);
+     }
+ 
+     /// Remove the interface by the local address if the condition is [`true`].
+     ///
+     /// Its better to use this method to remove the interface than [`Self::del_interface`].
++    // TODO: 干掉，只保留 del_interface
+     pub fn del_interface_if<P>(&self, bind_addr: BindAddr, f: P)
+     where
+         P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
+@@ -272,6 +291,7 @@ impl QuicProto {
+         Err((bind_addr, packet, pathway, link))
+     }
+ 
++    // TODO: 移动到 Router
+     pub async fn deliver(&self, bind_addr: BindAddr, packet: Packet, pathway: Pathway, link: Link) {
+         if let Err(received) = self.try_deliver(bind_addr, packet, pathway, link).await {
+             _ = self.unrouted_packets.send(received).await;
+@@ -286,9 +306,12 @@ impl QuicProto {
+     ///
+     /// **Once this operation is called it cannot be undone**
+     pub fn dismiss_unrouted_packets(&self) {
++        // TODO: unrouted_packets 只有 server 有 Option<unrouted_packets>
++        // router.on_unrouted_packet({});
+         self.unrouted_packets.close();
+     }
+ 
++    // Router
+     pub async fn recv_unrouted_packet(&self) -> Option<(BindAddr, Packet, Pathway, Link)> {
+         loop {
+             let (bind_addr, packet, pathway, link) = self.unrouted_packets.recv().await?;
+@@ -299,6 +322,7 @@ impl QuicProto {
+         }
+     }
+ 
++    // TODO: 干掉
+     pub fn dismiss_broken_interfaces(&self) {
+         self.broken_interfaces.close();
+     }
