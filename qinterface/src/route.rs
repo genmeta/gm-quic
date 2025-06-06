@@ -21,11 +21,11 @@ use crate::queue::RcvdPacketQueue;
 
 pub type Received = (BindAddr, Packet, Pathway, Link);
 
-type UnroutedPacketHandler = Pin<Box<dyn Sink<Received, Error = Never> + Send + Sync>>;
+type UnroutedPacketSink = Pin<Box<dyn Sink<Received, Error = Never> + Send + Sync>>;
 
 pub struct Router {
     table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    unrouted: Mutex<UnroutedPacketHandler>,
+    unrouted: Mutex<UnroutedPacketSink>,
 }
 
 impl Router {
@@ -79,8 +79,10 @@ impl Router {
     }
 
     pub async fn deliver(&self, received: Received) {
-        if let Err(unrouted) = self.try_deliver(received).await {
-            _ = self.unrouted.lock().await.send(unrouted).await;
+        if let Err(received) = self.try_deliver(received).await {
+            let mut unrouted = self.unrouted.lock().await;
+            _ = unrouted.send(received).await;
+            _ = unrouted.flush().await;
         }
     }
 
@@ -90,7 +92,7 @@ impl Router {
         }
     }
 
-    pub async fn register_unrouted_handler<S>(&self, handler: S)
+    pub async fn register_unrouted_sink<S>(&self, handler: S)
     where
         S: Sink<Received, Error = Never> + Send + Sync + 'static,
     {

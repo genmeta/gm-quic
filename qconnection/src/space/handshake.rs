@@ -246,7 +246,7 @@ pub fn spawn_deliver_and_parse(
                     if role == qbase::sid::Role::Server {
                         let origin_dcid = components.parameters.get_origin_dcid()?;
                         if origin_dcid != *packet.dcid() {
-                            components.proto.del_router_entry(&origin_dcid.into());
+                            components.router.remove(&origin_dcid.into());
                         }
                     }
                 }

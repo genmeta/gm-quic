@@ -1,16 +1,39 @@
 use std::{
-    sync::{Arc, OnceLock},
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, OnceLock, RwLock, RwLockReadGuard},
     time::Duration,
 };
 
-use dashmap::DashMap;
 use netdev::Interface;
 use netwatch::netmon::Monitor;
-use tokio::sync::{mpsc, watch};
+use qbase::net::address::{IfaceBindAddr, IpFamily};
+use tokio::sync::watch;
+
+struct Devices(RwLock<HashMap<String, Interface>>);
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self(RwLock::new(HashMap::new()))
+    }
+}
+
+impl Devices {
+    pub fn get(&self) -> RwLockReadGuard<HashMap<String, Interface>> {
+        self.0.read().unwrap()
+    }
+
+    pub fn update(&self) {
+        *self.0.write().unwrap() = netdev::get_interfaces()
+            .into_iter()
+            .map(|iface| (iface.name.clone(), iface))
+            .collect();
+    }
+}
 
 pub struct InterfacesMonitor {
-    devices: Arc<DashMap<String, Interface>>,
-    update_tx: mpsc::Sender<()>,
+    devices: Arc<Devices>,
+    updated_tx: watch::Sender<()>,
     updated_rx: watch::Receiver<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -22,28 +45,22 @@ impl InterfacesMonitor {
     }
 
     pub fn new() -> Self {
-        let devices: Arc<DashMap<String, Interface>> = Arc::default();
+        let devices = Arc::new(Devices::default());
 
-        for interface in netdev::get_interfaces() {
-            devices.insert(interface.name.clone(), interface);
-        }
-
-        let (update_tx, mut updata_rx) = mpsc::channel(2);
         let (updated_tx, updated_rx) = watch::channel(());
 
         let task = tokio::spawn({
             let devices = devices.clone();
-            let update_tx = update_tx.clone();
+            let timer_tx = updated_tx.clone();
+            let event_tx = updated_tx.clone();
             async move {
-                tokio::spawn({
-                    let update_tx = update_tx.clone();
-                    async move {
-                        let mut interval = tokio::time::interval(Duration::from_secs(5));
-                        loop {
-                            interval.tick().await;
-                            if update_tx.send(()).await.is_err() {
-                                break;
-                            };
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    loop {
+                        interval.tick().await;
+                        devices.update();
+                        if timer_tx.send(()).is_err() {
+                            break;
                         }
                     }
                 });
@@ -51,59 +68,64 @@ impl InterfacesMonitor {
                 tokio::spawn(async move {
                     if let Ok(monitor) = Monitor::new().await {
                         let cb = move |is_major| {
-                            let update_tx = update_tx.clone();
-                            Box::pin(async move {
-                                if is_major {
-                                    _ = update_tx.send(()).await;
-                                }
-                            })
-                                as futures::future::BoxFuture<'static, ()>
+                            if is_major {
+                                _ = event_tx.send(());
+                            }
+                            Box::pin(async move {}) as futures::future::BoxFuture<'static, ()>
                         };
                         _ = monitor.subscribe(cb).await;
                     }
                 });
-
-                while updata_rx.recv().await.is_some() {
-                    for interface in netdev::get_interfaces() {
-                        devices.insert(interface.name.clone(), interface);
-                    }
-                    _ = updated_tx.send(());
-                }
             }
         });
 
         Self {
             devices,
-            update_tx,
+            updated_tx,
             updated_rx,
             task,
         }
     }
 
-    pub fn watcher(&self) -> watch::Receiver<()> {
+    pub fn subscribe(&self) -> watch::Receiver<()> {
         self.updated_rx.clone()
     }
 
     pub fn on_interface_changed(&self) {
-        _ = self.update_tx.try_send(());
+        self.devices.update();
+        self.updated_tx.send(()).unwrap();
     }
 
-    pub fn devices(&self) -> &DashMap<String, Interface> {
-        &self.devices
+    pub fn devices(&self) -> RwLockReadGuard<HashMap<String, Interface>> {
+        self.devices.get()
+    }
+
+    pub fn get(&self, bind_addr: &IfaceBindAddr) -> Option<SocketAddr> {
+        self.devices()
+            .get(bind_addr.device_name())
+            .and_then(|interface| match bind_addr.ip_family() {
+                IpFamily::V4 => interface
+                    .ipv4
+                    .first()
+                    .map(|ipnet| SocketAddr::new(ipnet.addr().into(), bind_addr.port().into())),
+                IpFamily::V6 => interface
+                    .ipv6
+                    .iter()
+                    .map(|ipnet| ipnet.addr())
+                    .find(|ip| !matches!(ip.octets(), [0xfe, 0x80, ..]))
+                    .map(|ip| SocketAddr::new(ip.into(), bind_addr.port().into())),
+            })
+    }
+}
+
+impl Default for InterfacesMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Drop for InterfacesMonitor {
     fn drop(&mut self) {
         self.task.abort();
-    }
-}
-
-#[tokio::test]
-async fn feature() {
-    let mut watcher = InterfacesMonitor::global().watcher();
-
-    if watcher.changed().await.is_ok() {
-        dbg!(InterfacesMonitor::global().devices());
     }
 }

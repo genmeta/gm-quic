@@ -2,12 +2,13 @@ use std::{io, sync::Arc};
 
 use dashmap::DashMap;
 use handy::UdpSocketController;
-use qbase::{
-    net::address::{AddrKind, BindAddr, IpFamily},
-    param::RememberedParameters,
-};
+use qbase::net::address::{AddrKind, BindAddr, IpFamily};
 use qconnection::builder::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
+use qinterface::{
+    ifaces::{Interface, QuicInterfaces},
+    route::Router,
+};
 use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
@@ -37,18 +38,12 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<BindAddr, Arc<dyn QuicInterface>>>,
+    bind_interfaces: Option<DashMap<BindAddr, Arc<Interface>>>,
     defer_idle_timeout: HeartbeatConfig,
-    // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
-    //       然后看谁先收到服务器的响应比较好
-    _enable_happy_eyepballs: bool,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
-    quic_iface_factory: Box<dyn ProductQuicInterface>,
-    // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
-    _remembered: Option<RememberedParameters>,
+    quic_iface_factory: Arc<dyn ProductQuicInterface>,
     reuse_connection: bool,
-    reuse_address: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     tls_config: Arc<TlsClientConfig>,
@@ -85,12 +80,10 @@ impl QuicClient {
     pub fn builder_with_tls<T>(tls_config: T) -> QuicClientBuilder<T> {
         QuicClientBuilder {
             bind_interfaces: DashMap::new(),
-            reuse_address: false,
             reuse_connection: false,
-            enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(UdpSocketController::bind),
+            quic_iface_factory: Arc::new(UdpSocketController::bind),
             parameters: ClientParameters::default(),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
@@ -99,14 +92,14 @@ impl QuicClient {
         }
     }
 
-    fn new_connection(
+    async fn new_connection(
         &self,
         server_name: String,
         server_ep: EndpointAddr,
     ) -> io::Result<Arc<Connection>> {
         let quic_iface = match &self.bind_interfaces {
             None => {
-                let bind_addr = match server_ep.kind() {
+                let bind_addr: BindAddr = match server_ep.kind() {
                     AddrKind::Ip(IpFamily::V4) => "inet://0.0.0.0/alloc".into(),
                     AddrKind::Ip(IpFamily::V6) => "inet://::/alloc".into(),
                     _ => {
@@ -115,29 +108,20 @@ impl QuicClient {
                         ));
                     }
                 };
-                let quic_iface = self.quic_iface_factory.bind(bind_addr)?;
-                crate::proto().add_interface(quic_iface.clone());
-                quic_iface
+                QuicInterfaces::global()
+                    .insert(bind_addr.clone(), self.quic_iface_factory.clone())?
             }
             Some(bind_interfaces) => bind_interfaces
                 .iter()
-                .map(|entry| entry.key().clone())
-                .filter(|bind_addr| bind_addr.kind() == server_ep.kind())
-                .find_map(|bind_addr| {
-                    if self.reuse_address {
-                        crate::proto().get_interface(bind_addr)
-                    } else {
-                        crate::proto()
-                            .get_interface_if(bind_addr, |iface, _| Arc::strong_count(iface) == 1)
-                    }
-                })
+                .find(|entry| entry.key().kind() == server_ep.kind())
+                .map(|entry| entry.value().clone())
                 .ok_or(io::Error::new(
                     io::ErrorKind::AddrNotAvailable,
                     "No suitable address available",
                 ))?,
         };
 
-        let local_addr = quic_iface.read_addr()?;
+        let local_addr = quic_iface.borrow().await?.real_addr()?;
         let link = Link::new(local_addr, *server_ep);
         //  TODO: 是否要outer addr，agent addr
         let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
@@ -155,7 +139,7 @@ impl QuicClient {
                 .with_parameters(self.parameters.clone(), None)
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_proto(crate::proto().clone())
+                .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
                 .with_qlog(self.logger.as_ref())
@@ -169,9 +153,7 @@ impl QuicClient {
                     match event {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(bind_addr, ..) => {
-                            crate::proto().try_free_interface(bind_addr);
-                        }
+                        Event::PathInactivated(..) => {}
                         Event::ApplicationClose => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)
@@ -230,7 +212,7 @@ impl QuicClient {
     ///
     /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will initiates
     /// a new connection to the server.
-    pub fn connect(
+    pub async fn connect(
         &self,
         server_name: impl Into<String>,
         server_ep: impl ToEndpointAddr,
@@ -238,36 +220,24 @@ impl QuicClient {
         let server_name = server_name.into();
         let server_ep = server_ep.to_endpoint_addr();
         if self.reuse_connection {
-            Self::reuseable_connections()
-                .entry(server_name.clone())
-                .or_try_insert_with(|| self.new_connection(server_name, server_ep))
-                .map(|entry| entry.clone())
-        } else {
-            self.new_connection(server_name, server_ep)
-        }
-    }
-}
-
-impl Drop for QuicClient {
-    fn drop(&mut self) {
-        if let Some(bind_interfaces) = self.bind_interfaces.take() {
-            for (bind_addr, bind_iface) in bind_interfaces.into_read_only().iter() {
-                crate::proto().del_interface_if(bind_addr.clone(), |iface, _| {
-                    Arc::ptr_eq(bind_iface, iface) && Arc::strong_count(iface) == 2
-                });
+            match Self::reuseable_connections().entry(server_name.clone()) {
+                dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().clone()),
+                dashmap::Entry::Vacant(vacant_entry) => Ok(vacant_entry
+                    .insert(self.new_connection(server_name, server_ep).await?)
+                    .clone()),
             }
+        } else {
+            self.new_connection(server_name, server_ep).await
         }
     }
 }
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindAddr, Arc<dyn QuicInterface>>,
-    reuse_address: bool,
+    bind_interfaces: DashMap<BindAddr, Arc<Interface>>,
     reuse_connection: bool,
-    enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
-    quic_iface_factory: Box<dyn ProductQuicInterface>,
+    quic_iface_factory: Arc<dyn ProductQuicInterface>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     tls_config: T,
@@ -286,7 +256,7 @@ impl<T> QuicClientBuilder<T> {
     /// and the factory is [`UdpSocketController::bind`].
     pub fn with_iface_factory(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
-            quic_iface_factory: Box::new(factory),
+            quic_iface_factory: Arc::new(factory),
             ..self
         }
     }
@@ -312,16 +282,14 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
     pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindAddr>>) -> io::Result<Self> {
-        for entry in self.bind_interfaces.iter() {
-            crate::proto().try_free_interface(entry.key().clone());
-        }
         self.bind_interfaces.clear();
 
         for bind_addr in addrs.into_iter().map(Into::into) {
             if self.bind_interfaces.contains_key(&bind_addr) {
                 continue;
             }
-            let interface = self.quic_iface_factory.bind(bind_addr.clone())?;
+            let interface = QuicInterfaces::global()
+                .insert(bind_addr.clone(), self.quic_iface_factory.clone())?;
             self.bind_interfaces.insert(bind_addr, interface);
         }
 
@@ -334,18 +302,6 @@ impl<T> QuicClientBuilder<T> {
     /// and `server_addr`, instead of creating a new connection every time.
     pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
-        self
-    }
-
-    /// Enable reuse interface.
-    ///
-    /// If you dont bind any address, this option will not take effect.
-    ///
-    /// By default, the client will not use the same interface with other connections, which means that the client must
-    /// select a new interface every time it initiates a connection. If you enable this option, the client will share
-    /// the same address between connections.
-    pub fn reuse_address(mut self) -> Self {
-        self.reuse_address = true;
         self
     }
 
@@ -429,9 +385,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -452,9 +406,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -523,9 +475,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         }
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -553,9 +503,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -574,9 +522,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -595,9 +541,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
@@ -647,15 +591,11 @@ impl QuicClientBuilder<TlsClientConfig> {
         };
         QuicClient {
             bind_interfaces,
-            reuse_address: self.reuse_address,
             reuse_connection: self.reuse_connection,
-            _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
-            // TODO: 要能加载上次连接的parameters
-            _remembered: None,
             tls_config: Arc::new(self.tls_config),
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),

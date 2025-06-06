@@ -116,6 +116,12 @@ impl<T> Channel<T> {
     }
 }
 
+impl<T> Drop for Channel<T> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 /// Error type for [`Channel::try_send`].
 #[derive(thiserror::Error, Debug, Clone, Copy)]
 pub enum TrySendError<T> {

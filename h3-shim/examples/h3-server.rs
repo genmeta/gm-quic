@@ -104,7 +104,8 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_alpns(options.alpns)
-        .listen(128);
+        .listen(128)
+        .await;
     listeners.add_server(
         server_name.as_str(),
         cert.as_path(),
