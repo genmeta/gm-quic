@@ -36,7 +36,11 @@ use qevent::{
     },
     telemetry::{Instrument, Log, Span},
 };
-use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
+use qinterface::{
+    ifaces::QuicInterfaces,
+    queue::RcvdPacketQueue,
+    route::{Router, RouterRegistry},
+};
 pub use rustls::crypto::CryptoProvider;
 use tracing::Instrument as _;
 
@@ -202,13 +206,15 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
     pub fn with_proto(
         self,
-        proto: Arc<QuicProto>,
+        router: Arc<Router>,
+        interfaces: Arc<QuicInterfaces>,
     ) -> ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         ProtoReady {
             foundation: self.foundation,
             tls_config: self.tls_config,
             streams_ctrl: self.streams_ctrl,
-            proto,
+            router,
+            interfaces,
             defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
@@ -230,13 +236,15 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
     pub fn with_proto(
         self,
-        proto: Arc<QuicProto>,
+        router: Arc<Router>,
+        interfaces: Arc<QuicInterfaces>,
     ) -> ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         ProtoReady {
             foundation: self.foundation,
             tls_config: self.tls_config,
             streams_ctrl: self.streams_ctrl,
-            proto,
+            router,
+            interfaces,
             defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
@@ -246,7 +254,8 @@ pub struct ProtoReady<Foundation, Config> {
     foundation: Foundation,
     tls_config: Config,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-    proto: Arc<QuicProto>,
+    router: Arc<Router>,
+    interfaces: Arc<QuicInterfaces>,
     defer_idle_timeout: HeartbeatConfig,
 }
 
@@ -269,8 +278,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
-        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> = self
-            .proto
+        let router_registry: qinterface::route::RouterRegistry<ArcReliableFrameDeque> = self
+            .router
             .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
@@ -323,6 +332,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         let raw_handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
 
         ComponentsReady {
+            interfaces: self.interfaces,
+            router: self.router,
             parameters,
             tls_session,
             raw_handshake,
@@ -330,7 +341,6 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             cid_registry,
             flow_ctrl,
             spaces,
-            proto: self.proto,
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
@@ -355,14 +365,13 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
-        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> = self
-            .proto
+        let router_registry: RouterRegistry<ArcReliableFrameDeque> = self
+            .router
             .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
         server_params.set_initial_source_connection_id(initial_scid);
-        self.proto
-            .add_router_entry(origin_dcid.into(), rcvd_pkt_q.clone());
+        self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
         server_params.set_original_destination_connection_id(origin_dcid);
 
         let cid_registry = CidRegistry::new(
@@ -410,6 +419,8 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let raw_handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
 
         ComponentsReady {
+            interfaces: self.interfaces,
+            router: self.router,
             parameters,
             tls_session,
             raw_handshake,
@@ -417,7 +428,6 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             cid_registry,
             flow_ctrl,
             spaces,
-            proto: self.proto,
             rcvd_pkt_q,
             tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
@@ -437,7 +447,8 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 }
 
 pub struct ComponentsReady {
-    proto: Arc<QuicProto>,
+    interfaces: Arc<QuicInterfaces>,
+    router: Arc<Router>,
     token_registry: ArcTokenRegistry,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     cid_registry: CidRegistry,
@@ -483,6 +494,8 @@ impl ComponentsReady {
         let conn_state = ConnState::new();
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
         let components = Components {
+            interfaces: self.interfaces,
+            router: self.router,
             parameters: self.parameters,
             tls_session: self.tls_session,
             handshake: Handshake::new(self.raw_handshake, inform_cc, event_broker.clone()),
@@ -490,7 +503,6 @@ impl ComponentsReady {
             cid_registry: self.cid_registry,
             flow_ctrl: self.flow_ctrl,
             spaces: self.spaces,
-            proto: self.proto,
             rcvd_pkt_q: self.rcvd_pkt_q,
             paths: ArcPathContexts::new(self.tx_wakers, event_broker.clone()),
             defer_idle_timeout: self.defer_idle_timeout,
@@ -588,19 +600,23 @@ impl Components {
         is_probed: bool,
     ) -> io::Result<Arc<Path>> {
         let try_create = || {
+            let interface = self
+                .interfaces
+                .get(&bind_addr)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
+            let max_ack_delay = self
+                .parameters
+                .get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
+
             let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
             qevent::event!(PathAssigned {
                 path_id: pathway.to_string(),
                 path_local: link.src(),
                 path_remote: link.dst(),
             });
-            let max_ack_delay = self
-                .parameters
-                .get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
             let path = Arc::new(Path::new(
-                &self.proto,
-                bind_addr,
+                interface,
                 link,
                 pathway,
                 max_ack_delay,
@@ -668,7 +684,7 @@ impl Components {
                 .parameters
                 .get_origin_dcid()
                 .expect("connection not close yet");
-            self.proto.del_router_entry(&origin_dcid.into());
+            self.router.remove(&origin_dcid.into());
         }
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);
@@ -717,7 +733,7 @@ impl Components {
                 .parameters
                 .get_origin_dcid()
                 .expect("connection not close yet");
-            self.proto.del_router_entry(&origin_dcid.into());
+            self.router.remove(&origin_dcid.into());
         }
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);

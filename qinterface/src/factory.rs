@@ -1,11 +1,11 @@
-use std::{io, sync::Arc};
+use std::io;
 
 use qbase::net::address::BindAddr;
 
 use crate::QuicInterface;
 
 pub trait ProductQuicInterface: Send + Sync {
-    fn bind(&self, addr: BindAddr) -> io::Result<Arc<dyn QuicInterface>>;
+    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicInterface>>;
 }
 
 impl<F, Q> ProductQuicInterface for F
@@ -14,7 +14,7 @@ where
     Q: QuicInterface + 'static,
 {
     #[inline]
-    fn bind(&self, addr: BindAddr) -> io::Result<Arc<dyn QuicInterface>> {
-        Ok(Arc::new((self)(addr)?))
+    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicInterface>> {
+        Ok(Box::new((self)(addr)?))
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     io,
-    ops::Deref,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -12,14 +11,13 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        address::BindAddr,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
     packet::PacketContains,
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
-use qinterface::{QuicInterface, router::QuicProto};
+use qinterface::ifaces::Interface;
 use tokio::{
     task::AbortHandle,
     time::{Duration, Instant},
@@ -35,7 +33,7 @@ pub mod burst;
 pub mod idle;
 
 pub struct Path {
-    interface: Arc<dyn QuicInterface>,
+    interface: Arc<Interface>,
     validated: AtomicBool,
     link: Link,
     pathway: Pathway,
@@ -52,18 +50,13 @@ pub struct Path {
 
 impl Path {
     pub fn new(
-        proto: &QuicProto,
-        bind_addr: BindAddr,
+        interface: Arc<Interface>,
         link: Link,
         pathway: Pathway,
         max_ack_delay: Duration,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
     ) -> io::Result<Self> {
-        let interface = proto.get_interface(bind_addr).ok_or(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "Interface not fount",
-        ))?;
         let pmtu = Arc::new(AtomicU16::new(MSS as u16));
         let path_status = PathStatus::new(handshake_status, pmtu.clone());
         let tx_waker = ArcSendWaker::new();
@@ -120,10 +113,6 @@ impl Path {
         &self.cc.0
     }
 
-    pub fn interface(&self) -> &dyn QuicInterface {
-        self.interface.deref()
-    }
-
     pub fn tx_waker(&self) -> &ArcSendWaker {
         &self.tx_waker
     }
@@ -153,19 +142,16 @@ impl Path {
         self.pmtu.load(Ordering::Acquire)
     }
 
-    pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
+    pub async fn send_packets(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+        let iface = self.interface.borrow().await?;
+
         self.anti_amplifier
-            .on_sent(segments.iter().map(|s| s.len()).sum());
+            .on_sent(bufs.iter().map(|s| s.len()).sum());
         if self.anti_amplifier.balance().is_err() {
             self.status.enter_anti_amplification_limit();
         }
-        while !segments.is_empty() {
-            let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
-            let sent =
-                core::future::poll_fn(|cx| self.interface.poll_send(cx, segments, hdr)).await?;
-            segments = &segments[sent..];
-        }
-        Ok(())
+        let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
+        iface.sendmsgs(bufs, hdr).await
     }
 }
 

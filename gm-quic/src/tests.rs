@@ -6,6 +6,7 @@ use std::{
 };
 
 use qevent::telemetry::{Log, handy::*};
+use qinterface::ifaces::QuicInterfaces;
 use rustls::server::WebPkiClientVerifier;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -25,13 +26,14 @@ fn qlogger() -> Arc<dyn Log + Send + Sync> {
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-pub fn test_serially<C, S>(
-    launch_server: impl FnOnce() -> Result<(Arc<QuicListeners>, S), Error>,
+pub fn test_serially<C, Sl, St>(
+    launch_server: impl FnOnce() -> Sl,
     launch_client: impl FnOnce(SocketAddr) -> C,
 ) -> Result<(), Error>
 where
     C: Future<Output = Result<(), Error>> + 'static,
-    S: Future<Output: Send> + Send + 'static,
+    Sl: Future<Output = Result<(Arc<QuicListeners>, St), Error>> + Send + 'static,
+    St: Future<Output: Send> + Send + 'static,
 {
     static SUBSCRIBER: Once = Once::new();
 
@@ -54,19 +56,25 @@ where
         static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
         let _lock = LOCK.get_or_init(Default::default).lock().await;
 
-        let (listeners, server_task) = launch_server()?;
+        let (listeners, server_task) = launch_server().await?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = listeners.servers()["localhost"]
-            .iter()
-            .next()
-            .expect("Server should bind at least one address")
-            .1
-            .expect("Server should bind at least one address successfully")
+        let server_addr = QuicInterfaces::global()
+            .get(
+                listeners.servers()["localhost"]
+                    .iter()
+                    .next()
+                    .expect("Server should bind at least one address"),
+            )
+            .expect("Server should bind the address successfully")
+            .borrow()
+            .await?
+            .real_addr()?
             .try_into()
             .expect("This test support only SocketAddr");
+
         let result = time::timeout(Duration::from_secs(10), launch_client(server_addr)).await;
 
-        listeners.shutdown();
+        listeners.shutdown().await;
         server_task.abort();
 
         result?.expect("test timeout");
@@ -80,25 +88,6 @@ const SERVER_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/server.
 const CLIENT_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/client.cert");
 const CLIENT_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/client.key");
 const TEST_DATA: &[u8] = include_bytes!("tests.rs");
-
-#[test]
-fn server_bind_no_interfaces() -> Result<(), Error> {
-    test_serially(
-        || {
-            let listeners = QuicListeners::builder()?
-                .without_client_cert_verifier()
-                .listen(128);
-            listeners.add_server("localhost", SERVER_CERT, SERVER_KEY, [] as [&str; 0], None)?;
-            // bind interface then add interface
-            listeners.add_interface(
-                "localhost",
-                Arc::new(UdpSocketController::bind("inet://127.0.0.1/alloc".into())?),
-            )?;
-            Ok((listeners, async {}))
-        },
-        |_| async { Ok(()) },
-    )
-}
 
 async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
     io::copy(&mut reader, &mut writer).await?;
@@ -143,14 +132,15 @@ async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<()
     .map(|_| ())
 }
 
-fn launch_echo_server(
+async fn launch_echo_server(
     parameters: ServerParameters,
 ) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), Error> {
     let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
         .with_parameters(parameters)
         .with_qlog(qlogger())
-        .listen(128);
+        .listen(128)
+        .await;
     listeners.add_server(
         "localhost",
         SERVER_CERT,
@@ -179,7 +169,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
 fn single_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -191,7 +181,7 @@ fn single_stream() -> Result<(), Error> {
 fn signal_big_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(1024)).await?;
 
         Ok(())
@@ -203,7 +193,7 @@ fn signal_big_stream() -> Result<(), Error> {
 fn empty_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         send_and_verify_echo(&connection, b"").await?;
 
         Ok(())
@@ -226,12 +216,13 @@ fn shutdown() -> Result<(), Error> {
         }
     }
 
-    let launch_server = || {
+    let launch_server = || async {
         let listeners = QuicListeners::builder()?
             .without_client_cert_verifier()
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128);
+            .listen(128)
+            .await;
         listeners.add_server(
             "localhost",
             SERVER_CERT,
@@ -243,7 +234,7 @@ fn shutdown() -> Result<(), Error> {
     };
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         connection.handshaked().await; // 可有可无
 
         assert!(
@@ -274,7 +265,7 @@ fn idle_timeout() {
 
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         connection.terminated().await;
         Result::Ok(())
     };
@@ -289,7 +280,7 @@ fn double_connections() -> Result<(), Error> {
         let mut connections = JoinSet::new();
 
         for conn_idx in 0..2 {
-            let connection = client.connect("localhost", server_addr)?;
+            let connection = client.connect("localhost", server_addr).await?;
             connections.spawn(
                 async move { send_and_verify_echo(&connection, TEST_DATA).await }
                     .instrument(tracing::info_span!("stream", conn_idx)),
@@ -318,7 +309,7 @@ fn parallel_stream() -> Result<(), Error> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connect("localhost", server_addr)?;
+            let connection = client.connect("localhost", server_addr).await?;
             for stream_idx in 0..PARALLEL_ECHO_STREAMS {
                 let connection = connection.clone();
                 streams.spawn(
@@ -349,7 +340,7 @@ fn parallel_big_stream() -> Result<(), Error> {
         let test_data = Arc::new(TEST_DATA.to_vec().repeat(128));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connect("localhost", server_addr)?;
+            let connection = client.connect("localhost", server_addr).await?;
             let test_data = test_data.clone();
             big_streams.spawn(
                 async move { send_and_verify_echo(&connection, &test_data).await }
@@ -403,7 +394,7 @@ fn limited_streams() -> Result<(), Error> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS / 2 {
-            let connection = client.connect("localhost", server_addr)?;
+            let connection = client.connect("localhost", server_addr).await?;
             for stream_idx in 0..PARALLEL_ECHO_STREAMS / 2 {
                 let connection = connection.clone();
                 streams.spawn(
@@ -438,7 +429,7 @@ fn client_without_verify() -> Result<(), Error> {
                 .build();
             Arc::new(client)
         };
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -478,7 +469,7 @@ fn client_auth() -> Result<(), Error> {
             });
         }
     }
-    let launch_server = || {
+    let launch_server = || async {
         let mut roots = rustls::RootCertStore::empty();
         roots.add_parsable_certificates(CA_CERT.to_certificate());
         let listeners = QuicListeners::builder()?
@@ -489,7 +480,8 @@ fn client_auth() -> Result<(), Error> {
             )
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128);
+            .listen(128)
+            .await;
         listeners.add_server(
             "localhost",
             SERVER_CERT,
@@ -514,7 +506,7 @@ fn client_auth() -> Result<(), Error> {
 
             Arc::new(client)
         };
-        let connection = client.connect("localhost", server_addr)?;
+        let connection = client.connect("localhost", server_addr).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())

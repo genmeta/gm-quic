@@ -1,9 +1,8 @@
 pub mod factory;
-// handy（qudp）是可选的
-pub mod handy;
+pub mod ifaces;
 pub mod packet;
 pub mod queue;
-pub mod router;
+pub mod route;
 pub mod util;
 
 use std::{
@@ -11,7 +10,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use qbase::net::{
     address::{BindAddr, RealAddr},
     route::PacketHeader,
@@ -47,7 +46,7 @@ pub trait QuicInterface: Send + Sync {
     /// then the implementation should return an error as well.
     ///
     /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
-    fn read_addr(&self) -> io::Result<RealAddr>;
+    fn real_addr(&self) -> io::Result<RealAddr>;
 
     /// Maximum size of a single network segment in bytes
     fn max_segment_size(&self) -> usize;
@@ -74,7 +73,67 @@ pub trait QuicInterface: Send + Sync {
     fn poll_recv(
         &self,
         cx: &mut Context,
-        pkts: &mut Vec<BytesMut>,
+        pkts: &mut [BytesMut],
         hdrs: &mut [PacketHeader],
     ) -> Poll<io::Result<usize>>;
+}
+
+impl dyn QuicInterface {
+    pub async fn sendmsgs(
+        &self,
+        mut bufs: &[io::IoSlice<'_>],
+        hdr: PacketHeader,
+    ) -> io::Result<()> {
+        while !bufs.is_empty() {
+            let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, hdr)).await?;
+            bufs = &bufs[sent..];
+        }
+        Ok(())
+    }
+
+    pub async fn recvmsgs<'b>(
+        &self,
+        bufs: &'b mut Vec<BytesMut>,
+        hdrs: &'b mut Vec<PacketHeader>,
+    ) -> io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b> {
+        let rcvd = std::future::poll_fn(|cx| {
+            let max_segments = self.max_segments();
+            let max_segment_size = self.max_segment_size();
+            bufs.resize_with(max_segments, || {
+                Bytes::from_owner(vec![0u8; max_segment_size]).into()
+            });
+            hdrs.resize_with(max_segments, PacketHeader::empty);
+            self.poll_recv(cx, bufs, hdrs)
+        })
+        .await?;
+
+        Ok(bufs
+            .drain(..rcvd)
+            .zip(hdrs.drain(..rcvd))
+            .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
+    }
+
+    pub async fn recvpkts<'b>(
+        &self,
+        bufs: &'b mut Vec<BytesMut>,
+        hdrs: &'b mut Vec<PacketHeader>,
+    ) -> io::Result<impl Iterator<Item = route::Received> + Send + 'b> {
+        use qbase::packet::{self, Packet, PacketReader};
+        fn is_initial_packet(pkt: &Packet) -> bool {
+            matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
+        }
+
+        let bind_addr = self.bind_addr();
+        Ok(self
+            .recvmsgs(bufs, hdrs)
+            .await?
+            .flat_map(move |(buf, hdr)| {
+                let size = buf.len();
+                let bind_addr = bind_addr.clone();
+                PacketReader::new(buf, 8)
+                    .flatten()
+                    .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
+                    .map(move |pkt| (bind_addr.clone(), pkt, hdr.pathway(), hdr.link()))
+            }))
+    }
 }

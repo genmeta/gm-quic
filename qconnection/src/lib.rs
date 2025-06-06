@@ -15,14 +15,14 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::{QuicInterface, router::QuicProto};
+    pub use qinterface::QuicInterface;
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 
     #[allow(unused_imports)]
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
-        pub use qinterface::handy::*;
+        pub use qinterface::ifaces::handy::*;
     }
 
     pub use crate::{
@@ -60,8 +60,9 @@ use qbase::{
 };
 use qevent::telemetry::Instrument;
 use qinterface::{
+    ifaces::QuicInterfaces,
     queue::RcvdPacketQueue,
-    router::{QuicProto, RouterRegistry},
+    route::{Router, RouterRegistry},
 };
 use qrecovery::{
     journal, recv, reliable, send,
@@ -121,7 +122,8 @@ pub struct Components {
     flow_ctrl: FlowController,
     spaces: Spaces,
     paths: ArcPathContexts,
-    proto: Arc<QuicProto>,
+    interfaces: Arc<QuicInterfaces>,
+    router: Arc<Router>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
