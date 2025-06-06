@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 use bytes::BufMut;
 use derive_more::Deref;
@@ -18,6 +18,7 @@ use qbase::{
             EncodeHeader, GetDcid, GetScid, GetType, io::WriteHeader, long::LongHeader,
             short::OneRttHeader,
         },
+        keys::DirectionalKeys,
         signal::{KeyPhaseBit, SpinBit},
     },
     util::{DescribeData, WriteData},
@@ -75,7 +76,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
     pub fn new_long<S>(
         header: LongHeader<S>,
         buffer: &'b mut [u8],
-        keys: Arc<rustls::quic::Keys>,
+        keys: DirectionalKeys,
         journal: &'s ArcSentJournal<F>,
     ) -> Result<Self, Signals>
     where
@@ -108,8 +109,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
     pub fn new_short(
         header: OneRttHeader,
         buffer: &'b mut [u8],
-        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
-        pk: Arc<dyn rustls::quic::PacketKey>,
+        keys: DirectionalKeys,
         key_phase: KeyPhaseBit,
         journal: &'s ArcSentJournal<F>,
     ) -> Result<Self, Signals> {
@@ -118,7 +118,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
         Ok(Self {
             pn: pn.0,
             clerk: guard,
-            writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
+            writer: PacketWriter::new_short(&header, buffer, pn, keys, key_phase)?,
             logger: PacketLogger {
                 header: {
                     let mut builder = qevent::quic::PacketHeader::builder();

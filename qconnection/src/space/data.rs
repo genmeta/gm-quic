@@ -20,7 +20,10 @@ use qbase::{
             GetType, OneRttHeader,
             long::{ZeroRttHeader, io::LongHeaderBuilder},
         },
-        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
+        keys::{
+            ArcOneRttKeys, ArcOneRttPacketKeys, ArcZeroRttKeys, DirectionalKeys,
+            HeaderProtectionKeys,
+        },
         number::PacketNumber,
         signal::SpinBit,
         r#type::Type,
@@ -63,7 +66,7 @@ pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 pub type ReceivedOneRttFrom = (BindAddr, CipherOneRttPacket, Pathway, Link);
 
 pub struct DataSpace {
-    zero_rtt_keys: ArcKeys,
+    zero_rtt_keys: ArcZeroRttKeys,
     one_rtt_keys: ArcOneRttKeys,
     crypto_stream: CryptoStream,
     streams: DataStreams,
@@ -81,9 +84,10 @@ impl DataSpace {
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
         max_ack_delay: Duration,
+        zero_rtt_keys: ArcZeroRttKeys,
     ) -> Self {
         Self {
-            zero_rtt_keys: ArcKeys::new_pending(),
+            zero_rtt_keys,
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16, Some(max_ack_delay)),
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
@@ -100,16 +104,16 @@ impl DataSpace {
         }
     }
 
-    pub async fn decrypt_0rtt_packet(
+    pub fn decrypt_0rtt_packet(
         &self,
         packet: CipherZeroRttPacket,
     ) -> Option<Result<PlainZeroRttPacket, QuicError>> {
-        match self.zero_rtt_keys.get_remote_keys().await {
-            Some(keys) => packet.decrypt_long_packet(
-                keys.remote.header.as_ref(),
-                keys.remote.packet.as_ref(),
-                |pn| self.journal.of_rcvd_packets().decode_pn(pn),
-            ),
+        match self.zero_rtt_keys.get_decrypt_keys() {
+            Some(keys) => {
+                packet.decrypt_long_packet(keys.header.as_ref(), keys.packet.as_ref(), |pn| {
+                    self.journal.of_rcvd_packets().decode_pn(pn)
+                })
+            }
             None => {
                 packet.drop_on_key_unavailable();
                 None
@@ -142,7 +146,10 @@ impl DataSpace {
             return Err(Signals::empty()); // not error, just skip 0rtt
         }
 
-        let keys = self.zero_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
+            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
+        };
+
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_long(
@@ -209,8 +216,10 @@ impl DataSpace {
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
-            hpk,
-            pk,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
             key_phase,
             &sent_journal,
         )?;
@@ -290,8 +299,10 @@ impl DataSpace {
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
-            hpk,
-            pk,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
             key_phase,
             &sent_journal,
         )?;
@@ -323,8 +334,10 @@ impl DataSpace {
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
-            hpk,
-            pk,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
             key_phase,
             &sent_journal,
         )?;
@@ -490,7 +503,7 @@ pub fn spawn_deliver_and_parse(
             while let Some((bind_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-                    if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
+                    if let Some(packet) = space.decrypt_0rtt_packet(packet).transpose()? {
                         let path = match components
                             .get_or_try_create_path(bind_addr, link, pathway, true)
                         {
@@ -701,8 +714,17 @@ impl ClosingDataSpace {
         let header = OneRttHeader::new(Default::default(), dcid);
         let pn = self.ccf_packet_pn;
         // 装填ccf时ccf不在乎Limiter
-        let mut packet_writer =
-            PacketWriter::new_short(&header, buf, pn, hpk.local.clone(), pk, key_phase).ok()?;
+        let mut packet_writer = PacketWriter::new_short(
+            &header,
+            buf,
+            pn,
+            DirectionalKeys {
+                header: hpk.local.clone(),
+                packet: pk,
+            },
+            key_phase,
+        )
+        .ok()?;
 
         packet_writer.dump_frame(ccf.clone());
 

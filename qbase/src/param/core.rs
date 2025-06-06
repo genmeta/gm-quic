@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use derive_more::{Deref, From, Into, TryInto};
+use derive_more::{AsRef, From, Into, TryInto};
 
 use super::GeneralParameters;
 use crate::{
@@ -36,7 +36,7 @@ pub enum PeerParameters {
     Server(ServerParameters),
 }
 
-#[derive(Default, Debug, Clone, Into, Deref, PartialEq)]
+#[derive(Default, Debug, Clone, Into, AsRef, PartialEq)]
 pub struct ClientParameters(GeneralParameters);
 
 impl ClientParameters {
@@ -89,7 +89,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, QuicEr
     Ok(params)
 }
 
-#[derive(Default, Debug, Clone, Into, Deref, PartialEq)]
+#[derive(Default, Debug, Clone, Into, AsRef, PartialEq)]
 pub struct ServerParameters(GeneralParameters);
 
 impl ServerParameters {
@@ -165,12 +165,6 @@ impl RememberedParameters {
     #[inline]
     pub fn contains(&self, id: ParameterId) -> bool {
         self.0.contains(id)
-    }
-}
-
-impl From<ClientParameters> for RememberedParameters {
-    fn from(value: ClientParameters) -> Self {
-        RememberedParameters(value.0)
     }
 }
 

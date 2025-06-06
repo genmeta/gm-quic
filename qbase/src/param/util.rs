@@ -72,7 +72,7 @@ macro_rules! parameter_ids {
         }
 
         impl ParameterId{
-            pub const KNOWNS: &[Self] = &[
+            pub const KNOWNS: &'static [Self] = &[
                 $(ParameterId::$name,)*
             ];
 

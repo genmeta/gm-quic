@@ -7,7 +7,7 @@ use super::{
     r#type::{Type, io::be_packet_type},
     *,
 };
-use crate::varint::be_varint;
+use crate::{packet::keys::DirectionalKeys, varint::be_varint};
 
 /// Parse the payload of a packet.
 ///
@@ -176,7 +176,7 @@ impl<'b> PacketWriter<'b> {
         header: &LongHeader<S>,
         buffer: &'b mut [u8],
         pn: (u64, PacketNumber),
-        keys: Arc<rustls::quic::Keys>,
+        keys: DirectionalKeys,
     ) -> Result<Self, Signals>
     where
         S: EncodeHeader,
@@ -218,8 +218,7 @@ impl<'b> PacketWriter<'b> {
         header: &OneRttHeader,
         buffer: &'b mut [u8],
         pn: (u64, PacketNumber),
-        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
-        pk: Arc<dyn rustls::quic::PacketKey>,
+        keys: DirectionalKeys,
         key_phase: KeyPhaseBit,
     ) -> Result<Self, Signals> {
         let hdr_len = header.size();
@@ -232,7 +231,7 @@ impl<'b> PacketWriter<'b> {
         hdr_buf.put_header(header);
         payload_buf.put_packet_number(encoded_pn);
         let cursor = hdr_len + encoded_pn.size();
-        let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
+        let keys = Keys::ShortHeaderPacket { keys, key_phase };
         let end = buffer.len() - keys.pk().tag_len();
         let packet = PacketLayout {
             hdr_len,
@@ -385,6 +384,8 @@ unsafe impl BufMut for PacketWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::frame::CryptoFrame;
 
@@ -457,16 +458,10 @@ mod tests {
 
         let pn = (0, PacketNumber::encode(0, 0));
 
-        let keys = Arc::new(rustls::quic::Keys {
-            local: rustls::quic::DirectionalKeys {
-                packet: Box::new(TransparentKeys),
-                header: Box::new(TransparentKeys),
-            },
-            remote: rustls::quic::DirectionalKeys {
-                packet: Box::new(TransparentKeys),
-                header: Box::new(TransparentKeys),
-            },
-        });
+        let keys = DirectionalKeys {
+            packet: Arc::new(TransparentKeys),
+            header: Arc::new(TransparentKeys),
+        };
 
         let mut writer = PacketWriter::new_long(&header, &mut buffer, pn, keys).unwrap();
         let frame = CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(12));
