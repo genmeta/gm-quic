@@ -14,7 +14,11 @@ pub use peer_name::{ArcClientName, ArcEndpointName, ArcServerName};
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
-    param::{ArcParameters, ParameterId, StoreParameter, StoreParameterExt},
+    packet::keys::ArcZeroRttKeys,
+    param::{
+        ArcParameters, ClientParameters, ParameterId, PeerParameters, RememberedParameters,
+        ServerParameters, WriteParameters, be_client_parameters, be_server_parameters,
+    },
     varint::VarInt,
 };
 use qevent::telemetry::Instrument;
@@ -28,21 +32,78 @@ use crate::{Components, SpecificComponents, events::Event, prelude::EmitEvent};
 type TlsConnection = rustls::quic::Connection;
 
 #[derive(Debug)]
-struct TlsSession {
+pub struct TlsSession {
     tls_conn: TlsConnection,
     read_waker: Option<Waker>,
 }
 
-impl From<TlsConnection> for TlsSession {
-    fn from(tls_conn: TlsConnection) -> Self {
+impl TlsSession {
+    /// The QUIC version used by the TLS session.
+    pub const QUIC_VERSION: rustls::quic::Version = rustls::quic::Version::V1;
+
+    /// Create a new client-side TLS session.
+    pub fn new_client(
+        server_name: rustls::pki_types::ServerName<'static>,
+        tls_config: Arc<rustls::ClientConfig>,
+        client_params: &ClientParameters,
+    ) -> Self {
+        let mut params = Vec::with_capacity(1024);
+        params.put_parameters(client_params.as_ref());
+
+        let client_connection = rustls::quic::ClientConnection::new(
+            tls_config,
+            Self::QUIC_VERSION,
+            server_name,
+            params,
+        );
+        let connection =
+            rustls::quic::Connection::Client(client_connection.expect("Invalid client tls config"));
+
         Self {
-            tls_conn,
+            tls_conn: connection,
             read_waker: None,
         }
     }
-}
 
-impl TlsSession {
+    /// Create a new server-side TLS session.
+    pub fn new_server(
+        tls_config: Arc<rustls::ServerConfig>,
+        server_params: &ServerParameters,
+    ) -> Self {
+        let mut params = Vec::with_capacity(1024);
+        params.put_parameters(server_params.as_ref());
+
+        let server_connection =
+            rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params);
+        let connection =
+            rustls::quic::Connection::Server(server_connection.expect("Invalid server tls config"));
+
+        Self {
+            tls_conn: connection,
+            read_waker: None,
+        }
+    }
+
+    pub fn load_remembered_parameters(&self) -> Option<Result<RememberedParameters, QuicError>> {
+        match &self.tls_conn {
+            rustls::quic::Connection::Client(client_conn) => client_conn
+                .quic_transport_parameters()
+                .map(|raw_params| be_server_parameters(raw_params).map(RememberedParameters::from)),
+            rustls::quic::Connection::Server(..) => panic!("Server doesnot support this"),
+        }
+    }
+
+    pub fn zero_rtt_keys(&self) -> ArcZeroRttKeys {
+        match &self.tls_conn {
+            TlsConnection::Client(client_conn) => {
+                ArcZeroRttKeys::Client(client_conn.zero_rtt_keys().map(Into::into))
+            }
+            TlsConnection::Server(server_conn) => {
+                ArcZeroRttKeys::Server(server_conn.zero_rtt_keys().map(Into::into))
+            }
+        }
+    }
+
     fn wake_read(&mut self) {
         if let Some(waker) = self.read_waker.as_ref() {
             waker.wake_by_ref();
@@ -93,45 +154,55 @@ impl ReadAndProcess<'_> {
             Err(e) => return Err(e.clone()),
         };
 
-        let extra_auth = |params: &dyn StoreParameter| {
-            match self.specific {
-                SpecificComponents::Client => { /* no extra auth */ }
-                SpecificComponents::Server(server_components) => {
-                    let host = tls_session
-                        .server_name()
-                        .ok_or(QuicError::with_default_fty(
-                            ErrorKind::ConnectionRefused,
-                            "Missing SNI in client hello",
-                        ))?;
-                    let client_name = params.get_as::<String>(CLIENT_NAME_PARAM_ID);
-                    if (server_components.client_authers.iter())
-                        .all(|auther| auther.verify_client_params(host, client_name.as_deref()))
-                    {
-                        self.server_name.assign(host.to_owned());
-                        self.client_name.assign(client_name.clone());
-                        server_components.send_gate.grant_permit();
-                        // remote_params will be assigned in recv_remote_params(if this closure return Ok(()))
-                    } else {
-                        tracing::warn!(
-                            host,
-                            ?client_name,
-                            "Client SNI or client name verification failed"
-                        );
-                        return Err(Error::Quic(QuicError::with_default_fty(
-                            ErrorKind::ConnectionRefused,
-                            "",
-                        )));
-                    }
-                }
-            }
-            Ok(())
-        };
-        if !self.params.is_remote_params_ready() {
-            if let Some(raw) = tls_session.tls_conn.quic_transport_parameters() {
-                return self.params.recv_remote_params(raw, extra_auth);
-            }
+        if tls_session.tls_conn.handshake_kind().is_none()
+            && tls_session.tls_conn.quic_transport_parameters().is_some()
+        {
+            assert!(matches!(tls_session.tls_conn, TlsConnection::Client(..)))
         }
-        Ok(())
+
+        if matches!(self.params.is_remote_params_received(), None | Some(true)) {
+            return Ok(());
+        }
+
+        let Some(raw_params) = tls_session.tls_conn.quic_transport_parameters() else {
+            return Ok(());
+        };
+
+        let params: PeerParameters = match self.specific {
+            SpecificComponents::Client => {
+                let params = be_server_parameters(raw_params)?;
+                /* no extra auth */
+                params.into()
+            }
+            SpecificComponents::Server(server_components) => {
+                let params = be_client_parameters(raw_params)?;
+                let host = tls_session
+                    .server_name()
+                    .ok_or(QuicError::with_default_fty(
+                        ErrorKind::ConnectionRefused,
+                        "Missing SNI in client hello",
+                    ))?;
+                let client_name = params.get_as::<String>(CLIENT_NAME_PARAM_ID);
+                if !(server_components.client_authers.iter())
+                    .all(|auther| auther.verify_client_params(host, client_name.as_deref()))
+                {
+                    tracing::warn!(
+                        host,
+                        ?client_name,
+                        "Client SNI or client name verification failed"
+                    );
+                    return Err(Error::Quic(QuicError::with_default_fty(
+                        ErrorKind::ConnectionRefused,
+                        "",
+                    )));
+                }
+                self.server_name.assign(host.to_owned());
+                self.client_name.assign(client_name.clone());
+                server_components.send_gate.grant_permit();
+                params.into()
+            }
+        };
+        self.params.recv_remote_params(params)
     }
 
     fn try_parse_certs(&mut self) -> Result<(), Error> {
@@ -218,37 +289,8 @@ impl futures::Future for ReadAndProcess<'_> {
 pub struct ArcTlsSession(Arc<Mutex<Result<TlsSession, Error>>>);
 
 impl ArcTlsSession {
-    /// The QUIC version used by the TLS session.
-    const QUIC_VERSION: rustls::quic::Version = rustls::quic::Version::V1;
-
-    /// Create a new client-side TLS session.
-    pub fn new_client(
-        server_name: rustls::pki_types::ServerName<'static>,
-        tls_config: Arc<rustls::ClientConfig>,
-        parameters: &ArcParameters,
-    ) -> Self {
-        let mut params = Vec::with_capacity(1024);
-        parameters.load_local_params_into(&mut params);
-
-        let client_connection = rustls::quic::ClientConnection::new(
-            tls_config,
-            Self::QUIC_VERSION,
-            server_name,
-            params,
-        );
-        let connection = rustls::quic::Connection::Client(client_connection.unwrap());
-        Self(Arc::new(Mutex::new(Ok(connection.into()))))
-    }
-
-    /// Create a new server-side TLS session.
-    pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &ArcParameters) -> Self {
-        let mut params = Vec::with_capacity(1024);
-        parameters.load_local_params_into(&mut params);
-
-        let server_connection =
-            rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params).unwrap();
-        let connection = rustls::quic::Connection::Server(server_connection);
-        Self(Arc::new(Mutex::new(Ok(connection.into()))))
+    pub fn new(tls_session: TlsSession) -> Self {
+        Self(Arc::new(Mutex::new(Ok(tls_session))))
     }
 
     /// Abort the TLS session, the handshaking will be stopped if it is not completed.
@@ -405,7 +447,7 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
             if let Some(key_change) = key_upgrade {
                 match key_change {
                     rustls::quic::KeyChange::Handshake { keys } => {
-                        handshake_keys.set_keys(keys);
+                        handshake_keys.set_keys(keys.into());
                         handshake.got_handshake_key();
                         cur_epoch = Epoch::Handshake;
                     }

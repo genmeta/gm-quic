@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use derive_builder::Builder;
 use derive_more::From;
-use qbase::param::{ClientParameters, ServerParameters};
+use qbase::param::{GeneralParameters, ParameterId};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -175,60 +175,65 @@ pub struct ParametersSet {
     grease_quic_bit: Option<bool>,
 }
 
+macro_rules! extract_parameter {
+    ( $(
+        $id:ident as $as:ident from $set:ident to $this:ident.$field:ident
+    ),* $(,)? ) => {
+        $(
+        $this.$field = $this.$field.take().or_else(|| {
+            Some($set.get_as::<$as>(ParameterId::$id).map(Into::into))
+        });
+        )*
+    };
+}
+
 impl ParametersSetBuilder {
     /// helper method to set all client parameters at once
-    pub fn client_parameters(&mut self, params: &ClientParameters) -> &mut Self {
-        self.initial_source_connection_id(params.initial_source_connection_id())
-            .disable_active_migration(params.disable_active_migration())
-            .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
-            .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
-            .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
-            .max_ack_delay(params.max_ack_delay().as_millis() as u16)
-            .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
-            .initial_max_data(params.initial_max_data().into_inner())
-            .initial_max_stream_data_bidi_local(
-                params.initial_max_stream_data_bidi_local().into_inner(),
-            )
-            .initial_max_stream_data_bidi_remote(
-                params.initial_max_stream_data_bidi_remote().into_inner(),
-            )
-            .initial_max_stream_data_uni(params.initial_max_stream_data_uni().into_inner())
-            .initial_max_streams_bidi(params.initial_max_streams_bidi().into_inner())
-            .initial_max_streams_uni(params.initial_max_streams_uni().into_inner())
-            .max_datagram_frame_size(params.max_datagram_frame_size().into_inner())
-        // .grease_quic_bit(params.grease_quic_bit() as _) currently not supported
+    pub fn client_parameters(&mut self, params: &GeneralParameters) -> &mut Self {
+        use qbase::cid::ConnectionId;
+        extract_parameter! {
+            InitialSourceConnectionId as ConnectionId from params to self.initial_source_connection_id,
+            DisableActiveMigration as bool from params to self.disable_active_migration,
+            MaxIdleTimeout as u64 from params to self.max_idle_timeout,
+            MaxUdpPayloadSize as u32 from params to self.max_udp_payload_size,
+            AckDelayExponent as u16 from params to self.ack_delay_exponent,
+            MaxAckDelay as u16 from params to self.max_ack_delay,
+            ActiveConnectionIdLimit as u32 from params to self.active_connection_id_limit,
+            InitialMaxData as u64 from params to self.initial_max_data,
+            InitialMaxStreamDataBidiLocal as u64 from params to self.initial_max_stream_data_bidi_local,
+            InitialMaxStreamDataBidiRemote as u64 from params to self.initial_max_stream_data_bidi_remote,
+            InitialMaxStreamDataUni as u64 from params to self.initial_max_stream_data_uni,
+            InitialMaxStreamsBidi as u64 from params to self.initial_max_streams_bidi,
+            InitialMaxStreamsUni as u64 from params to self.initial_max_streams_uni,
+            MaxDatagramFrameSize as u64 from params to self.max_datagram_frame_size,
+            GreaseQuicBit as bool from params to self.grease_quic_bit,
+        }
+        self
     }
 
     /// helper method to set all server parameters at once
-    pub fn server_parameters(&mut self, params: &ServerParameters) -> &mut Self {
-        self.original_destination_connection_id(params.original_destination_connection_id())
-            .initial_source_connection_id(params.initial_source_connection_id())
-            .disable_active_migration(params.disable_active_migration())
-            .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
-            .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
-            .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
-            .max_ack_delay(params.max_ack_delay().as_millis() as u16)
-            .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
-            .initial_max_data(params.initial_max_data().into_inner())
-            .initial_max_stream_data_bidi_local(
-                params.initial_max_stream_data_bidi_local().into_inner(),
-            )
-            .initial_max_stream_data_bidi_remote(
-                params.initial_max_stream_data_bidi_remote().into_inner(),
-            )
-            .initial_max_stream_data_uni(params.initial_max_stream_data_uni().into_inner())
-            .initial_max_streams_bidi(params.initial_max_streams_bidi().into_inner())
-            .initial_max_streams_uni(params.initial_max_streams_uni().into_inner())
-            .max_datagram_frame_size(params.max_datagram_frame_size().into_inner());
-        // .grease_quic_bit(params.grease_quic_bit() as _) currently not supported
-        if let Some(retry_scid) = params.retry_source_connection_id() {
-            self.retry_source_connection_id(retry_scid);
-        }
-        if let Some(preferred_address) = params.preferred_address() {
-            self.preferred_address(preferred_address);
-        }
-        if let Some(stateless_reset_token) = params.statelss_reset_token() {
-            self.stateless_reset_token(stateless_reset_token);
+    pub fn server_parameters(&mut self, params: &GeneralParameters) -> &mut Self {
+        use qbase::{cid::ConnectionId, param::PreferredAddress, token::ResetToken};
+        extract_parameter! {
+            OriginalDestinationConnectionId as ConnectionId from params to self.original_destination_connection_id,
+            InitialSourceConnectionId as ConnectionId from params to self.initial_source_connection_id,
+            RetrySourceConnectionId as ConnectionId from params to self.retry_source_connection_id,
+            StatelessResetToken as ResetToken from params to self.stateless_reset_token,
+            DisableActiveMigration as bool from params to self.disable_active_migration,
+            MaxIdleTimeout as u64 from params to self.max_idle_timeout,
+            MaxUdpPayloadSize as u32 from params to self.max_udp_payload_size,
+            AckDelayExponent as u16 from params to self.ack_delay_exponent,
+            MaxAckDelay as u16 from params to self.max_ack_delay,
+            ActiveConnectionIdLimit as u32 from params to self.active_connection_id_limit,
+            InitialMaxData as u64 from params to self.initial_max_data,
+            InitialMaxStreamDataBidiLocal as u64 from params to self.initial_max_stream_data_bidi_local,
+            InitialMaxStreamDataBidiRemote as u64 from params to self.initial_max_stream_data_bidi_remote,
+            InitialMaxStreamDataUni as u64 from params to self.initial_max_stream_data_uni,
+            InitialMaxStreamsBidi as u64 from params to self.initial_max_streams_bidi,
+            InitialMaxStreamsUni as u64 from params to self.initial_max_streams_uni,
+            PreferredAddress as PreferredAddress from params to self.preferred_address,
+            MaxDatagramFrameSize as u64 from params to self.max_datagram_frame_size,
+            GreaseQuicBit as bool from params to self.grease_quic_bit,
         }
         self
     }
