@@ -185,7 +185,7 @@ async fn send_and_verify_echo(
     dst: &mut (impl AsyncWrite + Unpin),
 ) -> Result<(), Error> {
     let (server_name, server_addr) = lookup(auth).await?;
-    let connection = client.connect(server_name, server_addr)?;
+    let connection = client.connect(server_name, server_addr).await?;
     let (_sid, (reader, writer)) = connection.open_bi_stream().await?.unwrap();
 
     let mut reader = rx_pb.wrap_async_read(reader);

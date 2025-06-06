@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 pub use qconnection::{
     builder::{
@@ -20,32 +20,3 @@ mod client;
 mod server;
 #[cfg(test)]
 mod tests;
-
-pub fn proto() -> &'static Arc<QuicProto> {
-    static PROTO: OnceLock<Arc<QuicProto>> = OnceLock::new();
-    PROTO.get_or_init(|| {
-        let proto = Arc::new(QuicProto::new());
-        let handle_unrouted_packets = {
-            let proto = proto.clone();
-            async move {
-                while let Some((bind_addr, packet, pathway, ink)) =
-                    proto.recv_unrouted_packet().await
-                {
-                    QuicListeners::try_accept_connection(bind_addr, packet, pathway, ink).await;
-                }
-            }
-        };
-        let handle_broken_interfaces = {
-            let proto = proto.clone();
-            async move {
-                while let Some((local_addr, iface, error)) = proto.get_broken_interface().await {
-                    QuicListeners::on_interface_broken(local_addr, iface, error);
-                }
-            }
-        };
-        tokio::spawn(async move {
-            tokio::join!(handle_unrouted_packets, handle_broken_interfaces);
-        });
-        proto
-    })
-}
