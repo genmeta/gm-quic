@@ -65,7 +65,8 @@ async fn run(options: Options) -> io::Result<()> {
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
-        .listen(128);
+        .listen(128)
+        .await;
     listeners.add_server(
         options.certs.server_name.as_str(),
         options.certs.cert.as_path(),

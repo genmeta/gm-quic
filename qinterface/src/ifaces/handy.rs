@@ -13,6 +13,7 @@ mod qudp {
     };
     use qudp::BATCH_SIZE;
 
+    use super::super::monitor::InterfacesMonitor;
     use crate::{PacketHeader, QuicInterface};
 
     pub struct UdpSocketController {
@@ -26,12 +27,20 @@ mod qudp {
                 BindAddr::Socket(SocketBindAddr::Inet(inet_bind_addr)) => {
                     SocketAddr::from(*inet_bind_addr)
                 }
+                BindAddr::Socket(SocketBindAddr::Iface(iface_bind_addr)) => {
+                    InterfacesMonitor::global()
+                        .get(iface_bind_addr)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::NotFound,
+                                format!("Interface not found: {iface_bind_addr}"),
+                            )
+                        })?
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
-                        format!(
-                            "USC can only bind to specific addresses (SocketAddr), got: {bind_addr:?}"
-                        ),
+                        format!("USC can only bind to socket addresses, got: {bind_addr:?}"),
                     ));
                 }
             };
@@ -48,7 +57,7 @@ mod qudp {
             self.bind_addr.clone()
         }
 
-        fn read_addr(&self) -> io::Result<RealAddr> {
+        fn real_addr(&self) -> io::Result<RealAddr> {
             self.inner.local_addr().map(RealAddr::Inet)
         }
 
@@ -67,7 +76,7 @@ mod qudp {
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
             debug_assert_eq!(hdr.ecn(), None);
-            debug_assert_eq!(hdr.link().src(), self.read_addr()?);
+            debug_assert_eq!(hdr.link().src(), self.real_addr()?);
             let hdr = qudp::DatagramHeader::new(
                 hdr.link().src().try_into().expect("Must be SocketAddr"),
                 hdr.link().dst().try_into().expect("Must be SocketAddr"),
@@ -81,7 +90,7 @@ mod qudp {
         fn poll_recv(
             &self,
             cx: &mut Context,
-            pkts: &mut Vec<BytesMut>,
+            pkts: &mut [BytesMut],
             qbase_hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
             let len = qbase_hdrs.len().min(pkts.len());
@@ -95,7 +104,7 @@ mod qudp {
             let rcvd = ready!(self.inner.poll_recv(cx, &mut bufs, &mut hdrs))?;
 
             for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
-                let dst = self.read_addr()?;
+                let dst = self.real_addr()?;
                 let way = Pathway::new(qudp_hdr.src.to_endpoint_addr(), dst.to_endpoint_addr());
                 let link = Link::new(qudp_hdr.src, self.inner.local_addr()?);
                 qbase_hdrs[idx] = PacketHeader::new(

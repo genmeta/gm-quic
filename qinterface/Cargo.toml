@@ -14,6 +14,9 @@ rust-version.workspace = true
 bytes = { workspace = true }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
+futures = { workspace = true }
+netdev = { workspace = true }
+netwatch = { workspace = true }
 qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
@@ -21,7 +24,6 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-futures = { workspace = true }
 
 qudp = { workspace = true, optional = true }
 

@@ -1,11 +1,12 @@
 use std::{
     io,
-    ops::ControlFlow,
+    ops::{ControlFlow, Deref},
     sync::{Arc, atomic::Ordering},
-    task::{Context, Poll, ready},
+    task::{Context, Poll},
 };
 
 use qbase::net::tx::Signals;
+use qinterface::QuicInterface;
 
 use crate::{
     ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tls::ArcSendGate,
@@ -51,10 +52,11 @@ impl super::Path {
 impl Burst {
     fn prepare<'b>(
         &self,
+        interface: &dyn QuicInterface,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]>, Transaction<'_>)>, Signals> {
-        let max_segments = self.path.interface.max_segments();
-        let max_segment_size = self.path.interface.max_segment_size();
+        let max_segments = interface.max_segments();
+        let max_segment_size = interface.max_segment_size();
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -82,8 +84,9 @@ impl Burst {
         Ok(Some((buffers, transaction.unwrap())))
     }
 
-    fn load_into_buffers<'b>(
+    fn load_segments<'b>(
         &'b self,
+        interface: &dyn QuicInterface,
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
         mut transaction: Transaction<'b>,
     ) -> io::Result<Result<Vec<usize>, Signals>> {
@@ -91,7 +94,7 @@ impl Burst {
 
         let scid = self.local_cids.initial_scid();
         let reversed_size = 0; // TODO
-        let max_segments = self.path.interface.max_segments();
+        let max_segments = interface.max_segments();
 
         let (ControlFlow::Break(result) | ControlFlow::Continue(result)) = prepared_buffers
             .map(move |segment| {
@@ -150,26 +153,24 @@ impl Burst {
         Ok(result)
     }
 
-    fn poll_burst<'b>(
-        &'b self,
-        cx: &mut Context<'_>,
-        buffers: &'b mut Vec<Vec<u8>>,
+    fn poll_burst(
+        &self,
+        cx: &mut Context,
+        interface: &dyn QuicInterface,
+        buffers: &mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
-        if let Some(send_gate) = &self.send_gate {
-            ready!(send_gate.poll_request_permit(cx));
-        }
-        let (buffers, transaction) = match self.prepare(buffers) {
+        let (buffers, transaction) = match self.prepare(interface, buffers) {
             Ok(Some((buffers, transaction))) => (buffers, transaction),
-            Ok(None) => return Poll::Pending, // 发送任务结束。阻止路径因为连接关闭而被移除
+            Ok(None) => return Poll::Pending, // 发送任务停止但是不结束
             Err(siginals) => {
                 self.path.tx_waker.wait_for(cx, siginals);
                 return Poll::Pending;
             }
         };
-        match self.load_into_buffers(buffers, transaction)? {
+        match self.load_segments(interface, buffers, transaction)? {
             Ok(segments) => {
                 debug_assert!(!segments.is_empty());
-                Poll::Ready(Ok(segments))
+                Poll::Ready(io::Result::Ok(segments))
             }
             Err(signals) => {
                 self.path.tx_waker.wait_for(cx, signals);
@@ -178,16 +179,33 @@ impl Burst {
         }
     }
 
+    async fn burst(
+        &self,
+        interface: &dyn QuicInterface,
+        buffers: &mut Vec<Vec<u8>>,
+    ) -> io::Result<Vec<usize>> {
+        core::future::poll_fn(|cx| self.poll_burst(cx, interface, buffers)).await
+    }
+
     pub async fn launch(self) -> io::Result<()> {
         let mut buffers = vec![];
+
+        if let Some(send_gate) = &self.send_gate {
+            send_gate.request_permit().await;
+        }
+
         loop {
-            let segment_lens =
-                core::future::poll_fn(|cx| self.poll_burst(cx, &mut buffers)).await?;
-            let segments = segment_lens
-                .into_iter()
-                .enumerate()
-                .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
-                .collect::<Vec<_>>();
+            let segments = {
+                let interface = self.path.interface.borrow().await?;
+                let segment_lens = self.burst(interface.deref(), &mut buffers).await?;
+
+                segment_lens
+                    .into_iter()
+                    .enumerate()
+                    .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
+                    .collect::<Vec<_>>()
+            };
+
             self.path.send_packets(&segments).await?;
         }
     }
