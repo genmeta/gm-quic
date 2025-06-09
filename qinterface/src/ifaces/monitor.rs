@@ -6,7 +6,6 @@ use std::{
 };
 
 use netdev::Interface;
-use netwatch::netmon::Monitor;
 use qbase::net::address::{IfaceBindAddr, IpFamily};
 use tokio::sync::watch;
 
@@ -52,7 +51,7 @@ impl InterfacesMonitor {
         let task = tokio::spawn({
             let devices = devices.clone();
             let timer_tx = updated_tx.clone();
-            let event_tx = updated_tx.clone();
+            // let event_tx = updated_tx.clone();
             async move {
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -65,17 +64,17 @@ impl InterfacesMonitor {
                     }
                 });
 
-                tokio::spawn(async move {
-                    if let Ok(monitor) = Monitor::new().await {
-                        let cb = move |is_major| {
-                            if is_major {
-                                _ = event_tx.send(());
-                            }
-                            Box::pin(async move {}) as futures::future::BoxFuture<'static, ()>
-                        };
-                        _ = monitor.subscribe(cb).await;
-                    }
-                });
+                // tokio::spawn(async move {
+                //     if let Ok(monitor) = netwatch::netmon::Monitor::new().await {
+                //         let cb = move |is_major| {
+                //             if is_major {
+                //                 _ = event_tx.send(());
+                //             }
+                //             Box::pin(async move {}) as futures::future::BoxFuture<'static, ()>
+                //         };
+                //         _ = monitor.subscribe(cb).await;
+                //     }
+                // });
             }
         });
 
