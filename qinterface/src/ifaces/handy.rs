@@ -61,12 +61,12 @@ mod qudp {
             self.inner.local_addr().map(RealAddr::Inet)
         }
 
-        fn max_segments(&self) -> usize {
-            BATCH_SIZE
+        fn max_segments(&self) -> io::Result<usize> {
+            Ok(BATCH_SIZE)
         }
 
-        fn max_segment_size(&self) -> usize {
-            1500
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Ok(1500)
         }
 
         fn poll_send(

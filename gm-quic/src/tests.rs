@@ -66,8 +66,6 @@ where
                     .expect("Server should bind at least one address"),
             )
             .expect("Server should bind the address successfully")
-            .borrow()
-            .await?
             .real_addr()?
             .try_into()
             .expect("This test support only SocketAddr");
@@ -169,7 +167,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
 fn single_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -181,7 +179,7 @@ fn single_stream() -> Result<(), Error> {
 fn signal_big_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(1024)).await?;
 
         Ok(())
@@ -193,7 +191,7 @@ fn signal_big_stream() -> Result<(), Error> {
 fn empty_stream() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         send_and_verify_echo(&connection, b"").await?;
 
         Ok(())
@@ -234,7 +232,7 @@ fn shutdown() -> Result<(), Error> {
     };
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         connection.handshaked().await; // 可有可无
 
         assert!(
@@ -265,7 +263,7 @@ fn idle_timeout() {
 
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         connection.terminated().await;
         Result::Ok(())
     };
@@ -280,7 +278,7 @@ fn double_connections() -> Result<(), Error> {
         let mut connections = JoinSet::new();
 
         for conn_idx in 0..2 {
-            let connection = client.connect("localhost", server_addr).await?;
+            let connection = client.connect("localhost", server_addr)?;
             connections.spawn(
                 async move { send_and_verify_echo(&connection, TEST_DATA).await }
                     .instrument(tracing::info_span!("stream", conn_idx)),
@@ -309,7 +307,7 @@ fn parallel_stream() -> Result<(), Error> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connect("localhost", server_addr).await?;
+            let connection = client.connect("localhost", server_addr)?;
             for stream_idx in 0..PARALLEL_ECHO_STREAMS {
                 let connection = connection.clone();
                 streams.spawn(
@@ -340,7 +338,7 @@ fn parallel_big_stream() -> Result<(), Error> {
         let test_data = Arc::new(TEST_DATA.to_vec().repeat(128));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connect("localhost", server_addr).await?;
+            let connection = client.connect("localhost", server_addr)?;
             let test_data = test_data.clone();
             big_streams.spawn(
                 async move { send_and_verify_echo(&connection, &test_data).await }
@@ -394,7 +392,7 @@ fn limited_streams() -> Result<(), Error> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS / 2 {
-            let connection = client.connect("localhost", server_addr).await?;
+            let connection = client.connect("localhost", server_addr)?;
             for stream_idx in 0..PARALLEL_ECHO_STREAMS / 2 {
                 let connection = connection.clone();
                 streams.spawn(
@@ -429,7 +427,7 @@ fn client_without_verify() -> Result<(), Error> {
                 .build();
             Arc::new(client)
         };
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -506,7 +504,7 @@ fn client_auth() -> Result<(), Error> {
 
             Arc::new(client)
         };
-        let connection = client.connect("localhost", server_addr).await?;
+        let connection = client.connect("localhost", server_addr)?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())

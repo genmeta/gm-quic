@@ -11,7 +11,7 @@ use handy::UdpSocketController;
 use qconnection::builder::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
-    ifaces::{Interface, QuicInterfaces},
+    ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
     route::Router,
     util::Channel,
 };
@@ -69,7 +69,7 @@ impl Debug for Server {
 
 /// An interface that has been bound to servers in the [`QuicListeners`].
 struct BoundInterface {
-    iface: Arc<Interface>,
+    iface: Arc<BorrowedInterface>,
     servers: DashSet<String>,
 }
 
@@ -104,8 +104,6 @@ type Incomings = Channel<(
 ///
 /// - Servers can share the same network interfaces
 /// - Servers can be added without initially binding to any interface
-/// - Use [`QuicListeners::add_interface`] to bind a server to additional interfaces
-/// - Use [`QuicListeners::del_interface`] to remove a server from an interface
 ///
 /// ## Connection Handling
 ///
@@ -201,10 +199,7 @@ impl QuicListeners {
     /// the connection will be rejected by [`QuicListeners`].
     ///
     /// A server can be added without binding any interface.
-    ///
-    /// After adding a server, you can call [`QuicListeners::add_interface`]
-    /// to add more interfaces to the server, or [`QuicListeners::del_interface`] to remove an
-    /// interface from the server.
+    /// But the server will not be able to accept connections.
     pub fn add_server(
         &self,
         server_name: impl Into<String>,

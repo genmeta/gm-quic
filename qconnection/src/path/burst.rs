@@ -1,6 +1,6 @@
 use std::{
     io,
-    ops::{ControlFlow, Deref},
+    ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
     task::{Context, Poll},
 };
@@ -52,11 +52,14 @@ impl super::Path {
 impl Burst {
     fn prepare<'b>(
         &self,
-        interface: &dyn QuicInterface,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]>, Transaction<'_>)>, Signals> {
-        let max_segments = interface.max_segments();
-        let max_segment_size = interface.max_segment_size();
+        let Ok(max_segments) = self.path.interface.max_segments() else {
+            return Ok(None);
+        };
+        let Ok(max_segment_size) = self.path.interface.max_segment_size() else {
+            return Ok(None);
+        };
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -86,7 +89,6 @@ impl Burst {
 
     fn load_segments<'b>(
         &'b self,
-        interface: &dyn QuicInterface,
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
         mut transaction: Transaction<'b>,
     ) -> io::Result<Result<Vec<usize>, Signals>> {
@@ -94,7 +96,7 @@ impl Burst {
 
         let scid = self.local_cids.initial_scid();
         let reversed_size = 0; // TODO
-        let max_segments = interface.max_segments();
+        let max_segments = self.path.interface.max_segments()?;
 
         let (ControlFlow::Break(result) | ControlFlow::Continue(result)) = prepared_buffers
             .map(move |segment| {
@@ -156,10 +158,9 @@ impl Burst {
     fn poll_burst(
         &self,
         cx: &mut Context,
-        interface: &dyn QuicInterface,
         buffers: &mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
-        let (buffers, transaction) = match self.prepare(interface, buffers) {
+        let (buffers, transaction) = match self.prepare(buffers) {
             Ok(Some((buffers, transaction))) => (buffers, transaction),
             Ok(None) => return Poll::Pending, // 发送任务停止但是不结束
             Err(siginals) => {
@@ -167,7 +168,7 @@ impl Burst {
                 return Poll::Pending;
             }
         };
-        match self.load_segments(interface, buffers, transaction)? {
+        match self.load_segments(buffers, transaction)? {
             Ok(segments) => {
                 debug_assert!(!segments.is_empty());
                 Poll::Ready(io::Result::Ok(segments))
@@ -179,12 +180,8 @@ impl Burst {
         }
     }
 
-    async fn burst(
-        &self,
-        interface: &dyn QuicInterface,
-        buffers: &mut Vec<Vec<u8>>,
-    ) -> io::Result<Vec<usize>> {
-        core::future::poll_fn(|cx| self.poll_burst(cx, interface, buffers)).await
+    async fn burst(&self, buffers: &mut Vec<Vec<u8>>) -> io::Result<Vec<usize>> {
+        core::future::poll_fn(|cx| self.poll_burst(cx, buffers)).await
     }
 
     pub async fn launch(self) -> io::Result<()> {
@@ -195,16 +192,13 @@ impl Burst {
         }
 
         loop {
-            let segments = {
-                let interface = self.path.interface.borrow().await?;
-                let segment_lens = self.burst(interface.deref(), &mut buffers).await?;
+            let segment_lens = self.burst(&mut buffers).await?;
 
-                segment_lens
-                    .into_iter()
-                    .enumerate()
-                    .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
-                    .collect::<Vec<_>>()
-            };
+            let segments = segment_lens
+                .into_iter()
+                .enumerate()
+                .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
+                .collect::<Vec<_>>();
 
             self.path.send_packets(&segments).await?;
         }

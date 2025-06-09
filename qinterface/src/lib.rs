@@ -28,7 +28,8 @@ use qbase::net::{
 /// you can refer to the [`UdpSocketController`] implementation in the [`handy`] module.
 ///
 /// [`ProductQuicInterface`]: crate::factory::ProductQuicInterface
-/// [`UdpSocketController`]: crate::handy::UdpSocketController
+/// [`UdpSocketController`]: crate::ifaces::handy::UdpSocketController
+/// [`handy`]: crate::ifaces::handy
 pub trait QuicInterface: Send + Sync {
     /// Get the bind address that this interface is bound to
     ///
@@ -49,10 +50,10 @@ pub trait QuicInterface: Send + Sync {
     fn real_addr(&self) -> io::Result<RealAddr>;
 
     /// Maximum size of a single network segment in bytes
-    fn max_segment_size(&self) -> usize;
+    fn max_segment_size(&self) -> io::Result<usize>;
 
     /// Maximum number of segments that can be sent in a single batch
-    fn max_segments(&self) -> usize;
+    fn max_segments(&self) -> io::Result<usize>;
 
     /// Poll for sending packets
     ///
@@ -97,8 +98,8 @@ impl dyn QuicInterface {
         hdrs: &'b mut Vec<PacketHeader>,
     ) -> io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b> {
         let rcvd = std::future::poll_fn(|cx| {
-            let max_segments = self.max_segments();
-            let max_segment_size = self.max_segment_size();
+            let max_segments = self.max_segments()?;
+            let max_segment_size = self.max_segment_size()?;
             bufs.resize_with(max_segments, || {
                 Bytes::from_owner(vec![0u8; max_segment_size]).into()
             });
