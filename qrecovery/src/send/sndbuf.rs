@@ -434,6 +434,10 @@ impl BufMap {
             self.0.drain(drain_start..drain_end);
         }
     }
+
+    fn reset(&mut self) {
+        self.0 = VecDeque::from(vec![State::encode(0, Color::Pending)]);
+    }
 }
 
 impl BufMap {
@@ -664,6 +668,10 @@ impl SendBuf {
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
     pub fn may_loss_data(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
+    }
+
+    pub fn reset(&mut self) {
+        self.state.reset()
     }
 
     /// Return whether all data currently written has been received(acknowledged) by the peer.

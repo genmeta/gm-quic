@@ -20,6 +20,7 @@ use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
     net::{address::BindAddr, tx::ArcSendWakers},
+    packet::keys::ArcZeroRttKeys,
     param::{ArcParameters, ParameterId},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
@@ -55,7 +56,7 @@ use crate::{
     termination::Terminator,
     tls::{
         self, ArcClientName, ArcEndpointName, ArcPeerCerts, ArcSendGate, ArcServerName,
-        ArcTlsSession, ClientAuthers, TlsSession,
+        ArcTlsSession, ArcZeroRtt, ClientAuthers, TlsSession,
     },
 };
 
@@ -212,6 +213,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             router,
             interfaces,
             defer_idle_timeout: HeartbeatConfig::default(),
+            zero_rtt: ArcZeroRtt::new(false),
         }
     }
 }
@@ -246,6 +248,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             router,
             interfaces,
             defer_idle_timeout: HeartbeatConfig::default(),
+            zero_rtt: ArcZeroRtt::new(false),
         }
     }
 }
@@ -257,12 +260,20 @@ pub struct ProtoReady<Foundation, Config> {
     router: Arc<Router>,
     interfaces: Arc<QuicInterfaces>,
     defer_idle_timeout: HeartbeatConfig,
+    zero_rtt: ArcZeroRtt,
 }
 
 impl<Foundation, Config> ProtoReady<Foundation, Config> {
     pub fn defer_idle_timeout(self, config: HeartbeatConfig) -> Self {
         Self {
             defer_idle_timeout: config,
+            ..self
+        }
+    }
+
+    pub fn with_zero_rtt(self, enabled: bool) -> Self {
+        ProtoReady {
+            zero_rtt: ArcZeroRtt::new(enabled),
             ..self
         }
     }
@@ -321,9 +332,18 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let tls_session =
             TlsSession::new_client(self.foundation.server, self.tls_config, &client_params);
-        let remembered = tls_session
-            .load_remembered_parameters()
-            .and_then(Result::ok);
+        let (remembered, zero_rtt_keys) = {
+            if self.zero_rtt.is_enabled() {
+                (
+                    tls_session
+                        .load_remembered_parameters()
+                        .and_then(Result::ok),
+                    tls_session.zero_rtt_keys(),
+                )
+            } else {
+                (None, ArcZeroRttKeys::Client(None))
+            }
+        };
 
         let spaces = Spaces::new(
             InitialSpace::new(
@@ -339,7 +359,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
-                tls_session.zero_rtt_keys(),
+                zero_rtt_keys,
             ),
         );
 
@@ -362,6 +382,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             server_name: ArcEndpointName::from(self.foundation.server_name),
             qlog_span: None,
             specific: SpecificComponents::Client {},
+            zero_rtt: self.zero_rtt,
         }
     }
 }
@@ -423,8 +444,14 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             .get_as(ParameterId::MaxAckDelay)
             .expect("unreachable: default value will be got if the value unset");
 
-        let tls_session = TlsSession::new_server(self.tls_config, &server_params);
+        let tls_session =
+            TlsSession::new_server(self.tls_config, &server_params, self.zero_rtt.is_enabled());
 
+        let zero_rtt_keys = if self.zero_rtt.is_enabled() {
+            tls_session.zero_rtt_keys()
+        } else {
+            ArcZeroRttKeys::Server(None)
+        };
         let spaces = Spaces::new(
             InitialSpace::new(
                 initial_keys.into(),
@@ -439,7 +466,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
-                tls_session.zero_rtt_keys(),
+                zero_rtt_keys,
             ),
         );
 
@@ -474,6 +501,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
                 client_authers: self.foundation.client_authers,
                 odcid_router_entry,
             }),
+            zero_rtt: self.zero_rtt,
         }
     }
 }
@@ -494,6 +522,7 @@ pub struct ComponentsReady {
     server_name: ArcServerName,
     specific: SpecificComponents,
     qlog_span: Option<Span>,
+    zero_rtt: ArcZeroRtt,
 }
 
 impl ComponentsReady {
@@ -542,12 +571,14 @@ impl ComponentsReady {
             server_name: self.server_name,
             peer_certs: ArcPeerCerts::default(),
             specific: self.specific,
+            zero_rtt: self.zero_rtt,
         };
 
         tracing_span.in_scope(|| {
             qlog_span.in_scope(|| {
                 tokio::spawn(tls::keys_upgrade(&components));
                 tokio::spawn(accept_transport_parameters(&components));
+                tokio::spawn(handle_0rtt_rejection(&components));
                 space::spawn_deliver_and_parse(&components);
             })
         });
@@ -615,6 +646,18 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
     async move {
         if let Err(Error::Quic(e)) = task.await {
             event_broker.emit(Event::Failed(e));
+        }
+    }
+    .instrument_in_current()
+    .in_current_span()
+}
+
+fn handle_0rtt_rejection(components: &Components) -> impl Future<Output = ()> + Send {
+    let zero_rtt = components.zero_rtt.clone();
+    let streams = components.spaces.data().streams().clone();
+    async move {
+        if matches!(zero_rtt.is_accepted().await, Ok(Some(false))) {
+            streams.on_0rtt_rejected();
         }
     }
     .instrument_in_current()

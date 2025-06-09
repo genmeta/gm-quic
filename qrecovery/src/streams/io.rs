@@ -95,6 +95,13 @@ impl<TX> ArcOutputGuard<'_, TX> {
         };
     }
 
+    pub(super) fn on_0rtt_rejected(&mut self) {
+        match self.0.as_ref() {
+            Ok(set) => set.values().for_each(|(o, _)| o.on_0rtt_rejected()),
+            Err(e) => unreachable!("output is invalid: {e}"),
+        };
+    }
+
     pub(super) fn on_conn_error(&mut self, error: &QuicError) {
         match self.0.as_ref() {
             Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(error)),

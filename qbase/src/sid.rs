@@ -4,7 +4,10 @@ use super::{
     frame::MaxStreamsFrame,
     varint::{VarInt, WriteVarInt, be_varint},
 };
-use crate::frame::{SendFrame, StreamsBlockedFrame};
+use crate::{
+    frame::{SendFrame, StreamsBlockedFrame},
+    net::tx::ArcSendWakers,
+};
 
 /// Roles in the QUIC protocol, including client and server.
 ///
@@ -317,9 +320,10 @@ where
         max_uni_streams: u64,
         sid_frames_tx: T,
         ctrl: Box<dyn ControlStreamsConcurrency>,
+        tx_wakers: ArcSendWakers,
     ) -> Self {
         // 缺省为0
-        let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone());
+        let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone(), tx_wakers);
         let remote =
             ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams, sid_frames_tx, ctrl);
         Self { local, remote }

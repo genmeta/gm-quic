@@ -79,6 +79,8 @@ use tls::{
 };
 use tracing::Instrument as _;
 
+use crate::tls::ArcZeroRtt;
+
 /// The kind of frame which guaratend to be received by peer.
 ///
 /// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
@@ -132,6 +134,7 @@ pub struct Components {
     peer_certs: ArcPeerCerts,
     server_name: ArcServerName,
     client_name: ArcClientName,
+    zero_rtt: ArcZeroRtt,
     specific: SpecificComponents,
 }
 

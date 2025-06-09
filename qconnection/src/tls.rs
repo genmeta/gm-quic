@@ -1,6 +1,7 @@
 mod client_auth;
 mod peer_certs;
 mod peer_name;
+mod zero_rtt;
 
 use core::{
     ops::DerefMut,
@@ -26,10 +27,11 @@ use qrecovery::crypto::CryptoStream;
 use rustls::quic::KeyChange;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
+pub use zero_rtt::ArcZeroRtt;
 
 use crate::{Components, SpecificComponents, events::Event, prelude::EmitEvent};
 
-type TlsConnection = rustls::quic::Connection;
+pub type TlsConnection = rustls::quic::Connection;
 
 #[derive(Debug)]
 pub struct TlsSession {
@@ -55,9 +57,10 @@ impl TlsSession {
             Self::QUIC_VERSION,
             server_name,
             params,
-        );
-        let connection =
-            rustls::quic::Connection::Client(client_connection.expect("Invalid client tls config"));
+        )
+        .expect("Invalid client tls config");
+
+        let connection = TlsConnection::Client(client_connection);
 
         Self {
             tls_conn: connection,
@@ -69,35 +72,39 @@ impl TlsSession {
     pub fn new_server(
         tls_config: Arc<rustls::ServerConfig>,
         server_params: &ServerParameters,
+        enable_zero_rtt: bool,
     ) -> Self {
         let mut params = Vec::with_capacity(1024);
         params.put_parameters(server_params.as_ref());
 
-        let server_connection =
-            rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params);
-        let connection =
-            rustls::quic::Connection::Server(server_connection.expect("Invalid server tls config"));
-
+        let mut server_connection =
+            rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params)
+                .expect("Invalid server tls config");
+        if !enable_zero_rtt {
+            server_connection.reject_early_data();
+        }
         Self {
-            tls_conn: connection,
+            tls_conn: TlsConnection::Server(server_connection),
             read_waker: None,
         }
     }
 
     pub fn load_remembered_parameters(&self) -> Option<Result<RememberedParameters, QuicError>> {
         match &self.tls_conn {
-            rustls::quic::Connection::Client(client_conn) => client_conn
+            TlsConnection::Client(client_conn) => client_conn
                 .quic_transport_parameters()
                 .map(|raw_params| be_server_parameters(raw_params).map(RememberedParameters::from)),
-            rustls::quic::Connection::Server(..) => panic!("Server doesnot support this"),
+            TlsConnection::Server(..) => panic!("Server doesnot support this"),
         }
     }
 
     pub fn zero_rtt_keys(&self) -> ArcZeroRttKeys {
         match &self.tls_conn {
+            // encrypt keys
             TlsConnection::Client(client_conn) => {
                 ArcZeroRttKeys::Client(client_conn.zero_rtt_keys().map(Into::into))
             }
+            // decrypt keys
             TlsConnection::Server(server_conn) => {
                 ArcZeroRttKeys::Server(server_conn.zero_rtt_keys().map(Into::into))
             }
@@ -142,6 +149,7 @@ struct ReadAndProcess<'r> {
     server_name: &'r ArcServerName,
     peer_certs: &'r ArcPeerCerts,
     specific: &'r SpecificComponents,
+    zero_rtt: &'r ArcZeroRtt,
 }
 
 const CLIENT_NAME_PARAM_ID: ParameterId = ParameterId::Value(VarInt::from_u32(0xffee));
@@ -154,19 +162,18 @@ impl ReadAndProcess<'_> {
             Err(e) => return Err(e.clone()),
         };
 
-        if tls_session.tls_conn.handshake_kind().is_none()
-            && tls_session.tls_conn.quic_transport_parameters().is_some()
-        {
-            assert!(matches!(tls_session.tls_conn, TlsConnection::Client(..)))
-        }
+        let Some(handshake_kind) = tls_session.tls_conn.handshake_kind() else {
+            return Ok(());
+        };
 
         if matches!(self.params.is_remote_params_received(), None | Some(true)) {
             return Ok(());
         }
 
-        let Some(raw_params) = tls_session.tls_conn.quic_transport_parameters() else {
-            return Ok(());
-        };
+        let raw_params = tls_session
+            .tls_conn
+            .quic_transport_parameters()
+            .expect("Parameters should be ready when handshake kind is known");
 
         let params: PeerParameters = match self.specific {
             SpecificComponents::Client => {
@@ -202,6 +209,17 @@ impl ReadAndProcess<'_> {
                 params.into()
             }
         };
+        let is_0rtt_accepted = match &tls_session.tls_conn {
+            TlsConnection::Client(client_conn) => {
+                handshake_kind == rustls::HandshakeKind::Resumed
+                    && client_conn.is_early_data_accepted()
+            }
+            TlsConnection::Server(..) => handshake_kind == rustls::HandshakeKind::Resumed,
+        };
+        match is_0rtt_accepted {
+            true => self.zero_rtt.on_0rtt_accepted(),
+            false => self.zero_rtt.on_0rtt_rejected(),
+        }
         self.params.recv_remote_params(params)
     }
 
@@ -284,7 +302,7 @@ impl futures::Future for ReadAndProcess<'_> {
 
 /// The shared TLS session for QUIC's TLS handshake.
 ///
-/// This is a wrapper around the [`rustls::quic::Connection`], which is a QUIC-specific TLS connection.
+/// This is a wrapper around the [`TlsConnection`], which is a QUIC-specific TLS connection.
 #[derive(Debug, Clone)]
 pub struct ArcTlsSession(Arc<Mutex<Result<TlsSession, Error>>>);
 
@@ -303,7 +321,7 @@ impl ArcTlsSession {
             *guard = Err(error.clone());
         }
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn read_and_process<'r>(
         &'r self,
         buf: &'r mut Vec<u8>,
@@ -312,6 +330,7 @@ impl ArcTlsSession {
         server_name: &'r ArcServerName,
         peer_certs: &'r ArcPeerCerts,
         specific: &'r SpecificComponents,
+        zero_rtt: &'r ArcZeroRtt,
     ) -> ReadAndProcess<'r> {
         buf.clear();
         ReadAndProcess {
@@ -322,6 +341,7 @@ impl ArcTlsSession {
             server_name,
             peer_certs,
             specific,
+            zero_rtt,
         }
     }
 
@@ -409,6 +429,7 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
     let event_broker = components.event_broker.clone();
     let paths = components.paths.clone();
     let specific = components.specific.clone();
+    let zero_rtt = components.zero_rtt.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
@@ -422,6 +443,7 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
                     &server_name,
                     &peer_certs,
                     &specific,
+                    &zero_rtt,
                 )
                 .await
             {

@@ -177,7 +177,7 @@ impl DataSpace {
         // try to load stream frames into this 0RTT packet to send
         let fresh_data = self
             .streams
-            .try_load_data_into(&mut packet, tx.flow_limit())
+            .try_load_data_into(&mut packet, tx.flow_limit(), true)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
@@ -265,7 +265,7 @@ impl DataSpace {
         // try to load stream frames into this 1RTT packet to send
         let fresh_data = self
             .streams
-            .try_load_data_into(&mut packet, tx.flow_limit())
+            .try_load_data_into(&mut packet, tx.flow_limit(), false)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
 

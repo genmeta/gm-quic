@@ -137,6 +137,12 @@ impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
+    pub fn on_0rtt_rejected(&self) {
+        if let Ok(mut output_guard) = self.output.guard() {
+            output_guard.on_0rtt_rejected();
+        }
+    }
+
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
@@ -144,6 +150,7 @@ where
         &self,
         packet: &mut P,
         flow_limit: usize,
+        is_0rtt: bool,
     ) -> Result<usize, Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
@@ -180,6 +187,12 @@ where
             Err(signals)
         }
 
+        // 不一定所有流都允许被发送，比如，0rtt被拒绝max_streams会倒缩，此时大于max_streams的流就不允许被发送
+        let stream_allowed = |sid: &StreamId| {
+            sid.role() == self.stream_ids.remote.role()
+                || sid.id() < self.stream_ids.local.max_streams(sid.dir(), is_0rtt)
+        };
+
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
         const DEFAULT_TOKENS: usize = 4096;
@@ -188,7 +201,8 @@ where
             Some((sid, tokens)) if *tokens == 0 => try_load_data_into_once(
                 (output.outgoings.range(..=sid).rev())
                     .chain(output.outgoings.range((Excluded(sid), Unbounded)).rev())
-                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
+                    .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 flow_limit,
             ),
@@ -204,14 +218,16 @@ where
                     (output.outgoings.range(..sid).rev())
                         .chain(output.outgoings.range((Excluded(sid), Unbounded)).rev())
                         .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-                ),
+                )
+                .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 flow_limit,
             ),
             // rev([..])
             None => try_load_data_into_once(
                 (output.outgoings.range(..).rev())
-                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
+                    .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 flow_limit,
             ),
@@ -259,15 +275,16 @@ where
         &self,
         packet: &mut P,
         mut flow_limit: usize,
+        is_0rtt: bool,
     ) -> Result<usize, Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
         use core::ops::ControlFlow::*;
-        // 取唯一一个最新的错误（如果有），或者返回DATA_UNAVAILABLE
+        // 取唯一一个最新的错误（如果有）
         let (Continue(result) | Break(result)) = core::iter::from_fn(|| {
             Some(
-                self.try_load_data_into_once(packet, flow_limit)
+                self.try_load_data_into_once(packet, flow_limit, is_0rtt)
                     .map(|fresh| (flow_limit -= fresh, fresh).1),
             )
         })
@@ -572,6 +589,7 @@ where
                 max_uni_streams,
                 Ext(ctrl_frames.clone()),
                 ctrl,
+                tx_wakers.clone(),
             ),
             uni_stream_rcvbuf_size,
             local_bi_stream_rcvbuf_size,

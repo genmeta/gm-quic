@@ -7,6 +7,7 @@ use std::{
 use super::{Dir, Role, StreamId};
 use crate::{
     frame::{MaxStreamsFrame, ReceiveFrame, SendFrame, StreamsBlockedFrame},
+    net::tx::{ArcSendWakers, Signals},
     sid::MAX_STREAMS_LIMIT,
     varint::VarInt,
 };
@@ -14,11 +15,23 @@ use crate::{
 /// Local stream IDs management.
 #[derive(Debug)]
 struct LocalStreamIds<BLOCKED> {
-    role: Role,                   // Our role
-    max: [u64; 2],                // The maximum stream ID we can create
-    unallocated: [u64; 2],        // The stream ID that we have not used
-    wakers: [VecDeque<Waker>; 2], // Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
-    blocked: BLOCKED,             // The StreamsBlocked frames that will be sent to peer
+    /// Our role
+    role: Role,
+    /// The maximum stream ID we can create in each direction.
+    max: [u64; 2],
+    /// Intiial maximum stream ID for client's 0rtt data.
+    init_max: [u64; 2],
+    /// Parameters received and/or [`MaxStreamsFrame`] received from the peer.
+    new_max_rcvd: bool,
+    /// The stream ID that we have not used.
+    ///
+    /// if the allocated > max, it means 0rtt data was rejected by server
+    unallocated: [u64; 2],
+    /// Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
+    wakers: [VecDeque<Waker>; 2],
+    /// The StreamsBlocked frames that will be sent to peer
+    blocked: BLOCKED,
+    tx_wakers: ArcSendWakers,
 }
 
 impl<BLOCKED> LocalStreamIds<BLOCKED>
@@ -27,19 +40,41 @@ where
 {
     /// Create a new [`LocalStreamIds`] with the given role,
     /// and maximum number of streams that can be created in each [`Dir`].
-    fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
+    fn new(
+        role: Role,
+        init_max_bi_streams: u64,
+        init_max_uni_streams: u64,
+        blocked: BLOCKED,
+        tx_wakers: ArcSendWakers,
+    ) -> Self {
+        debug_assert!(
+            role == Role::Client || (init_max_bi_streams == 0 && init_max_uni_streams == 0),
+            "Server cannot remember the parameters"
+        );
         Self {
             role,
-            max: [max_bi_streams, max_uni_streams],
+            init_max: [init_max_bi_streams, init_max_uni_streams],
+            max: [0, 0],
+            new_max_rcvd: false,
             unallocated: [0, 0],
             wakers: [VecDeque::with_capacity(2), VecDeque::with_capacity(2)],
             blocked,
+            tx_wakers,
         }
     }
 
     /// Returns local role.
     fn role(&self) -> Role {
         self.role
+    }
+
+    /// Returns the maximum stream ID that can be created in the `dir` direction.
+    fn max_streams(&self, dir: Dir, is_0rtt: bool) -> u64 {
+        if is_0rtt {
+            self.init_max[dir as usize]
+        } else {
+            self.max[dir as usize]
+        }
     }
 
     /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
@@ -53,19 +88,29 @@ where
         let max_streams = &mut self.max[dir as usize];
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
         if *max_streams < val {
-            *max_streams = val;
+            // The rejected 0rtt stream can be sent again, as if new data was written.
+            if *max_streams < self.unallocated[dir as usize] {
+                self.tx_wakers.wake_all_by(Signals::WRITTEN);
+            }
             for waker in self.wakers[dir as usize].drain(..) {
                 waker.wake();
             }
+            *max_streams = val;
         }
     }
 
     fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         let idx = dir as usize;
+        let max = if self.new_max_rcvd {
+            self.max[idx]
+        } else {
+            // new value may not be assign this time, but we know that 0rtt is accepted, new max value is greater
+            self.max[idx].max(self.init_max[idx])
+        };
         let cur = &mut self.unallocated[idx];
         if *cur > MAX_STREAMS_LIMIT {
             Poll::Ready(None)
-        } else if *cur < self.max[idx] {
+        } else if *cur < max {
             let id = *cur;
             *cur += 1;
             Poll::Ready(Some(StreamId::new(self.role, dir, id)))
@@ -103,18 +148,33 @@ where
     /// Create a new [`ArcLocalStreamIds`] with the given role,
     /// and maximum number of streams that can be created in each direction,
     /// the `blocked` contains the [`StreamsBlockedFrame`] that will be sent to peer.
-    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
+    pub fn new(
+        role: Role,
+        max_bi_streams: u64,
+        max_uni_streams: u64,
+        blocked: BLOCKED,
+        tx_wakers: ArcSendWakers,
+    ) -> Self {
         Self(Arc::new(Mutex::new(LocalStreamIds::new(
             role,
             max_bi_streams,
             max_uni_streams,
             blocked,
+            tx_wakers,
         ))))
     }
 
     /// Returns local role
     pub fn role(&self) -> Role {
         self.0.lock().unwrap().role()
+    }
+
+    /// Returns the maximum stream ID that can be created in the `dir` direction.
+    ///
+    /// If `is_0rtt` is true, initial maximum stream ID is returned.
+    /// If 0rtt is rejected by server, it returns None,
+    pub fn max_streams(&self, dir: Dir, is_0rtt: bool) -> u64 {
+        self.0.lock().unwrap().max_streams(dir, is_0rtt)
     }
 
     /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
@@ -188,7 +248,13 @@ mod tests {
 
     #[test]
     fn test_recv_max_stream_frames() {
-        let local = ArcLocalStreamIds::new(Role::Client, 0, 0, StreamsBlockedFrameTx::default());
+        let local = ArcLocalStreamIds::new(
+            Role::Client,
+            0,
+            0,
+            StreamsBlockedFrameTx::default(),
+            ArcSendWakers::default(),
+        );
         local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0)));
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);

@@ -173,6 +173,18 @@ impl<TX> Outgoing<TX> {
         };
     }
 
+    pub fn on_0rtt_rejected(&self) {
+        let mut sender = self.0.sender();
+        let inner = sender.deref_mut();
+        if let Ok(sending_state) = inner {
+            match sending_state {
+                Sender::Sending(s) => s.reset_send(),
+                Sender::DataSent(s) => s.reset_send(),
+                _ => (),
+            }
+        };
+    }
+
     /// Called when the [`STOP_SENDING frame`] sent by the peer is received.
     ///
     /// If the stream has not been closed, the stream will be reset and then a [`RESET_STREAM frame`] will

@@ -36,6 +36,15 @@ pub enum PeerParameters {
     Server(ServerParameters),
 }
 
+impl AsRef<GeneralParameters> for PeerParameters {
+    fn as_ref(&self) -> &GeneralParameters {
+        match self {
+            PeerParameters::Clinet(params) => &params.0,
+            PeerParameters::Server(params) => &params.0,
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, Into, AsRef, PartialEq)]
 pub struct ClientParameters(GeneralParameters);
 

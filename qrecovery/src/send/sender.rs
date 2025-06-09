@@ -310,6 +310,11 @@ impl<TX> SendingSender<TX> {
         self.sndbuf.may_loss_data(&frame.range())
     }
 
+    pub(crate) fn reset_send(&mut self) {
+        self.tx_wakers.wake_all_by(Signals::WRITTEN);
+        self.sndbuf.reset();
+    }
+
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
@@ -477,6 +482,11 @@ impl<TX> DataSentSender<TX> {
             self.fin_state = FinState::Lost;
         }
         self.sndbuf.may_loss_data(&frame.range())
+    }
+
+    pub(crate) fn reset_send(&mut self) {
+        self.tx_wakers.wake_all_by(Signals::WRITTEN);
+        self.sndbuf.reset();
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
