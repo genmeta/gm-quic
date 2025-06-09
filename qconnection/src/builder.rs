@@ -333,7 +333,6 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         ComponentsReady {
             interfaces: self.interfaces,
-            router: self.router,
             parameters,
             tls_session,
             raw_handshake,
@@ -371,7 +370,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let initial_scid = router_registry.gen_unique_cid();
 
         server_params.set_initial_source_connection_id(initial_scid);
-        self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
+        let odcid_router_entry = self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
         server_params.set_original_destination_connection_id(origin_dcid);
 
         let cid_registry = CidRegistry::new(
@@ -420,7 +419,6 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
         ComponentsReady {
             interfaces: self.interfaces,
-            router: self.router,
             parameters,
             tls_session,
             raw_handshake,
@@ -441,6 +439,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
                     ArcSendGate::unrestricted()
                 },
                 client_authers: self.foundation.client_authers,
+                odcid_router_entry,
             }),
         }
     }
@@ -448,7 +447,6 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
 pub struct ComponentsReady {
     interfaces: Arc<QuicInterfaces>,
-    router: Arc<Router>,
     token_registry: ArcTokenRegistry,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     cid_registry: CidRegistry,
@@ -495,7 +493,6 @@ impl ComponentsReady {
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
         let components = Components {
             interfaces: self.interfaces,
-            router: self.router,
             parameters: self.parameters,
             tls_session: self.tls_session,
             handshake: Handshake::new(self.raw_handshake, inform_cc, event_broker.clone()),
@@ -679,13 +676,6 @@ impl Components {
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
-        if self.handshake.role() == sid::Role::Server {
-            let origin_dcid = self
-                .parameters
-                .get_origin_dcid()
-                .expect("connection not close yet");
-            self.router.remove(&origin_dcid.into());
-        }
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);
         self.peer_certs.on_conn_error(&error);
@@ -728,13 +718,6 @@ impl Components {
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
-        if self.handshake.role() == sid::Role::Server {
-            let origin_dcid = self
-                .parameters
-                .get_origin_dcid()
-                .expect("connection not close yet");
-            self.router.remove(&origin_dcid.into());
-        }
         self.parameters.on_conn_error(&error);
         self.server_name.on_conn_error(&error);
         self.peer_certs.on_conn_error(&error);
