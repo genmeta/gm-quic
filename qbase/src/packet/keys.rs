@@ -34,7 +34,7 @@ pub struct ArcKeys(Arc<Mutex<KeysState>>);
 
 impl ArcKeys {
     #[inline]
-    fn lock_guard(&self) -> MutexGuard<KeysState> {
+    fn lock_guard(&self) -> MutexGuard<'_, KeysState> {
         self.0.lock().unwrap()
     }
 
@@ -79,7 +79,7 @@ impl ArcKeys {
     ///     // use pk to decrypt packet body...
     /// }
     /// ```
-    pub fn get_remote_keys(&self) -> GetRemoteKeys {
+    pub fn get_remote_keys(&self) -> GetRemoteKeys<'_> {
         GetRemoteKeys(self)
     }
 
@@ -261,7 +261,7 @@ impl ArcOneRttPacketKeys {
     /// Obtain exclusive access to the 1-RTT packet keys.
     /// During the exclusive period of encrypting or decrypting packets,
     /// the keys must not be updated elsewhere.
-    pub fn lock_guard(&self) -> MutexGuard<OneRttPacketKeys> {
+    pub fn lock_guard(&self) -> MutexGuard<'_, OneRttPacketKeys> {
         self.0.0.lock().unwrap()
     }
 
@@ -309,7 +309,7 @@ enum OneRttKeysState {
 pub struct ArcOneRttKeys(Arc<Mutex<OneRttKeysState>>);
 
 impl ArcOneRttKeys {
-    fn lock_guard(&self) -> MutexGuard<OneRttKeysState> {
+    fn lock_guard(&self) -> MutexGuard<'_, OneRttKeysState> {
         self.0.lock().unwrap()
     }
 
@@ -381,7 +381,7 @@ impl ArcOneRttKeys {
     /// Asynchronously obtain the remote keys for removing header protection and packet decryption.
     ///
     /// Rreturn [`GetRemoteKeys`], which implemented the Future trait.
-    pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys {
+    pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys<'_> {
         GetRemoteOneRttKeys(self)
     }
 }

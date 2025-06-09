@@ -163,7 +163,7 @@ impl DatagramReader {
     /// The future is *Cancel Safe*.
     ///
     /// [datagram frame]: https://www.rfc-editor.org/rfc/rfc9221.html
-    pub fn recv(&mut self) -> RecvDatagram {
+    pub fn recv(&mut self) -> RecvDatagram<'_> {
         RecvDatagram { reader: self }
     }
 

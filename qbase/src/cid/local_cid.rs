@@ -276,11 +276,11 @@ mod tests {
     }
 
     impl IssuedCids {
-        fn frames(&self) -> MutexGuard<Vec<NewConnectionIdFrame>> {
+        fn frames(&self) -> MutexGuard<'_, Vec<NewConnectionIdFrame>> {
             self.frames.lock().unwrap()
         }
 
-        fn active_cids(&self) -> MutexGuard<HashMap<ConnectionId, ResetToken>> {
+        fn active_cids(&self) -> MutexGuard<'_, HashMap<ConnectionId, ResetToken>> {
             self.active_cids.lock().unwrap()
         }
     }

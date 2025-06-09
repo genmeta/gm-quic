@@ -98,7 +98,7 @@ impl<T> Future<T> {
         }
     }
 
-    pub(crate) fn state(&self) -> MutexGuard<FutureState<T>> {
+    pub(crate) fn state(&self) -> MutexGuard<'_, FutureState<T>> {
         self.state.lock().unwrap()
     }
 
@@ -121,7 +121,7 @@ impl<T> Future<T> {
     /// If the value is ready, the value will be returned as [`Poll::Ready`]. If the value is not
     /// ready, this method will return [`Poll::Pending`] and the waker will be stored.
     #[inline]
-    pub fn poll_get(&self, cx: &mut Context<'_>) -> Poll<ReadyFuture<T>> {
+    pub fn poll_get(&self, cx: &mut Context<'_>) -> Poll<ReadyFuture<'_, T>> {
         let mut state = self.state();
         match state.deref_mut() {
             FutureState::Demand(wakers) => {
@@ -136,7 +136,7 @@ impl<T> Future<T> {
     ///
     /// If the value is ready, the value will be returned as [`Some`]. If the value is not ready, this
     /// method will return [`None`].
-    pub fn try_get(&self) -> Option<ReadyFuture<T>> {
+    pub fn try_get(&self) -> Option<ReadyFuture<'_, T>> {
         let state = self.state();
         match state.deref() {
             FutureState::Demand(..) => None,
@@ -146,7 +146,7 @@ impl<T> Future<T> {
 
     /// Get the value of the [`Future`] asynchronously.
     #[inline]
-    pub async fn get(&self) -> ReadyFuture<T> {
+    pub async fn get(&self) -> ReadyFuture<'_, T> {
         std::future::poll_fn(|cx| self.poll_get(cx)).await
     }
 }

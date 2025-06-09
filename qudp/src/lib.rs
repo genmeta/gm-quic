@@ -178,7 +178,7 @@ impl UdpSocketController {
         }
     }
 
-    pub fn receiver(&self) -> Receiver {
+    pub fn receiver(&self) -> Receiver<'_> {
         Receiver {
             usc: self,
             iovecs: (0..BATCH_SIZE)

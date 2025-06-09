@@ -625,7 +625,7 @@ impl SendBuf {
     /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
     ///   picked up is in two parts, the begin of the second slice are the end of the first slice
-    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data, Signals>
+    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data<'_>, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {

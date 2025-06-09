@@ -523,7 +523,7 @@ where
 }
 
 impl<TX> ArcRecver<TX> {
-    pub(super) fn recver(&self) -> MutexGuard<Result<Recver<TX>, Error>> {
+    pub(super) fn recver(&'_ self) -> MutexGuard<'_, Result<Recver<TX>, Error>> {
         self.0.lock().unwrap()
     }
 }

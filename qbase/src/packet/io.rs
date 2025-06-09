@@ -131,7 +131,7 @@ pub struct PacketLayout {
 }
 
 impl PacketLayout {
-    pub fn writer(mut self, buffer: &mut [u8]) -> PacketWriter {
+    pub fn writer(mut self, buffer: &mut [u8]) -> PacketWriter<'_> {
         self.end = buffer.len() - self.keys.pk().tag_len();
         assert!(self.end >= self.cursor);
         PacketWriter {
