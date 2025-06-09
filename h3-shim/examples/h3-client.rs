@@ -208,7 +208,7 @@ async fn download_files_with_progress(
     save: Option<PathBuf>,
 ) -> Result<usize, Error> {
     let (server_name, server_addr) = lookup(&authority).await?;
-    let connection = client.connect(server_name, server_addr).await?;
+    let connection = client.connect(server_name, server_addr)?;
 
     let (mut connection, send_request) =
         h3::client::new(h3_shim::QuicConnection::new(connection)).await?;

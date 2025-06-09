@@ -6,7 +6,7 @@ use qbase::net::address::{AddrKind, BindAddr, IpFamily};
 use qconnection::builder::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
-    ifaces::{Interface, QuicInterfaces},
+    ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
     route::Router,
 };
 use rustls::{
@@ -30,7 +30,6 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 ///
 /// - **Automatic binding**: If no interfaces are bound, the client automatically binds to system-assigned addresses
 /// - **Manual binding**: Use [`QuicClientBuilder::bind`] to bind specific interfaces
-/// - **Interface reuse**: Enable with [`QuicClientBuilder::reuse_address`] to share interfaces between connections
 ///
 /// ## Connection Handling
 ///
@@ -38,7 +37,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<BindAddr, Arc<Interface>>>,
+    bind_interfaces: Option<DashMap<BindAddr, Arc<BorrowedInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
@@ -92,7 +91,7 @@ impl QuicClient {
         }
     }
 
-    async fn new_connection(
+    fn new_connection(
         &self,
         server_name: String,
         server_ep: EndpointAddr,
@@ -121,7 +120,7 @@ impl QuicClient {
                 ))?,
         };
 
-        let local_addr = quic_iface.borrow().await?.real_addr()?;
+        let local_addr = quic_iface.real_addr()?;
         let link = Link::new(local_addr, *server_ep);
         //  TODO: 是否要outer addr，agent addr
         let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
@@ -212,7 +211,7 @@ impl QuicClient {
     ///
     /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will initiates
     /// a new connection to the server.
-    pub async fn connect(
+    pub fn connect(
         &self,
         server_name: impl Into<String>,
         server_ep: impl ToEndpointAddr,
@@ -223,18 +222,18 @@ impl QuicClient {
             match Self::reuseable_connections().entry(server_name.clone()) {
                 dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().clone()),
                 dashmap::Entry::Vacant(vacant_entry) => Ok(vacant_entry
-                    .insert(self.new_connection(server_name, server_ep).await?)
+                    .insert(self.new_connection(server_name, server_ep)?)
                     .clone()),
             }
         } else {
-            self.new_connection(server_name, server_ep).await
+            self.new_connection(server_name, server_ep)
         }
     }
 }
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindAddr, Arc<Interface>>,
+    bind_interfaces: DashMap<BindAddr, Arc<BorrowedInterface>>,
     reuse_connection: bool,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicInterface>,

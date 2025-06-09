@@ -46,6 +46,7 @@ impl DatagramHeader {
         }
     }
 }
+
 impl Default for DatagramHeader {
     fn default() -> Self {
         Self {
@@ -157,6 +158,13 @@ impl Wake for Wakers {
         for waker in self.0.lock().unwrap().drain(..) {
             waker.wake_by_ref();
         }
+    }
+}
+
+impl Drop for UdpSocketController {
+    fn drop(&mut self) {
+        self.read.wake_by_ref();
+        self.write.wake_by_ref();
     }
 }
 

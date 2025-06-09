@@ -17,7 +17,7 @@ use qbase::{
     packet::PacketContains,
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
-use qinterface::ifaces::Interface;
+use qinterface::{QuicInterface, ifaces::borrowed::BorrowedInterface};
 use tokio::{
     task::AbortHandle,
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ pub mod burst;
 pub mod idle;
 
 pub struct Path {
-    interface: Arc<Interface>,
+    interface: Arc<BorrowedInterface>,
     validated: AtomicBool,
     link: Link,
     pathway: Pathway,
@@ -50,7 +50,7 @@ pub struct Path {
 
 impl Path {
     pub fn new(
-        interface: Arc<Interface>,
+        interface: Arc<BorrowedInterface>,
         link: Link,
         pathway: Pathway,
         max_ack_delay: Duration,
@@ -143,14 +143,13 @@ impl Path {
     }
 
     pub async fn send_packets(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        let iface = self.interface.borrow().await?;
-
         self.anti_amplifier
             .on_sent(bufs.iter().map(|s| s.len()).sum());
         if self.anti_amplifier.balance().is_err() {
             self.status.enter_anti_amplification_limit();
         }
         let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
+        let iface: &dyn QuicInterface = self.interface.as_ref();
         iface.sendmsgs(bufs, hdr).await
     }
 }

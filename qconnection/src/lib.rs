@@ -62,7 +62,7 @@ use qevent::telemetry::Instrument;
 use qinterface::{
     ifaces::QuicInterfaces,
     queue::RcvdPacketQueue,
-    route::{Router, RouterRegistry},
+    route::{Router, RouterEntry, RouterRegistry},
 };
 use qrecovery::{
     journal, recv, reliable, send,
@@ -145,6 +145,7 @@ enum SpecificComponents {
 struct ServerComponents {
     send_gate: ArcSendGate,
     client_authers: ClientAuthers,
+    _odcid_router_entry: RouterEntry,
 }
 
 impl Components {
