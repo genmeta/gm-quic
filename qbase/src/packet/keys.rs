@@ -6,7 +6,46 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use rustls::quic::{HeaderProtectionKey, Keys, PacketKey, Secrets};
+use rustls::quic::{
+    DirectionalKeys as RustlsDirectionalKeys, HeaderProtectionKey, Keys as RustlsKeys, PacketKey,
+    Secrets,
+};
+
+/// Keys used to communicate in a single direction
+#[derive(Clone)]
+pub struct DirectionalKeys {
+    /// Encrypts or decrypts a packet's headers
+    pub header: Arc<dyn HeaderProtectionKey>,
+    /// Encrypts or decrypts the payload of a packet
+    pub packet: Arc<dyn PacketKey>,
+}
+
+impl From<RustlsDirectionalKeys> for DirectionalKeys {
+    fn from(keys: RustlsDirectionalKeys) -> Self {
+        Self {
+            header: keys.header.into(),
+            packet: keys.packet.into(),
+        }
+    }
+}
+
+/// Complete set of keys used to communicate with the peer
+#[derive(Clone)]
+pub struct Keys {
+    /// Encrypts outgoing packets
+    pub local: DirectionalKeys,
+    /// Decrypts incoming packets
+    pub remote: DirectionalKeys,
+}
+
+impl From<RustlsKeys> for Keys {
+    fn from(keys: RustlsKeys) -> Self {
+        Self {
+            local: keys.local.into(),
+            remote: keys.remote.into(),
+        }
+    }
+}
 
 use super::KeyPhaseBit;
 
@@ -183,6 +222,35 @@ impl Future for GetRemoteKeys<'_> {
     }
 }
 
+pub enum ArcZeroRttKeys {
+    Client(Option<DirectionalKeys>),
+    Server(Option<DirectionalKeys>),
+}
+
+impl ArcZeroRttKeys {
+    pub fn new_client(keys: Option<RustlsDirectionalKeys>) -> Self {
+        Self::Client(keys.map(Into::into))
+    }
+
+    pub fn new_server(keys: Option<RustlsDirectionalKeys>) -> Self {
+        Self::Server(keys.map(Into::into))
+    }
+
+    pub fn get_decrypt_keys(&self) -> Option<DirectionalKeys> {
+        match self {
+            Self::Client(..) => None,
+            Self::Server(keys) => keys.clone(),
+        }
+    }
+
+    pub fn get_encrypt_keys(&self) -> Option<DirectionalKeys> {
+        match self {
+            Self::Client(keys) => keys.clone(),
+            Self::Server(..) => None,
+        }
+    }
+}
+
 /// The packet encryption and decryption keys for 1-RTT packets,
 /// which will still change after negotiation between the two endpoints.
 ///
@@ -324,7 +392,7 @@ impl ArcOneRttKeys {
     /// As the TLS handshake progresses, 1-RTT keys will finally be obtained.
     /// And then its internal waker will be awakened to notify the packet
     /// decryption task to continue, if the internal waker was registered.
-    pub fn set_keys(&self, keys: Keys, secrets: Secrets) {
+    pub fn set_keys(&self, keys: RustlsKeys, secrets: Secrets) {
         let mut state = self.lock_guard();
         match &mut *state {
             OneRttKeysState::Pending(waker) => {

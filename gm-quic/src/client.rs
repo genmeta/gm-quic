@@ -135,7 +135,7 @@ impl QuicClient {
         let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
             Connection::with_token_sink(server_name.clone(), token_sink)
-                .with_parameters(self.parameters.clone(), None)
+                .with_parameters(self.parameters.clone())
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(Router::global().clone(), QuicInterfaces::global().clone())

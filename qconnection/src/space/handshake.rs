@@ -17,7 +17,7 @@ use qbase::{
             GetDcid, GetType,
             long::{HandshakeHeader, io::LongHeaderBuilder},
         },
-        keys::ArcKeys,
+        keys::{ArcKeys, Keys},
         number::PacketNumber,
     },
     util::BoundQueue,
@@ -33,7 +33,6 @@ use qevent::{
 };
 use qinterface::packet::{CipherPacket, PlainPacket};
 use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
-use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
@@ -101,7 +100,7 @@ impl HandshakeSpace {
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
-        let mut packet = PacketBuffer::new_long(header, buf, keys, &sent_journal)?;
+        let mut packet = PacketBuffer::new_long(header, buf, keys.local.clone(), &sent_journal)?;
 
         let mut signals = Signals::empty();
 
@@ -148,7 +147,7 @@ impl HandshakeSpace {
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
-        let mut packet = PacketBuffer::new_long(header, buf, keys, &sent_journal)?;
+        let mut packet = PacketBuffer::new_long(header, buf, keys.local.clone(), &sent_journal)?;
 
         packet.dump_ping_frame();
 
@@ -349,7 +348,8 @@ impl ClosingHandshakeSpace {
     ) -> Option<FinalPacketLayout> {
         let header = LongHeaderBuilder::with_cid(dcid, scid).handshake();
         let pn = self.ccf_packet_pn;
-        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
+        let mut packet_writer =
+            PacketWriter::new_long(&header, buf, pn, self.keys.local.clone()).ok()?;
 
         let ccf = match ccf.clone() {
             ConnectionCloseFrame::App(mut app_close_frame) => {

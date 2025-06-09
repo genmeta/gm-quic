@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::{BufMut, BytesMut, buf::UninitSlice};
 use derive_more::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
@@ -14,6 +12,7 @@ use crate::{
         io::{WriteDataFrame, WriteFrame},
     },
     net::tx::Signals,
+    packet::keys::DirectionalKeys,
     util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
@@ -194,11 +193,10 @@ pub trait MarshalPathFrame<F> {
 
 enum Keys {
     LongHeaderPacket {
-        keys: Arc<rustls::quic::Keys>,
+        keys: DirectionalKeys,
     },
     ShortHeaderPacket {
-        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
-        pk: Arc<dyn rustls::quic::PacketKey>,
+        keys: DirectionalKeys,
         key_phase: KeyPhaseBit,
     },
 }
@@ -206,15 +204,17 @@ enum Keys {
 impl Keys {
     fn hpk(&self) -> &dyn rustls::quic::HeaderProtectionKey {
         match self {
-            Self::LongHeaderPacket { keys } => keys.local.header.as_ref(),
-            Self::ShortHeaderPacket { hpk, .. } => hpk.as_ref(),
+            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
+                keys.header.as_ref()
+            }
         }
     }
 
     fn pk(&self) -> &dyn rustls::quic::PacketKey {
         match self {
-            Self::LongHeaderPacket { keys } => keys.local.packet.as_ref(),
-            Self::ShortHeaderPacket { pk, .. } => pk.as_ref(),
+            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
+                keys.packet.as_ref()
+            }
         }
     }
 

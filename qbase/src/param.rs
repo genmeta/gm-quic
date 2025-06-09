@@ -83,7 +83,7 @@ pub struct Parameters {
     state: u8,
     client: Arc<GeneralParameters>,
     server: Arc<GeneralParameters>,
-    remembered: Option<RememberedParameters>,
+    remembered: Option<Arc<RememberedParameters>>,
     requirements: Requirements,
     wakers: Vec<Waker>,
 }
@@ -106,7 +106,7 @@ impl Parameters {
             state: Self::CLIENT_READY,
             client: Arc::new(client.into()),
             server: Arc::default(),
-            remembered,
+            remembered: remembered.map(Arc::new),
             requirements: Requirements::Client {
                 origin_dcid,
                 initial_scid: None,
@@ -137,10 +137,6 @@ impl Parameters {
             Requirements::Client { .. } => Role::Client,
             Requirements::Server { .. } => Role::Server,
         }
-    }
-
-    fn remembered(&self) -> Option<&RememberedParameters> {
-        self.remembered.as_ref()
     }
 
     // fn set_retry_scid(&mut self, cid: ConnectionId) {
@@ -388,14 +384,10 @@ impl ArcParameters {
     ///
     /// It is meaningful only for the client, to send early data
     /// with 0Rtt packets before receving the server transport params.
-    pub fn get_remebered_as<V>(&self, id: ParameterId) -> Result<Option<V>, Error>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
+    pub fn remembered(&self) -> Result<Option<Arc<RememberedParameters>>, Error> {
         let guard = self.0.lock().unwrap();
         let params = guard.as_ref().map_err(Clone::clone)?;
-        Ok(params.remembered().and_then(|r| r.get_as(id)))
+        Ok(params.remembered.clone())
     }
 
     // /// Sets the retry source connection ID in the server
@@ -614,7 +606,8 @@ mod tests {
 
         // Test remembered params
         assert_eq!(
-            arc_params.get_remebered_as::<VarInt>(ParameterId::MaxUdpPayloadSize),
+            arc_params.remembered().map(|remembered| remembered
+                .map(|remembered| remembered.get_as::<VarInt>(ParameterId::MaxUdpPayloadSize))),
             Ok(None)
         );
 

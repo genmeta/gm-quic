@@ -20,7 +20,7 @@ use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
     net::{address::BindAddr, tx::ArcSendWakers},
-    param::{ArcParameters, ParameterId, RememberedParameters},
+    param::{ArcParameters, ParameterId},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
     varint::VarInt,
@@ -55,7 +55,7 @@ use crate::{
     termination::Terminator,
     tls::{
         self, ArcClientName, ArcEndpointName, ArcPeerCerts, ArcSendGate, ArcServerName,
-        ArcTlsSession, ClientAuthers,
+        ArcTlsSession, ClientAuthers, TlsSession,
     },
 };
 
@@ -71,7 +71,6 @@ impl Connection {
             token_registry: ArcTokenRegistry::with_sink(server_name.clone(), token_sink),
             server_name,
             client_params: ClientParameters::default(),
-            remembered: None,
         }
     }
 
@@ -91,18 +90,12 @@ pub struct ClientFoundation {
     token_registry: ArcTokenRegistry,
     client_params: ClientParameters,
     server_name: String,
-    remembered: Option<RememberedParameters>,
 }
 
 impl ClientFoundation {
-    pub fn with_parameters(
-        self,
-        client_params: ClientParameters,
-        remembered: Option<RememberedParameters>,
-    ) -> Self {
+    pub fn with_parameters(self, client_params: ClientParameters) -> Self {
         ClientFoundation {
             client_params,
-            remembered,
             ..self
         }
     }
@@ -278,7 +271,6 @@ impl<Foundation, Config> ProtoReady<Foundation, Config> {
 impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
     pub fn with_cids(self, origin_dcid: ConnectionId) -> ComponentsReady {
         let mut client_params = self.foundation.client_params;
-        let remembered = self.foundation.remembered;
 
         let tx_wakers = ArcSendWakers::default();
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
@@ -325,31 +317,39 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             .get_as(ParameterId::MaxAckDelay)
             .expect("unreachable: default value will be got if the value unset");
 
+        let client_name = ArcClientName::from(&client_params);
+
+        let tls_session =
+            TlsSession::new_client(self.foundation.server, self.tls_config, &client_params);
+        let remembered = tls_session
+            .load_remembered_parameters()
+            .and_then(Result::ok);
+
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, self.foundation.token, tx_wakers.clone()),
+            InitialSpace::new(
+                initial_keys.into(),
+                self.foundation.token,
+                tx_wakers.clone(),
+            ),
             HandshakeSpace::new(tx_wakers.clone()),
             DataSpace::new(
                 sid::Role::Client,
                 reliable_frames.clone(),
-                &client_params,
+                client_params.as_ref(),
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
+                tls_session.zero_rtt_keys(),
             ),
         );
 
-        let client_name = ArcClientName::from(&client_params);
         let parameters = ArcParameters::new_client(client_params, remembered, origin_dcid);
-
-        let tls_session =
-            ArcTlsSession::new_client(self.foundation.server, self.tls_config, &parameters);
-
         let raw_handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
 
         ComponentsReady {
             interfaces: self.interfaces,
             parameters,
-            tls_session,
+            tls_session: ArcTlsSession::new(tls_session),
             raw_handshake,
             token_registry: self.foundation.token_registry,
             cid_registry,
@@ -422,16 +422,24 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let max_ack_delay = server_params
             .get_as(ParameterId::MaxAckDelay)
             .expect("unreachable: default value will be got if the value unset");
+
+        let tls_session = TlsSession::new_server(self.tls_config, &server_params);
+
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, Vec::with_capacity(0), tx_wakers.clone()),
+            InitialSpace::new(
+                initial_keys.into(),
+                Vec::with_capacity(0),
+                tx_wakers.clone(),
+            ),
             HandshakeSpace::new(tx_wakers.clone()),
             DataSpace::new(
                 sid::Role::Server,
                 reliable_frames.clone(),
-                &server_params,
+                server_params.as_ref(),
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
+                tls_session.zero_rtt_keys(),
             ),
         );
 
@@ -440,14 +448,12 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             .initial_scid_from_peer_need_equal(client_scid)
             .unwrap();
 
-        let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
-
         let raw_handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
 
         ComponentsReady {
             interfaces: self.interfaces,
             parameters,
-            tls_session,
+            tls_session: ArcTlsSession::new(tls_session),
             raw_handshake,
             token_registry: self.foundation.token_registry,
             cid_registry,

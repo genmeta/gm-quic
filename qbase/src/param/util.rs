@@ -72,7 +72,7 @@ macro_rules! parameter_ids {
         }
 
         impl ParameterId{
-            pub const KNOWNS: &[Self] = &[
+            pub const KNOWNS: &'static [Self] = &[
                 $(ParameterId::$name,)*
             ];
 
@@ -540,7 +540,8 @@ impl GeneralParameters {
     #[inline]
     pub fn get_as<V>(&self, id: ParameterId) -> Option<V>
     where
-        V: TryFrom<ParameterValue, Error: Debug>,
+        V: TryFrom<ParameterValue>,
+        <V as TryFrom<ParameterValue>>::Error: Debug,
     {
         self.get(id).map(|v| v.try_into().expect("type mismatch"))
     }

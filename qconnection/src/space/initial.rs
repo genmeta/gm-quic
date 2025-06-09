@@ -20,7 +20,7 @@ use qbase::{
             GetDcid, GetScid, GetType,
             long::{InitialHeader, io::LongHeaderBuilder},
         },
-        keys::ArcKeys,
+        keys::{ArcKeys, Keys},
         number::PacketNumber,
     },
     token::TokenRegistry,
@@ -37,7 +37,6 @@ use qevent::{
 };
 use qinterface::packet::{CipherPacket, PlainPacket};
 use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
-use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
@@ -63,7 +62,7 @@ pub struct InitialSpace {
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, tx_wakers: ArcSendWakers) -> Self {
+    pub fn new(keys: Keys, token: Vec<u8>, tx_wakers: ArcSendWakers) -> Self {
         let journal = InitialJournal::with_capacity(16, None);
         let crypto_stream = CryptoStream::new(4096, 4096, tx_wakers);
 
@@ -113,7 +112,7 @@ impl InitialSpace {
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
                 .initial(self.token.lock().unwrap().clone()),
             buf,
-            keys,
+            keys.local.clone(),
             &sent_journal,
         )?;
 
@@ -165,7 +164,7 @@ impl InitialSpace {
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
                 .initial(self.token.lock().unwrap().clone()),
             buf,
-            keys,
+            keys.local.clone(),
             &sent_journal,
         )?;
 
@@ -403,7 +402,8 @@ impl ClosingInitialSpace {
     ) -> Option<FinalPacketLayout> {
         let header = LongHeaderBuilder::with_cid(dcid, scid).initial(vec![]);
         let pn = self.ccf_packet_pn;
-        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
+        let mut packet_writer =
+            PacketWriter::new_long(&header, buf, pn, self.keys.local.clone()).ok()?;
 
         let ccf = match ccf.clone() {
             ConnectionCloseFrame::App(mut app_close_frame) => {
