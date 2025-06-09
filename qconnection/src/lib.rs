@@ -62,7 +62,7 @@ use qevent::telemetry::Instrument;
 use qinterface::{
     ifaces::QuicInterfaces,
     queue::RcvdPacketQueue,
-    route::{Router, RouterEntry, RouterRegistry},
+    route::{RouterEntry, RouterRegistry},
 };
 use qrecovery::{
     journal, recv, reliable, send,
@@ -123,7 +123,6 @@ pub struct Components {
     spaces: Spaces,
     paths: ArcPathContexts,
     interfaces: Arc<QuicInterfaces>,
-    router: Arc<Router>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
@@ -145,7 +144,7 @@ enum SpecificComponents {
 struct ServerComponents {
     send_gate: ArcSendGate,
     client_authers: ClientAuthers,
-    _odcid_router_entry: RouterEntry,
+    odcid_router_entry: RouterEntry,
 }
 
 impl Components {

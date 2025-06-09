@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
@@ -40,8 +40,17 @@ impl Router {
     }
 
     // for origin_dcid
-    pub fn insert(&self, signpost: Signpost, queue: Arc<RcvdPacketQueue>) {
-        self.table.insert(signpost, queue);
+    pub fn insert(
+        self: &Arc<Self>,
+        signpost: Signpost,
+        queue: Arc<RcvdPacketQueue>,
+    ) -> RouterEntry {
+        self.table.insert(signpost, queue.clone());
+        RouterEntry {
+            signpost,
+            queue: Arc::downgrade(&queue),
+            router: self.clone(),
+        }
     }
 
     pub fn remove(&self, signpost: &Signpost) {
@@ -133,6 +142,34 @@ impl From<SocketAddr> for Signpost {
             cid: ConnectionId::default(),
             peer: Some(value),
         }
+    }
+}
+
+#[derive(Clone)]
+#[must_use = "When RouterEntry dropped, this will remove the entry from the router table"]
+pub struct RouterEntry {
+    signpost: Signpost,
+    queue: Weak<RcvdPacketQueue>,
+    router: Arc<Router>,
+}
+
+impl RouterEntry {
+    pub fn signpost(&self) -> Signpost {
+        self.signpost
+    }
+
+    pub fn remove(&self) {
+        self.router
+            .table
+            .remove_if(&self.signpost, |_, exist_queue| {
+                Weak::ptr_eq(&Arc::downgrade(exist_queue), &self.queue)
+            });
+    }
+}
+
+impl Drop for RouterEntry {
+    fn drop(&mut self) {
+        self.remove();
     }
 }
 

@@ -43,7 +43,7 @@ use tracing::Instrument as _;
 
 use super::{AckInitialSpace, pipe};
 use crate::{
-    Components, InitialJournal,
+    Components, InitialJournal, ServerComponents, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     termination::Terminator,
@@ -228,7 +228,6 @@ pub fn spawn_deliver_and_parse(
     };
 
     let components = components.clone();
-    let role = components.handshake.role();
     let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let deliver_and_parse = async move {
@@ -297,10 +296,12 @@ pub fn spawn_deliver_and_parse(
                     // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
                     // negotiating done.
                     // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if role == qbase::sid::Role::Server {
-                        let origin_dcid = components.parameters.get_origin_dcid()?;
-                        if origin_dcid != *packet.dcid() {
-                            components.router.remove(&origin_dcid.into());
+                    if let SpecificComponents::Server(ServerComponents {
+                        odcid_router_entry, ..
+                    }) = &components.specific
+                    {
+                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
+                            odcid_router_entry.remove();
                         }
                     }
                 }
