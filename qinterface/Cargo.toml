@@ -16,7 +16,6 @@ dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
 netdev = { workspace = true }
-netwatch = { workspace = true }
 qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
