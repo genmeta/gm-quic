@@ -262,7 +262,7 @@ impl<TX> SendingSender<TX> {
         &mut self,
         predicate: P,
         flow_limit: usize,
-    ) -> Result<StreamData, Signals>
+    ) -> Result<StreamData<'_>, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -419,7 +419,7 @@ impl<TX> DataSentSender<TX> {
         &mut self,
         predicate: P,
         flow_limit: usize,
-    ) -> Result<StreamData, Signals>
+    ) -> Result<StreamData<'_>, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -582,7 +582,7 @@ impl<TX> ArcSender<TX> {
         }
     }
 
-    pub(super) fn sender(&self) -> MutexGuard<Result<Sender<TX>, Error>> {
+    pub(super) fn sender(&self) -> MutexGuard<'_, Result<Sender<TX>, Error>> {
         self.0.lock().unwrap()
     }
 }

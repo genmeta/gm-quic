@@ -625,11 +625,11 @@ where
         }
     }
 
-    pub(super) fn accept_bi(&self, snd_buf_size: u64) -> AcceptBiStream<Ext<TX>> {
+    pub(super) fn accept_bi(&self, snd_buf_size: u64) -> AcceptBiStream<'_, Ext<TX>> {
         self.listener.accept_bi_stream(snd_buf_size)
     }
 
-    pub(super) fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
+    pub(super) fn accept_uni(&self) -> AcceptUniStream<'_, Ext<TX>> {
         self.listener.accept_uni_stream()
     }
 

@@ -99,7 +99,7 @@ where
 
     /// Create a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<TX> {
+    pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<'_, TX> {
         OpenBiStream {
             inner: self,
             snd_wnd_size,
@@ -108,7 +108,7 @@ where
 
     /// Create a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<TX> {
+    pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<'_, TX> {
         OpenUniStream {
             inner: self,
             snd_wnd_size,
@@ -117,13 +117,13 @@ where
 
     /// accept a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<Ext<TX>> {
+    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<'_, Ext<TX>> {
         self.0.accept_bi(snd_wnd_size)
     }
 
     /// accept a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
+    pub fn accept_uni(&self) -> AcceptUniStream<'_, Ext<TX>> {
         self.0.accept_uni()
     }
 }

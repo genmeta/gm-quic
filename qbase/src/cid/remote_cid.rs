@@ -413,7 +413,7 @@ where
     pub fn borrow_cid(
         &self,
         tx_waker: ArcSendWaker,
-    ) -> Result<Option<BorrowedCid<RETIRED>>, Signals> {
+    ) -> Result<Option<BorrowedCid<'_, RETIRED>>, Signals> {
         self.0.lock().unwrap().borrow_cid(tx_waker).map(|cid| {
             cid.map(|cid| BorrowedCid {
                 cid_cell: &self.0,

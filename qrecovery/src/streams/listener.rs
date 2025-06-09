@@ -87,7 +87,7 @@ impl<TX> ArcListener<TX> {
         Self(Arc::new(Mutex::new(Ok(Listener::new()))))
     }
 
-    pub(crate) fn guard(&self) -> Result<ListenerGuard<TX>, QuicError> {
+    pub(crate) fn guard(&self) -> Result<ListenerGuard<'_, TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ListenerGuard { inner: guard }),
@@ -95,14 +95,14 @@ impl<TX> ArcListener<TX> {
         }
     }
 
-    pub fn accept_bi_stream(&self, snd_buf_size: u64) -> AcceptBiStream<TX> {
+    pub fn accept_bi_stream(&self, snd_buf_size: u64) -> AcceptBiStream<'_, TX> {
         AcceptBiStream {
             inner: self,
             snd_buf_size,
         }
     }
 
-    pub fn accept_uni_stream(&self) -> AcceptUniStream<TX> {
+    pub fn accept_uni_stream(&'_ self) -> AcceptUniStream<'_, TX> {
         AcceptUniStream { inner: self }
     }
 

@@ -75,7 +75,7 @@ impl<TX> ArcOutput<TX> {
         self.0.lock().unwrap()
     }
 
-    pub(super) fn guard(&self) -> Result<ArcOutputGuard<TX>, QuicError> {
+    pub(super) fn guard(&'_ self) -> Result<ArcOutputGuard<'_, TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ArcOutputGuard(guard)),

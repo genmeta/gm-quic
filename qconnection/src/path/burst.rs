@@ -52,7 +52,7 @@ impl Burst {
     fn prepare<'b>(
         &self,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]>, Transaction)>, Signals> {
+    ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]>, Transaction<'_>)>, Signals> {
         let max_segments = self.path.interface.max_segments();
         let max_segment_size = self.path.interface.max_segment_size();
 
