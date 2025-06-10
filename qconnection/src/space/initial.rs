@@ -352,7 +352,7 @@ impl Feedback for InitialSpace {
 pub struct ClosingInitialSpace {
     rcvd_journal: ArcRcvdJournal,
     ccf_packet_pn: (u64, PacketNumber),
-    keys: Arc<Keys>,
+    keys: Keys,
 }
 
 impl InitialSpace {

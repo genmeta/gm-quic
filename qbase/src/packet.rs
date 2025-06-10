@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use bytes::{BufMut, BytesMut, buf::UninitSlice};
 use derive_more::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
@@ -199,6 +201,22 @@ enum Keys {
         keys: DirectionalKeys,
         key_phase: KeyPhaseBit,
     },
+}
+
+impl Debug for Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LongHeaderPacket { .. } => f
+                .debug_struct("LongHeaderPacket")
+                .field("keys", &"...")
+                .finish(),
+            Self::ShortHeaderPacket { key_phase, .. } => f
+                .debug_struct("ShortHeaderPacket")
+                .field("keys", &"...")
+                .field("key_phase", key_phase)
+                .finish(),
+        }
+    }
 }
 
 impl Keys {

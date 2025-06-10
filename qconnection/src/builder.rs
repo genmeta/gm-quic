@@ -20,7 +20,6 @@ use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
     net::{address::BindAddr, tx::ArcSendWakers},
-    packet::keys::ArcZeroRttKeys,
     param::{ArcParameters, ParameterId},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
@@ -315,15 +314,6 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rustls::quic::Version::V1,
         );
 
-        let flow_ctrl = FlowController::new(
-            0,
-            client_params
-                .get_as(ParameterId::InitialMaxData)
-                .expect("unreachable: default value will be got if the value unset"),
-            reliable_frames.clone(),
-            tx_wakers.clone(),
-        );
-
         let max_ack_delay = client_params
             .get_as(ParameterId::MaxAckDelay)
             .expect("unreachable: default value will be got if the value unset");
@@ -332,18 +322,16 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let tls_session =
             TlsSession::new_client(self.foundation.server, self.tls_config, &client_params);
-        let (remembered, zero_rtt_keys) = {
-            if self.zero_rtt.is_enabled() {
-                (
+
+        let remembered_params = self
+            .zero_rtt
+            .is_enabled()
+            .then(|| {
                     tls_session
                         .load_remembered_parameters()
-                        .and_then(Result::ok),
-                    tls_session.zero_rtt_keys(),
-                )
-            } else {
-                (None, ArcZeroRttKeys::Client(None))
-            }
-        };
+                    .and_then(Result::ok)
+            })
+            .and_then(|opt| opt);
 
         let spaces = Spaces::new(
             InitialSpace::new(
@@ -356,14 +344,34 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
                 sid::Role::Client,
                 reliable_frames.clone(),
                 client_params.as_ref(),
+                remembered_params.as_ref(),
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
-                zero_rtt_keys,
             ),
         );
 
-        let parameters = ArcParameters::new_client(client_params, remembered, origin_dcid);
+        if self.zero_rtt.is_enabled() {
+            tls_session.load_zero_rtt_keys(&spaces.data().zero_rtt_keys());
+        }
+
+        let flow_ctrl = FlowController::new(
+            remembered_params
+                .as_ref()
+                .map(|remembered_params| {
+                    remembered_params
+                        .get_as(ParameterId::InitialMaxData)
+                        .expect("unreachable: default value will be got if the value unset")
+                })
+                .unwrap_or(0),
+            client_params
+                .get_as(ParameterId::InitialMaxData)
+                .expect("unreachable: default value will be got if the value unset"),
+            reliable_frames.clone(),
+            tx_wakers.clone(),
+        );
+
+        let parameters = ArcParameters::new_client(client_params, remembered_params, origin_dcid);
         let raw_handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
 
         ComponentsReady {
@@ -447,11 +455,6 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let tls_session =
             TlsSession::new_server(self.tls_config, &server_params, self.zero_rtt.is_enabled());
 
-        let zero_rtt_keys = if self.zero_rtt.is_enabled() {
-            tls_session.zero_rtt_keys()
-        } else {
-            ArcZeroRttKeys::Server(None)
-        };
         let spaces = Spaces::new(
             InitialSpace::new(
                 initial_keys.into(),
@@ -463,10 +466,10 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
                 sid::Role::Server,
                 reliable_frames.clone(),
                 server_params.as_ref(),
+                None,
                 self.streams_ctrl,
                 tx_wakers.clone(),
                 max_ack_delay,
-                zero_rtt_keys,
             ),
         );
 
@@ -656,7 +659,10 @@ fn handle_0rtt_rejection(components: &Components) -> impl Future<Output = ()> + 
     let zero_rtt = components.zero_rtt.clone();
     let streams = components.spaces.data().streams().clone();
     async move {
-        if matches!(zero_rtt.is_accepted().await, Ok(Some(false))) {
+        let Some(fut) = zero_rtt.is_accepted() else {
+            return;
+        };
+        if matches!(fut.await, Ok(false)) {
             streams.on_0rtt_rejected();
         }
     }

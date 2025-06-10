@@ -99,7 +99,7 @@ pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Err
     }
 }
 
-#[derive(CopyGetters)]
+#[derive(Debug, CopyGetters)]
 pub struct PacketLayout {
     hdr_len: usize,
     len_encoding: usize,

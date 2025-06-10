@@ -298,7 +298,7 @@ impl Feedback for HandshakeSpace {
 pub struct ClosingHandshakeSpace {
     rcvd_journal: ArcRcvdJournal,
     ccf_packet_pn: (u64, PacketNumber),
-    keys: Arc<Keys>,
+    keys: Keys,
 }
 
 impl HandshakeSpace {

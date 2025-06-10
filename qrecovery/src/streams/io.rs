@@ -7,7 +7,10 @@ use std::{
 };
 
 use derive_more::{Deref, DerefMut};
-use qbase::{error::Error as QuicError, sid::StreamId};
+use qbase::{
+    error::Error as QuicError,
+    sid::{Dir, StreamId},
+};
 
 use crate::{recv::Incoming, send::Outgoing};
 
@@ -95,9 +98,19 @@ impl<TX> ArcOutputGuard<'_, TX> {
         };
     }
 
-    pub(super) fn on_0rtt_rejected(&mut self) {
+    pub(super) fn on_0rtt_rejected(
+        &mut self,
+        init_max_streams_bidi: u64,
+        init_max_streams_uni: u64,
+    ) {
         match self.0.as_ref() {
-            Ok(set) => set.values().for_each(|(o, _)| o.on_0rtt_rejected()),
+            Ok(set) => set
+                .iter()
+                .filter(|(sid, _)| {
+                    (sid.dir() == Dir::Bi && sid.id() < init_max_streams_bidi)
+                        || (sid.dir() == Dir::Uni && sid.id() < init_max_streams_uni)
+                })
+                .for_each(|(_, (o, _))| o.on_0rtt_rejected()),
             Err(e) => unreachable!("output is invalid: {e}"),
         };
     }

@@ -28,7 +28,7 @@ use qbase::{
         signal::SpinBit,
         r#type::Type,
     },
-    param::GeneralParameters,
+    param::{GeneralParameters, RememberedParameters},
     sid::{ControlStreamsConcurrency, Role},
     util::BoundQueue,
 };
@@ -81,13 +81,13 @@ impl DataSpace {
         role: Role,
         reliable_frames: ArcReliableFrameDeque,
         local_params: &GeneralParameters,
+        remembered_params: Option<&RememberedParameters>,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
         max_ack_delay: Duration,
-        zero_rtt_keys: ArcZeroRttKeys,
     ) -> Self {
         Self {
-            zero_rtt_keys,
+            zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16, Some(max_ack_delay)),
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
@@ -95,6 +95,7 @@ impl DataSpace {
             streams: DataStreams::new(
                 role,
                 local_params,
+                remembered_params,
                 streams_ctrl,
                 reliable_frames,
                 tx_wakers.clone(),
@@ -104,11 +105,12 @@ impl DataSpace {
         }
     }
 
-    pub fn decrypt_0rtt_packet(
+    pub async fn decrypt_0rtt_packet(
         &self,
         packet: CipherZeroRttPacket,
     ) -> Option<Result<PlainZeroRttPacket, QuicError>> {
-        match self.zero_rtt_keys.get_decrypt_keys() {
+        // TODO: client should never received 0rtt packet...
+        match self.zero_rtt_keys.get_decrypt_keys()?.await {
             Some(keys) => {
                 packet.decrypt_long_packet(keys.header.as_ref(), keys.packet.as_ref(), |pn| {
                     self.journal.of_rcvd_packets().decode_pn(pn)
@@ -143,10 +145,12 @@ impl DataSpace {
         buf: &mut [u8],
     ) -> Result<(PaddablePacket, usize), Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
+            tracing::info!("skip: 1rtt key ready");
             return Err(Signals::empty()); // not error, just skip 0rtt
         }
 
         let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
+            tracing::info!("skip: no 0rtt key");
             return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
         };
 
@@ -357,6 +361,10 @@ impl DataSpace {
         self.one_rtt_keys.clone()
     }
 
+    pub fn zero_rtt_keys(&self) -> ArcZeroRttKeys {
+        self.zero_rtt_keys.clone()
+    }
+
     pub fn on_conn_error(&self, error: &Error) {
         self.streams.on_conn_error(error);
         #[cfg(feature = "unreliable")]
@@ -476,10 +484,8 @@ pub fn spawn_deliver_and_parse(
             Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
             Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
             Frame::HandshakeDone(f) => {
-                _ = {
-                    // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
-                    handshake_done_frames_entry.send(f)
-                }
+                // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
+                _ = handshake_done_frames_entry.send(f)
             }
             Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
             Frame::Challenge(f) => _ = path.recv_frame(&f),
@@ -503,7 +509,7 @@ pub fn spawn_deliver_and_parse(
             while let Some((bind_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-                    if let Some(packet) = space.decrypt_0rtt_packet(packet).transpose()? {
+                    if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                         let path = match components
                             .get_or_try_create_path(bind_addr, link, pathway, true)
                         {

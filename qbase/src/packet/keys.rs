@@ -6,6 +6,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use futures::FutureExt;
 use rustls::quic::{
     DirectionalKeys as RustlsDirectionalKeys, HeaderProtectionKey, Keys as RustlsKeys, PacketKey,
     Secrets,
@@ -48,12 +49,71 @@ impl From<RustlsKeys> for Keys {
 }
 
 use super::KeyPhaseBit;
+use crate::sid::Role;
 
 #[derive(Clone)]
-enum KeysState {
+enum KeysState<K> {
     Pending(Option<Waker>),
-    Ready(Arc<Keys>),
+    Ready(K),
     Invalid,
+}
+
+impl<K> KeysState<K> {
+    fn set(&mut self, keys: K) {
+        match self {
+            KeysState::Pending(waker) => {
+                if let Some(waker) = waker.take() {
+                    waker.wake();
+                }
+                *self = KeysState::Ready(keys);
+            }
+            KeysState::Ready(_) => unreachable!("KeysState::set called twice"),
+            KeysState::Invalid => unreachable!("KeysState::set called after invalidation"),
+        }
+    }
+
+    fn get(&mut self) -> Option<&K> {
+        match self {
+            KeysState::Ready(keys) => Some(keys),
+            KeysState::Pending(..) | KeysState::Invalid => None,
+        }
+    }
+
+    fn invalid(&mut self) -> Option<K> {
+        match std::mem::replace(self, KeysState::Invalid) {
+            KeysState::Pending(waker) => {
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+                None
+            }
+            KeysState::Ready(keys) => Some(keys),
+            KeysState::Invalid => None,
+        }
+    }
+}
+
+impl<K: Unpin + Clone> Future for KeysState<K> {
+    type Output = Option<K>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut() {
+            KeysState::Pending(waker) => {
+                if waker
+                    .as_ref()
+                    .is_some_and(|waker| !waker.will_wake(cx.waker()))
+                {
+                    unreachable!(
+                        "Try to get remote keys from multiple tasks! This is a bug, please report it."
+                    )
+                }
+                *waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            KeysState::Ready(keys) => Poll::Ready(Some(keys.clone())),
+            KeysState::Invalid => Poll::Ready(None),
+        }
+    }
 }
 
 /// Long packet keys, for encryption and decryption keys for those long packets,
@@ -69,11 +129,10 @@ enum KeysState {
 ///
 /// The keys for 1-RTT packets are a separate structure, see [`ArcOneRttKeys`].
 #[derive(Clone)]
-pub struct ArcKeys(Arc<Mutex<KeysState>>);
+pub struct ArcKeys(Arc<Mutex<KeysState<Keys>>>);
 
 impl ArcKeys {
-    #[inline]
-    fn lock_guard(&self) -> MutexGuard<'_, KeysState> {
+    fn lock_guard(&self) -> MutexGuard<'_, KeysState<Keys>> {
         self.0.lock().unwrap()
     }
 
@@ -91,7 +150,7 @@ impl ArcKeys {
     ///
     /// The initial keys are known at first, can use this method to create the [`ArcKeys`].
     pub fn with_keys(keys: Keys) -> Self {
-        Self(Arc::new(KeysState::Ready(Arc::new(keys)).into()))
+        Self(Arc::new(KeysState::Ready(keys).into()))
     }
 
     /// Asynchronously obtain the remote keys for removing header protection and packet decryption.
@@ -118,8 +177,8 @@ impl ArcKeys {
     ///     // use pk to decrypt packet body...
     /// }
     /// ```
-    pub fn get_remote_keys(&self) -> GetRemoteKeys<'_> {
-        GetRemoteKeys(self)
+    pub fn get_remote_keys(&self) -> GetRemoteKeys<'_, Keys> {
+        GetRemoteKeys(&self.0)
     }
 
     /// Get the local keys for packet encryption and adding header protection.
@@ -145,12 +204,8 @@ impl ArcKeys {
     ///     // use hpk to add header protection...
     /// }
     /// ```
-    pub fn get_local_keys(&self) -> Option<Arc<Keys>> {
-        let state = self.lock_guard();
-        match &*state {
-            KeysState::Ready(keys) => Some(keys.clone()),
-            _ => None,
-        }
+    pub fn get_local_keys(&self) -> Option<Keys> {
+        self.lock_guard().get().cloned()
     }
 
     /// Set the keys to the [`ArcKeys`].
@@ -160,17 +215,7 @@ impl ArcKeys {
     /// its internal waker will be awakened to notify the packet decryption task
     /// to continue, if the internal waker was registered.
     pub fn set_keys(&self, keys: Keys) {
-        let mut state = self.lock_guard();
-        match &mut *state {
-            KeysState::Pending(waker) => {
-                if let Some(waker) = waker.take() {
-                    waker.wake();
-                }
-                *state = KeysState::Ready(Arc::new(keys));
-            }
-            KeysState::Ready(_) => panic!("set_keys called twice"),
-            KeysState::Invalid => panic!("set_keys called after invalidation"),
-        }
+        self.lock_guard().set(keys);
     }
 
     /// Retire the keys, which means that the keys are no longer available.
@@ -179,75 +224,61 @@ impl ArcKeys {
     /// Especially in the closing state, the return keys are used to generate the final packet
     /// containing the ConnectionClose frame, and decrypt the data packets received from the
     /// peer for a while.
-    pub fn invalid(&self) -> Option<Arc<Keys>> {
-        let mut state = self.lock_guard();
-        match std::mem::replace(state.deref_mut(), KeysState::Invalid) {
-            KeysState::Pending(waker) => {
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
-                None
-            }
-            KeysState::Ready(keys) => Some(keys),
-            KeysState::Invalid => unreachable!(),
-        }
+    pub fn invalid(&self) -> Option<Keys> {
+        self.lock_guard().invalid()
     }
 }
 
-/// To obtain the remote keys from [`ArcKeys`] for removing long header protection
+/// To obtain the remote keys from [`ArcKeys`] or [`ArcOneRttKeys`] for removing long header protection
 /// and packet decryption.
-pub struct GetRemoteKeys<'k>(&'k ArcKeys);
+pub struct GetRemoteKeys<'k, K>(&'k Mutex<KeysState<K>>);
 
-impl Future for GetRemoteKeys<'_> {
-    type Output = Option<Arc<Keys>>;
+impl<K: Unpin + Clone> Future for GetRemoteKeys<'_, K> {
+    type Output = Option<K>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut keys = self.0.lock_guard();
-        match &mut *keys {
-            KeysState::Pending(waker) => {
-                if waker
-                    .as_ref()
-                    .is_some_and(|waker| !waker.will_wake(cx.waker()))
-                {
-                    unreachable!(
-                        "Try to get remote keys from multiple tasks! This is a bug, please report it."
-                    )
-                }
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            KeysState::Ready(keys) => Poll::Ready(Some(keys.clone())),
-            KeysState::Invalid => Poll::Ready(None),
-        }
+        Pin::new(self.0.lock().unwrap()).poll_unpin(cx)
     }
 }
 
-pub enum ArcZeroRttKeys {
-    Client(Option<DirectionalKeys>),
-    Server(Option<DirectionalKeys>),
+#[derive(Clone)]
+pub struct ArcZeroRttKeys {
+    role: Role,
+    keys: Arc<Mutex<KeysState<DirectionalKeys>>>,
 }
 
 impl ArcZeroRttKeys {
-    pub fn new_client(keys: Option<RustlsDirectionalKeys>) -> Self {
-        Self::Client(keys.map(Into::into))
-    }
-
-    pub fn new_server(keys: Option<RustlsDirectionalKeys>) -> Self {
-        Self::Server(keys.map(Into::into))
-    }
-
-    pub fn get_decrypt_keys(&self) -> Option<DirectionalKeys> {
-        match self {
-            Self::Client(..) => None,
-            Self::Server(keys) => keys.clone(),
+    pub fn new_pending(role: Role) -> Self {
+        Self {
+            role,
+            keys: Arc::new(Mutex::new(KeysState::Pending(None))),
         }
+    }
+
+    fn lock_guard(&self) -> MutexGuard<'_, KeysState<DirectionalKeys>> {
+        self.keys.lock().unwrap()
+    }
+
+    pub fn set_keys(&self, keys: DirectionalKeys) {
+        self.lock_guard().set(keys);
     }
 
     pub fn get_encrypt_keys(&self) -> Option<DirectionalKeys> {
-        match self {
-            Self::Client(keys) => keys.clone(),
-            Self::Server(..) => None,
+        match self.role {
+            Role::Client => self.lock_guard().get().cloned(),
+            Role::Server => None,
         }
+    }
+
+    pub fn get_decrypt_keys(&self) -> Option<GetRemoteKeys<'_, DirectionalKeys>> {
+        match self.role {
+            Role::Client => None,
+            Role::Server => Some(GetRemoteKeys(&self.keys)),
+        }
+    }
+
+    pub fn invalid(&self) -> Option<DirectionalKeys> {
+        self.lock_guard().invalid()
     }
 }
 

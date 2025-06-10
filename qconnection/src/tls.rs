@@ -59,6 +59,7 @@ impl TlsSession {
             params,
         )
         .expect("Invalid client tls config");
+        client_connection.zero_rtt_keys();
 
         let connection = TlsConnection::Client(client_connection);
 
@@ -98,16 +99,14 @@ impl TlsSession {
         }
     }
 
-    pub fn zero_rtt_keys(&self) -> ArcZeroRttKeys {
+    pub fn load_zero_rtt_keys(&self, keys: &ArcZeroRttKeys) {
         match &self.tls_conn {
-            // encrypt keys
             TlsConnection::Client(client_conn) => {
-                ArcZeroRttKeys::Client(client_conn.zero_rtt_keys().map(Into::into))
+                if let Some(zero_rtt_encrypt_keys) = client_conn.zero_rtt_keys() {
+                    keys.set_keys(zero_rtt_encrypt_keys.into());
+                }
             }
-            // decrypt keys
-            TlsConnection::Server(server_conn) => {
-                ArcZeroRttKeys::Server(server_conn.zero_rtt_keys().map(Into::into))
-            }
+            TlsConnection::Server(..) => { /* not this time */ }
         }
     }
 
@@ -144,28 +143,38 @@ impl TlsSession {
 struct ReadAndProcess<'r> {
     tls_conn: &'r Mutex<Result<TlsSession, Error>>,
     messages: &'r mut Vec<u8>,
+    // client: handshake space(EE), server: initial space(CH)
     params: &'r ArcParameters,
+    // client: before initial, server: initial space(CH)
     client_name: &'r ArcClientName,
+    // client: before initial, server: initial space(CH)
     server_name: &'r ArcServerName,
+    // client: handshake space(SC), server: handshake space(CC)
     peer_certs: &'r ArcPeerCerts,
     specific: &'r SpecificComponents,
+    //
     zero_rtt: &'r ArcZeroRtt,
+    //
+    zero_rtt_keys: &'r ArcZeroRttKeys,
 }
 
 const CLIENT_NAME_PARAM_ID: ParameterId = ParameterId::Value(VarInt::from_u32(0xffee));
 
 impl ReadAndProcess<'_> {
-    fn try_parse_hello(&mut self) -> Result<(), Error> {
+    fn try_recv_params(&mut self) -> Result<(), Error> {
         let mut guard = self.tls_conn.lock().unwrap();
         let tls_session = match guard.deref_mut() {
             Ok(tls_conn) => tls_conn,
             Err(e) => return Err(e.clone()),
         };
 
+        // client: received EE
+        // server: received CH
         let Some(handshake_kind) = tls_session.tls_conn.handshake_kind() else {
             return Ok(());
         };
 
+        // The handshake type and transport parameters are ready at the same time
         if matches!(self.params.is_remote_params_received(), None | Some(true)) {
             return Ok(());
         }
@@ -175,11 +184,18 @@ impl ReadAndProcess<'_> {
             .quic_transport_parameters()
             .expect("Parameters should be ready when handshake kind is known");
 
-        let params: PeerParameters = match self.specific {
+        let (peer_params, zero_rtt_accepted): (PeerParameters, bool) = match self.specific {
             SpecificComponents::Client => {
                 let params = be_server_parameters(raw_params)?;
-                /* no extra auth */
-                params.into()
+                let zero_rtt_accepted = matches!(handshake_kind, rustls::HandshakeKind::Resumed)
+                    && matches!(
+                        self.params.remembered(),
+                        Ok(Some(remembered)) if remembered.is_0rtt_accepted(&params)
+                    );
+
+                // no extra auth
+
+                (params.into(), zero_rtt_accepted)
             }
             SpecificComponents::Server(server_components) => {
                 let params = be_client_parameters(raw_params)?;
@@ -196,7 +212,7 @@ impl ReadAndProcess<'_> {
                     tracing::warn!(
                         host,
                         ?client_name,
-                        "Client SNI or client name verification failed"
+                        "Client SNI or client name verification failed, refusing connection."
                     );
                     return Err(Error::Quic(QuicError::with_default_fty(
                         ErrorKind::ConnectionRefused,
@@ -206,21 +222,25 @@ impl ReadAndProcess<'_> {
                 self.server_name.assign(host.to_owned());
                 self.client_name.assign(client_name.clone());
                 server_components.send_gate.grant_permit();
-                params.into()
+
+                let zero_rtt_accepted = match tls_session.tls_conn.zero_rtt_keys() {
+                    Some(zero_rtt_keys) => {
+                        self.zero_rtt_keys.set_keys(zero_rtt_keys.into());
+                        true
+                    }
+                    None => {
+                        // We can be sure that 0rtt key does not exist.
+                        self.zero_rtt_keys.invalid();
+                        false
+                    }
+                };
+                (params.into(), zero_rtt_accepted)
             }
         };
-        let is_0rtt_accepted = match &tls_session.tls_conn {
-            TlsConnection::Client(client_conn) => {
-                handshake_kind == rustls::HandshakeKind::Resumed
-                    && client_conn.is_early_data_accepted()
-            }
-            TlsConnection::Server(..) => handshake_kind == rustls::HandshakeKind::Resumed,
-        };
-        match is_0rtt_accepted {
-            true => self.zero_rtt.on_0rtt_accepted(),
-            false => self.zero_rtt.on_0rtt_rejected(),
-        }
-        self.params.recv_remote_params(params)
+
+        tracing::debug!(?handshake_kind, zero_rtt_accepted, ?peer_params);
+        self.zero_rtt.set(zero_rtt_accepted);
+        self.params.recv_remote_params(peer_params)
     }
 
     fn try_parse_certs(&mut self) -> Result<(), Error> {
@@ -255,7 +275,7 @@ impl ReadAndProcess<'_> {
                             tracing::warn!(
                                 ?host,
                                 ?client_name,
-                                "Client certificate verification failed"
+                                "Client certificate verification failed, refusing connection."
                             );
                             return Err(Error::Quic(QuicError::with_default_fty(
                                 ErrorKind::ConnectionRefused,
@@ -293,7 +313,7 @@ impl futures::Future for ReadAndProcess<'_> {
             (key_change, tls_conn.is_handshaking())
         };
 
-        this.try_parse_hello()?;
+        this.try_recv_params()?;
         this.try_parse_certs()?;
 
         Poll::Ready(Ok((key_change, is_handshaking)))
@@ -331,6 +351,7 @@ impl ArcTlsSession {
         peer_certs: &'r ArcPeerCerts,
         specific: &'r SpecificComponents,
         zero_rtt: &'r ArcZeroRtt,
+        zero_rtt_keys: &'r ArcZeroRttKeys,
     ) -> ReadAndProcess<'r> {
         buf.clear();
         ReadAndProcess {
@@ -342,6 +363,7 @@ impl ArcTlsSession {
             peer_certs,
             specific,
             zero_rtt,
+            zero_rtt_keys,
         }
     }
 
@@ -430,6 +452,7 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
     let paths = components.paths.clone();
     let specific = components.specific.clone();
     let zero_rtt = components.zero_rtt.clone();
+    let zero_rtt_keys = components.spaces.data().zero_rtt_keys().clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
@@ -444,6 +467,7 @@ pub fn keys_upgrade(components: &Components) -> impl futures::Future<Output = ()
                     &peer_certs,
                     &specific,
                     &zero_rtt,
+                    &zero_rtt_keys,
                 )
                 .await
             {

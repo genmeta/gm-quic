@@ -32,7 +32,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     net::tx::ArcSendWakers,
-    param::GeneralParameters,
+    param::{GeneralParameters, RememberedParameters},
     sid::{ControlStreamsConcurrency, Role, StreamId},
 };
 
@@ -84,6 +84,7 @@ where
     pub fn new(
         role: Role,
         local_params: &GeneralParameters,
+        remembered_params: Option<&RememberedParameters>,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
@@ -91,6 +92,7 @@ where
         Self(Arc::new(raw::DataStreams::new(
             role,
             local_params,
+            remembered_params,
             ctrl,
             ctrl_frames,
             tx_wakers,

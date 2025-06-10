@@ -7,6 +7,7 @@ use crate::{
     error::{ErrorKind, QuicError},
     frame::FrameType,
     param::{ParameterFlags, ParameterId, ParameterValue, be_parameter},
+    varint::VarInt,
 };
 
 fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> QuicError {
@@ -177,6 +178,21 @@ impl RememberedParameters {
     #[inline]
     pub fn contains(&self, id: ParameterId) -> bool {
         self.0.contains(id)
+    }
+
+    pub fn is_0rtt_accepted(&self, server_params: &ServerParameters) -> bool {
+        ParameterId::KNOWNS
+            .iter()
+            .filter(|id| id.flags().contains(ParameterFlags::NOT_REDUCE))
+            .all(|&id| {
+                match (
+                    self.get_as::<VarInt>(id),
+                    server_params.get_as::<VarInt>(id),
+                ) {
+                    (Some(old_value), Some(new_value)) => old_value <= new_value,
+                    _ => unreachable!("NOT_REDUCE parameters have default values"),
+                }
+            })
     }
 }
 

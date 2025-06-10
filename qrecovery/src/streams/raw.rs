@@ -9,7 +9,7 @@ use qbase::{
     },
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
-    param::{GeneralParameters, ParameterId},
+    param::{GeneralParameters, ParameterId, RememberedParameters},
     sid::{
         ControlStreamsConcurrency, Dir, Role, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
@@ -139,13 +139,16 @@ where
 {
     pub fn on_0rtt_rejected(&self) {
         if let Ok(mut output_guard) = self.output.guard() {
-            output_guard.on_0rtt_rejected();
+            let init_max_streams_bidi = self.stream_ids.local.max_streams(Dir::Bi, true);
+            let init_max_streams_uni = self.stream_ids.local.max_streams(Dir::Uni, true);
+            output_guard.on_0rtt_rejected(init_max_streams_bidi, init_max_streams_uni);
         }
     }
 
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
+    #[tracing::instrument(skip(self, packet), ret, err(Debug))]
     fn try_load_data_into_once<P>(
         &self,
         packet: &mut P,
@@ -174,7 +177,7 @@ where
             P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
         {
             let mut signals = Signals::TRANSPORT;
-            for (sid, (outgoing, _s), tokens) in streams {
+            for (sid, (outgoing, _ios), tokens) in streams {
                 match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
                     Ok((data_len, is_fresh)) => {
                         let remain_tokens = tokens - data_len;
@@ -188,9 +191,11 @@ where
         }
 
         // 不一定所有流都允许被发送，比如，0rtt被拒绝max_streams会倒缩，此时大于max_streams的流就不允许被发送
+        let max_streams_bidi = self.stream_ids.local.max_streams(Dir::Bi, is_0rtt);
+        let max_streams_uni = self.stream_ids.local.max_streams(Dir::Bi, is_0rtt);
         let stream_allowed = |sid: &StreamId| {
-            sid.role() == self.stream_ids.remote.role()
-                || sid.id() < self.stream_ids.local.max_streams(sid.dir(), is_0rtt)
+            sid.dir() == Dir::Bi && sid.id() < max_streams_bidi
+                || sid.dir() == Dir::Uni && sid.id() < max_streams_uni
         };
 
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
@@ -560,6 +565,7 @@ where
     pub(super) fn new(
         role: Role,
         local_params: &GeneralParameters,
+        remembered_params: Option<&RememberedParameters>,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
@@ -571,6 +577,12 @@ where
         let max_uni_streams = local_params
             .get_as::<u64>(InitialMaxStreamsUni)
             .expect("unreachable: default will be used");
+        let remembered_max_bi_streams = remembered_params
+            .and_then(|p| p.get_as::<u64>(InitialMaxStreamsBidi))
+            .unwrap_or(0);
+        let remembered_max_uni_streams = remembered_params
+            .and_then(|p| p.get_as::<u64>(InitialMaxStreamsUni))
+            .unwrap_or(0);
         let uni_stream_rcvbuf_size = local_params
             .get_as::<u64>(InitialMaxStreamDataUni)
             .expect("unreachable: default will be used");
@@ -587,6 +599,8 @@ where
                 role,
                 max_bi_streams,
                 max_uni_streams,
+                remembered_max_bi_streams,
+                remembered_max_uni_streams,
                 Ext(ctrl_frames.clone()),
                 ctrl,
                 tx_wakers.clone(),

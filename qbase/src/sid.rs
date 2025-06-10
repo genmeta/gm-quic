@@ -314,18 +314,27 @@ where
     /// parameters, which are unknown at the beginning.
     /// Therefore, peer's `initial_max_streams_xx` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_streams_xx` setting.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         role: Role,
-        max_bi_streams: u64,
-        max_uni_streams: u64,
+        local_max_bi: u64,
+        local_max_uni: u64,
+        remembered_max_bi: u64,
+        remembered_max_uni: u64,
         sid_frames_tx: T,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
     ) -> Self {
         // 缺省为0
-        let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone(), tx_wakers);
+        let local = ArcLocalStreamIds::new(
+            role,
+            remembered_max_bi,
+            remembered_max_uni,
+            sid_frames_tx.clone(),
+            tx_wakers,
+        );
         let remote =
-            ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams, sid_frames_tx, ctrl);
+            ArcRemoteStreamIds::new(!role, local_max_bi, local_max_uni, sid_frames_tx, ctrl);
         Self { local, remote }
     }
 }

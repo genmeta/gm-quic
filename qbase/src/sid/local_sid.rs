@@ -97,6 +97,7 @@ where
             }
             *max_streams = val;
         }
+        self.new_max_rcvd = true;
     }
 
     fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
@@ -150,17 +151,13 @@ where
     /// the `blocked` contains the [`StreamsBlockedFrame`] that will be sent to peer.
     pub fn new(
         role: Role,
-        max_bi_streams: u64,
-        max_uni_streams: u64,
+        max_bidi: u64,
+        max_uni: u64,
         blocked: BLOCKED,
         tx_wakers: ArcSendWakers,
     ) -> Self {
         Self(Arc::new(Mutex::new(LocalStreamIds::new(
-            role,
-            max_bi_streams,
-            max_uni_streams,
-            blocked,
-            tx_wakers,
+            role, max_bidi, max_uni, blocked, tx_wakers,
         ))))
     }
 
