@@ -405,6 +405,7 @@ impl QuicListeners {
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
+                .with_zero_rtt(listeners.tls_config.max_early_data_size == 0xffffffff)
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
                 .with_qlog(self.logger.as_ref())
@@ -695,6 +696,18 @@ impl QuicListenersBuilder<TlsServerConfig> {
         self.tls_config
             .alpn_protocols
             .extend(alpn.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn enable_0rtt(mut self) -> Self {
+        // The TLS early_data extension in the NewSessionTicket message is defined to convey (in the
+        // max_early_data_size parameter) the amount of TLS 0-RTT data the server is willing to accept. QUIC does not
+        // use TLS early data. QUIC uses 0-RTT packets to carry early data. Accordingly, the max_early_data_size
+        // parameter is repurposed to hold a sentinel value 0xffffffff to indicate that the server is willing to accept QUIC
+        // 0-RTT data. To indicate that the server does not accept 0-RTT data, the early_data extension is omitted from
+        // the NewSessionTicket. The amount of data that the client can send in QUIC 0-RTT is controlled by the
+        // initial_max_data transport parameter supplied by the server.
+        self.tls_config.max_early_data_size = 0xffffffff;
         self
     }
 

@@ -80,6 +80,8 @@ async fn run(options: Options) -> Result<(), Error> {
         .with_parameters(client_parameters())
         .with_qlog(qlogger)
         .reuse_connection()
+        .enable_sslkeylog()
+        .enable_0rtt()
         .build();
 
     match options.files {
@@ -186,7 +188,8 @@ async fn send_and_verify_echo(
 ) -> Result<(), Error> {
     let (server_name, server_addr) = lookup(auth).await?;
     let connection = client.connect(server_name, server_addr)?;
-    let (_sid, (reader, writer)) = connection.open_bi_stream().await?.unwrap();
+    let (sid, (reader, writer)) = connection.open_bi_stream().await?.unwrap();
+    tracing::debug!(%sid, "opened stream");
 
     let mut reader = rx_pb.wrap_async_read(reader);
     let mut writer = tx_pb.wrap_async_write(writer);

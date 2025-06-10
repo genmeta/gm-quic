@@ -327,8 +327,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             .zero_rtt
             .is_enabled()
             .then(|| {
-                    tls_session
-                        .load_remembered_parameters()
+                tls_session
+                    .load_remembered_parameters()
                     .and_then(Result::ok)
             })
             .and_then(|opt| opt);

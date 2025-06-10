@@ -139,6 +139,7 @@ impl QuicClient {
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
+                .with_zero_rtt(self.tls_config.enable_early_data)
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
                 .with_qlog(self.logger.as_ref())
@@ -580,9 +581,13 @@ impl QuicClientBuilder<TlsClientConfig> {
         self
     }
 
+    pub fn enable_0rtt(mut self) -> Self {
+        self.tls_config.enable_early_data = true;
+        self
+    }
+
     /// Build the QuicClient, ready to initiates connect to the servers.
-    pub fn build(mut self) -> QuicClient {
-        self.tls_config.resumption = rustls::client::Resumption::disabled();
+    pub fn build(self) -> QuicClient {
         let bind_interfaces = if self.bind_interfaces.is_empty() {
             None
         } else {
