@@ -178,7 +178,7 @@ impl QuicClient {
             }
         });
 
-        connection.add_path(quic_iface.bind_addr(), link, pathway)?;
+        connection.add_path(quic_iface.bind_addr(), link, pathway)??;
         Ok(connection)
     }
 

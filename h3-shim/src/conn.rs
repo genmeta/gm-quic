@@ -1,5 +1,4 @@
 use std::{
-    io,
     ops::Deref,
     pin::Pin,
     sync::Arc,
@@ -11,7 +10,7 @@ use gm_quic::{StreamId, StreamReader, StreamWriter};
 use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 
 use crate::{
-    error::{self, convert_connection_io_error},
+    error::{self, convert_quic_error},
     streams::{BidiStream, RecvStream, SendStream},
 };
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
@@ -177,10 +176,10 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
 
-fn sid_exceed_limit_error() -> io::Error {
-    io::Error::other(
+fn sid_exceed_limit_error() -> ConnectionErrorIncoming {
+    ConnectionErrorIncoming::Undefined(Arc::from(Box::from(
         "the stream IDs in the `dir` direction exceed 2^60, this is very very hard to happen.",
-    )
+    )) as _)
 }
 
 #[allow(clippy::type_complexity)]
@@ -194,8 +193,8 @@ impl OpenBiStreams {
             let bidi = conn
                 .open_bi_stream()
                 .await
-                .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
-                .map_err(convert_connection_io_error);
+                .map_err(convert_quic_error)
+                .and_then(|o| o.ok_or_else(sid_exceed_limit_error));
             Some((bidi, conn))
         });
         Self(Box::pin(stream))
@@ -227,8 +226,8 @@ impl OpenUniStreams {
             let send = conn
                 .open_uni_stream()
                 .await
-                .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
-                .map_err(convert_connection_io_error);
+                .map_err(convert_quic_error)
+                .and_then(|o| o.ok_or_else(sid_exceed_limit_error));
             Some((send, conn))
         });
         Self(Box::pin(stream))
@@ -261,7 +260,7 @@ impl AcceptBiStreams {
                 conn.accept_bi_stream()
                     .await
                     .map(Option::unwrap)
-                    .map_err(error::convert_connection_io_error),
+                    .map_err(error::convert_quic_error),
                 conn,
             ))
         });
@@ -289,7 +288,7 @@ impl AcceptUniStreams {
                 .accept_uni_stream()
                 .await
                 .map(Option::unwrap)
-                .map_err(error::convert_connection_io_error);
+                .map_err(error::convert_quic_error);
             Some((uni, conn))
         });
         Self(Box::pin(stream))

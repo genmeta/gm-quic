@@ -38,6 +38,7 @@ pub mod builder;
 
 use std::{
     borrow::Cow,
+    fmt::Debug,
     future::Future,
     io,
     sync::{Arc, RwLock},
@@ -55,7 +56,7 @@ use qbase::{
         address::BindAddr,
         route::{Link, Pathway},
     },
-    param::{ArcParameters, ParameterId},
+    param::{ArcParameters, ParameterId, ParameterValue},
     sid::StreamId,
     token::ArcTokenRegistry,
 };
@@ -152,19 +153,41 @@ struct ServerComponents {
 }
 
 impl Components {
-    pub fn open_bi_stream(
+    pub fn get_remote_or_remembered_params<V>(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+        id: ParameterId,
+    ) -> impl Future<Output = Result<Option<V>, Error>> + Send
+    where
+        V: TryFrom<ParameterValue>,
+        <V as TryFrom<ParameterValue>>::Error: Debug,
     {
         let params = self.parameters.clone();
+        async move {
+            if !params.is_remote_params_ready() {
+                if let Some(remembered) = params.remembered()? {
+                    return Ok(remembered.get_as::<V>(id));
+                }
+            }
+            let remote_params = params.remote().await?;
+            Ok(remote_params.get_as(id))
+        }
+        .instrument_in_current()
+        .in_current_span()
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn open_bi_stream(
+        &self,
+    ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
+    {
+        let get_snd_wnd_size = self
+            .get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataBidiRemote);
         let streams = self.spaces.data().streams().clone();
         async move {
-            let snd_wnd_size = params
-                .remote()
+            let snd_wnd_size = get_snd_wnd_size
                 .await?
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
                 .expect("unreachable: default value will be got if the value unset");
-            Ok(streams.open_bi(snd_wnd_size).await?)
+            streams.open_bi(snd_wnd_size).await
         }
         .instrument_in_current()
         .in_current_span()
@@ -172,32 +195,31 @@ impl Components {
 
     pub fn open_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send {
-        let params = self.parameters.clone();
+    ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
+        let get_snd_wnd_size =
+            self.get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataUni);
         let streams = self.spaces.data().streams().clone();
         async move {
-            let snd_wnd_size = params
-                .remote()
+            let snd_wnd_size = get_snd_wnd_size
                 .await?
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
                 .expect("unreachable: default value will be got if the value unset");
-            Ok(streams.open_uni(snd_wnd_size).await?)
+            streams.open_uni(snd_wnd_size).await
         }
         .instrument_in_current()
         .in_current_span()
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn accept_bi_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+    ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
     {
-        let params = self.parameters.clone();
+        let get_snd_wnd_size =
+            self.get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataBidiLocal);
         let streams = self.spaces.data().streams().clone();
         async move {
-            let snd_wnd_size = params
-                .remote()
+            let snd_wnd_size = get_snd_wnd_size
                 .await?
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiLocal)
                 .expect("unreachable: default value will be got if the value unset");
             Ok(Some(streams.accept_bi(snd_wnd_size).await?))
         }
@@ -207,7 +229,7 @@ impl Components {
 
     pub fn accept_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send {
+    ) -> impl Future<Output = Result<Option<(StreamId, StreamReader)>, Error>> + Send {
         let streams = self.spaces.data().streams().clone();
         async move { Ok(Some(streams.accept_uni().await?)) }
             .instrument_in_current()
@@ -215,11 +237,13 @@ impl Components {
     }
 
     #[cfg(feature = "unreliable")]
+    #[deprecated]
     pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
         self.spaces.data().datagrams().reader()
     }
 
     #[cfg(feature = "unreliable")]
+    #[deprecated]
     pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<DatagramWriter>> + Send {
         let params = self.parameters.clone();
         let datagrams = self.spaces.data().datagrams().clone();
@@ -294,56 +318,66 @@ impl Connection {
         }
     }
 
-    fn try_map_components<T>(&self, op: impl FnOnce(&Components) -> T) -> io::Result<T> {
+    fn try_map_components<T>(&self, op: impl FnOnce(&Components) -> T) -> Result<T, Error> {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         self.state
             .read()
             .unwrap()
             .as_ref()
             .map(op)
-            .map_err(|termination| termination.error().into())
+            .map_err(|termination| termination.error())
     }
 
     pub async fn open_bi_stream(
         &self,
-    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+    ) -> Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error> {
         self.try_map_components(|core_conn| core_conn.open_bi_stream())?
             .await
     }
 
-    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
+    pub async fn open_uni_stream(&self) -> Result<Option<(StreamId, StreamWriter)>, Error> {
         self.try_map_components(|core_conn| core_conn.open_uni_stream())?
             .await
     }
 
     pub async fn accept_bi_stream(
         &self,
-    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+    ) -> Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error> {
         self.try_map_components(|core_conn| core_conn.accept_bi_stream())?
             .await
     }
 
-    pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
+    pub async fn accept_uni_stream(&self) -> Result<Option<(StreamId, StreamReader)>, Error> {
         self.try_map_components(|core_conn| core_conn.accept_uni_stream())?
             .await
     }
 
     #[cfg(feature = "unreliable")]
-    pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
-        self.try_map_components(|core_conn| core_conn.unreliable_reader())?
+    #[deprecated]
+    #[allow(deprecated)]
+    pub fn unreliable_reader(&self) -> Result<io::Result<DatagramReader>, Error> {
+        self.try_map_components(|core_conn| core_conn.unreliable_reader())
     }
 
     #[cfg(feature = "unreliable")]
-    pub async fn unreliable_writer(&self) -> io::Result<DatagramWriter> {
-        self.try_map_components(|core_conn| core_conn.unreliable_writer())?
-            .await
+    #[deprecated]
+    #[allow(deprecated)]
+    pub async fn unreliable_writer(&self) -> Result<io::Result<DatagramWriter>, Error> {
+        Ok(self
+            .try_map_components(|core_conn| core_conn.unreliable_writer())?
+            .await)
     }
 
-    pub fn add_path(&self, bind_addr: BindAddr, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(bind_addr, link, pathway))?
+    pub fn add_path(
+        &self,
+        bind_addr: BindAddr,
+        link: Link,
+        pathway: Pathway,
+    ) -> Result<io::Result<()>, Error> {
+        self.try_map_components(|core_conn| core_conn.add_path(bind_addr, link, pathway))
     }
 
-    pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
+    pub fn del_path(&self, pathway: &Pathway) -> Result<(), Error> {
         self.try_map_components(|core_conn| core_conn.del_path(pathway))
     }
 
@@ -351,8 +385,8 @@ impl Connection {
         self.try_map_components(|_| true).unwrap_or_default()
     }
 
-    pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
-        self.try_map_components(|core_conn| Ok(core_conn.parameters.get_origin_dcid()?))?
+    pub fn origin_dcid(&self) -> Result<cid::ConnectionId, Error> {
+        self.try_map_components(|core_conn| core_conn.parameters.get_origin_dcid())?
     }
 
     pub async fn handshaked(&self) -> bool {
@@ -368,16 +402,14 @@ impl Connection {
         }
     }
 
-    pub async fn peer_certs(&self) -> io::Result<Arc<PeerCert>> {
-        Ok(self
-            .try_map_components(|core_conn| core_conn.peer_certs())?
-            .await?)
+    pub async fn peer_certs(&self) -> Result<Arc<PeerCert>, Error> {
+        self.try_map_components(|core_conn| core_conn.peer_certs())?
+            .await
     }
 
-    pub async fn server_name(&self) -> io::Result<String> {
-        Ok(self
-            .try_map_components(|core_conn| core_conn.server_name())?
-            .await?)
+    pub async fn server_name(&self) -> Result<String, Error> {
+        self.try_map_components(|core_conn| core_conn.server_name())?
+            .await
     }
 }
 

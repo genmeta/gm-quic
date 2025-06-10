@@ -22,7 +22,8 @@ impl ArcZeroRtt {
     }
 
     pub(super) fn set(&self, accepetd: bool) {
-        let fut = (self.0.as_ref()).expect("this can only be called when 0rtt is enabled");
-        fut.assign(Ok(accepetd));
+        if let Some(fut) = self.0.as_ref() {
+            fut.assign(Ok(accepetd));
+        }
     }
 }

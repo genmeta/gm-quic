@@ -148,7 +148,6 @@ where
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    #[tracing::instrument(skip(self, packet), ret, err(Debug))]
     fn try_load_data_into_once<P>(
         &self,
         packet: &mut P,
