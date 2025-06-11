@@ -351,8 +351,8 @@ impl<TX> SendingSender<TX> {
 
     pub(super) fn on_0rtt_accepted(&mut self, max_stream_data: u64) {
         self.max_stream_data
-            .switch_to_one_rtt(true, |zero_rtt_value, one_rtt_value| {
-                debug_assert!(*one_rtt_value >= *zero_rtt_value);
+            .switch_to_one_rtt(true, |zero_rtt_value, _one_rtt_value| {
+                debug_assert!(max_stream_data >= *zero_rtt_value);
             });
         self.update_window(max_stream_data);
     }
@@ -547,10 +547,10 @@ impl<TX> DataSentSender<TX> {
         self.sndbuf.may_loss_data(&frame.range())
     }
 
-    pub(super) fn on_0rtt_accepted(&mut self) {
+    pub(super) fn on_0rtt_accepted(&mut self, max_stream_data: u64) {
         self.max_stream_data
-            .switch_to_one_rtt(true, |zero_rtt_value, one_rtt_value| {
-                debug_assert!(*one_rtt_value >= *zero_rtt_value);
+            .switch_to_one_rtt(true, |zero_rtt_value, _one_rtt_value| {
+                debug_assert!(max_stream_data >= *zero_rtt_value);
             });
     }
 

@@ -32,14 +32,20 @@ struct SendFlow {
 
 impl SendFlow {
     fn avaliable(&self) -> u64 {
-        self.max_data - self.sent_data
+        self.max_data.saturating_sub(self.sent_data)
     }
 }
 
 impl<TX> SendControler<TX> {
     fn new(initial_max_data: u64, broker: TX, tx_wakers: ArcSendWakers) -> Self {
         Self {
-            flow: DualRttState::new(Default::default(), initial_max_data != 0),
+            flow: DualRttState::new(
+                SendFlow {
+                    sent_data: 0,
+                    max_data: initial_max_data,
+                },
+                initial_max_data != 0,
+            ),
             blocking: false,
             broker,
             tx_wakers,
@@ -116,9 +122,7 @@ impl<TX> SendControler<TX> {
     fn on_0rtt_accepted(&mut self) {
         self.flow
             .switch_to_one_rtt(true, |zero_rtt_flow, one_rtt_flow| {
-                assert!(one_rtt_flow.max_data > zero_rtt_flow.max_data);
                 one_rtt_flow.sent_data += zero_rtt_flow.sent_data;
-                assert!(one_rtt_flow.max_data >= one_rtt_flow.sent_data);
             });
     }
 }
@@ -192,7 +196,7 @@ impl<TX> ArcSendControler<TX> {
                 inner.commit(avaliable, zero_rtt);
                 Ok(Credit {
                     available: avaliable as usize,
-                    zero_rtt: inner.flow.in_zero_rtt(),
+                    zero_rtt,
                     controller: self,
                 })
             }

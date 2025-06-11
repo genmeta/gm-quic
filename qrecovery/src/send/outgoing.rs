@@ -173,7 +173,7 @@ impl<TX> Outgoing<TX> {
             match sending_state {
                 Sender::Ready(s) => s.on_0rtt_accepted(new_snd_wnd_size),
                 Sender::Sending(s) => s.on_0rtt_accepted(new_snd_wnd_size),
-                Sender::DataSent(s) => s.on_0rtt_accepted(),
+                Sender::DataSent(s) => s.on_0rtt_accepted(new_snd_wnd_size),
                 _ => (),
             }
         };
