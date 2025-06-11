@@ -126,7 +126,12 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<P>(&mut self, predicate: P, flow_limit: usize) -> Result<(Range<u64>, bool), Signals>
+    fn pick<P>(
+        &mut self,
+        predicate: P,
+        flow_limit: usize,
+        send_window_size: u64,
+    ) -> Result<(Range<u64>, bool), Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -136,6 +141,11 @@ impl BufMap {
             .iter_mut()
             .enumerate()
             .find(|(.., state)| {
+                if state.offset() >= send_window_size {
+                    // 如果offset已经超过了发送窗口大小，说明该区间能被发送
+                    signals |= Signals::FLOW_CONTROL;
+                    return false;
+                }
                 // 选择Pending的区间（如果流控允许），或者选择Lost的区间
                 match state.color() {
                     Color::Pending if flow_limit != 0 => return true,
@@ -172,7 +182,12 @@ impl BufMap {
             .map(|(index, origin_state, allowance)| {
                 // 找到了一个合适的区间来发送，但检查区间长度是否足够，过长的话，还要拆区间一分为二
                 let (start, color) = origin_state.decode();
-                let mut end = self.0.get(index + 1).map(|s| s.offset()).unwrap_or(self.1);
+                let mut end = self
+                    .0
+                    .get(index + 1)
+                    .map(|s| s.offset())
+                    .unwrap_or(self.1)
+                    .min(send_window_size);
 
                 let mut i = self.same_before(index, Color::Flighting);
                 if start + (allowance as u64) < end {
@@ -629,12 +644,17 @@ impl SendBuf {
     /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
     ///   picked up is in two parts, the begin of the second slice are the end of the first slice
-    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data<'_>, Signals>
+    pub fn pick_up<P>(
+        &mut self,
+        predicate: P,
+        flow_limit: usize,
+        max_data: u64,
+    ) -> Result<Data<'_>, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
         self.state
-            .pick(predicate, flow_limit)
+            .pick(predicate, flow_limit, max_data)
             .map(|(range, is_fresh)| {
                 let start = (range.start - self.offset) as usize;
                 let end = (range.end - self.offset) as usize;
@@ -732,12 +752,12 @@ mod tests {
     #[test]
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
-        let range = buf_map.pick(|_| Some(20), usize::MAX);
+        let range = buf_map.pick(|_| Some(20), usize::MAX, u64::MAX);
         assert_eq!(range, Err(Signals::TRANSPORT | Signals::WRITTEN));
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
-        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 0..20);
         assert!(is_fresh);
         assert_eq!(
@@ -748,7 +768,7 @@ mod tests {
             ]
         );
 
-        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 20..40);
         assert!(is_fresh);
         assert_eq!(
@@ -761,7 +781,7 @@ mod tests {
 
         buf_map.0.insert(2, State::encode(50, Color::Lost));
         buf_map.0.insert(3, State::encode(120, Color::Pending));
-        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 40..50);
         assert!(is_fresh);
         assert_eq!(
@@ -774,7 +794,7 @@ mod tests {
         );
 
         buf_map.0.get_mut(0).unwrap().set_color(Color::Recved);
-        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(20), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 50..70);
         assert!(!is_fresh);
         assert_eq!(
@@ -787,7 +807,7 @@ mod tests {
             ]
         );
 
-        let (range, is_fresh) = buf_map.pick(|_| Some(130), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(130), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 70..120);
         assert!(!is_fresh);
         assert_eq!(
@@ -799,7 +819,7 @@ mod tests {
             ]
         );
 
-        let (range, is_fresh) = buf_map.pick(|_| Some(130), usize::MAX).unwrap();
+        let (range, is_fresh) = buf_map.pick(|_| Some(130), usize::MAX, u64::MAX).unwrap();
         assert_eq!(range, 120..200);
         assert!(is_fresh);
         assert_eq!(
@@ -810,7 +830,7 @@ mod tests {
             ]
         );
 
-        let result = buf_map.pick(|_| Some(130), usize::MAX);
+        let result = buf_map.pick(|_| Some(130), usize::MAX, u64::MAX);
         assert!(result.is_err());
         assert_eq!(
             buf_map.0,
@@ -827,10 +847,10 @@ mod tests {
         buf_map.extend_to(200);
         assert_eq!(buf_map.sent(), 0);
 
-        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(120), usize::MAX, u64::MAX).is_ok());
         assert_eq!(buf_map.sent(), 120);
 
-        assert!(buf_map.pick(|_| Some(80), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(80), usize::MAX, u64::MAX).is_ok());
         assert_eq!(buf_map.sent(), 200);
     }
 
@@ -838,7 +858,7 @@ mod tests {
     fn test_bufmap_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(120), usize::MAX, u64::MAX).is_ok());
         buf_map.ack_rcvd(&(0..20));
         assert_eq!(
             buf_map.0,
@@ -913,7 +933,7 @@ mod tests {
             ]
         );
 
-        assert!(buf_map.pick(|_| Some(130), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(130), usize::MAX, u64::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![
@@ -947,7 +967,7 @@ mod tests {
     fn test_bufmap_invalid_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(120), usize::MAX, u64::MAX).is_ok());
         buf_map.ack_rcvd(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
@@ -969,7 +989,7 @@ mod tests {
     fn test_bufmap_recved_overflow() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(120), usize::MAX, u64::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![
@@ -985,7 +1005,7 @@ mod tests {
     fn test_bufmap_recved_over_end() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        assert!(buf_map.pick(|_| Some(200), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(200), usize::MAX, u64::MAX).is_ok());
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
         buf_map.ack_rcvd(&(0..201));
     }
@@ -994,7 +1014,7 @@ mod tests {
     fn test_bufmap_lost() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
+        assert!(buf_map.pick(|_| Some(120), usize::MAX, u64::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![

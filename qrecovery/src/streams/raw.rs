@@ -3,9 +3,10 @@ use std::task::{Context, Poll, ready};
 use bytes::BufMut;
 use qbase::{
     error::{Error, ErrorKind, QuicError},
+    flow::ArcSendControler,
     frame::{
-        FrameType, GetFrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
-        SendFrame, StreamCtlFrame, StreamFrame,
+        DataBlockedFrame, FrameType, GetFrameType, ReceiveFrame, ResetStreamFrame,
+        STREAM_FRAME_MAX_ENCODING_SIZE, SendFrame, StreamCtlFrame, StreamFrame,
     },
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
@@ -137,25 +138,62 @@ impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    pub fn on_0rtt_rejected(&self) {
-        if let Ok(mut output_guard) = self.output.guard() {
-            let init_max_streams_bidi = self.stream_ids.local.max_streams(Dir::Bi, true);
-            let init_max_streams_uni = self.stream_ids.local.max_streams(Dir::Uni, true);
-            output_guard.on_0rtt_rejected(init_max_streams_bidi, init_max_streams_uni);
+    pub fn on_0rtt_rejected(&self, remote_params: &GeneralParameters) {
+        self.stream_ids.local.on_0rtt_rejected();
+
+        if let Ok(output_guard) = self.output.guard() {
+            let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi, true);
+            let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni, true);
+            let opened_bidi_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .expect("unreachable: default value will be got if the value unset");
+            let opened_uni_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
+                .expect("unreachable: default value will be got if the value unset");
+            output_guard.on_0rtt_rejected(
+                opened_bidi,
+                opened_uni,
+                opened_bidi_snd_wnd_size,
+                opened_uni_snd_wnd_size,
+            );
+        }
+    }
+
+    pub fn on_0rtt_accepted(&self, remote_params: &GeneralParameters) {
+        self.stream_ids.local.on_0rtt_accepted();
+
+        if let Ok(output_guard) = self.output.guard() {
+            let local_role = self.stream_ids.local.role();
+            let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi, true);
+            let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni, true);
+            let opened_bidi_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .expect("unreachable: default value will be got if the value unset");
+            let opened_uni_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
+                .expect("unreachable: default value will be got if the value unset");
+            output_guard.on_0rtt_accepted(
+                local_role,
+                opened_bidi,
+                opened_uni,
+                opened_bidi_snd_wnd_size,
+                opened_uni_snd_wnd_size,
+            );
         }
     }
 
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    fn try_load_data_into_once<P>(
+    fn try_load_data_into_once<P, FTX>(
         &self,
         packet: &mut P,
-        flow_limit: usize,
-        is_0rtt: bool,
-    ) -> Result<usize, Signals>
+        flow_ctrl: &ArcSendControler<FTX>,
+        zero_rtt: bool,
+    ) -> Result<(), Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        FTX: SendFrame<DataBlockedFrame>,
     {
         // todo: use core::range instead in rust 2024
         use core::ops::Bound::*;
@@ -164,6 +202,10 @@ where
             return Err(Signals::CONGESTION);
         }
 
+        let Ok(mut credit) = flow_ctrl.credit(packet.remaining_mut(), zero_rtt) else {
+            return Err(Signals::empty()); // connection closed
+        };
+
         let mut guard = self.output.streams();
         let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
 
@@ -171,13 +213,14 @@ where
             streams: impl Iterator<Item = (StreamId, &'s (Outgoing<TX>, IOState), usize)>,
             packet: &mut P,
             flow_limit: usize,
+            zero_rtt: bool,
         ) -> Result<(StreamId, usize, usize), Signals>
         where
             P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
         {
             let mut signals = Signals::TRANSPORT;
             for (sid, (outgoing, _ios), tokens) in streams {
-                match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
+                match outgoing.try_load_data_into(packet, sid, flow_limit, tokens, zero_rtt) {
                     Ok((data_len, is_fresh)) => {
                         let remain_tokens = tokens - data_len;
                         let fresh_bytes = if is_fresh { data_len } else { 0 };
@@ -190,10 +233,12 @@ where
         }
 
         // 不一定所有流都允许被发送，比如，0rtt被拒绝max_streams会倒缩，此时大于max_streams的流就不允许被发送
-        let max_streams_bidi = self.stream_ids.local.max_streams(Dir::Bi, is_0rtt);
-        let max_streams_uni = self.stream_ids.local.max_streams(Dir::Bi, is_0rtt);
+        let remote_role = self.stream_ids.remote.role();
+        let max_streams_bidi = self.stream_ids.local.opened_streams(Dir::Bi, zero_rtt);
+        let max_streams_uni = self.stream_ids.local.opened_streams(Dir::Bi, zero_rtt);
         let stream_allowed = |sid: &StreamId| {
-            sid.dir() == Dir::Bi && sid.id() < max_streams_bidi
+            sid.role() == remote_role
+                || sid.dir() == Dir::Bi && sid.id() < max_streams_bidi
                 || sid.dir() == Dir::Uni && sid.id() < max_streams_uni
         };
 
@@ -208,7 +253,8 @@ where
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
                     .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
-                flow_limit,
+                credit.available(),
+                zero_rtt,
             ),
             // [sid] + rev([..sid]) + rev([sid+1..])
             Some((sid, tokens)) => try_load_data_into_once(
@@ -225,7 +271,8 @@ where
                 )
                 .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
-                flow_limit,
+                credit.available(),
+                zero_rtt,
             ),
             // rev([..])
             None => try_load_data_into_once(
@@ -233,12 +280,14 @@ where
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
                     .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
-                flow_limit,
+                credit.available(),
+                zero_rtt,
             ),
         }?;
 
         output.cursor = Some((sid, remain_tokens));
-        Ok(fresh_bytes)
+        credit.post_sent(fresh_bytes);
+        Ok(())
     }
 
     /// Try to load data from streams into the packet.
@@ -275,29 +324,26 @@ where
     /// * [`usize`]: The number of new data writen to the buffer.
     ///
     /// [`write`]: tokio::io::AsyncWriteExt::write
-    pub fn try_load_data_into<P>(
+    pub fn try_load_data_into<P, FTX>(
         &self,
         packet: &mut P,
-        mut flow_limit: usize,
-        is_0rtt: bool,
-    ) -> Result<usize, Signals>
+        flow_ctrl: &ArcSendControler<FTX>,
+        zero_rtt: bool,
+    ) -> Result<(), Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        FTX: SendFrame<DataBlockedFrame>,
     {
         use core::ops::ControlFlow::*;
+
         // 取唯一一个最新的错误（如果有）
-        let (Continue(result) | Break(result)) = core::iter::from_fn(|| {
-            Some(
-                self.try_load_data_into_once(packet, flow_limit, is_0rtt)
-                    .map(|fresh| (flow_limit -= fresh, fresh).1),
-            )
-        })
-        .try_fold(Err(Signals::empty()), |result, once| match (result, once) {
-            (Ok(sum), Ok(fresh)) => Continue(Ok(sum + fresh)),
-            (Ok(sum), Err(_no_more)) => Break(Ok(sum)),
-            (Err(_), Ok(n)) => Continue(Ok(n)),
-            (Err(_), Err(signals)) => Break(Err(signals)),
-        });
+        let (Continue(result) | Break(result)) =
+            core::iter::from_fn(|| Some(self.try_load_data_into_once(packet, flow_ctrl, zero_rtt)))
+                .try_fold(Err(Signals::empty()), |result, once| match (result, once) {
+                    (_, Ok(())) => Continue(Ok(())),
+                    (Ok(()), Err(_no_more)) => Break(Ok(())),
+                    (Err(_), Err(signals)) => Break(Err(signals)),
+                });
         result
     }
 
@@ -629,8 +675,8 @@ where
             Ok(input) => input,
             Err(e) => return Poll::Ready(Err(e)),
         };
-        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let arc_sender = self.create_sender(sid, snd_buf_size);
+        if let Some((sid, zero_rtt)) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
+            let arc_sender = self.create_sender(sid, snd_buf_size, zero_rtt);
             let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
             let io_state = IOState::bidirection();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state.clone());
@@ -654,8 +700,8 @@ where
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
         };
-        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let arc_sender = self.create_sender(sid, snd_buf_size);
+        if let Some((sid, zero_rtt)) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
+            let arc_sender = self.create_sender(sid, snd_buf_size, zero_rtt);
             let io_state = IOState::send_only();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
             Poll::Ready(Ok(Some((sid, Writer::new(arc_sender)))))
@@ -701,7 +747,7 @@ where
                 for sid in need_create {
                     let arc_recver = self.create_recver(sid, rcv_buf_size);
                     // buf_size will be revised by Listener::poll_accept_bi_stream
-                    let arc_sender = self.create_sender(sid, 0);
+                    let arc_sender = self.create_sender(sid, 0, false);
                     let io_state = IOState::bidirection();
                     input.insert(sid, Incoming::new(arc_recver.clone()), io_state.clone());
                     output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
@@ -738,12 +784,13 @@ where
         }
     }
 
-    fn create_sender(&self, sid: StreamId, buf_size: u64) -> ArcSender<Ext<TX>> {
+    fn create_sender(&self, sid: StreamId, buf_size: u64, zero_rtt: bool) -> ArcSender<Ext<TX>> {
         ArcSender::new(
             sid,
             buf_size,
             Ext(self.ctrl_frames.clone()),
             self.tx_wakers.clone(),
+            zero_rtt,
         )
     }
 

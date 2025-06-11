@@ -143,14 +143,12 @@ impl DataSpace {
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &mut [u8],
-    ) -> Result<(PaddablePacket, usize), Signals> {
+    ) -> Result<PaddablePacket, Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
-            tracing::info!("skip: 1rtt key ready");
             return Err(Signals::empty()); // not error, just skip 0rtt
         }
 
         let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
-            tracing::info!("skip: no 0rtt key");
             return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
         };
 
@@ -179,9 +177,8 @@ impl DataSpace {
             .try_load_frames_into(&mut packet)
             .map_err(|s| signals |= s);
         // try to load stream frames into this 0RTT packet to send
-        let fresh_data = self
-            .streams
-            .try_load_data_into(&mut packet, tx.flow_limit(), true)
+        self.streams
+            .try_load_data_into(&mut packet, &tx.flow_ctrl().sender, true)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
@@ -191,12 +188,9 @@ impl DataSpace {
             .map_err(|s| signals |= s);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
-        Ok((
-            packet
-                .prepare_with_time(retran_timeout, expire_timeout)
-                .map_err(|_| signals)?,
-            fresh_data,
-        ))
+        packet
+            .prepare_with_time(retran_timeout, expire_timeout)
+            .map_err(|_| signals)
     }
 
     pub fn try_assemble_1rtt_packet(
@@ -206,7 +200,7 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Result<(PaddablePacket, Option<u64>, usize), Signals> {
+    ) -> Result<(PaddablePacket, Option<u64>), Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
@@ -267,9 +261,8 @@ impl DataSpace {
             .try_load_frames_into(&mut packet)
             .map_err(|s| signals |= s);
         // try to load stream frames into this 1RTT packet to send
-        let fresh_data = self
-            .streams
-            .try_load_data_into(&mut packet, tx.flow_limit(), false)
+        self.streams
+            .try_load_data_into(&mut packet, &tx.flow_ctrl().sender, false)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
 
@@ -284,7 +277,6 @@ impl DataSpace {
                 .prepare_with_time(retran_timeout, expire_timeout)
                 .map_err(|_| signals)?,
             ack,
-            fresh_data,
         ))
     }
 

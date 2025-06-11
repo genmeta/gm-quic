@@ -8,6 +8,7 @@ use crate::{
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     varint::VarInt,
+    zero_rtt::DualRttState,
 };
 
 /// Connection-level global Stream Flow Control in the sending direction,
@@ -15,20 +16,30 @@ use crate::{
 /// and updated by the [`MaxDataFrame`] sent by the peer.
 ///
 /// Private controler in [`ArcSendControler`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SendControler<TX> {
-    sent_data: u64,
-    max_data: u64,
+    flow: DualRttState<SendFlow>,
     blocking: bool,
     broker: TX,
     tx_wakers: ArcSendWakers,
 }
 
+#[derive(Default, Debug)]
+struct SendFlow {
+    sent_data: u64,
+    max_data: u64,
+}
+
+impl SendFlow {
+    fn avaliable(&self) -> u64 {
+        self.max_data - self.sent_data
+    }
+}
+
 impl<TX> SendControler<TX> {
     fn new(initial_max_data: u64, broker: TX, tx_wakers: ArcSendWakers) -> Self {
         Self {
-            sent_data: 0,
-            max_data: initial_max_data,
+            flow: DualRttState::new(Default::default(), initial_max_data != 0),
             blocking: false,
             broker,
             tx_wakers,
@@ -36,11 +47,79 @@ impl<TX> SendControler<TX> {
     }
 
     fn increase_limit(&mut self, max_data: u64) {
-        if max_data > self.max_data {
-            self.max_data = max_data;
+        let cur_max_data = &mut self.flow.one_rtt_mut().max_data;
+        if max_data > *cur_max_data {
+            *cur_max_data = max_data;
             self.blocking = false;
             self.tx_wakers.wake_all_by(Signals::FLOW_CONTROL);
         }
+    }
+
+    fn avaliable(&self, zero_rtt: bool) -> u64 {
+        match zero_rtt {
+            // 0rtt has been accepted, subject to the restrictions of both 0rtt and 1rtt
+            true if matches!(self.flow.zero_rtt_accepted(), Some(true)) => {
+                (self.flow.zero_rtt().avaliable()).min(self.flow.one_rtt().avaliable())
+            }
+            // At this point, it is not known whether 0rtt will be accepted,
+            // so it is considered to be accepted and returns to fewer flow control
+            false if self.flow.zero_rtt_accepted().is_none() => {
+                (self.flow.zero_rtt().avaliable()).min(self.flow.one_rtt().avaliable())
+            }
+            true => self.flow.zero_rtt().avaliable(),
+            false => self.flow.one_rtt().avaliable(),
+        }
+    }
+
+    fn commit(&mut self, flow: u64, zero_rtt: bool)
+    where
+        TX: SendFrame<DataBlockedFrame>,
+    {
+        // If 0rtt has been accepted, then 1rtt of sending quota will be consumed
+        let zero_rtt = zero_rtt && !matches!(self.flow.zero_rtt_accepted(), Some(true));
+        match zero_rtt {
+            true => self.flow.zero_rtt_mut().sent_data += flow,
+            false => self.flow.one_rtt_mut().sent_data += flow,
+        }
+
+        if self.flow.avaliable() == 0 && !self.blocking {
+            self.blocking = true;
+            self.broker.send_frame([DataBlockedFrame::new(
+                VarInt::from_u64(self.flow.max_data)
+                    .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
+            )]);
+        }
+    }
+
+    fn return_back(&mut self, flow: u64, zero_rtt: bool) {
+        let zero_rtt = zero_rtt && !matches!(self.flow.zero_rtt_accepted(), Some(true));
+        // If 0rtt has been accepted, then 1rtt of the sending amount will be returned
+        match zero_rtt {
+            true => self.flow.zero_rtt_mut().sent_data -= flow,
+            false => self.flow.one_rtt_mut().sent_data -= flow,
+        }
+        if self.avaliable(zero_rtt) > 0 {
+            self.tx_wakers.wake_all_by(Signals::FLOW_CONTROL);
+        }
+    }
+
+    fn on_0rtt_rejected(&mut self) {
+        self.blocking = false;
+        let cur_1rtt_avaliable = self.avaliable(false);
+        self.flow
+            .switch_to_one_rtt(false, |_zero_rtt_flow, _one_rtt_flow| {});
+        if self.avaliable(false) > cur_1rtt_avaliable {
+            self.tx_wakers.wake_all_by(Signals::FLOW_CONTROL);
+        }
+    }
+
+    fn on_0rtt_accepted(&mut self) {
+        self.flow
+            .switch_to_one_rtt(true, |zero_rtt_flow, one_rtt_flow| {
+                assert!(one_rtt_flow.max_data > zero_rtt_flow.max_data);
+                one_rtt_flow.sent_data += zero_rtt_flow.sent_data;
+                assert!(one_rtt_flow.max_data >= one_rtt_flow.sent_data);
+            });
     }
 }
 
@@ -103,28 +182,33 @@ impl<TX> ArcSendControler<TX> {
     /// the traffic credit is considered to be consumed immediately.
     /// The unused flow control quota for this send will be returned to the sending controller.
     /// This design avoids the sending task’s exclusive access to the sending controller.
-    pub fn credit(&self, quota: usize) -> Result<Credit<'_, TX>, Error>
+    pub fn credit(&self, quota: usize, zero_rtt: bool) -> Result<Credit<'_, TX>, Error>
     where
         TX: SendFrame<DataBlockedFrame>,
     {
         match self.0.lock().unwrap().as_mut() {
             Ok(inner) => {
-                let avaliable = (inner.max_data - inner.sent_data).min(quota as u64);
-                inner.sent_data += avaliable;
-                if inner.sent_data == inner.max_data && !inner.blocking {
-                    inner.blocking = true;
-                    inner.broker.send_frame([DataBlockedFrame::new(
-                        VarInt::from_u64(inner.max_data).expect(
-                            "max_data of flow controller is very very hard to exceed 2^62 - 1",
-                        ),
-                    )]);
-                }
+                let avaliable = inner.avaliable(zero_rtt).min(quota as u64);
+                inner.commit(avaliable, zero_rtt);
                 Ok(Credit {
                     available: avaliable as usize,
+                    zero_rtt: inner.flow.in_zero_rtt(),
                     controller: self,
                 })
             }
             Err(e) => Err(e.clone()),
+        }
+    }
+
+    pub fn on_0rtt_accepted(&self) {
+        if let Ok(inner) = self.0.lock().unwrap().deref_mut() {
+            inner.on_0rtt_accepted();
+        }
+    }
+
+    pub fn on_0rtt_rejected(&self) {
+        if let Ok(inner) = self.0.lock().unwrap().deref_mut() {
+            inner.on_0rtt_rejected();
         }
     }
 
@@ -157,6 +241,7 @@ impl<TX> ReceiveFrame<MaxDataFrame> for ArcSendControler<TX> {
 /// and finally updating(or maybe not) the flow control should be exclusive.
 pub struct Credit<'a, TX> {
     available: usize,
+    zero_rtt: bool,
     controller: &'a ArcSendControler<TX>,
 }
 
@@ -180,10 +265,7 @@ where
 impl<TX> Drop for Credit<'_, TX> {
     fn drop(&mut self) {
         if let Ok(inner) = self.controller.0.lock().unwrap().as_mut() {
-            inner.sent_data -= self.available as u64;
-            if self.available > 0 {
-                inner.tx_wakers.wake_all_by(Signals::FLOW_CONTROL);
-            }
+            inner.return_back(self.available as u64, self.zero_rtt);
         }
     }
 }
@@ -335,11 +417,11 @@ impl<TX: Clone> FlowController<TX> {
     /// Get some flow control credit to send fresh flow data.
     /// The returned value may be smaller than the parameter's intended value.
     /// If some QUIC error occured, it would return the error directly.
-    pub fn send_limit(&self, quota: usize) -> Result<Credit<'_, TX>, Error>
+    pub fn send_limit(&self, quota: usize, zero_rtt: bool) -> Result<Credit<'_, TX>, Error>
     where
         TX: SendFrame<DataBlockedFrame>,
     {
-        self.sender.credit(quota)
+        self.sender.credit(quota, zero_rtt)
     }
 
     /// Handles the error event of the QUIC connection.
@@ -382,8 +464,9 @@ mod tests {
     #[test]
     fn test_send_controler() {
         let broker = SendControllerBroker::default();
-        let controler = ArcSendControler::new(100, broker.clone(), Default::default());
-        let mut credit = controler.credit(200).unwrap();
+        let controler = ArcSendControler::new(0, broker.clone(), Default::default());
+        controler.increase_limit(100);
+        let mut credit = controler.credit(200, false).unwrap();
         assert_eq!(credit.available(), 100);
         credit.post_sent(50);
         assert_eq!(credit.available(), 50);
@@ -395,13 +478,13 @@ mod tests {
         assert_eq!(broker.lock().unwrap().len(), 1);
         assert_eq!(broker.lock().unwrap()[0].limit(), 100);
 
-        let credit = controler.credit(1).unwrap();
+        let credit = controler.credit(1, false).unwrap();
         assert_eq!(credit.available(), 0);
         drop(credit);
 
         controler.increase_limit(200);
 
-        let mut credit = controler.credit(200).unwrap();
+        let mut credit = controler.credit(200, false).unwrap();
         assert_eq!(credit.available(), 100);
         credit.post_sent(50);
         assert_eq!(credit.available(), 50);

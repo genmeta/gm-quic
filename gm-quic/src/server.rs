@@ -405,7 +405,7 @@ impl QuicListeners {
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
-                .with_zero_rtt(listeners.tls_config.max_early_data_size == 0xffffffff)
+                .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
                 .with_qlog(self.logger.as_ref())

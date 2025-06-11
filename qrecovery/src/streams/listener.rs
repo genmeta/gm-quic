@@ -58,7 +58,7 @@ impl<TX> Listener<TX> {
         snd_buf_size: u64,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
-            sender.revise_buffer_size(snd_buf_size);
+            sender.update_window(snd_buf_size);
             Poll::Ready(Ok((sid, (Reader::new(recever), Writer::new(sender)))))
         } else {
             self.bi_waker = Some(cx.waker().clone());

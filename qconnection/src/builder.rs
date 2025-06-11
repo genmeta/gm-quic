@@ -658,12 +658,25 @@ fn accept_transport_parameters(components: &Components) -> impl Future<Output = 
 fn handle_0rtt_rejection(components: &Components) -> impl Future<Output = ()> + Send {
     let zero_rtt = components.zero_rtt.clone();
     let streams = components.spaces.data().streams().clone();
+    let send_ctrl = components.flow_ctrl.sender.clone();
+    let params = components.parameters.clone();
     async move {
         let Some(fut) = zero_rtt.is_accepted() else {
             return;
         };
-        if matches!(fut.await, Ok(false)) {
-            streams.on_0rtt_rejected();
+        let Ok(remote_params) = params.remote().await else {
+            return;
+        };
+        match fut.await {
+            Ok(true) => {
+                streams.on_0rtt_accepted(remote_params.as_ref());
+                send_ctrl.on_0rtt_accepted();
+            }
+            Ok(false) => {
+                streams.on_0rtt_rejected(remote_params.as_ref());
+                send_ctrl.on_0rtt_rejected();
+            }
+            Err(_) => {}
         }
     }
     .instrument_in_current()

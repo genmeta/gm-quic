@@ -29,7 +29,7 @@ use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    ArcDcidCell, ArcReliableFrameDeque, Credit, GuaranteedFrame,
+    ArcDcidCell, ArcReliableFrameDeque, FlowController, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };
@@ -375,7 +375,7 @@ pub struct Transaction<'a> {
     scid: ConnectionId,
     dcid: BorrowedCid<'a, ArcReliableFrameDeque>,
     cc: &'a ArcCC,
-    flow_limit: Credit<'a>,
+    flow_ctrl: &'a FlowController,
     constraints: Constraints,
 }
 
@@ -385,16 +385,12 @@ impl<'a> Transaction<'a> {
         dcid: &'a ArcDcidCell,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
-        flow_ctrl: &'a crate::FlowController,
+        flow_ctrl: &'a FlowController,
         tx_waker: ArcSendWaker,
     ) -> Result<Option<Self>, Signals> {
         let send_quota = cc.send_quota()?;
         let Some(credit_limit) = anti_amplifier.balance()? else {
             return Ok(None);
-        };
-        let flow_limit = match flow_ctrl.send_limit(send_quota) {
-            Ok(flow_limit) => flow_limit,
-            Err(_error) => return Ok(None),
         };
         let borriwed_dcid = match dcid.borrow_cid(tx_waker)? {
             Some(borriwed_dcid) => borriwed_dcid,
@@ -405,7 +401,7 @@ impl<'a> Transaction<'a> {
             scid,
             dcid: borriwed_dcid,
             cc,
-            flow_limit,
+            flow_ctrl,
             constraints,
         }))
     }
@@ -418,6 +414,10 @@ impl<'a> Transaction<'a> {
         *self.dcid
     }
 
+    pub fn flow_ctrl(&self) -> &FlowController {
+        self.flow_ctrl
+    }
+
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
         self.cc.need_ack(epoch)
     }
@@ -426,20 +426,9 @@ impl<'a> Transaction<'a> {
         self.cc.retransmit_and_expire_time(epoch)
     }
 
-    pub fn flow_limit(&self) -> usize {
-        self.flow_limit.available()
-    }
-
-    pub fn commit(
-        &mut self,
-        epoch: Epoch,
-        final_layout: FinalPacketLayout,
-        fresh_data: usize,
-        ack: Option<u64>,
-    ) {
+    pub fn commit(&mut self, epoch: Epoch, final_layout: FinalPacketLayout, ack: Option<u64>) {
         self.constraints
             .commit(final_layout.sent_bytes(), final_layout.in_flight());
-        self.flow_limit.post_sent(fresh_data);
         self.cc.on_pkt_sent(
             epoch,
             final_layout.pn(),
@@ -454,7 +443,6 @@ impl<'a> Transaction<'a> {
 struct LevelState {
     epoch: Epoch,
     packet: PaddablePacket,
-    fresh_len: usize,
     ack: Option<u64>,
     buf_range: Range<usize>,
 }
@@ -482,7 +470,6 @@ impl Transaction<'_> {
                 .map(|(packet, ack)| LevelState {
                     epoch: Epoch::Initial,
                     packet,
-                    fresh_len: 0,
                     ack,
                     buf_range,
                 })
@@ -492,10 +479,9 @@ impl Transaction<'_> {
             spaces
                 .data()
                 .try_assemble_0rtt_packet(tx, path_challenge_frames, &mut buf[buf_range.clone()])
-                .map(|(packet, fresh_len)| LevelState {
+                .map(|packet| LevelState {
                     epoch: Epoch::Data,
                     packet,
-                    fresh_len,
                     ack: None,
                     buf_range,
                 })
@@ -508,7 +494,6 @@ impl Transaction<'_> {
                 .map(|(packet, ack)| LevelState {
                     epoch: Epoch::Handshake,
                     packet,
-                    fresh_len: 0,
                     ack,
                     buf_range,
                 })
@@ -524,10 +509,9 @@ impl Transaction<'_> {
                     path_response_frames,
                     &mut buf[buf_range.clone()],
                 )
-                .map(|(packet, ack, fresh_len)| LevelState {
+                .map(|(packet, ack)| LevelState {
                     epoch: Epoch::Data,
                     packet,
-                    fresh_len,
                     ack,
                     buf_range,
                 })
@@ -559,7 +543,6 @@ impl Transaction<'_> {
                         this_level.packet.packet_len(),
                         this_level.packet.in_flight(),
                     );
-                    self.flow_limit.post_sent(this_level.fresh_len);
                     // replace last level, complete and commit last level to cc
                     if let Some(last_level) = last_level.replace(this_level) {
                         let final_layout =
@@ -624,7 +607,7 @@ impl Transaction<'_> {
         let buf = self.constraints.constrain(buf);
         data_space
             .try_assemble_1rtt_packet(self, spin, path_challenge_frames, path_response_frames, buf)
-            .map(|(packet, ack, fresh_bytes)| {
+            .map(|(packet, ack)| {
                 let final_layout = if packet.probe_new_path() {
                     packet.complete(buf)
                 } else {
@@ -632,7 +615,6 @@ impl Transaction<'_> {
                 };
                 self.constraints
                     .commit(final_layout.sent_bytes(), final_layout.in_flight());
-                self.flow_limit.post_sent(fresh_bytes);
                 self.cc.on_pkt_sent(
                     Epoch::Data,
                     final_layout.pn(),

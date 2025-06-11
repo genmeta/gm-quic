@@ -20,6 +20,7 @@ derive_more = { workspace = true, features = [
     "deref",
     "deref_mut",
     "from",
+    "into",
     "try_into",
 ] }
 enum_dispatch = { workspace = true }

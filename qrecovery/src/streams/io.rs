@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    ops::{Deref, DerefMut},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU8, Ordering},
@@ -9,7 +10,7 @@ use std::{
 use derive_more::{Deref, DerefMut};
 use qbase::{
     error::Error as QuicError,
-    sid::{Dir, StreamId},
+    sid::{Dir, Role, StreamId},
 };
 
 use crate::{recv::Incoming, send::Outgoing};
@@ -79,48 +80,85 @@ impl<TX> ArcOutput<TX> {
     }
 
     pub(super) fn guard(&'_ self) -> Result<ArcOutputGuard<'_, TX>, QuicError> {
-        let guard = self.0.lock().unwrap();
-        match guard.as_ref() {
-            Ok(_) => Ok(ArcOutputGuard(guard)),
+        let streams = self.streams();
+        match streams.as_ref() {
+            Ok(_) => Ok(ArcOutputGuard(streams)),
             Err(e) => Err(e.clone()),
         }
     }
 }
 
-#[derive(Deref, DerefMut)]
 pub(super) struct ArcOutputGuard<'a, TX>(MutexGuard<'a, Result<Output<TX>, QuicError>>);
+
+impl<TX> Deref for ArcOutputGuard<'_, TX> {
+    type Target = Output<TX>;
+
+    fn deref(&self) -> &Self::Target {
+        match self.0.as_ref() {
+            Ok(output) => output,
+            Err(e) => unreachable!("output is invalid: {e}"),
+        }
+    }
+}
+
+impl<TX> DerefMut for ArcOutputGuard<'_, TX> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self.0.as_mut() {
+            Ok(output) => output,
+            Err(e) => unreachable!("output is invalid: {e}"),
+        }
+    }
+}
 
 impl<TX> ArcOutputGuard<'_, TX> {
     pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<TX>, io_state: IOState) {
-        match self.0.as_mut() {
-            Ok(set) => set.insert(sid, (outgoing, io_state)),
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
+        self.deref_mut().insert(sid, (outgoing, io_state));
     }
 
     pub(super) fn on_0rtt_rejected(
-        &mut self,
-        init_max_streams_bidi: u64,
-        init_max_streams_uni: u64,
+        &self,
+        opened_bidi: u64,
+        opened_uni: u64,
+        bidi_snd_wnd_size: u64,
+        uni_snd_wnd_size: u64,
     ) {
-        match self.0.as_ref() {
-            Ok(set) => set
-                .iter()
-                .filter(|(sid, _)| {
-                    (sid.dir() == Dir::Bi && sid.id() < init_max_streams_bidi)
-                        || (sid.dir() == Dir::Uni && sid.id() < init_max_streams_uni)
-                })
-                .for_each(|(_, (o, _))| o.on_0rtt_rejected()),
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
+        self.deref()
+            .iter()
+            .filter(|(sid, _)| {
+                (sid.dir() == Dir::Bi && sid.id() < opened_bidi)
+                    || (sid.dir() == Dir::Uni && sid.id() < opened_uni)
+            })
+            .for_each(|(sid, (o, _))| match sid.dir() {
+                Dir::Bi => o.on_0rtt_rejected(bidi_snd_wnd_size),
+                Dir::Uni => o.on_0rtt_rejected(uni_snd_wnd_size),
+            })
+    }
+
+    pub(super) fn on_0rtt_accepted(
+        &self,
+        local_role: Role,
+        opened_bidi: u64,
+        opened_uni: u64,
+        bidi_snd_wnd_size: u64,
+        uni_snd_wnd_size: u64,
+    ) {
+        self.deref()
+            .iter()
+            .filter(|(sid, _)| {
+                sid.role() == local_role
+                    && ((sid.dir() == Dir::Bi && sid.id() < opened_bidi)
+                        || (sid.dir() == Dir::Uni && sid.id() < opened_uni))
+            })
+            .for_each(|(sid, (outgoing, _))| match sid.dir() {
+                Dir::Bi => outgoing.on_0rtt_accepted(bidi_snd_wnd_size),
+                Dir::Uni => outgoing.on_0rtt_accepted(uni_snd_wnd_size),
+            });
     }
 
     pub(super) fn on_conn_error(&mut self, error: &QuicError) {
-        match self.0.as_ref() {
-            Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(error)),
-            // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
+        self.deref()
+            .values()
+            .for_each(|(o, _)| o.on_conn_error(error));
         *self.0 = Err(error.clone());
     }
 }

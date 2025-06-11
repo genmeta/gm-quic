@@ -8,7 +8,7 @@ use qbase::{
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
-    varint::{VARINT_MAX, VarInt},
+    varint::VarInt,
 };
 use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
@@ -34,6 +34,7 @@ impl<TX: Clone> Outgoing<TX> {
         sid: StreamId,
         flow_limit: usize,
         tokens: usize,
+        zero_rtt: bool,
     ) -> Result<(usize, bool), Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
@@ -62,7 +63,7 @@ impl<TX: Clone> Outgoing<TX> {
             Sender::Ready(s) => {
                 let mut s: SendingSender<TX> = s.upgrade();
                 let (result, finished) = s
-                    .pick_up(predicate, flow_limit)
+                    .pick_up(predicate, flow_limit, zero_rtt)
                     .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
                     .map_err(|s| (Err(s), false))
                     .unwrap_or_else(|x| x);
@@ -75,7 +76,7 @@ impl<TX: Clone> Outgoing<TX> {
             }
             Sender::Sending(s) => {
                 let (result, finished) = s
-                    .pick_up(predicate, flow_limit)
+                    .pick_up(predicate, flow_limit, zero_rtt)
                     .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
                     .map_err(|s| (Err(s), false))
                     .unwrap_or_else(|x| x);
@@ -84,7 +85,7 @@ impl<TX: Clone> Outgoing<TX> {
                 }
                 result
             }
-            Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
+            Sender::DataSent(s) => s.pick_up(predicate, flow_limit, zero_rtt).map(write),
             _ => Err(Signals::TRANSPORT),
         }
     }
@@ -102,13 +103,7 @@ impl<TX> Outgoing<TX> {
     ///
     /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames
     pub fn update_window(&self, max_stream_data: u64) {
-        assert!(max_stream_data <= VARINT_MAX);
-        let mut sender = self.0.sender();
-        match sender.deref_mut() {
-            Ok(Sender::Ready(s)) => s.update_window(max_stream_data),
-            Ok(Sender::Sending(s)) => s.update_window(max_stream_data),
-            _ => {}
-        }
+        self.0.update_window(max_stream_data);
     }
 
     /// Called when the data sent to peer is acknowlwged.
@@ -173,13 +168,23 @@ impl<TX> Outgoing<TX> {
         };
     }
 
-    pub fn on_0rtt_rejected(&self) {
-        let mut sender = self.0.sender();
-        let inner = sender.deref_mut();
-        if let Ok(sending_state) = inner {
+    pub fn on_0rtt_accepted(&self, new_snd_wnd_size: u64) {
+        if let Ok(sending_state) = self.0.sender().deref_mut() {
             match sending_state {
-                Sender::Sending(s) => s.reset_send(),
-                Sender::DataSent(s) => s.reset_send(),
+                Sender::Ready(s) => s.on_0rtt_accepted(new_snd_wnd_size),
+                Sender::Sending(s) => s.on_0rtt_accepted(new_snd_wnd_size),
+                Sender::DataSent(s) => s.on_0rtt_accepted(),
+                _ => (),
+            }
+        };
+    }
+
+    pub fn on_0rtt_rejected(&self, new_snd_wnd_size: u64) {
+        if let Ok(sending_state) = self.0.sender().deref_mut() {
+            match sending_state {
+                Sender::Ready(s) => s.on_0rtt_rejected(new_snd_wnd_size),
+                Sender::Sending(s) => s.on_0rtt_rejected(new_snd_wnd_size),
+                Sender::DataSent(s) => s.on_0rtt_rejected(new_snd_wnd_size),
                 _ => (),
             }
         };

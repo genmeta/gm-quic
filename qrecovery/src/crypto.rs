@@ -38,7 +38,7 @@ mod send {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
             self.sndbuf
-                .pick_up(predicate, usize::MAX)
+                .pick_up(predicate, usize::MAX, u64::MAX)
                 .map(|(offset, _is_fresh, data)| {
                     let frame = CryptoFrame::new(
                         VarInt::from_u64(offset).unwrap(),
