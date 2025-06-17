@@ -97,7 +97,7 @@ impl Parameters {
     ///
     /// It will wait for the server transport parameters to be
     /// received and parsed.
-    fn new_client(
+    pub fn new_client(
         client: ClientParameters,
         remembered: Option<RememberedParameters>,
         origin_dcid: ConnectionId,
@@ -121,7 +121,7 @@ impl Parameters {
     ///
     /// It will wait for the client transport parameters to be
     /// received and parsed.
-    fn new_server(server: ServerParameters) -> Self {
+    pub fn new_server(server: ServerParameters) -> Self {
         Self {
             state: Self::SERVER_READY,
             client: Arc::default(),
@@ -132,10 +132,24 @@ impl Parameters {
         }
     }
 
-    fn role(&self) -> Role {
+    pub fn role(&self) -> Role {
         match self.requirements {
             Requirements::Client { .. } => Role::Client,
             Requirements::Server { .. } => Role::Server,
+        }
+    }
+
+    pub fn local(&self) -> &GeneralParameters {
+        match self.role() {
+            Role::Client => &self.client,
+            Role::Server => &self.server,
+        }
+    }
+
+    pub fn remote(&self) -> &GeneralParameters {
+        match self.role() {
+            Role::Client => &self.server,
+            Role::Server => &self.client,
         }
     }
 
@@ -197,7 +211,10 @@ impl Parameters {
         }
     }
 
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), QuicError> {
+    pub fn initial_scid_from_peer_need_equal(
+        &mut self,
+        cid: ConnectionId,
+    ) -> Result<(), QuicError> {
         let initial_scid = match &mut self.requirements {
             Requirements::Client { initial_scid, .. } => initial_scid,
             Requirements::Server { initial_scid } => initial_scid,
@@ -316,6 +333,12 @@ impl Parameters {
 #[derive(Debug, Clone)]
 pub struct ArcParameters(Arc<Mutex<Result<Parameters, Error>>>);
 
+impl From<Parameters> for ArcParameters {
+    fn from(params: Parameters) -> Self {
+        Self(Arc::new(Mutex::new(Ok(params))))
+    }
+}
+
 impl ArcParameters {
     /// Creates a new client transport parameters, with the client
     /// parameters and remembered server parameters if exist.
@@ -341,6 +364,13 @@ impl ArcParameters {
     /// received and parsed.
     pub fn new_server(server: ServerParameters) -> Self {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
+    }
+
+    pub fn role(&self) -> Result<Role, Error> {
+        (self.0.lock().unwrap())
+            .as_mut()
+            .map(|params| params.role())
+            .map_err(|e| e.clone())
     }
 
     pub fn local(&self) -> Result<Arc<GeneralParameters>, Error> {
@@ -478,11 +508,11 @@ impl ArcParameters {
         }
     }
 
-    pub fn is_remote_params_received(&self) -> Option<bool> {
+    pub fn is_remote_params_received(&self) -> Result<bool, Error> {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
-            Ok(params) => Some(params.is_remote_params_received()),
-            Err(_) => None,
+            Ok(params) => Ok(params.is_remote_params_received()),
+            Err(e) => Err(e.clone()),
         }
     }
 
@@ -490,12 +520,11 @@ impl ArcParameters {
     ///
     /// It is usually used to avoid processing remote transport parameters
     /// more than once.
-    pub fn is_remote_params_ready(&self) -> bool {
-        let guard = self.0.lock().unwrap();
-        match guard.deref() {
-            Ok(params) => params.is_remote_params_ready(),
-            Err(_) => false,
-        }
+    pub fn is_remote_params_ready(&self) -> Result<bool, Error> {
+        (self.0.lock().unwrap())
+            .as_mut()
+            .map(|params| params.is_remote_params_ready())
+            .map_err(|e| e.clone())
     }
 
     /// When some connection error occurred, convert this parameters

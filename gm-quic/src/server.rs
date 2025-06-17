@@ -8,7 +8,7 @@ use std::{
 
 use dashmap::{DashMap, DashSet};
 use handy::UdpSocketController;
-use qconnection::builder::*;
+use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
@@ -123,7 +123,7 @@ pub struct QuicListeners {
     parameters: ServerParameters,
     silent_rejection: bool,
     client_authers: Vec<Arc<dyn AuthClient>>,
-    tls_config: Arc<TlsServerConfig>,
+    tls_config: TlsServerConfig,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     defer_idle_timeout: HeartbeatConfig,
     logger: Arc<dyn Log + Send + Sync>,
@@ -348,7 +348,7 @@ impl AuthClient for ServerAuther {
             .is_some_and(|server| server.bind_addresses.contains(&self.iface))
     }
 
-    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &PeerCert) -> bool {
+    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> bool {
         true
     }
 }
@@ -398,18 +398,17 @@ impl QuicListeners {
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
         let connection = Arc::new(
-            Connection::with_token_provider(self.token_provider.clone())
+            Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
                 .with_silent_rejection(self.silent_rejection)
-                .with_client_authers(client_authers)
+                .with_client_authers(client_authers.collect())
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
                 .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
-                .defer_idle_timeout(self.defer_idle_timeout)
+                .with_defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
-                .with_qlog(self.logger.as_ref())
-                .run_with(event_broker),
+                .with_qlog(self.logger.clone())
+                .run(event_broker),
         );
 
         let incomings = self.incomings.clone();
@@ -730,11 +729,11 @@ impl QuicListenersBuilder<TlsServerConfig> {
             incomings: self.incomings, // any number greater than 0
             token_provider: self
                 .token_provider
-                .unwrap_or_else(|| Arc::new(NoopTokenRegistry)),
+                .unwrap_or_else(|| Arc::new(handy::NoopTokenRegistry)),
             parameters: self.parameters,
             silent_rejection: self.silent_rejection,
             client_authers: self.client_authers,
-            tls_config: Arc::new(self.tls_config),
+            tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),

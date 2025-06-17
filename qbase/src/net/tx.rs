@@ -8,9 +8,11 @@ use derive_more::Deref;
 
 use super::route::Pathway;
 
+type SignalsBits = u16;
+
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy,PartialEq, Eq)]
-    pub struct Signals: u8 {
+    pub struct Signals: SignalsBits {
         const CONGESTION    = 1 << 0; // cc
         const FLOW_CONTROL  = 1 << 1; // flow
         const TRANSPORT     = 1 << 2; // ack/retran/reliable....
@@ -19,6 +21,7 @@ bitflags::bitflags! {
         const CREDIT        = 1 << 5; // aa
         const KEYS          = 1 << 6; // key(no waker in SendWaker)
         const PING          = 1 << 7; // packet which contains ping frames only
+        const ONE_RTT       = 1 << 8; // one rtt data space not ready
     }
 }
 
@@ -26,7 +29,7 @@ bitflags::bitflags! {
 pub struct SendWaker {
     waker: Option<Waker>,
     // Signals 对应的bit设置为1意为该位的条件已经满足，为0表示需要该条件满足
-    state: u8,
+    state: SignalsBits,
 }
 
 impl SendWaker {
@@ -34,7 +37,7 @@ impl SendWaker {
         Self::default()
     }
 
-    const WAITING: u8 = 0;
+    const WAITING: SignalsBits = 0;
 
     pub fn wait_for(&mut self, cx: &mut Context, signals: Signals) {
         if self.state & signals.bits() == 0 {
@@ -122,7 +125,7 @@ mod tests {
     };
 
     impl ArcSendWaker {
-        fn state(&self) -> u8 {
+        fn state(&self) -> SignalsBits {
             self.0.lock().unwrap().state
         }
     }

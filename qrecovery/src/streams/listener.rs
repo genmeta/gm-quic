@@ -55,10 +55,8 @@ impl<TX> Listener<TX> {
     fn poll_accept_bi_stream(
         &mut self,
         cx: &mut Context<'_>,
-        snd_buf_size: u64,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
-            sender.update_window(snd_buf_size);
             Poll::Ready(Ok((sid, (Reader::new(recever), Writer::new(sender)))))
         } else {
             self.bi_waker = Some(cx.waker().clone());
@@ -95,11 +93,8 @@ impl<TX> ArcListener<TX> {
         }
     }
 
-    pub fn accept_bi_stream(&self, snd_buf_size: u64) -> AcceptBiStream<'_, TX> {
-        AcceptBiStream {
-            inner: self,
-            snd_buf_size,
-        }
+    pub fn accept_bi_stream(&self) -> AcceptBiStream<'_, TX> {
+        AcceptBiStream { inner: self }
     }
 
     pub fn accept_uni_stream(&'_ self) -> AcceptUniStream<'_, TX> {
@@ -110,10 +105,9 @@ impl<TX> ArcListener<TX> {
     pub fn poll_accept_bi_stream(
         &self,
         cx: &mut Context<'_>,
-        snd_buf_size: u64,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         match self.0.lock().unwrap().as_mut() {
-            Ok(set) => set.poll_accept_bi_stream(cx, snd_buf_size),
+            Ok(set) => set.poll_accept_bi_stream(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
         }
     }
@@ -176,7 +170,6 @@ where
 #[derive(Debug, Clone)]
 pub struct AcceptBiStream<'l, TX> {
     inner: &'l ArcListener<TX>,
-    snd_buf_size: u64,
 }
 
 impl<TX> Future for AcceptBiStream<'_, TX>
@@ -186,7 +179,7 @@ where
     type Output = Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_accept_bi_stream(cx, self.snd_buf_size)
+        self.inner.poll_accept_bi_stream(cx)
     }
 }
 

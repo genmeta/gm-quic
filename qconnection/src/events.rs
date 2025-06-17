@@ -11,7 +11,7 @@ use qbase::{
 use qevent::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
 use tokio::sync::mpsc;
 
-use crate::state::ConnState;
+use crate::state::ArcConnState;
 
 /// The events that can be emitted by a quic connection
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,12 +40,12 @@ pub trait EmitEvent: Send + Sync {
 
 #[derive(Clone)]
 pub struct ArcEventBroker {
-    conn_state: ConnState,
+    conn_state: ArcConnState,
     raw_broker: Arc<dyn EmitEvent>,
 }
 
 impl ArcEventBroker {
-    pub fn new<E: EmitEvent + 'static>(conn_state: ConnState, event_broker: E) -> Self {
+    pub fn new<E: EmitEvent + 'static>(conn_state: ArcConnState, event_broker: E) -> Self {
         Self {
             conn_state,
             raw_broker: Arc::new(event_broker),

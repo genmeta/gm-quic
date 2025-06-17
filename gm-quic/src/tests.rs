@@ -39,7 +39,7 @@ where
 
     SUBSCRIBER.call_once(|| {
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .init()
     });
 
@@ -448,7 +448,7 @@ fn client_auth() -> Result<(), Error> {
             assert_eq!(server, "localhost");
 
             match connection.peer_certs().await?.as_ref() {
-                PeerCert::CertOrPublicKey(cert) => {
+                Some(cert) => {
                     let cert = rcgen::CertificateParams::from_ca_cert_der(&cert.as_slice().into())
                         .unwrap();
                     let client = rcgen::Ia5String::try_from("client").unwrap();
@@ -460,7 +460,7 @@ fn client_auth() -> Result<(), Error> {
                         )
                     );
                 }
-                PeerCert::None => {
+                None => {
                     panic!("Client should present a certificate")
                 }
             }

@@ -154,7 +154,7 @@ pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, QuicEr
     Ok(params)
 }
 
-#[derive(Debug, Into)]
+#[derive(Debug, Into, AsRef)]
 pub struct RememberedParameters(GeneralParameters);
 
 impl RememberedParameters {
