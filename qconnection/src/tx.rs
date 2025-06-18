@@ -29,7 +29,7 @@ use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    ArcDcidCell, ArcReliableFrameDeque, FlowController, GuaranteedFrame,
+    ArcDcidCell, ArcReliableFrameDeque, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };
@@ -375,7 +375,6 @@ pub struct Transaction<'a> {
     scid: ConnectionId,
     dcid: BorrowedCid<'a, ArcReliableFrameDeque>,
     cc: &'a ArcCC,
-    flow_ctrl: &'a FlowController,
     constraints: Constraints,
 }
 
@@ -385,7 +384,6 @@ impl<'a> Transaction<'a> {
         dcid: &'a ArcDcidCell,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
-        flow_ctrl: &'a FlowController,
         tx_waker: ArcSendWaker,
     ) -> Result<Option<Self>, Signals> {
         let send_quota = cc.send_quota()?;
@@ -401,7 +399,6 @@ impl<'a> Transaction<'a> {
             scid,
             dcid: borriwed_dcid,
             cc,
-            flow_ctrl,
             constraints,
         }))
     }
@@ -412,10 +409,6 @@ impl<'a> Transaction<'a> {
 
     pub fn dcid(&self) -> ConnectionId {
         *self.dcid
-    }
-
-    pub fn flow_ctrl(&self) -> &FlowController {
-        self.flow_ctrl
     }
 
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {

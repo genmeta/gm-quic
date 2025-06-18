@@ -376,24 +376,6 @@ impl TryFrom<ParameterValue> for u64 {
     }
 }
 
-impl TryFrom<ParameterValue> for u32 {
-    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
-
-    #[inline]
-    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
-        u64::try_from(value).map(|value| value as _)
-    }
-}
-
-impl TryFrom<ParameterValue> for u16 {
-    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
-
-    #[inline]
-    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
-        u64::try_from(value).map(|value| value as _)
-    }
-}
-
 impl TryFrom<ParameterValue> for String {
     type Error = <Bytes as TryFrom<ParameterValue>>::Error;
 

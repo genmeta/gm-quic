@@ -24,13 +24,13 @@ use tracing::Instrument as _;
 use crate::Components;
 
 #[derive(Clone)]
-pub struct ConnState {
+pub struct ArcConnState {
     state: Arc<AtomicU8>,
     handshaked: Arc<Semaphore>,
     terminated: Arc<Semaphore>,
 }
 
-impl Default for ConnState {
+impl Default for ArcConnState {
     fn default() -> Self {
         Self {
             state: Default::default(),
@@ -40,7 +40,7 @@ impl Default for ConnState {
     }
 }
 
-impl ConnState {
+impl ArcConnState {
     pub fn new() -> Self {
         Self::default()
     }
@@ -66,7 +66,7 @@ impl ConnState {
                 socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
 
-            match components.handshake.role() {
+            match components.quic_handshake.role() {
                 qbase::sid::Role::Client => {
                     if let Ok(local_parameters) = components.parameters.local() {
                         qevent::event!(ParametersSet {

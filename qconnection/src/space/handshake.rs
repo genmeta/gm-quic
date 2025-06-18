@@ -38,7 +38,7 @@ use tracing::Instrument as _;
 
 use super::AckHandshakeSpace;
 use crate::{
-    Components, HandshakeJournal, ServerComponents, SpecificComponents,
+    Components, HandshakeJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     space::pipe,
@@ -177,7 +177,7 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let inform_cc = components.handshake.status();
+    let inform_cc = components.quic_handshake.status();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
         let rcvd_joural = space.journal.of_rcvd_packets();
@@ -241,9 +241,7 @@ pub fn spawn_deliver_and_parse(
                     // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
                     // negotiating done.
                     // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server(ServerComponents {
-                        odcid_router_entry, ..
-                    }) = &components.specific
+                    if let SpecificComponents::Server { odcid_router_entry } = &components.specific
                     {
                         if odcid_router_entry.signpost() != (*packet.dcid()).into() {
                             odcid_router_entry.remove();

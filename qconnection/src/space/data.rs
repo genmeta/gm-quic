@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use bytes::BufMut;
 use qbase::{
@@ -28,9 +28,9 @@ use qbase::{
         signal::SpinBit,
         r#type::Type,
     },
-    param::{GeneralParameters, RememberedParameters},
+    param::{GeneralParameters, ParameterId, RememberedParameters},
     sid::{ControlStreamsConcurrency, Role},
-    util::BoundQueue,
+    util::{BoundQueue, Future},
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -49,7 +49,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use crate::{
-    ArcReliableFrameDeque, Components, DataJournal, DataStreams, GuaranteedFrame,
+    ArcReliableFrameDeque, Components, DataJournal, DataStreams, FlowController, GuaranteedFrame,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},
@@ -69,39 +69,108 @@ pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
     one_rtt_keys: ArcOneRttKeys,
     crypto_stream: CryptoStream,
+    flow_ctrl: FlowController,
     streams: DataStreams,
-    #[cfg(feature = "unreliable")]
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
+    tx_wakers: ArcSendWakers,
+
+    one_rtt_ready: Future<()>,
 }
 
 impl DataSpace {
-    pub fn new(
-        role: Role,
-        reliable_frames: ArcReliableFrameDeque,
+    pub fn new_zero_rtt(
         local_params: &GeneralParameters,
-        remembered_params: Option<&RememberedParameters>,
+        remembered_params: &RememberedParameters,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+        reliable_frames: ArcReliableFrameDeque,
         tx_wakers: ArcSendWakers,
-        max_ack_delay: Duration,
     ) -> Self {
         Self {
-            zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
+            zero_rtt_keys: ArcZeroRttKeys::new_pending(Role::Client),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
-            journal: DataJournal::with_capacity(16, Some(max_ack_delay)),
+            // max_ack_delay: NOT_RESUME
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
-            reliable_frames: reliable_frames.clone(),
+            flow_ctrl: FlowController::new(
+                remembered_params
+                    .get_as(ParameterId::InitialMaxData)
+                    .expect("unreachable: default value will be got if the value unset"),
+                local_params
+                    .get_as(ParameterId::InitialMaxData)
+                    .expect("unreachable: default value will be got if the value unset"),
+                reliable_frames.clone(),
+                tx_wakers.clone(),
+            ),
             streams: DataStreams::new(
-                role,
+                Role::Client,
                 local_params,
-                remembered_params,
+                true,
+                remembered_params.as_ref(),
                 streams_ctrl,
-                reliable_frames,
+                reliable_frames.clone(),
                 tx_wakers.clone(),
             ),
             #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(1024, tx_wakers),
+            datagrams: DatagramFlow::new(
+                local_params
+                    .get_as(ParameterId::MaxDatagramFrameSize)
+                    .expect("unreachable: default value will be got if the value unset"),
+                tx_wakers.clone(),
+            ),
+            journal: DataJournal::with_capacity(16, None),
+            reliable_frames: reliable_frames.clone(),
+            tx_wakers,
+
+            one_rtt_ready: Future::new(),
+        }
+    }
+
+    pub fn new_one_rtt(
+        role: Role,
+        local_params: &GeneralParameters,
+        // remote_params: &GeneralParameters,
+        streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+        reliable_frames: ArcReliableFrameDeque,
+        tx_wakers: ArcSendWakers,
+    ) -> Self {
+        let remote_params = GeneralParameters::default();
+        Self {
+            zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
+            one_rtt_keys: ArcOneRttKeys::new_pending(),
+            // max_ack_delay: NOT_RESUME
+            crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
+            flow_ctrl: FlowController::new(
+                remote_params
+                    .get_as(ParameterId::InitialMaxData)
+                    .expect("unreachable: default value will be got if the value unset"),
+                local_params
+                    .get_as(ParameterId::InitialMaxData)
+                    .expect("unreachable: default value will be got if the value unset"),
+                reliable_frames.clone(),
+                tx_wakers.clone(),
+            ),
+            streams: DataStreams::new(
+                role,
+                local_params,
+                false,
+                &remote_params,
+                streams_ctrl,
+                reliable_frames.clone(),
+                tx_wakers.clone(),
+            ),
+            #[cfg(feature = "unreliable")]
+            datagrams: DatagramFlow::new(
+                local_params
+                    .get_as(ParameterId::MaxDatagramFrameSize)
+                    .expect("unreachable: default value will be got if the value unset"),
+                tx_wakers.clone(),
+            ),
+            journal: DataJournal::with_capacity(16, None),
+            reliable_frames: reliable_frames.clone(),
+            tx_wakers,
+
+            one_rtt_ready: Future::new(),
         }
     }
 
@@ -145,7 +214,7 @@ impl DataSpace {
         buf: &mut [u8],
     ) -> Result<PaddablePacket, Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
-            return Err(Signals::empty()); // not error, just skip 0rtt
+            return Err(Signals::ONE_RTT); // should 1rtt
         }
 
         let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
@@ -166,19 +235,15 @@ impl DataSpace {
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
             .map_err(|s| signals |= s);
-        _ = self
-            .crypto_stream
-            .outgoing()
-            .try_load_data_into(&mut packet)
-            .map_err(|s| signals |= s);
         // try to load reliable frames into this 0RTT packet to send
         _ = self
             .reliable_frames
             .try_load_frames_into(&mut packet)
             .map_err(|s| signals |= s);
         // try to load stream frames into this 0RTT packet to send
+        // If the stream has entered 1rtt, no data will be loaded
         self.streams
-            .try_load_data_into(&mut packet, &tx.flow_ctrl().sender, true)
+            .try_load_data_into(&mut packet, &self.flow_ctrl.sender, true)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
@@ -201,6 +266,10 @@ impl DataSpace {
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
     ) -> Result<(PaddablePacket, Option<u64>), Signals> {
+        if !self.is_one_rtt_ready() {
+            return Err(Signals::ONE_RTT); // not ready for 1RTT
+        }
+
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
@@ -262,7 +331,7 @@ impl DataSpace {
             .map_err(|s| signals |= s);
         // try to load stream frames into this 1RTT packet to send
         self.streams
-            .try_load_data_into(&mut packet, &tx.flow_ctrl().sender, false)
+            .try_load_data_into(&mut packet, &self.flow_ctrl.sender, false)
             .map_err(|s| signals |= s)
             .unwrap_or_default();
 
@@ -346,7 +415,20 @@ impl DataSpace {
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {
-        self.one_rtt_keys.get_local_keys().is_some()
+        self.one_rtt_ready.try_get().is_some()
+    }
+
+    pub fn is_zero_rtt_avaliable(&self) -> bool {
+        self.zero_rtt_keys.get_encrypt_keys().is_some()
+    }
+
+    pub async fn one_rtt_ready(&self) {
+        self.one_rtt_ready.get().await;
+    }
+
+    pub(crate) fn on_one_rtt_ready(&self) {
+        assert_eq!(self.one_rtt_ready.set(()), None);
+        self.tx_wakers.wake_all_by(Signals::ONE_RTT);
     }
 
     pub fn one_rtt_keys(&self) -> ArcOneRttKeys {
@@ -369,6 +451,14 @@ impl DataSpace {
 
     pub fn streams(&self) -> &DataStreams {
         &self.streams
+    }
+
+    pub fn flow_ctrl(&self) -> &FlowController {
+        &self.flow_ctrl
+    }
+
+    pub(crate) fn journal(&self) -> &DataJournal {
+        &self.journal
     }
 
     #[cfg(feature = "unreliable")]
@@ -400,7 +490,7 @@ pub fn spawn_deliver_and_parse(
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
 
     let flow_controlled_data_streams =
-        FlowControlledDataStreams::new(space.streams.clone(), components.flow_ctrl.clone());
+        FlowControlledDataStreams::new(space.streams.clone(), space.flow_ctrl.clone());
 
     // Assemble the pipelines of frame processing
     pipe(
@@ -415,18 +505,18 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_max_data_frames,
-        components.flow_ctrl.sender.clone(),
+        space.flow_ctrl.sender.clone(),
         event_broker.clone(),
     );
     pipe(
         rcvd_data_blocked_frames,
-        components.flow_ctrl.recver.clone(),
+        space.flow_ctrl.recver.clone(),
         event_broker.clone(),
     );
     pipe(
         rcvd_handshake_done_frames,
         components
-            .handshake
+            .quic_handshake
             .discard_spaces_on_client_handshake_done(components.paths.clone()),
         event_broker.clone(),
     );
@@ -498,6 +588,8 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
+            // wait for the 1RTT to be ready, then start receiving packets
+            space.one_rtt_ready().await;
             while let Some((bind_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
@@ -550,6 +642,9 @@ pub fn spawn_deliver_and_parse(
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
+            // wait for the 1RTT to be ready, then start receiving packets
+            space.one_rtt_ready().await;
+            tracing::info!("ready for recv 1rtt");
             while let Some((bind_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
@@ -564,7 +659,7 @@ pub fn spawn_deliver_and_parse(
                             }
                         };
                         components
-                            .handshake
+                            .quic_handshake
                             .discard_spaces_on_server_handshake_done(&components.paths);
 
                         let mut frames = QuicFramesCollector::<PacketReceived>::new();

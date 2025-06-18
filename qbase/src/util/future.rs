@@ -62,10 +62,10 @@ impl<T> Deref for ReadyFuture<'_, T> {
 ///     async move {
 ///         // do some work to get the value
 ///         let value = some_work().await;
-///         fut.assign(value);
+///         fut.set(value);
 ///
 ///         // the new value will replace the old value
-///         assert_eq!(fut.assign("Hi World"), Some("Hello, World"));
+///         assert_eq!(fut.set("Hi World"), Some("Hello, World"));
 ///     }
 /// });
 ///
@@ -102,14 +102,14 @@ impl<T> Future<T> {
         self.state.lock().unwrap()
     }
 
-    /// Assign the value to the [`Future`].
+    /// Set the value to the [`Future`].
     ///
-    /// Return the old value as [`Some`] if the future is already assigned.
+    /// Return the old value as [`Some`] if the future is already set.
     #[inline]
-    pub fn assign(&self, item: T) -> Option<T> {
+    pub fn set(&self, item: T) -> Option<T> {
         match std::mem::replace(self.state().deref_mut(), FutureState::Ready(item)) {
             FutureState::Demand(wakers) => {
-                wakers.into_iter().for_each(|waker| waker.wake());
+                wakers.into_iter().for_each(|waker| waker.wake_by_ref());
                 None
             }
             FutureState::Ready(old) => Some(old),
@@ -159,6 +159,18 @@ impl<T> Default for Future<T> {
     }
 }
 
+impl<T> Drop for Future<T> {
+    fn drop(&mut self) {
+        if let FutureState::Demand(wakers) = self.state().deref_mut() {
+            // If the future is dropped while there are still wakers waiting,
+            // we should wake them up to avoid deadlock.
+            for waker in wakers.drain(..) {
+                waker.wake();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -173,12 +185,12 @@ mod tests {
     fn new() {
         let future = Future::new();
         assert_eq!(future.try_get().as_deref(), None);
-        assert_eq!(future.assign("Hello world"), None);
+        assert_eq!(future.set("Hello world"), None);
         assert_eq!(future.try_get().as_deref(), Some(&"Hello world"));
 
         let future = Future::with("Hello World");
         assert_eq!(future.try_get().as_deref(), Some(&"Hello World"));
-        assert_eq!(future.assign("Hi"), Some("Hello World"));
+        assert_eq!(future.set("Hi"), Some("Hello World"));
     }
 
     #[tokio::test]
@@ -202,7 +214,7 @@ mod tests {
         });
 
         write.notified().await;
-        assert_eq!(future.assign("Hello world"), None);
+        assert_eq!(future.set("Hello world"), None);
 
         task.await.unwrap();
     }
@@ -230,9 +242,9 @@ mod tests {
 
         write.notified().await;
         assert_eq!(future.try_get().as_deref(), None);
-        assert_eq!(future.assign("Hello world"), None);
+        assert_eq!(future.set("Hello world"), None);
         write.notified().await;
-        assert_eq!(future.assign("Changed"), Some("Hello world"));
+        assert_eq!(future.set("Changed"), Some("Hello world"));
         task.await.unwrap();
     }
 
@@ -243,7 +255,7 @@ mod tests {
             let future = future.clone();
             async move {
                 let _ = timeout(Duration::from_millis(100), future.get()).await;
-                let _ = future.assign("Hello world");
+                let _ = future.set("Hello world");
             }
         });
 

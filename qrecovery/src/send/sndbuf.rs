@@ -450,7 +450,7 @@ impl BufMap {
         }
     }
 
-    fn reset(&mut self) {
+    fn reset_sent(&mut self) {
         self.0 = VecDeque::from(vec![State::encode(0, Color::Pending)]);
     }
 }
@@ -690,8 +690,8 @@ impl SendBuf {
         self.state.may_loss(range);
     }
 
-    pub fn reset(&mut self) {
-        self.state.reset()
+    pub fn reset_sent(&mut self) {
+        self.state.reset_sent()
     }
 
     /// Return whether all data currently written has been received(acknowledged) by the peer.

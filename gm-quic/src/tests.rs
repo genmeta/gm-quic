@@ -101,7 +101,7 @@ pub async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
         assert_eq!(server, "localhost");
         tracing::info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
-            while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {
+            while let Ok((_sid, (reader, writer))) = connection.accept_bi_stream().await {
                 tokio::spawn(echo_stream(reader, writer));
             }
         });
@@ -206,7 +206,7 @@ fn shutdown() -> Result<(), Error> {
             let (connection, _server, pathway, _link) = listeners.accept().await?;
             tracing::info!(source = ?pathway.remote(), "accepted new connection");
             tokio::spawn(async move {
-                let (_sid, (reader, writer)) = connection.accept_bi_stream().await?.unwrap();
+                let (_sid, (reader, writer)) = connection.accept_bi_stream().await?;
                 echo_stream(reader, writer).await?;
                 connection.close("Bye bye", 0);
                 Result::<(), Error>::Ok(())
@@ -448,7 +448,7 @@ fn client_auth() -> Result<(), Error> {
             assert_eq!(server, "localhost");
 
             match connection.peer_certs().await?.as_ref() {
-                PeerCert::CertOrPublicKey(cert) => {
+                Some(cert) => {
                     let cert = rcgen::CertificateParams::from_ca_cert_der(&cert.as_slice().into())
                         .unwrap();
                     let client = rcgen::Ia5String::try_from("client").unwrap();
@@ -460,13 +460,13 @@ fn client_auth() -> Result<(), Error> {
                         )
                     );
                 }
-                PeerCert::None => {
+                None => {
                     panic!("Client should present a certificate")
                 }
             }
 
             tokio::spawn(async move {
-                while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {
+                while let Ok((_sid, (reader, writer))) = connection.accept_bi_stream().await {
                     tokio::spawn(echo_stream(reader, writer));
                 }
             });

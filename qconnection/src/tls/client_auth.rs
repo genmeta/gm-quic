@@ -5,8 +5,6 @@ use std::{
 
 use qbase::util::Future;
 
-use crate::prelude::PeerCert;
-
 pub type ClientAuthers = Vec<Arc<dyn AuthClient>>;
 
 pub trait AuthClient: Send + Sync {
@@ -16,7 +14,7 @@ pub trait AuthClient: Send + Sync {
         &self,
         host: &str,
         client_name: Option<&str>,
-        clinet_certs: &PeerCert,
+        clinet_certs: &[u8],
     ) -> bool;
 }
 
@@ -79,6 +77,6 @@ impl ArcSendGate {
     /// Called after client parameters and server verification are completed
     /// successfully. Unblocks all pending transmission requests.
     pub fn grant_permit(&self) {
-        self.0.assign(());
+        self.0.set(());
     }
 }

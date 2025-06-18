@@ -2,8 +2,7 @@ use std::sync::OnceLock;
 
 pub use qconnection::{
     builder::{
-        ClientParameters, ConnectionId, ConsistentConcurrency, ControlStreamsConcurrency,
-        ServerParameters, TokenProvider, TokenSink,
+        ClientParameters, ControlStreamsConcurrency, ServerParameters, TokenProvider, TokenSink,
     },
     prelude::*,
 };

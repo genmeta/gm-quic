@@ -1,114 +1,85 @@
-use std::{
-    future::Future,
-    io,
-    sync::{Arc, RwLock},
-};
+use std::{ops::Deref, sync::Arc};
 
 pub use qbase::{
-    cid::{ConnectionId, GenUniqueCid, RetireCid},
-    net::route::{Link, Pathway},
+    cid::ConnectionId,
     packet::{
-        DataHeader, Packet,
+        DataHeader, OneRttHeader, Packet,
         header::{GetDcid, GetScid},
         long::DataHeader as LongHeader,
     },
     param::{ClientParameters, ServerParameters},
-    sid::{ControlStreamsConcurrency, handy::*},
-    token::{TokenProvider, TokenSink, handy::*},
+    sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController},
+    token::{TokenProvider, TokenSink},
 };
 use qbase::{
+    cid::GenUniqueCid,
     error::Error,
-    frame::ConnectionCloseFrame,
-    net::{address::BindAddr, tx::ArcSendWakers},
-    param::{ArcParameters, ParameterId},
-    sid::{self, ProductStreamsConcurrencyController},
-    token::ArcTokenRegistry,
-    varint::VarInt,
+    net::tx::ArcSendWakers,
+    param::{ArcParameters, ParameterId, Parameters},
+    sid::{Role, handy::DemandConcurrency},
+    token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::HandshakeStatus;
 use qevent::{
-    GroupID, VantagePointType,
+    GroupID,
     quic::{
         Owner,
-        connectivity::{ConnectionClosed, PathAssigned},
-        transport::ParametersSet,
+        transport::{ParametersRestored, ParametersSet},
     },
-    telemetry::{Instrument, Log, Span},
+    telemetry::{Instrument, Log, handy::NoopLogger},
 };
-use qinterface::{
-    ifaces::QuicInterfaces,
-    queue::RcvdPacketQueue,
-    route::{Router, RouterRegistry},
-};
-pub use rustls::crypto::CryptoProvider;
+use qinterface::{ifaces::QuicInterfaces, queue::RcvdPacketQueue, route::Router};
+use rustls::crypto::CryptoProvider;
+pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
 use tracing::Instrument as _;
 
-pub use crate::tls::AuthClient;
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    FlowController, Handshake, RawHandshake, ServerComponents, SpecificComponents, Termination,
-    events::{ArcEventBroker, EmitEvent, Event},
-    path::{ArcPathContexts, Path},
-    prelude::HeartbeatConfig,
-    space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
-    state::ConnState,
-    termination::Terminator,
-    tls::{
-        self, ArcClientName, ArcEndpointName, ArcPeerCerts, ArcSendGate, ArcServerName,
-        ArcTlsSession, ArcZeroRtt, ClientAuthers, TlsSession,
+    Handshake, RawHandshake, RouterRegistry, SpecificComponents,
+    events::ArcEventBroker,
+    path::ArcPathContexts,
+    prelude::{EmitEvent, Event},
+    space::{
+        Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace,
+        spawn_deliver_and_parse,
     },
+    state::ArcConnState,
+    tls::{ArcSendGate, ArcTlsHandshake, ClientTlsSession, ServerTlsSession, TlsSession},
+};
+pub use crate::{
+    path::idle::HeartbeatConfig,
+    tls::{AuthClient, ClientAuthers},
 };
 
 impl Connection {
-    pub fn with_token_sink(
-        server_name: String,
-        token_sink: Arc<dyn TokenSink>,
-    ) -> ClientFoundation {
+    pub fn new_client(server_name: String, token_sink: Arc<dyn TokenSink>) -> ClientFoundation {
         ClientFoundation {
-            server: rustls::pki_types::ServerName::try_from(server_name.clone())
-                .expect("server name is not valid"),
-            token: token_sink.fetch_token(&server_name),
+            server_name: server_name.clone(),
             token_registry: ArcTokenRegistry::with_sink(server_name.clone(), token_sink),
-            server_name,
             client_params: ClientParameters::default(),
         }
     }
 
-    pub fn with_token_provider(token_provider: Arc<dyn TokenProvider>) -> ServerFoundation {
+    pub fn new_server(token_provider: Arc<dyn TokenProvider>) -> ServerFoundation {
         ServerFoundation {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
             silent_rejection: false,
-            client_authers: vec![],
+            client_authers: ClientAuthers::default(),
         }
     }
 }
 
 pub struct ClientFoundation {
-    server: rustls::pki_types::ServerName<'static>,
-    token: Vec<u8>,
+    server_name: String,
     token_registry: ArcTokenRegistry,
     client_params: ClientParameters,
-    server_name: String,
 }
 
 impl ClientFoundation {
-    pub fn with_parameters(self, client_params: ClientParameters) -> Self {
-        ClientFoundation {
-            client_params,
-            ..self
-        }
-    }
-
-    pub fn with_tls_config(
-        self,
-        tls_config: Arc<rustls::ClientConfig>,
-    ) -> TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
-        TlsReady {
-            foundation: self,
-            tls_config,
-            streams_ctrl: Box::new(sid::handy::DemandConcurrency),
-        }
+    pub fn with_parameters(mut self, params: ClientParameters) -> Self {
+        self.client_params = params;
+        self
     }
 }
 
@@ -120,51 +91,133 @@ pub struct ServerFoundation {
 }
 
 impl ServerFoundation {
-    pub fn with_parameters(self, server_params: ServerParameters) -> Self {
-        ServerFoundation {
-            server_params,
-            ..self
-        }
+    pub fn with_parameters(mut self, params: ServerParameters) -> Self {
+        self.server_params = params;
+        self
     }
 
-    pub fn with_silent_rejection(self, silent_rejection: bool) -> Self {
-        ServerFoundation {
-            silent_rejection,
-            ..self
-        }
+    pub fn with_silent_rejection(mut self, silent: bool) -> Self {
+        self.silent_rejection = silent;
+        self
     }
 
-    pub fn with_client_authers(
-        self,
-        client_authers: impl IntoIterator<Item = Arc<dyn AuthClient>>,
-    ) -> Self {
-        ServerFoundation {
-            client_authers: client_authers.into_iter().collect(),
-            ..self
-        }
+    pub fn with_client_authers(mut self, authers: ClientAuthers) -> Self {
+        self.client_authers = authers;
+        self
     }
+}
 
+pub struct ConnectionFoundation<Foundation, TlsConfig> {
+    foundation: Foundation,
+    tls_config: TlsConfig,
+
+    ifaces: Arc<QuicInterfaces>,
+    router: Arc<Router>,
+    streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+    zero_rtt: bool,
+    defer_idle_timeout: HeartbeatConfig,
+}
+
+pub type ClientConnectionFoundation = ConnectionFoundation<ClientFoundation, TlsClientConfig>;
+pub type ServerConnectionFoundation = ConnectionFoundation<ServerFoundation, TlsServerConfig>;
+
+impl ClientFoundation {
     pub fn with_tls_config(
         self,
-        tls_config: Arc<rustls::ServerConfig>,
-    ) -> TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-        TlsReady {
+        tls_config: TlsClientConfig,
+    ) -> ConnectionFoundation<Self, TlsClientConfig> {
+        ConnectionFoundation {
             foundation: self,
             tls_config,
-            streams_ctrl: Box::new(sid::handy::DemandConcurrency),
+            ifaces: QuicInterfaces::global().clone(),
+            router: Router::global().clone(),
+            streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
+            zero_rtt: false,
+            defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
 }
 
-pub struct TlsReady<Foundation, Config> {
-    foundation: Foundation,
-    tls_config: Config,
-    streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
+    pub fn with_streams_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
+    where
+        F: ProductStreamsConcurrencyController + ?Sized,
+    {
+        let client_params = &self.foundation.client_params;
+        let init_max_bidi_streams = client_params
+            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .expect("unreachable: default value will be got if the value unset");
+        let init_max_uni_streams = client_params
+            .get_as(ParameterId::InitialMaxStreamsUni)
+            .expect("unreachable: default value will be got if the value unset");
+        ConnectionFoundation {
+            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
+            ..self
+        }
+    }
+
+    pub fn with_zero_rtt(mut self, enabled: bool) -> Self {
+        self.tls_config.enable_early_data = enabled;
+        self.zero_rtt = enabled;
+        self
+    }
+}
+
+impl ServerFoundation {
+    pub fn with_tls_config(
+        self,
+        tls_config: TlsServerConfig,
+    ) -> ConnectionFoundation<Self, TlsServerConfig> {
+        ConnectionFoundation {
+            foundation: self,
+            tls_config,
+            ifaces: QuicInterfaces::global().clone(),
+            router: Router::global().clone(),
+            streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
+            zero_rtt: false,
+            defer_idle_timeout: HeartbeatConfig::default(),
+        }
+    }
+}
+
+impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
+    pub fn with_streams_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
+    where
+        F: ProductStreamsConcurrencyController + ?Sized,
+    {
+        let server_params = &self.foundation.server_params;
+        let init_max_bidi_streams = server_params
+            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .expect("unreachable: default value will be got if the value unset");
+        let init_max_uni_streams = server_params
+            .get_as(ParameterId::InitialMaxStreamsUni)
+            .expect("unreachable: default value will be got if the value unset");
+        ConnectionFoundation {
+            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
+            ..self
+        }
+    }
+
+    pub fn with_zero_rtt(mut self, enabled: bool) -> Self {
+        match enabled {
+            true => self.tls_config.max_early_data_size = 0xffffffff,
+            false => self.tls_config.max_early_data_size = 0,
+        }
+        self.zero_rtt = enabled;
+        self
+    }
+}
+
+impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
+    pub fn with_defer_idle_timeout(mut self, defer: HeartbeatConfig) -> Self {
+        self.defer_idle_timeout = defer;
+        self
+    }
 }
 
 fn initial_keys_with(
     crypto_provider: &Arc<CryptoProvider>,
-    client_dcid: &ConnectionId,
+    origin_dcid: &ConnectionId,
     side: rustls::Side,
     version: rustls::quic::Version,
 ) -> rustls::quic::Keys {
@@ -179,671 +232,353 @@ fn initial_keys_with(
         })
         .flatten()
         .expect("crypto provider does not provide supported cipher suite")
-        .keys(client_dcid, side, version)
+        .keys(origin_dcid, side, version)
 }
 
-impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
-    pub fn with_streams_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
-    where
-        F: ?Sized + ProductStreamsConcurrencyController,
-    {
-        let client_params = &self.foundation.client_params;
-        let init_max_bidi_streams = client_params
-            .get_as(ParameterId::InitialMaxStreamsBidi)
-            .expect("unreachable: default value will be got if the value unset");
-        let init_max_uni_streams = client_params
-            .get_as(ParameterId::InitialMaxStreamsUni)
-            .expect("unreachable: default value will be got if the value unset");
-        TlsReady {
-            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
-            ..self
-        }
-    }
-
-    pub fn with_proto(
-        self,
-        router: Arc<Router>,
-        interfaces: Arc<QuicInterfaces>,
-    ) -> ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
-        ProtoReady {
-            foundation: self.foundation,
-            tls_config: self.tls_config,
-            streams_ctrl: self.streams_ctrl,
-            router,
-            interfaces,
-            defer_idle_timeout: HeartbeatConfig::default(),
-            zero_rtt: ArcZeroRtt::new(false),
-        }
-    }
-}
-
-impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-    pub fn with_streams_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
-    where
-        F: ?Sized + ProductStreamsConcurrencyController,
-    {
-        let server_params = &self.foundation.server_params;
-        let init_max_bidi_streams = server_params
-            .get_as(ParameterId::InitialMaxStreamsBidi)
-            .expect("unreachable: default value will be got if the value unset");
-        let init_max_uni_streams = server_params
-            .get_as(ParameterId::InitialMaxStreamsUni)
-            .expect("unreachable: default value will be got if the value unset");
-        TlsReady {
-            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
-            ..self
-        }
-    }
-
-    pub fn with_proto(
-        self,
-        router: Arc<Router>,
-        interfaces: Arc<QuicInterfaces>,
-    ) -> ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-        ProtoReady {
-            foundation: self.foundation,
-            tls_config: self.tls_config,
-            streams_ctrl: self.streams_ctrl,
-            router,
-            interfaces,
-            defer_idle_timeout: HeartbeatConfig::default(),
-            zero_rtt: ArcZeroRtt::new(false),
-        }
-    }
-}
-
-pub struct ProtoReady<Foundation, Config> {
-    foundation: Foundation,
-    tls_config: Config,
-    streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-    router: Arc<Router>,
-    interfaces: Arc<QuicInterfaces>,
-    defer_idle_timeout: HeartbeatConfig,
-    zero_rtt: ArcZeroRtt,
-}
-
-impl<Foundation, Config> ProtoReady<Foundation, Config> {
-    pub fn defer_idle_timeout(self, config: HeartbeatConfig) -> Self {
-        Self {
-            defer_idle_timeout: config,
-            ..self
-        }
-    }
-
-    pub fn with_zero_rtt(self, enabled: bool) -> Self {
-        ProtoReady {
-            zero_rtt: ArcZeroRtt::new(enabled),
-            ..self
-        }
-    }
-}
-
-impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
-    pub fn with_cids(self, origin_dcid: ConnectionId) -> ComponentsReady {
-        let mut client_params = self.foundation.client_params;
-
-        let tx_wakers = ArcSendWakers::default();
-        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
-
-        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
-
-        let router_registry: qinterface::route::RouterRegistry<ArcReliableFrameDeque> = self
-            .router
-            .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
-        let initial_scid = router_registry.gen_unique_cid();
-
-        client_params
-            .set(ParameterId::InitialSourceConnectionId, initial_scid)
-            .unwrap();
-
-        let cid_registry = CidRegistry::new(
-            ArcLocalCids::new(initial_scid, router_registry),
-            ArcRemoteCids::new(
-                origin_dcid,
-                client_params
-                    .get_as(ParameterId::ActiveConnectionIdLimit)
-                    .expect("unreachable: default value will be got if the value unset"),
-                reliable_frames.clone(),
-            ),
-        );
-
+impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
+    pub fn with_cids(self, origin_dcid: ConnectionId) -> PendingConnection {
         let initial_keys = initial_keys_with(
             self.tls_config.crypto_provider(),
             &origin_dcid,
             rustls::Side::Client,
-            rustls::quic::Version::V1,
+            crate::tls::QUIC_VERSION,
         );
 
-        let max_ack_delay = client_params
-            .get_as(ParameterId::MaxAckDelay)
-            .expect("unreachable: default value will be got if the value unset");
-
-        let client_name = ArcClientName::from(&client_params);
-
-        let tls_session =
-            TlsSession::new_client(self.foundation.server, self.tls_config, &client_params);
-
-        let remembered_params = self
-            .zero_rtt
-            .is_enabled()
-            .then(|| {
-                tls_session
-                    .load_remembered_parameters()
-                    .and_then(Result::ok)
-            })
-            .and_then(|opt| opt);
-
-        let spaces = Spaces::new(
-            InitialSpace::new(
-                initial_keys.into(),
-                self.foundation.token,
-                tx_wakers.clone(),
-            ),
-            HandshakeSpace::new(tx_wakers.clone()),
-            DataSpace::new(
-                sid::Role::Client,
-                reliable_frames.clone(),
-                client_params.as_ref(),
-                remembered_params.as_ref(),
-                self.streams_ctrl,
-                tx_wakers.clone(),
-                max_ack_delay,
-            ),
-        );
-
-        if self.zero_rtt.is_enabled() {
-            tls_session.load_zero_rtt_keys(&spaces.data().zero_rtt_keys());
-        }
-
-        let flow_ctrl = FlowController::new(
-            remembered_params
-                .as_ref()
-                .map(|remembered_params| {
-                    remembered_params
-                        .get_as(ParameterId::InitialMaxData)
-                        .expect("unreachable: default value will be got if the value unset")
-                })
-                .unwrap_or(0),
-            client_params
-                .get_as(ParameterId::InitialMaxData)
-                .expect("unreachable: default value will be got if the value unset"),
-            reliable_frames.clone(),
-            tx_wakers.clone(),
-        );
-
-        let parameters = ArcParameters::new_client(client_params, remembered_params, origin_dcid);
-        let raw_handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
-
-        ComponentsReady {
-            interfaces: self.interfaces,
-            parameters,
-            tls_session: ArcTlsSession::new(tls_session),
-            raw_handshake,
-            token_registry: self.foundation.token_registry,
-            cid_registry,
-            flow_ctrl,
-            spaces,
-            rcvd_pkt_q,
-            tx_wakers,
-            defer_idle_timeout: self.defer_idle_timeout,
-            client_name,
-            server_name: ArcEndpointName::from(self.foundation.server_name),
-            qlog_span: None,
-            specific: SpecificComponents::Client {},
-            zero_rtt: self.zero_rtt,
-        }
-    }
-}
-
-impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-    pub fn with_cids(
-        self,
-        origin_dcid: ConnectionId,
-        client_scid: ConnectionId,
-    ) -> ComponentsReady {
-        let mut server_params = self.foundation.server_params;
+        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
         let tx_wakers = ArcSendWakers::default();
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
 
-        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
-
-        let router_registry: RouterRegistry<ArcReliableFrameDeque> = self
+        let router_registry = self
             .router
             .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
-        server_params
-            .set(ParameterId::InitialSourceConnectionId, initial_scid)
-            .unwrap();
-        server_params
-            .set(ParameterId::OriginalDestinationConnectionId, origin_dcid)
-            .unwrap();
-        let odcid_router_entry = self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
+        let mut clinet_params = self.foundation.client_params;
+        _ = clinet_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
 
-        let cid_registry = CidRegistry::new(
-            ArcLocalCids::new(initial_scid, router_registry),
-            ArcRemoteCids::new(
-                client_scid,
-                server_params
-                    .get_as(ParameterId::ActiveConnectionIdLimit)
-                    .expect("unreachable: default value will be got if the value unset"),
-                reliable_frames.clone(),
-            ),
-        );
+        let tls_session = ClientTlsSession::init(
+            self.foundation.server_name.clone(),
+            Arc::new(self.tls_config),
+            &clinet_params,
+        )
+        .expect("Failed to initialize TLS handshake");
 
-        let initial_keys = initial_keys_with(
-            self.tls_config.crypto_provider(),
-            &origin_dcid,
-            rustls::Side::Server,
-            rustls::quic::Version::V1,
-        );
+        let remembered_parameters = tls_session.remembered_parameters();
+        let zero_rtt_keys = tls_session.load_zero_rtt_keys();
+        // if zero rtt enabled && loadede remembered parameters && zero rtt keys is available
+        let (data_space, parameters) = match (self.zero_rtt, remembered_parameters, zero_rtt_keys) {
+            (true, Some(remembered_parameters), Some(zero_rtt_keys)) => {
+                let data_space = DataSpace::new_zero_rtt(
+                    clinet_params.as_ref(),
+                    &remembered_parameters,
+                    self.streams_ctrl,
+                    reliable_frames.clone(),
+                    tx_wakers.clone(),
+                );
+                qevent::event!(ParametersRestored {
+                    client_parameters: &remembered_parameters,
+                });
+                data_space.zero_rtt_keys().set_keys(zero_rtt_keys);
+                let parameters =
+                    Parameters::new_client(clinet_params, Some(remembered_parameters), origin_dcid);
+                (data_space, parameters)
+            }
+            _ => {
+                let data_space = DataSpace::new_one_rtt(
+                    Role::Client,
+                    clinet_params.as_ref(),
+                    self.streams_ctrl,
+                    reliable_frames.clone(),
+                    tx_wakers.clone(),
+                );
+                let parameters = Parameters::new_client(clinet_params, None, origin_dcid);
+                (data_space, parameters)
+            }
+        };
 
-        let flow_ctrl = FlowController::new(
-            0,
-            server_params
-                .get_as(ParameterId::InitialMaxData)
-                .expect("unreachable: default value will be got if the value unset"),
-            reliable_frames.clone(),
-            tx_wakers.clone(),
-        );
-
-        let max_ack_delay = server_params
-            .get_as(ParameterId::MaxAckDelay)
-            .expect("unreachable: default value will be got if the value unset");
-
-        let tls_session =
-            TlsSession::new_server(self.tls_config, &server_params, self.zero_rtt.is_enabled());
-
-        let spaces = Spaces::new(
-            InitialSpace::new(
-                initial_keys.into(),
-                Vec::with_capacity(0),
-                tx_wakers.clone(),
-            ),
-            HandshakeSpace::new(tx_wakers.clone()),
-            DataSpace::new(
-                sid::Role::Server,
-                reliable_frames.clone(),
-                server_params.as_ref(),
-                None,
-                self.streams_ctrl,
-                tx_wakers.clone(),
-                max_ack_delay,
-            ),
-        );
-
-        let parameters = ArcParameters::new_server(server_params);
-        parameters
-            .initial_scid_from_peer_need_equal(client_scid)
-            .unwrap();
-
-        let raw_handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
-
-        ComponentsReady {
-            interfaces: self.interfaces,
-            parameters,
-            tls_session: ArcTlsSession::new(tls_session),
-            raw_handshake,
-            token_registry: self.foundation.token_registry,
-            cid_registry,
-            flow_ctrl,
-            spaces,
+        PendingConnection {
+            interfaces: self.ifaces,
             rcvd_pkt_q,
-            tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            client_name: ArcClientName::default(),
-            server_name: ArcServerName::default(),
-            qlog_span: None,
-            specific: SpecificComponents::Server(ServerComponents {
-                send_gate: if self.foundation.silent_rejection {
-                    ArcSendGate::new()
-                } else {
-                    ArcSendGate::unrestricted()
-                },
-                client_authers: self.foundation.client_authers,
-                odcid_router_entry,
-            }),
-            zero_rtt: self.zero_rtt,
+            role: Role::Client,
+            origin_dcid,
+            initial_scid,
+            initial_dcid: origin_dcid,
+            tx_wakers,
+            send_gate: ArcSendGate::unrestricted(),
+            reliable_frames,
+            router_registry,
+            parameters,
+            token_registry: self.foundation.token_registry,
+            tls_session: TlsSession::Client(tls_session),
+            initial_keys,
+            data_space,
+            sepcific: SpecificComponents::Client {},
+            qlogger: Arc::new(NoopLogger),
         }
     }
 }
 
-pub struct ComponentsReady {
-    interfaces: Arc<QuicInterfaces>,
-    token_registry: ArcTokenRegistry,
-    rcvd_pkt_q: Arc<RcvdPacketQueue>,
-    cid_registry: CidRegistry,
-    flow_ctrl: FlowController,
-    spaces: Spaces,
-    parameters: ArcParameters,
-    tls_session: ArcTlsSession,
-    raw_handshake: RawHandshake,
-    defer_idle_timeout: HeartbeatConfig,
-    tx_wakers: ArcSendWakers,
-    client_name: ArcClientName,
-    server_name: ArcServerName,
-    specific: SpecificComponents,
-    qlog_span: Option<Span>,
-    zero_rtt: ArcZeroRtt,
+impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
+    pub fn with_cids(
+        self,
+        origin_dcid: ConnectionId,
+        client_scid: ConnectionId,
+    ) -> PendingConnection {
+        let initial_keys = initial_keys_with(
+            self.tls_config.crypto_provider(),
+            &origin_dcid,
+            rustls::Side::Server,
+            crate::tls::QUIC_VERSION,
+        );
+
+        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
+
+        let tx_wakers = ArcSendWakers::default();
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
+
+        let router_registry = self
+            .router
+            .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
+        let initial_scid = router_registry.gen_unique_cid();
+        let odcid_router_entry = self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
+
+        let mut server_params = self.foundation.server_params;
+        _ = server_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
+        _ = server_params.set(ParameterId::OriginalDestinationConnectionId, origin_dcid);
+
+        let tls_session = ServerTlsSession::init(
+            Arc::new(self.tls_config),
+            &server_params,
+            self.foundation.client_authers,
+        )
+        .expect("Failed to initialize TLS handshake");
+
+        let data_space = DataSpace::new_one_rtt(
+            Role::Server,
+            server_params.as_ref(),
+            self.streams_ctrl,
+            reliable_frames.clone(),
+            tx_wakers.clone(),
+        );
+
+        let mut parameters = Parameters::new_server(server_params);
+        _ = parameters.initial_scid_from_peer_need_equal(client_scid);
+
+        PendingConnection {
+            interfaces: self.ifaces,
+            rcvd_pkt_q,
+            defer_idle_timeout: self.defer_idle_timeout,
+            role: Role::Server,
+            origin_dcid,
+            initial_scid,
+            initial_dcid: client_scid,
+            tx_wakers,
+            send_gate: tls_session.send_gate().clone(),
+            reliable_frames,
+            router_registry,
+            parameters,
+            token_registry: self.foundation.token_registry,
+            tls_session: TlsSession::Server(tls_session),
+            initial_keys,
+            data_space,
+            sepcific: SpecificComponents::Server { odcid_router_entry },
+            qlogger: Arc::new(NoopLogger),
+        }
+    }
 }
 
-impl ComponentsReady {
-    pub fn with_qlog(mut self, logger: &(impl Log + ?Sized)) -> Self {
-        let vantage_point_type = match self.raw_handshake.role() {
-            sid::Role::Client => VantagePointType::Client,
-            sid::Role::Server => VantagePointType::Server,
-        };
-        let origin_dcid = self.parameters.get_origin_dcid().unwrap();
-        self.qlog_span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
+pub struct PendingConnection {
+    interfaces: Arc<QuicInterfaces>,
+    rcvd_pkt_q: Arc<RcvdPacketQueue>,
+    defer_idle_timeout: HeartbeatConfig,
+    role: Role,
+    origin_dcid: ConnectionId,
+    initial_scid: ConnectionId,
+    initial_dcid: ConnectionId,
+    send_gate: ArcSendGate,
+    tx_wakers: ArcSendWakers,
+    reliable_frames: ArcReliableFrameDeque,
+    router_registry: RouterRegistry,
+    parameters: Parameters,
+    token_registry: ArcTokenRegistry,
+    tls_session: TlsSession,
+    initial_keys: rustls::quic::Keys,
+    data_space: DataSpace,
+    sepcific: SpecificComponents,
+    qlogger: Arc<dyn Log>,
+}
+
+impl PendingConnection {
+    pub fn with_qlog(mut self, qlogger: Arc<dyn Log>) -> Self {
+        self.qlogger = qlogger;
         self
     }
 
-    pub fn run_with<EE>(self, event_broker: EE) -> Connection
-    where
-        EE: EmitEvent + Clone + Send + Sync + 'static,
-    {
-        // telemetry
-        let role = self.raw_handshake.role();
-        let group_id = GroupID::from(self.parameters.get_origin_dcid().unwrap());
+    pub fn run(self, event_broker: impl EmitEvent + 'static) -> Connection {
+        let group_id = GroupID::from(self.origin_dcid);
+        let qlog_span = self.qlogger.new_trace(self.role.into(), group_id.clone());
+        let tracing_span = tracing::info_span!("connection", role = %self.role, odcid = %group_id);
 
-        let tracing_span = tracing::info_span!("connection",%role, odcid = %group_id);
-        let qlog_span = self
-            .qlog_span
-            .unwrap_or_else(|| qevent::span!(@current, group_id));
-
-        let is_server = role == sid::Role::Server;
-        let inform_cc = Arc::new(HandshakeStatus::new(is_server));
-        let conn_state = ConnState::new();
+        let conn_state = ArcConnState::new();
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
+
+        let initial_token = match self.token_registry.deref() {
+            TokenRegistry::Client((server_name, token_sink)) => token_sink.fetch_token(server_name),
+            TokenRegistry::Server(..) => vec![],
+        };
+        let spaces = Spaces::new(
+            InitialSpace::new(
+                self.initial_keys.into(),
+                initial_token,
+                self.tx_wakers.clone(),
+            ),
+            HandshakeSpace::new(self.tx_wakers.clone()),
+            self.data_space,
+        );
+
+        let quic_handshake = Handshake::new(
+            RawHandshake::new(self.role, self.reliable_frames.clone()),
+            Arc::new(HandshakeStatus::new(self.role == Role::Server)),
+            event_broker.clone(),
+        );
+
+        let local_cids = ArcLocalCids::new(self.initial_scid, self.router_registry);
+        let remote_cids = ArcRemoteCids::new(
+            self.initial_dcid,
+            self.parameters
+                .local()
+                .get_as(ParameterId::ActiveConnectionIdLimit)
+                .expect("unreachable: default value will be got if the value unset"),
+            self.reliable_frames.clone(),
+        );
+        let cid_registry = CidRegistry::new(local_cids, remote_cids);
+
+        let parameters = ArcParameters::from(self.parameters);
+
+        let tls_handshake = tracing_span.in_scope(|| {
+            qlog_span.in_scope(|| {
+                ArcTlsHandshake::new(
+                    self.tls_session,
+                    parameters.clone(),
+                    quic_handshake.clone(),
+                    [
+                        spaces.initial().crypto_stream().clone(),
+                        spaces.handshake().crypto_stream().clone(),
+                        spaces.data().crypto_stream().clone(),
+                    ],
+                    (
+                        spaces.handshake().keys(),
+                        spaces.data().zero_rtt_keys(),
+                        spaces.data().one_rtt_keys(),
+                    ),
+                    event_broker.clone(),
+                )
+            })
+        });
+
+        let paths = ArcPathContexts::new(self.tx_wakers.clone(), event_broker.clone());
+
         let components = Components {
             interfaces: self.interfaces,
-            parameters: self.parameters,
-            tls_session: self.tls_session,
-            handshake: Handshake::new(self.raw_handshake, inform_cc, event_broker.clone()),
-            token_registry: self.token_registry,
-            cid_registry: self.cid_registry,
-            flow_ctrl: self.flow_ctrl,
-            spaces: self.spaces,
             rcvd_pkt_q: self.rcvd_pkt_q,
-            paths: ArcPathContexts::new(self.tx_wakers, event_broker.clone()),
-            defer_idle_timeout: self.defer_idle_timeout,
-            event_broker,
             conn_state,
-            client_name: self.client_name,
-            server_name: self.server_name,
-            peer_certs: ArcPeerCerts::default(),
-            specific: self.specific,
-            zero_rtt: self.zero_rtt,
+            defer_idle_timeout: self.defer_idle_timeout,
+            paths,
+            send_gate: self.send_gate,
+            tls_handshake,
+            quic_handshake,
+            parameters,
+            token_registry: self.token_registry,
+            cid_registry,
+            spaces,
+            event_broker,
+            specific: self.sepcific,
         };
 
         tracing_span.in_scope(|| {
             qlog_span.in_scope(|| {
-                tokio::spawn(tls::keys_upgrade(&components));
-                tokio::spawn(accept_transport_parameters(&components));
-                tokio::spawn(handle_0rtt_rejection(&components));
-                space::spawn_deliver_and_parse(&components);
+                spawn_upgrade_1rtt(&components);
+                spawn_deliver_and_parse(&components);
             })
         });
 
         Connection {
-            state: RwLock::new(Ok(components)),
+            state: Ok(components).into(),
             qlog_span,
             tracing_span,
         }
     }
 }
 
-fn accept_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send {
-    let params = components.parameters.clone();
-    let streams = components.spaces.data().streams().clone();
-    let cid_registry = components.cid_registry.clone();
-    let flow_ctrl = components.flow_ctrl.clone();
-    let role = components.handshake.role();
+fn spawn_upgrade_1rtt(components: &Components) {
+    let parameters = components.parameters.clone();
+    let data_space = components.spaces.data().clone();
+    let local_cids = components.cid_registry.local.clone();
+    let tls_handshake = components.tls_handshake.clone();
+
     let task = async move {
-        use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
-        let remote_parameters = params.remote().await?;
+        let zero_rtt_rejected = tls_handshake
+            .info()
+            .await?
+            .zero_rtt_accepted()
+            .map(|accepted| !accepted)
+            .unwrap_or(false);
+        if zero_rtt_rejected {
+            debug_assert_eq!(parameters.role()?, Role::Client);
+            tracing::warn!("0-RTT is not accepted by the server.");
+        }
 
-        match role {
-            sid::Role::Client => {
-                qevent::event!(ParametersSet {
-                    owner: Owner::Remote,
-                    server_parameters: remote_parameters.as_ref(),
-                })
-            }
-            sid::Role::Server => {
-                qevent::event!(ParametersSet {
-                    owner: Owner::Remote,
-                    client_parameters: remote_parameters.as_ref(),
-                })
-            }
-        };
+        let remote_parameters = parameters.remote().await?;
+        match parameters.role()? {
+            Role::Client => qevent::event!(ParametersSet {
+                owner: Owner::Remote,
+                server_parameters: remote_parameters.as_ref()
+            }),
+            Role::Server => qevent::event!(ParametersSet {
+                owner: Owner::Remote,
+                client_parameters: remote_parameters.as_ref()
+            }),
+        }
 
-        // pretend to receive the MAX_STREAM frames
-        _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
+        // accept InitialMaxStreamsBidi, InitialMaxStreamUni,
+        // InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
+        data_space
+            .streams()
+            .revise_params(zero_rtt_rejected, remote_parameters.as_ref());
+        // accept InitialMaxData:
+        data_space.flow_ctrl().sender.revise_max_data(
+            zero_rtt_rejected,
             remote_parameters
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsBidi)
-                .expect("unreachable: default value will be got if the value unset"),
-        )));
-        _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
-            remote_parameters
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsUni)
-                .expect("unreachable: default value will be got if the value unset"),
-        )));
-
-        flow_ctrl.reset_send_window(
-            remote_parameters
-                .get_as::<u64>(ParameterId::InitialMaxData)
+                .get_as(ParameterId::InitialMaxData)
                 .expect("unreachable: default value will be got if the value unset"),
         );
-
-        cid_registry.local.set_limit(
+        // accept ActiveConnectionIdLimit
+        local_cids.set_limit(
             remote_parameters
-                .get_as::<u64>(ParameterId::ActiveConnectionIdLimit)
+                .get_as(ParameterId::ActiveConnectionIdLimit)
                 .expect("unreachable: default value will be got if the value unset"),
         )?;
+        data_space.journal().of_rcvd_packets().revise_max_ack_delay(
+            remote_parameters
+                .get_as(ParameterId::MaxAckDelay)
+                .expect("unreachable: default value will be got if the value unset"),
+        );
+        // only if data space is initialized in 0rtt
+        if !data_space.is_one_rtt_ready() {
+            data_space.on_one_rtt_ready();
+        }
 
         Result::<_, Error>::Ok(())
     };
+
     let event_broker = components.event_broker.clone();
-    async move {
-        if let Err(Error::Quic(e)) = task.await {
-            event_broker.emit(Event::Failed(e));
+    let task = async move {
+        if let Err(Error::Quic(quic_error)) = task.await {
+            event_broker.emit(Event::Failed(quic_error));
         }
-    }
-    .instrument_in_current()
-    .in_current_span()
-}
+    };
 
-fn handle_0rtt_rejection(components: &Components) -> impl Future<Output = ()> + Send {
-    let zero_rtt = components.zero_rtt.clone();
-    let streams = components.spaces.data().streams().clone();
-    let send_ctrl = components.flow_ctrl.sender.clone();
-    let params = components.parameters.clone();
-    async move {
-        let Some(fut) = zero_rtt.is_accepted() else {
-            return;
-        };
-        let Ok(remote_params) = params.remote().await else {
-            return;
-        };
-        match fut.await {
-            Ok(true) => {
-                streams.on_0rtt_accepted(remote_params.as_ref());
-                send_ctrl.on_0rtt_accepted();
-            }
-            Ok(false) => {
-                streams.on_0rtt_rejected(remote_params.as_ref());
-                send_ctrl.on_0rtt_rejected();
-            }
-            Err(_) => {}
-        }
-    }
-    .instrument_in_current()
-    .in_current_span()
-}
-
-impl Components {
-    pub fn get_or_try_create_path(
-        &self,
-        bind_addr: BindAddr,
-        link: Link,
-        pathway: Pathway,
-        is_probed: bool,
-    ) -> io::Result<Arc<Path>> {
-        let try_create = || {
-            let interface = self
-                .interfaces
-                .get(&bind_addr)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
-            let max_ack_delay = self
-                .parameters
-                .local()?
-                .get_as(ParameterId::MaxAckDelay)
-                .expect("unreachable: default value will be got if the value unset");
-
-            let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
-            qevent::event!(PathAssigned {
-                path_id: pathway.to_string(),
-                path_local: link.src(),
-                path_remote: link.dst(),
-            });
-
-            let path = Arc::new(Path::new(
-                interface,
-                link,
-                pathway,
-                max_ack_delay,
-                [
-                    self.spaces.initial().clone(),
-                    self.spaces.handshake().clone(),
-                    self.spaces.data().clone(),
-                ],
-                self.handshake.status(),
-            )?);
-
-            if !is_probed {
-                path.grant_anti_amplification();
-            }
-
-            let burst = path.new_burst(self);
-            let idle_timeout = path.idle_timeout(self);
-
-            let task = {
-                let path = path.clone();
-                let defer_idle_timeout = self.defer_idle_timeout;
-                async move {
-                    let validate = async {
-                        if do_validate {
-                            path.validate().await
-                        } else {
-                            path.skip_validation();
-                            true
-                        }
-                    };
-                    let reason: String = tokio::select! {
-                        false = validate => "failed to validate".into(),
-                        true = idle_timeout => "idle timeout".into(),
-                        Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
-                        _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
-                    };
-                    Err(reason)
-                }
-            };
-
-            let task =
-                Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
-                    .instrument_in_current();
-
-            tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
-            Ok((path, task))
-        };
-        self.paths.get_or_try_create_with(pathway, try_create)
-    }
-}
-
-impl Components {
-    // 对于server，第一条路径也通过add_path添加
-    pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
-        qevent::event!(ConnectionClosed {
-            owner: Owner::Local,
-            ccf: &ccf // TODO: trigger
-        });
-        let error = ccf.clone().into();
-        self.spaces.data().on_conn_error(&error);
-        self.flow_ctrl.on_conn_error(&error);
-        self.tls_session.on_conn_error(&error);
-        self.parameters.on_conn_error(&error);
-        self.server_name.on_conn_error(&error);
-        self.peer_certs.on_conn_error(&error);
-
-        tokio::spawn({
-            let local_cids = self.cid_registry.local.clone();
-            let event_broker = self.event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
-            async move {
-                tokio::time::sleep(pto_duration * 3).await;
-                local_cids.clear();
-                event_broker.emit(Event::Terminated);
-            }
-            .instrument_in_current()
-            .in_current_span()
-        });
-
-        let terminator = Arc::new(Terminator::new(ccf, &self));
-
-        // for server, send ccf only if the send gate is permitted.
-        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
-        {
-            tokio::spawn(
-                self.spaces
-                    .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
-                    .instrument_in_current()
-                    .in_current_span(),
-            );
-        }
-
-        Termination::closing(error, self.cid_registry.local, self.rcvd_pkt_q)
-    }
-
-    pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
-        qevent::event!(ConnectionClosed {
-            owner: Owner::Local,
-            ccf: &ccf // TODO: trigger
-        });
-        let error = ccf.clone().into();
-        self.spaces.data().on_conn_error(&error);
-        self.flow_ctrl.on_conn_error(&error);
-        self.tls_session.on_conn_error(&error);
-        self.parameters.on_conn_error(&error);
-        self.server_name.on_conn_error(&error);
-        self.peer_certs.on_conn_error(&error);
-
-        tokio::spawn({
-            let local_cids = self.cid_registry.local.clone();
-            let event_broker = self.event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
-            async move {
-                tokio::time::sleep(pto_duration * 3).await;
-                local_cids.clear();
-                event_broker.emit(Event::Terminated);
-            }
-            .instrument_in_current()
-            .in_current_span()
-        });
-
-        // for server, send ccf only if the send gate is permitted.
-        if !matches!(self.specific, SpecificComponents::Server(ref s) if !s.send_gate.is_permitted())
-        {
-            let terminator = Arc::new(Terminator::new(ccf, &self));
-            tokio::spawn(
-                self.spaces
-                    .drain(terminator, self.rcvd_pkt_q)
-                    .instrument_in_current()
-                    .in_current_span(),
-            );
-        }
-
-        Termination::draining(error, self.cid_registry.local)
-    }
+    tokio::spawn(task.instrument_in_current().in_current_span());
 }

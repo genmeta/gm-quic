@@ -10,7 +10,6 @@ use crate::{
     net::tx::{ArcSendWakers, Signals},
     sid::MAX_STREAMS_LIMIT,
     varint::VarInt,
-    zero_rtt::DualRttState,
 };
 
 /// Local stream IDs management.
@@ -18,24 +17,13 @@ use crate::{
 struct LocalStreamIds<BLOCKED> {
     /// Our role
     role: Role,
-    allocator: DualRttState<StreamIdAllocatorState>,
+    max: [u64; 2],
+    unallocated: [u64; 2],
     /// Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
     wakers: [VecDeque<Waker>; 2],
     /// The StreamsBlocked frames that will be sent to peer
     blocked: BLOCKED,
     tx_wakers: ArcSendWakers,
-}
-
-#[derive(Default, Debug)]
-struct StreamIdAllocatorState {
-    unallocated: [u64; 2],
-    max: [u64; 2],
-}
-
-impl StreamIdAllocatorState {
-    fn opened_streams(&self, dir: Dir) -> u64 {
-        self.unallocated[dir as usize].min(self.max[dir as usize])
-    }
 }
 
 impl<BLOCKED> LocalStreamIds<BLOCKED>
@@ -57,16 +45,8 @@ where
         );
         Self {
             role,
-            allocator: match role {
-                Role::Client => DualRttState::new(
-                    StreamIdAllocatorState {
-                        unallocated: [0, 0],
-                        max: [init_max_bi_streams, init_max_uni_streams],
-                    },
-                    init_max_bi_streams > 0 || init_max_uni_streams > 0,
-                ),
-                Role::Server => DualRttState::new(Default::default(), false),
-            },
+            max: [init_max_bi_streams, init_max_uni_streams],
+            unallocated: [0, 0],
             wakers: [VecDeque::with_capacity(2), VecDeque::with_capacity(2)],
             blocked,
             tx_wakers,
@@ -79,11 +59,8 @@ where
     }
 
     /// Returns the number of opened streams in the `dir` direction.
-    fn opened_streams(&self, dir: Dir, is_0rtt: bool) -> u64 {
-        match is_0rtt {
-            true => self.allocator.zero_rtt().opened_streams(dir),
-            false => self.allocator.one_rtt().opened_streams(dir),
-        }
+    fn opened_streams(&self, dir: Dir) -> u64 {
+        self.unallocated[dir as usize]
     }
 
     /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
@@ -93,13 +70,16 @@ where
             MaxStreamsFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
             MaxStreamsFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
         };
+        self.increase_limit(dir, val);
+    }
+
+    fn increase_limit(&mut self, dir: Dir, val: u64) {
         assert!(val <= MAX_STREAMS_LIMIT);
-        let allocator = self.allocator.one_rtt_mut();
-        let max_streams = &mut allocator.max[dir as usize];
+        let max_streams = &mut self.max[dir as usize];
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
         if *max_streams < val {
             // The rejected 0rtt stream can be sent again, as if new data was written.
-            if *max_streams < allocator.unallocated[dir as usize] {
+            if *max_streams < self.unallocated[dir as usize] {
                 self.tx_wakers.wake_all_by(Signals::WRITTEN);
             }
             for waker in self.wakers[dir as usize].drain(..) {
@@ -109,18 +89,15 @@ where
         }
     }
 
-    fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<(StreamId, bool)>> {
+    fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         let idx = dir as usize;
-        let max = self.allocator.max[idx];
-        let unallocated = self.allocator.unallocated[idx];
+        let max = self.max[idx];
+        let unallocated = self.unallocated[idx];
         if unallocated > MAX_STREAMS_LIMIT {
             Poll::Ready(None)
         } else if unallocated < max {
-            self.allocator.unallocated[idx] += 1;
-            Poll::Ready(Some((
-                StreamId::new(self.role, dir, unallocated),
-                self.allocator.in_zero_rtt(),
-            )))
+            self.unallocated[idx] += 1;
+            Poll::Ready(Some(StreamId::new(self.role, dir, unallocated)))
         } else {
             // waiting for MAX_STREAMS frame from peer
             self.wakers[idx].push_back(cx.waker().clone());
@@ -133,19 +110,17 @@ where
         }
     }
 
-    fn on_0rtt_rejected(&mut self) {
-        self.allocator.switch_to_one_rtt(false, |old, new| {
-            new.unallocated = old.unallocated;
-        });
-    }
-
-    fn on_0rtt_accepted(&mut self) {
-        self.allocator.switch_to_one_rtt(true, |old, new| {
-            new.unallocated = old.unallocated;
-            for dir in [Dir::Bi as usize, Dir::Uni as usize] {
-                new.unallocated[dir] = new.unallocated[dir].max(old.unallocated[dir]);
-            }
-        });
+    pub fn revise_max_streams(
+        &mut self,
+        zero_rtt_rejected: bool,
+        max_stream_bidi: u64,
+        max_stream_uni: u64,
+    ) {
+        if zero_rtt_rejected {
+            self.max = [0, 0];
+        }
+        self.increase_limit(Dir::Bi, max_stream_bidi);
+        self.increase_limit(Dir::Uni, max_stream_uni);
     }
 }
 
@@ -193,21 +168,8 @@ where
     /// If `is_0rtt` is false, the return value will not be greater than max_streams,
     /// that is, if 0rtt is rejected, the return value may be less than the number of open streams.
     /// This is the number of streams that can actually be sent in the 1rtt space.
-    pub fn opened_streams(&self, dir: Dir, is_0rtt: bool) -> u64 {
-        self.0.lock().unwrap().opened_streams(dir, is_0rtt)
-    }
-
-    /// Called when 0rtt is rejected.
-    ///
-    /// Opened streams will be kept, but the maximum stream ID that can be created
-    /// will be set to 1rtt state value.
-    pub fn on_0rtt_rejected(&self) {
-        self.0.lock().unwrap().on_0rtt_rejected();
-    }
-
-    /// Called when 0rtt is accepted.
-    pub fn on_0rtt_accepted(&self) {
-        self.0.lock().unwrap().on_0rtt_accepted();
+    pub fn opened_streams(&self, dir: Dir) -> u64 {
+        self.0.lock().unwrap().opened_streams(dir)
     }
 
     /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
@@ -240,8 +202,21 @@ where
     ///
     /// Return None if the stream IDs in the `dir` direction finally exceed 2^60,
     /// but it is very very hard to happen.
-    pub fn poll_alloc_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<(StreamId, bool)>> {
+    pub fn poll_alloc_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         self.0.lock().unwrap().poll_alloc_sid(cx, dir)
+    }
+
+    pub fn revise_max_streams(
+        &self,
+        zero_rtt_rejected: bool,
+        max_stream_bidi: u64,
+        max_stream_uni: u64,
+    ) {
+        self.0.lock().unwrap().revise_max_streams(
+            zero_rtt_rejected,
+            max_stream_bidi,
+            max_stream_uni,
+        );
     }
 }
 
@@ -300,7 +275,7 @@ mod tests {
         let _ = local.0.lock().unwrap().wakers[0].pop_front();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
-            Poll::Ready(Some((StreamId(0), false)))
+            Poll::Ready(Some(StreamId(0)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
         assert!(!local.0.lock().unwrap().wakers[0].is_empty());
@@ -308,11 +283,11 @@ mod tests {
         local.recv_max_streams_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(2)));
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Uni),
-            Poll::Ready(Some((StreamId(2), false)))
+            Poll::Ready(Some(StreamId(2)))
         );
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Uni),
-            Poll::Ready(Some((StreamId(6), false)))
+            Poll::Ready(Some(StreamId(6)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Uni), Poll::Pending);
         assert!(!local.0.lock().unwrap().wakers[1].is_empty());

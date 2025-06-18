@@ -38,9 +38,6 @@ pub mod util;
 /// [Variable-length integers](https://www.rfc-editor.org/rfc/rfc9000.html#name-variable-length-integer-enc).
 pub mod varint;
 
-/// Zero RTT support
-pub mod zero_rtt;
-
 /// The epoch of sending, usually been seen as the index of spaces.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {

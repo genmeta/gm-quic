@@ -3,14 +3,11 @@ use std::{io, sync::Arc};
 use dashmap::DashMap;
 use handy::UdpSocketController;
 use qbase::net::address::{AddrKind, BindAddr, IpFamily};
-use qconnection::builder::*;
+use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};
-use qinterface::{
-    ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
-    route::Router,
-};
+use qinterface::ifaces::{QuicInterfaces, borrowed::BorrowedInterface};
 use rustls::{
-    ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
+    ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
 };
 use tokio::sync::mpsc;
@@ -45,7 +42,7 @@ pub struct QuicClient {
     reuse_connection: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
-    tls_config: Arc<TlsClientConfig>,
+    tls_config: TlsClientConfig,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -134,16 +131,15 @@ impl QuicClient {
 
         let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
-            Connection::with_token_sink(server_name.clone(), token_sink)
+            Connection::new_client(server_name.clone(), token_sink)
                 .with_parameters(self.parameters.clone())
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_proto(Router::global().clone(), QuicInterfaces::global().clone())
                 .with_zero_rtt(self.tls_config.enable_early_data)
-                .defer_idle_timeout(self.defer_idle_timeout)
+                .with_defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
-                .with_qlog(self.logger.as_ref())
-                .run_with(event_broker),
+                .with_qlog(self.logger.clone())
+                .run(event_broker),
         );
 
         tokio::spawn({
@@ -600,7 +596,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
-            tls_config: Arc::new(self.tls_config),
+            tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),
             token_sink: self.token_sink,

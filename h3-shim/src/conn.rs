@@ -259,7 +259,6 @@ impl AcceptBiStreams {
             Some((
                 conn.accept_bi_stream()
                     .await
-                    .map(Option::unwrap)
                     .map_err(error::convert_quic_error),
                 conn,
             ))
@@ -287,7 +286,6 @@ impl AcceptUniStreams {
             let uni = conn
                 .accept_uni_stream()
                 .await
-                .map(Option::unwrap)
                 .map_err(error::convert_quic_error);
             Some((uni, conn))
         });

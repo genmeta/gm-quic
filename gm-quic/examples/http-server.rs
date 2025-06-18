@@ -139,7 +139,7 @@ async fn serve_files(connection: Arc<Connection>) -> Result<(), Error> {
     }
 
     loop {
-        let (_sid, (reader, writer)) = connection.accept_bi_stream().await?.expect("unreachable");
+        let (_sid, (reader, writer)) = connection.accept_bi_stream().await?;
         tokio::spawn(serve_file(reader, writer));
     }
 }

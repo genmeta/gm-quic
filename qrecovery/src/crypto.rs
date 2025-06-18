@@ -65,8 +65,14 @@ mod send {
 
     impl Sender {
         fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-            assert!(self.writable_waker.is_none());
-            assert!(self.flush_waker.is_none());
+            assert!(
+                self.writable_waker.is_none()
+                    || matches!(self.writable_waker, Some(ref waker) if waker.will_wake(cx.waker()))
+            );
+            assert!(
+                self.flush_waker.is_none()
+                    || matches!(self.flush_waker, Some(ref waker) if waker.will_wake(cx.waker()))
+            );
             if self.sndbuf.written() + buf.len() as u64 > VARINT_MAX {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
@@ -86,7 +92,10 @@ mod send {
         }
 
         fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            assert!(self.flush_waker.is_none());
+            assert!(
+                self.flush_waker.is_none()
+                    || matches!(self.flush_waker, Some(ref waker) if waker.will_wake(cx.waker()))
+            );
             if self.sndbuf.is_all_rcvd() {
                 Poll::Ready(Ok(()))
             } else {
@@ -214,7 +223,10 @@ mod recv {
             cx: &mut Context<'_>,
             buf: &mut T,
         ) -> Poll<io::Result<()>> {
-            assert!(self.read_waker.is_none());
+            assert!(
+                self.read_waker.is_none()
+                    || matches!(self.read_waker, Some(ref waker) if waker.will_wake(cx.waker()))
+            );
             if self.rcvbuf.is_readable() {
                 self.rcvbuf.try_read(buf);
                 Poll::Ready(Ok(()))

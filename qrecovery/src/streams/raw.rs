@@ -1,4 +1,10 @@
-use std::task::{Context, Poll, ready};
+use std::{
+    sync::{
+        RwLock,
+        atomic::{AtomicBool, Ordering::*},
+    },
+    task::{Context, Poll, ready},
+};
 
 use bytes::BufMut;
 use qbase::{
@@ -10,7 +16,7 @@ use qbase::{
     },
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
-    param::{GeneralParameters, ParameterId, RememberedParameters},
+    param::{GeneralParameters, ParameterId},
     sid::{
         ControlStreamsConcurrency, Dir, Role, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
@@ -112,19 +118,42 @@ where
 
     role: Role,
     stream_ids: StreamIds<Ext<TX>, Ext<TX>>,
-    // the receive buffer size for the accepted unidirectional stream created by peer
-    uni_stream_rcvbuf_size: u64,
-    // the receive buffer size of the bidirectional stream actively created by local
-    local_bi_stream_rcvbuf_size: u64,
-    // the receive buffer size for the accepted bidirectional stream created by peer
-    remote_bi_stream_rcvbuf_size: u64,
+    local_params: InitialMaxStreamData,
+    remote_params: RwLock<InitialMaxStreamData>,
     // 所有流的待写端，要发送数据，就得向这些流索取
     output: ArcOutput<Ext<TX>>,
     // 所有流的待读端，收到了数据，交付给这些流
     input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
+    in_zero_rtt: AtomicBool,
     tx_wakers: ArcSendWakers,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InitialMaxStreamData {
+    // the receive buffer size for the accepted unidirectional stream created by peer
+    max_data_uni: u64,
+    // the receive buffer size of the bidirectional stream actively created by local
+    max_data_bidi_local: u64,
+    // the receive buffer size for the accepted bidirectional stream created by peer
+    max_data_bidi_remote: u64,
+}
+
+impl From<&GeneralParameters> for InitialMaxStreamData {
+    fn from(params: &GeneralParameters) -> Self {
+        Self {
+            max_data_uni: params
+                .get_as(ParameterId::InitialMaxStreamDataUni)
+                .expect("unreachable: default value will be got if the value unset"),
+            max_data_bidi_local: params
+                .get_as(ParameterId::InitialMaxStreamDataBidiLocal)
+                .expect("unreachable: default value will be got if the value unset"),
+            max_data_bidi_remote: params
+                .get_as(ParameterId::InitialMaxStreamDataBidiRemote)
+                .expect("unreachable: default value will be got if the value unset"),
+        }
+    }
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -138,50 +167,6 @@ impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    pub fn on_0rtt_rejected(&self, remote_params: &GeneralParameters) {
-        self.stream_ids.local.on_0rtt_rejected();
-
-        if let Ok(output_guard) = self.output.guard() {
-            let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi, true);
-            let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni, true);
-            let opened_bidi_snd_wnd_size = remote_params
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
-                .expect("unreachable: default value will be got if the value unset");
-            let opened_uni_snd_wnd_size = remote_params
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
-                .expect("unreachable: default value will be got if the value unset");
-            output_guard.on_0rtt_rejected(
-                opened_bidi,
-                opened_uni,
-                opened_bidi_snd_wnd_size,
-                opened_uni_snd_wnd_size,
-            );
-        }
-    }
-
-    pub fn on_0rtt_accepted(&self, remote_params: &GeneralParameters) {
-        self.stream_ids.local.on_0rtt_accepted();
-
-        if let Ok(output_guard) = self.output.guard() {
-            let local_role = self.stream_ids.local.role();
-            let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi, true);
-            let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni, true);
-            let opened_bidi_snd_wnd_size = remote_params
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
-                .expect("unreachable: default value will be got if the value unset");
-            let opened_uni_snd_wnd_size = remote_params
-                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
-                .expect("unreachable: default value will be got if the value unset");
-            output_guard.on_0rtt_accepted(
-                local_role,
-                opened_bidi,
-                opened_uni,
-                opened_bidi_snd_wnd_size,
-                opened_uni_snd_wnd_size,
-            );
-        }
-    }
-
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
@@ -202,25 +187,28 @@ where
             return Err(Signals::CONGESTION);
         }
 
-        let Ok(mut credit) = flow_ctrl.credit(packet.remaining_mut(), zero_rtt) else {
-            return Err(Signals::empty()); // connection closed
-        };
-
         let mut guard = self.output.streams();
         let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
+
+        if zero_rtt && !self.in_zero_rtt.load(Acquire) {
+            return Err(Signals::ONE_RTT); // should load 1rtt
+        }
+
+        let Ok(mut credit) = flow_ctrl.credit(packet.remaining_mut()) else {
+            return Err(Signals::empty()); // connection closed
+        };
 
         fn try_load_data_into_once<'s, P, TX: 's + Clone>(
             streams: impl Iterator<Item = (StreamId, &'s (Outgoing<TX>, IOState), usize)>,
             packet: &mut P,
             flow_limit: usize,
-            zero_rtt: bool,
         ) -> Result<(StreamId, usize, usize), Signals>
         where
             P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
         {
             let mut signals = Signals::TRANSPORT;
             for (sid, (outgoing, _ios), tokens) in streams {
-                match outgoing.try_load_data_into(packet, sid, flow_limit, tokens, zero_rtt) {
+                match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
                     Ok((data_len, is_fresh)) => {
                         let remain_tokens = tokens - data_len;
                         let fresh_bytes = if is_fresh { data_len } else { 0 };
@@ -234,8 +222,8 @@ where
 
         // 不一定所有流都允许被发送，比如，0rtt被拒绝max_streams会倒缩，此时大于max_streams的流就不允许被发送
         let remote_role = self.stream_ids.remote.role();
-        let max_streams_bidi = self.stream_ids.local.opened_streams(Dir::Bi, zero_rtt);
-        let max_streams_uni = self.stream_ids.local.opened_streams(Dir::Bi, zero_rtt);
+        let max_streams_bidi = self.stream_ids.local.opened_streams(Dir::Bi);
+        let max_streams_uni = self.stream_ids.local.opened_streams(Dir::Bi);
         let stream_allowed = |sid: &StreamId| {
             sid.role() == remote_role
                 || sid.dir() == Dir::Bi && sid.id() < max_streams_bidi
@@ -254,7 +242,6 @@ where
                     .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 credit.available(),
-                zero_rtt,
             ),
             // [sid] + rev([..sid]) + rev([sid+1..])
             Some((sid, tokens)) => try_load_data_into_once(
@@ -272,7 +259,6 @@ where
                 .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 credit.available(),
-                zero_rtt,
             ),
             // rev([..])
             None => try_load_data_into_once(
@@ -281,7 +267,6 @@ where
                     .filter(|(sid, ..)| stream_allowed(sid)),
                 packet,
                 credit.available(),
-                zero_rtt,
             ),
         }?;
 
@@ -610,62 +595,90 @@ where
     pub(super) fn new(
         role: Role,
         local_params: &GeneralParameters,
-        remembered_params: Option<&RememberedParameters>,
+        zero_rtt: bool,
+        remote_params: &GeneralParameters,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
     ) -> Self {
         use ParameterId::*;
-        let max_bi_streams = local_params
-            .get_as::<u64>(InitialMaxStreamsBidi)
-            .expect("unreachable: default will be used");
-        let max_uni_streams = local_params
-            .get_as::<u64>(InitialMaxStreamsUni)
-            .expect("unreachable: default will be used");
-        let remembered_max_bi_streams = remembered_params
-            .and_then(|p| p.get_as::<u64>(InitialMaxStreamsBidi))
-            .unwrap_or(0);
-        let remembered_max_uni_streams = remembered_params
-            .and_then(|p| p.get_as::<u64>(InitialMaxStreamsUni))
-            .unwrap_or(0);
-        let uni_stream_rcvbuf_size = local_params
-            .get_as::<u64>(InitialMaxStreamDataUni)
-            .expect("unreachable: default will be used");
-        let local_bi_stream_rcvbuf_size = local_params
-            .get_as::<u64>(InitialMaxStreamDataBidiLocal)
-            .expect("unreachable: default will be used");
-        let remote_bi_stream_rcvbuf_size = local_params
-            .get_as::<u64>(InitialMaxStreamDataBidiRemote)
-            .expect("unreachable: default will be used");
-
         Self {
             role,
             stream_ids: StreamIds::new(
                 role,
-                max_bi_streams,
-                max_uni_streams,
-                remembered_max_bi_streams,
-                remembered_max_uni_streams,
+                local_params
+                    .get_as::<u64>(InitialMaxStreamsBidi)
+                    .expect("unreachable: default value will be got if the value unset"),
+                local_params
+                    .get_as::<u64>(InitialMaxStreamsUni)
+                    .expect("unreachable: default value will be got if the value unset"),
+                remote_params
+                    .get_as::<u64>(InitialMaxStreamsBidi)
+                    .expect("unreachable: default value will be got if the value unset"),
+                remote_params
+                    .get_as::<u64>(InitialMaxStreamsUni)
+                    .expect("unreachable: default value will be got if the value unset"),
                 Ext(ctrl_frames.clone()),
                 ctrl,
                 tx_wakers.clone(),
             ),
-            uni_stream_rcvbuf_size,
-            local_bi_stream_rcvbuf_size,
-            remote_bi_stream_rcvbuf_size,
+            local_params: local_params.into(),
+            remote_params: RwLock::new(remote_params.into()),
             output: ArcOutput::new(),
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
+            in_zero_rtt: AtomicBool::new(zero_rtt),
             tx_wakers,
         }
+    }
+
+    pub fn revise_params(&self, zero_rtt_rejected: bool, remote_params: &GeneralParameters) {
+        if let Ok(output) = self.output.guard() {
+            // enter 1rtt state, old state must be 0rtt
+            self.in_zero_rtt.store(false, Release);
+
+            *self.remote_params.write().unwrap() = remote_params.into();
+            let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi);
+            let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni);
+            let opened_bidi_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .expect("unreachable: default value will be got if the value unset");
+            let opened_uni_snd_wnd_size = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamDataUni)
+                .expect("unreachable: default value will be got if the value unset");
+            output.revise_max_stream_data(
+                zero_rtt_rejected,
+                opened_bidi,
+                opened_uni,
+                opened_bidi_snd_wnd_size,
+                opened_uni_snd_wnd_size,
+            );
+            let max_streams_bidi = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamsBidi)
+                .expect("unreachable: default value will be got if the value unset");
+            let max_streams_uni = remote_params
+                .get_as::<u64>(ParameterId::InitialMaxStreamsUni)
+                .expect("unreachable: default value will be got if the value unset");
+            self.stream_ids.local.revise_max_streams(
+                zero_rtt_rejected,
+                max_streams_bidi,
+                max_streams_uni,
+            );
+        }
+    }
+
+    fn remote_params(&self) -> InitialMaxStreamData {
+        *self
+            .remote_params
+            .read()
+            .expect("remote_params should not be poisoned")
     }
 
     #[allow(clippy::type_complexity)]
     pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
-        snd_buf_size: u64,
     ) -> Poll<Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, Error>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
@@ -675,9 +688,9 @@ where
             Ok(input) => input,
             Err(e) => return Poll::Ready(Err(e)),
         };
-        if let Some((sid, zero_rtt)) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let arc_sender = self.create_sender(sid, snd_buf_size, zero_rtt);
-            let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
+        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
+            let arc_sender = self.create_sender(sid, self.remote_params().max_data_bidi_remote);
+            let arc_recver = self.create_recver(sid, self.local_params.max_data_bidi_local);
             let io_state = IOState::bidirection();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state.clone());
             input.insert(sid, Incoming::new(arc_recver.clone()), io_state);
@@ -694,14 +707,13 @@ where
     pub(super) fn poll_open_uni_stream(
         &self,
         cx: &mut Context<'_>,
-        snd_buf_size: u64,
     ) -> Poll<Result<Option<(StreamId, Writer<Ext<TX>>)>, Error>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
         };
-        if let Some((sid, zero_rtt)) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let arc_sender = self.create_sender(sid, snd_buf_size, zero_rtt);
+        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
+            let arc_sender = self.create_sender(sid, self.remote_params().max_data_bidi_remote);
             let io_state = IOState::send_only();
             output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
             Poll::Ready(Ok(Some((sid, Writer::new(arc_sender)))))
@@ -710,8 +722,8 @@ where
         }
     }
 
-    pub(super) fn accept_bi(&self, snd_buf_size: u64) -> AcceptBiStream<'_, Ext<TX>> {
-        self.listener.accept_bi_stream(snd_buf_size)
+    pub(super) fn accept_bi(&self) -> AcceptBiStream<'_, Ext<TX>> {
+        self.listener.accept_bi_stream()
     }
 
     pub(super) fn accept_uni(&self) -> AcceptUniStream<'_, Ext<TX>> {
@@ -743,11 +755,12 @@ where
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
-                let rcv_buf_size = self.remote_bi_stream_rcvbuf_size;
                 for sid in need_create {
-                    let arc_recver = self.create_recver(sid, rcv_buf_size);
+                    let arc_recver =
+                        self.create_recver(sid, self.local_params.max_data_bidi_remote);
                     // buf_size will be revised by Listener::poll_accept_bi_stream
-                    let arc_sender = self.create_sender(sid, 0, false);
+                    let arc_sender =
+                        self.create_sender(sid, self.remote_params().max_data_bidi_local);
                     let io_state = IOState::bidirection();
                     input.insert(sid, Incoming::new(arc_recver.clone()), io_state.clone());
                     output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
@@ -771,10 +784,8 @@ where
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
-                let rcv_buf_size = self.uni_stream_rcvbuf_size;
-
                 for sid in need_create {
-                    let arc_receiver = self.create_recver(sid, rcv_buf_size);
+                    let arc_receiver = self.create_recver(sid, self.local_params.max_data_uni);
                     let io_state = IOState::receive_only();
                     input.insert(sid, Incoming::new(arc_receiver.clone()), io_state);
                     listener.push_uni_stream(sid, arc_receiver);
@@ -784,13 +795,12 @@ where
         }
     }
 
-    fn create_sender(&self, sid: StreamId, buf_size: u64, zero_rtt: bool) -> ArcSender<Ext<TX>> {
+    fn create_sender(&self, sid: StreamId, buf_size: u64) -> ArcSender<Ext<TX>> {
         ArcSender::new(
             sid,
             buf_size,
             Ext(self.ctrl_frames.clone()),
             self.tx_wakers.clone(),
-            zero_rtt,
         )
     }
 
