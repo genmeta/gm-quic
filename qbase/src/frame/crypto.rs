@@ -63,7 +63,9 @@ impl CryptoFrame {
     /// Evaluate the maximum number of bytes of data that can be accommodated,
     /// starting from a certain offset, within a given capacity. If it cannot
     /// accommodate a CryptoFrame header or can only accommodate 0 bytes, return None.
-    /// Note: If the offset exceeds 2^62, panic.
+    ///
+    /// Note: Panic if the offset exceeds 2^62-1, or the the capacity is too large
+    /// (about 2^32. It is impossible to have so much crypto stream data)
     pub fn estimate_max_capacity(capacity: usize, offset: u64) -> Option<usize> {
         assert!(offset <= VARINT_MAX);
         capacity
