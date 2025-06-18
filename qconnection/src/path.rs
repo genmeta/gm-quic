@@ -11,12 +11,15 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
+        address::BindAddr,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
     packet::PacketContains,
+    param::ParameterId,
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
+use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{QuicInterface, ifaces::borrowed::BorrowedInterface};
 use tokio::{
     task::AbortHandle,
@@ -29,6 +32,8 @@ mod util;
 pub use aa::*;
 pub use paths::*;
 pub use util::*;
+
+use crate::Components;
 pub mod burst;
 pub mod idle;
 
@@ -46,6 +51,85 @@ pub struct Path {
     tx_waker: ArcSendWaker,
     pmtu: Arc<AtomicU16>,
     status: PathStatus,
+}
+
+impl Components {
+    pub fn get_or_try_create_path(
+        &self,
+        bind_addr: BindAddr,
+        link: Link,
+        pathway: Pathway,
+        is_probed: bool,
+    ) -> io::Result<Arc<Path>> {
+        let try_create = || {
+            let interface = self
+                .interfaces
+                .get(&bind_addr)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
+            let max_ack_delay = self
+                .parameters
+                .local()?
+                .get_as(ParameterId::MaxAckDelay)
+                .expect("unreachable: default value will be got if the value unset");
+
+            let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
+            qevent::event!(PathAssigned {
+                path_id: pathway.to_string(),
+                path_local: link.src(),
+                path_remote: link.dst(),
+            });
+
+            let path = Arc::new(Path::new(
+                interface,
+                link,
+                pathway,
+                max_ack_delay,
+                [
+                    self.spaces.initial().clone(),
+                    self.spaces.handshake().clone(),
+                    self.spaces.data().clone(),
+                ],
+                self.quic_handshake.status(),
+            )?);
+
+            if !is_probed {
+                path.grant_anti_amplification();
+            }
+
+            let burst = path.new_burst(self);
+            let idle_timeout = path.idle_timeout(self.parameters.clone());
+
+            let task = {
+                let path = path.clone();
+                let defer_idle_timeout = self.defer_idle_timeout;
+                async move {
+                    let validate = async {
+                        if do_validate {
+                            path.validate().await
+                        } else {
+                            path.skip_validation();
+                            true
+                        }
+                    };
+                    let reason: String = tokio::select! {
+                        false = validate => "failed to validate".into(),
+                        true = idle_timeout => "idle timeout".into(),
+                        Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
+                        _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
+                    };
+                    Err(reason)
+                }
+            };
+
+            let task =
+                Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
+                    .instrument_in_current();
+
+            tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
+            Ok((path, task))
+        };
+        self.paths.get_or_try_create_with(pathway, try_create)
+    }
 }
 
 impl Path {

@@ -914,6 +914,7 @@ impl From<&Frame> for QuicFrame {
 }
 
 /// A collection of automatically and efficiently converting raw quic frames into qlog quic frames.
+#[derive(Debug)]
 pub struct QuicFramesCollector<E> {
     event: PhantomData<E>,
     frames: Vec<QuicFrame>,

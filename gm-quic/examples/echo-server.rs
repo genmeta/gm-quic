@@ -94,7 +94,7 @@ async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
         let (connection, _server, pathway, ..) = listeners.accept().await?;
         info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
-            while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {
+            while let Ok((_sid, (reader, writer))) = connection.accept_bi_stream().await {
                 tokio::spawn(handle_stream(reader, writer));
             }
         });

@@ -146,7 +146,7 @@ where
             Recver::DataRead => Poll::Ready(Ok(())),
             Recver::ResetRcvd(r) => {
                 qevent::event!(StreamStateUpdated {
-                    stream_id: r.stream_id(),
+                    stream_id: r.stream_id().id(),
                     stream_type: r.stream_id().dir(),
                     old: GranularStreamStates::ResetReceived,
                     new: GranularStreamStates::ResetRead,

@@ -319,8 +319,8 @@ where
         role: Role,
         local_max_bi: u64,
         local_max_uni: u64,
-        remembered_max_bi: u64,
-        remembered_max_uni: u64,
+        remote_max_bi: u64,
+        remote_max_uni: u64,
         sid_frames_tx: T,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
@@ -328,8 +328,8 @@ where
         // 缺省为0
         let local = ArcLocalStreamIds::new(
             role,
-            remembered_max_bi,
-            remembered_max_uni,
+            remote_max_bi,
+            remote_max_uni,
             sid_frames_tx.clone(),
             tx_wakers,
         );

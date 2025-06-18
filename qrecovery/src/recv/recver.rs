@@ -115,7 +115,7 @@ impl<TX: Clone> Recv<TX> {
         }
 
         qevent::event!(StreamStateUpdated {
-            stream_id: self.stream_id,
+            stream_id: self.stream_id.id(),
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Receive,
             new: GranularStreamStates::SizeKnown,
@@ -382,7 +382,7 @@ where
 {
     pub(super) fn upgrade(&mut self) -> DataRcvd {
         qevent::event!(StreamStateUpdated {
-            stream_id: self.stream_id,
+            stream_id: self.stream_id.id(),
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::SizeKnown,
             new: GranularStreamStates::DataReceived,
@@ -456,7 +456,7 @@ impl DataRcvd {
 
 fn log_reset_event(stream_id: StreamId, old: GranularStreamStates) {
     qevent::event!(StreamStateUpdated {
-        stream_id,
+        stream_id: stream_id.id(),
         stream_type: stream_id.dir(),
         old,
         new: GranularStreamStates::ResetReceived,
@@ -467,7 +467,7 @@ fn log_reset_event(stream_id: StreamId, old: GranularStreamStates) {
 impl DataRcvd {
     pub(super) fn upgrade(&self) {
         qevent::event!(StreamStateUpdated {
-            stream_id: self.stream_id,
+            stream_id: self.stream_id.id(),
             stream_type: self.stream_id.dir(),
             old: GranularStreamStates::DataReceived,
             new: GranularStreamStates::DataRead,

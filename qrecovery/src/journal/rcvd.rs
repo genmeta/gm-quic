@@ -359,6 +359,10 @@ impl ArcRcvdJournal {
     pub fn trigger_ack_frame(&self) -> Option<(u64, Instant)> {
         self.inner.read().unwrap().trigger_ack_frame()
     }
+
+    pub fn revise_max_ack_delay(&self, max_ack_delay: Duration) {
+        self.inner.write().unwrap().max_ack_delay = Some(max_ack_delay);
+    }
 }
 
 #[cfg(test)]

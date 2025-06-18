@@ -140,6 +140,11 @@ where
             }
         };
 
+        // tracing::info!(
+        //     "decrypted {} packet with PN {decoded_pn}",
+        //     core::any::type_name::<H>()
+        // );
+
         Some(Ok(PlainPacket {
             header: self.header,
             plain: self.payload.freeze(),
@@ -185,6 +190,11 @@ where
                 return None;
             }
         };
+
+        // tracing::info!(
+        //     "decrypted {} packet with PN {decoded_pn}",
+        //     core::any::type_name::<H>()
+        // );
 
         Some(Ok(PlainPacket {
             header: self.header,

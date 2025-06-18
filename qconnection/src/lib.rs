@@ -30,7 +30,6 @@ pub mod prelude {
         Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
         path::idle::HeartbeatConfig,
-        tls::PeerCert,
     };
 }
 
@@ -41,6 +40,7 @@ use std::{
     fmt::Debug,
     future::Future,
     io,
+    ops::Deref,
     sync::{Arc, RwLock},
 };
 
@@ -56,15 +56,18 @@ use qbase::{
         address::BindAddr,
         route::{Link, Pathway},
     },
-    param::{ArcParameters, ParameterId, ParameterValue},
-    sid::StreamId,
-    token::ArcTokenRegistry,
+    param::{ArcParameters, ParameterId},
+    sid::{Role, StreamId},
+    token::{ArcTokenRegistry, TokenRegistry},
 };
-use qevent::telemetry::Instrument;
+use qevent::{
+    quic::{Owner, connectivity::ConnectionClosed},
+    telemetry::Instrument,
+};
 use qinterface::{
     ifaces::QuicInterfaces,
     queue::RcvdPacketQueue,
-    route::{RouterEntry, RouterRegistry},
+    route::{self, RouterEntry},
 };
 use qrecovery::{
     journal, recv, reliable, send,
@@ -73,14 +76,12 @@ use qrecovery::{
 #[cfg(feature = "unreliable")]
 use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
-use state::ConnState;
+use state::ArcConnState;
 use termination::Termination;
-use tls::{
-    ArcClientName, ArcPeerCerts, ArcSendGate, ArcServerName, ArcTlsSession, ClientAuthers, PeerCert,
-};
+use tls::ArcSendGate;
 use tracing::Instrument as _;
 
-use crate::tls::ArcZeroRtt;
+use crate::termination::Terminator;
 
 /// The kind of frame which guaratend to be received by peer.
 ///
@@ -101,7 +102,8 @@ pub type HandshakeJournal = journal::Journal<CryptoFrame>;
 pub type DataJournal = journal::Journal<GuaranteedFrame>;
 
 pub type ArcReliableFrameDeque = reliable::ArcReliableFrameDeque<ReliableFrame>;
-pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
+pub type RouterRegistry = route::RouterRegistry<ArcReliableFrameDeque>;
+pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 pub type ArcDcidCell = cid::ArcCidCell<ArcReliableFrameDeque>;
@@ -118,76 +120,44 @@ pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
 
 #[derive(Clone)]
 pub struct Components {
-    parameters: ArcParameters,
-    tls_session: ArcTlsSession,
-    handshake: Handshake,
-    token_registry: ArcTokenRegistry,
-    cid_registry: CidRegistry,
-    flow_ctrl: FlowController,
-    spaces: Spaces,
-    paths: ArcPathContexts,
     interfaces: Arc<QuicInterfaces>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
+    conn_state: ArcConnState,
     defer_idle_timeout: HeartbeatConfig,
+    paths: ArcPathContexts,
+    send_gate: ArcSendGate,
+    tls_handshake: tls::ArcTlsHandshake,
+    quic_handshake: Handshake,
+    parameters: ArcParameters,
+    token_registry: ArcTokenRegistry,
+    cid_registry: CidRegistry,
+    spaces: Spaces,
     event_broker: ArcEventBroker,
-    conn_state: ConnState,
-
-    peer_certs: ArcPeerCerts,
-    server_name: ArcServerName,
-    client_name: ArcClientName,
-    zero_rtt: ArcZeroRtt,
     specific: SpecificComponents,
 }
 
 #[derive(Clone)]
-enum SpecificComponents {
-    Client,
-    Server(ServerComponents),
-}
-
-#[derive(Clone)]
-struct ServerComponents {
-    send_gate: ArcSendGate,
-    client_authers: ClientAuthers,
-    odcid_router_entry: RouterEntry,
+pub enum SpecificComponents {
+    Client {},
+    Server { odcid_router_entry: RouterEntry },
 }
 
 impl Components {
-    pub fn get_remote_or_remembered_params<V>(
-        &self,
-        id: ParameterId,
-    ) -> impl Future<Output = Result<Option<V>, Error>> + Send
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        let params = self.parameters.clone();
-        async move {
-            if !params.is_remote_params_ready() {
-                if let Some(remembered) = params.remembered()? {
-                    return Ok(remembered.get_as::<V>(id));
-                }
-            }
-            let remote_params = params.remote().await?;
-            Ok(remote_params.get_as(id))
-        }
-        .instrument_in_current()
-        .in_current_span()
-    }
-
     #[allow(clippy::type_complexity)]
     pub fn open_bi_stream(
         &self,
     ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
     {
-        let get_snd_wnd_size = self
-            .get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataBidiRemote);
-        let streams = self.spaces.data().streams().clone();
+        let data_space = self.spaces.data().clone();
+        let terminated = self.conn_state.terminated();
         async move {
-            let snd_wnd_size = get_snd_wnd_size
-                .await?
-                .expect("unreachable: default value will be got if the value unset");
-            streams.open_bi(snd_wnd_size).await
+            if !data_space.is_zero_rtt_avaliable() {
+                tokio::select! {
+                    _ = data_space.one_rtt_ready() => {},
+                    _ = terminated => {}
+                }
+            }
+            data_space.streams().open_bi().await
         }
         .instrument_in_current()
         .in_current_span()
@@ -196,14 +166,16 @@ impl Components {
     pub fn open_uni_stream(
         &self,
     ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
-        let get_snd_wnd_size =
-            self.get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataUni);
-        let streams = self.spaces.data().streams().clone();
+        let data_space = self.spaces.data().clone();
+        let terminated = self.conn_state.terminated();
         async move {
-            let snd_wnd_size = get_snd_wnd_size
-                .await?
-                .expect("unreachable: default value will be got if the value unset");
-            streams.open_uni(snd_wnd_size).await
+            if !data_space.is_zero_rtt_avaliable() {
+                tokio::select! {
+                    _ = data_space.one_rtt_ready() => {},
+                    _ = terminated => {}
+                }
+            }
+            data_space.streams().open_uni().await
         }
         .instrument_in_current()
         .in_current_span()
@@ -212,26 +184,18 @@ impl Components {
     #[allow(clippy::type_complexity)]
     pub fn accept_bi_stream(
         &self,
-    ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
-    {
-        let get_snd_wnd_size =
-            self.get_remote_or_remembered_params::<u64>(ParameterId::InitialMaxStreamDataBidiLocal);
+    ) -> impl Future<Output = Result<(StreamId, (StreamReader, StreamWriter)), Error>> + Send {
         let streams = self.spaces.data().streams().clone();
-        async move {
-            let snd_wnd_size = get_snd_wnd_size
-                .await?
-                .expect("unreachable: default value will be got if the value unset");
-            Ok(Some(streams.accept_bi(snd_wnd_size).await?))
-        }
-        .instrument_in_current()
-        .in_current_span()
+        async move { streams.accept_bi().await }
+            .instrument_in_current()
+            .in_current_span()
     }
 
     pub fn accept_uni_stream(
         &self,
-    ) -> impl Future<Output = Result<Option<(StreamId, StreamReader)>, Error>> + Send {
+    ) -> impl Future<Output = Result<(StreamId, StreamReader), Error>> + Send {
         let streams = self.spaces.data().streams().clone();
-        async move { Ok(Some(streams.accept_uni().await?)) }
+        async move { streams.accept_uni().await }
             .instrument_in_current()
             .in_current_span()
     }
@@ -268,14 +232,136 @@ impl Components {
         self.paths.remove(pathway, "application removed");
     }
 
-    pub fn peer_certs(&self) -> impl Future<Output = Result<Arc<PeerCert>, Error>> + Send {
-        let peer_certs = self.peer_certs.clone();
-        async move { peer_certs.get().await }
+    pub fn peer_certs(&self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send {
+        let tls_handshake = self.tls_handshake.clone();
+        async move {
+            match tls_handshake.info().await?.as_ref() {
+                tls::TlsHandshakeInfo::Client { peer_cert, .. } => Ok(Some(peer_cert.to_vec())),
+                tls::TlsHandshakeInfo::Server { peer_cert, .. } => Ok(peer_cert.clone()),
+            }
+        }
+        .instrument_in_current()
+        .in_current_span()
     }
 
     pub fn server_name(&self) -> impl Future<Output = Result<String, Error>> + Send {
-        let server_name = self.server_name.clone();
-        async move { server_name.get().await }
+        let token_registry = self.token_registry.clone();
+        let tls_handshake = self.tls_handshake.clone();
+        async move {
+            if let TokenRegistry::Client((server_name, ..)) = token_registry.deref() {
+                return Ok(server_name.clone());
+            }
+            match tls_handshake.info().await?.as_ref() {
+                tls::TlsHandshakeInfo::Client { .. } => {
+                    unreachable!("tls hs has different role with token registry")
+                }
+                tls::TlsHandshakeInfo::Server { server_name, .. } => Ok(server_name.clone()),
+            }
+        }
+        .instrument_in_current()
+        .in_current_span()
+    }
+
+    pub fn client_name(&self) -> impl Future<Output = Result<Option<String>, Error>> + Send {
+        let parameters = self.parameters.clone();
+        let tls_handshake = self.tls_handshake.clone();
+        async move {
+            if parameters.role()? == Role::Client {
+                return Ok(parameters
+                    .local()?
+                    .get(tls::CLIENT_NAME_PARAM_ID)
+                    .and_then(|cn| cn.try_into().ok()));
+            }
+
+            match tls_handshake.info().await?.as_ref() {
+                tls::TlsHandshakeInfo::Client { .. } => {
+                    unreachable!("tls hs has different role with token registry")
+                }
+                tls::TlsHandshakeInfo::Server { client_name, .. } => Ok(client_name.clone()),
+            }
+        }
+        .instrument_in_current()
+        .in_current_span()
+    }
+}
+
+impl Components {
+    pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
+        qevent::event!(ConnectionClosed {
+            owner: Owner::Local,
+            ccf: &ccf // TODO: trigger
+        });
+
+        let error = ccf.clone().into();
+        self.spaces.data().on_conn_error(&error);
+        self.tls_handshake.on_conn_error(&error);
+        self.parameters.on_conn_error(&error);
+
+        tokio::spawn(
+            {
+                let local_cids = self.cid_registry.local.clone();
+                let event_broker = self.event_broker.clone();
+                let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+                async move {
+                    tokio::time::sleep(pto_duration).await;
+                    local_cids.clear();
+                    event_broker.emit(Event::Terminated);
+                }
+            }
+            .instrument_in_current()
+            .in_current_span(),
+        );
+
+        if self.send_gate.is_permitted() {
+            let terminator = Arc::new(Terminator::new(ccf, &self));
+            tokio::spawn(
+                self.spaces
+                    .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
+                    .instrument_in_current()
+                    .in_current_span(),
+            );
+        }
+
+        Termination::closing(error, self.cid_registry.local, self.rcvd_pkt_q)
+    }
+
+    pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
+        qevent::event!(ConnectionClosed {
+            owner: Owner::Local,
+            ccf: &ccf // TODO: trigger
+        });
+
+        let error = ccf.clone().into();
+        self.spaces.data().on_conn_error(&error);
+        self.tls_handshake.on_conn_error(&error);
+        self.parameters.on_conn_error(&error);
+
+        tokio::spawn(
+            {
+                let local_cids = self.cid_registry.local.clone();
+                let event_broker = self.event_broker.clone();
+                let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+                async move {
+                    tokio::time::sleep(pto_duration).await;
+                    local_cids.clear();
+                    event_broker.emit(Event::Terminated);
+                }
+            }
+            .instrument_in_current()
+            .in_current_span(),
+        );
+
+        if self.send_gate.is_permitted() {
+            let terminator = Arc::new(Terminator::new(ccf, &self));
+            tokio::spawn(
+                self.spaces
+                    .drain(terminator, self.rcvd_pkt_q.clone())
+                    .instrument_in_current()
+                    .in_current_span(),
+            );
+        }
+
+        Termination::draining(error, self.cid_registry.local)
     }
 }
 
@@ -342,12 +428,12 @@ impl Connection {
 
     pub async fn accept_bi_stream(
         &self,
-    ) -> Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error> {
+    ) -> Result<(StreamId, (StreamReader, StreamWriter)), Error> {
         self.try_map_components(|core_conn| core_conn.accept_bi_stream())?
             .await
     }
 
-    pub async fn accept_uni_stream(&self) -> Result<Option<(StreamId, StreamReader)>, Error> {
+    pub async fn accept_uni_stream(&self) -> Result<(StreamId, StreamReader), Error> {
         self.try_map_components(|core_conn| core_conn.accept_uni_stream())?
             .await
     }
@@ -402,13 +488,19 @@ impl Connection {
         }
     }
 
-    pub async fn peer_certs(&self) -> Result<Arc<PeerCert>, Error> {
+    pub async fn peer_certs(&self) -> Result<Option<Vec<u8>>, Error> {
         self.try_map_components(|core_conn| core_conn.peer_certs())?
             .await
     }
 
     pub async fn server_name(&self) -> Result<String, Error> {
         self.try_map_components(|core_conn| core_conn.server_name())?
+            .await
+    }
+
+    // 0xffee: String
+    pub async fn client_name(&self) -> Result<Option<String>, Error> {
+        self.try_map_components(|core_conn| core_conn.client_name())?
             .await
     }
 }

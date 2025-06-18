@@ -42,7 +42,7 @@ use tracing::Instrument as _;
 
 use super::{AckInitialSpace, pipe};
 use crate::{
-    Components, InitialJournal, ServerComponents, SpecificComponents,
+    Components, InitialJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     termination::Terminator,
@@ -213,11 +213,11 @@ pub fn spawn_deliver_and_parse(
     };
 
     let validate = {
-        let tls_session = components.tls_session.clone();
+        let tls_handshake = components.tls_handshake.clone();
         let token_registry = components.token_registry.clone();
         move |initial_token: &[u8], path: &Path| {
             if let TokenRegistry::Server(provider) = token_registry.deref() {
-                if let Some(server_name) = tls_session.server_name() {
+                if let Ok(Some(server_name)) = tls_handshake.server_name() {
                     if provider.verify_token(server_name, initial_token) {
                         path.grant_anti_amplification();
                     }
@@ -295,9 +295,7 @@ pub fn spawn_deliver_and_parse(
                     // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
                     // negotiating done.
                     // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server(ServerComponents {
-                        odcid_router_entry, ..
-                    }) = &components.specific
+                    if let SpecificComponents::Server { odcid_router_entry } = &components.specific
                     {
                         if odcid_router_entry.signpost() != (*packet.dcid()).into() {
                             odcid_router_entry.remove();

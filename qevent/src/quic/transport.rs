@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use derive_builder::Builder;
 use derive_more::From;
-use qbase::param::{GeneralParameters, ParameterId};
+use qbase::param::{GeneralParameters, ParameterId, RememberedParameters};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -177,13 +177,19 @@ pub struct ParametersSet {
 
 macro_rules! extract_parameter {
     ( $(
-        $id:ident as $as:ident from $set:ident to $this:ident.$field:ident
+        $id:ident as $as:ident $(.map($($tt:tt)*))? from $set:ident to $this:ident.$field:ident
     ),* $(,)? ) => {
-        $(
+        $( extract_parameter!(@one $id as $as $(.map($($tt)*))? from $set to $this.$field); )*
+    };
+    (@one $id:ident as $as:ident .map($($tt:tt)*) from $set:ident to $this:ident.$field:ident) => {
+        $this.$field = $this.$field.take().or_else(|| {
+            Some($set.get_as::<$as>(ParameterId::$id).map($($tt)*))
+        });
+    };
+    (@one $id:ident as $as:ident from $set:ident to $this:ident.$field:ident) => {
         $this.$field = $this.$field.take().or_else(|| {
             Some($set.get_as::<$as>(ParameterId::$id).map(Into::into))
         });
-        )*
     };
 }
 
@@ -194,11 +200,11 @@ impl ParametersSetBuilder {
         extract_parameter! {
             InitialSourceConnectionId as ConnectionId from params to self.initial_source_connection_id,
             DisableActiveMigration as bool from params to self.disable_active_migration,
-            MaxIdleTimeout as u64 from params to self.max_idle_timeout,
-            MaxUdpPayloadSize as u32 from params to self.max_udp_payload_size,
-            AckDelayExponent as u16 from params to self.ack_delay_exponent,
-            MaxAckDelay as u16 from params to self.max_ack_delay,
-            ActiveConnectionIdLimit as u32 from params to self.active_connection_id_limit,
+            MaxIdleTimeout as Duration.map(|d| d.as_millis() as _) from params to self.max_idle_timeout,
+            MaxUdpPayloadSize as u64.map(|u| u as u32) from params to self.max_udp_payload_size,
+            AckDelayExponent as u64.map(|u| u as u16) from params to self.ack_delay_exponent,
+            MaxAckDelay as Duration.map(|d| d.as_millis() as _) from params to self.max_ack_delay,
+            ActiveConnectionIdLimit as u64.map(|u| u as u32) from params to self.active_connection_id_limit,
             InitialMaxData as u64 from params to self.initial_max_data,
             InitialMaxStreamDataBidiLocal as u64 from params to self.initial_max_stream_data_bidi_local,
             InitialMaxStreamDataBidiRemote as u64 from params to self.initial_max_stream_data_bidi_remote,
@@ -220,11 +226,11 @@ impl ParametersSetBuilder {
             RetrySourceConnectionId as ConnectionId from params to self.retry_source_connection_id,
             StatelessResetToken as ResetToken from params to self.stateless_reset_token,
             DisableActiveMigration as bool from params to self.disable_active_migration,
-            MaxIdleTimeout as u64 from params to self.max_idle_timeout,
-            MaxUdpPayloadSize as u32 from params to self.max_udp_payload_size,
-            AckDelayExponent as u16 from params to self.ack_delay_exponent,
-            MaxAckDelay as u16 from params to self.max_ack_delay,
-            ActiveConnectionIdLimit as u32 from params to self.active_connection_id_limit,
+            MaxIdleTimeout as Duration.map(|d| d.as_millis() as _) from params to self.max_idle_timeout,
+            MaxUdpPayloadSize as u64.map(|u| u as u32) from params to self.max_udp_payload_size,
+            AckDelayExponent as u64.map(|u| u as u16) from params to self.ack_delay_exponent,
+            MaxAckDelay as Duration.map(|d| d.as_millis() as _) from params to self.max_ack_delay,
+            ActiveConnectionIdLimit as u64.map(|u| u as u32) from params to self.active_connection_id_limit,
             InitialMaxData as u64 from params to self.initial_max_data,
             InitialMaxStreamDataBidiLocal as u64 from params to self.initial_max_stream_data_bidi_local,
             InitialMaxStreamDataBidiRemote as u64 from params to self.initial_max_stream_data_bidi_remote,
@@ -311,6 +317,27 @@ pub struct ParametersRestored {
     /// can only be restored at the client.
     /// servers MUST NOT restore this parameter!
     grease_quic_bit: Option<bool>,
+}
+
+impl ParametersRestoredBuilder {
+    /// helper method to set all client parameters at once
+    pub fn client_parameters(&mut self, params: &RememberedParameters) -> &mut Self {
+        extract_parameter! {
+            DisableActiveMigration as bool from params to self.disable_active_migration,
+            MaxIdleTimeout as Duration.map(|d| d.as_millis() as _) from params to self.max_idle_timeout,
+            MaxUdpPayloadSize as u64.map(|u| u as u32) from params to self.max_udp_payload_size,
+            ActiveConnectionIdLimit as u64.map(|u| u as u32) from params to self.active_connection_id_limit,
+            InitialMaxData as u64 from params to self.initial_max_data,
+            InitialMaxStreamDataBidiLocal as u64 from params to self.initial_max_stream_data_bidi_local,
+            InitialMaxStreamDataBidiRemote as u64 from params to self.initial_max_stream_data_bidi_remote,
+            InitialMaxStreamDataUni as u64 from params to self.initial_max_stream_data_uni,
+            InitialMaxStreamsBidi as u64 from params to self.initial_max_streams_bidi,
+            InitialMaxStreamsUni as u64 from params to self.initial_max_streams_uni,
+            MaxDatagramFrameSize as u64 from params to self.max_datagram_frame_size,
+            GreaseQuicBit as bool from params to self.grease_quic_bit,
+        }
+        self
+    }
 }
 
 /// The packet_sent event indicates a QUIC-level packet was sent.  It has
