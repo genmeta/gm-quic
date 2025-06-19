@@ -7,6 +7,9 @@ use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::{fs::File, io::AsyncReadExt};
+use tracing_subscriber::{
+    Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -38,6 +41,15 @@ struct Options {
         help = "ALPNs to use for the connection"
     )]
     alpns: Vec<Vec<u8>>,
+
+    #[arg(
+        long,
+        short,
+        default_value = "128",
+        help = "Maximum number of requests in the backlog. \
+                If the backlog is full, new connections will be refused."
+    )]
+    backlog: usize,
     #[command(flatten)]
     certs: Certs,
 }
@@ -63,11 +75,16 @@ struct Certs {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .with_ansi(true)
+    tracing_subscriber::registry()
+        // .with(console_subscriber::spawn())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+        )
         .init();
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         // default value 512 out of macos ulimit
@@ -104,7 +121,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_alpns(options.alpns)
-        .listen(128)
+        .listen(options.backlog)
         .await;
     listeners.add_server(
         server_name.as_str(),

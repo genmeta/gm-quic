@@ -12,17 +12,20 @@ use qbase::net::{
 };
 
 use super::QuicInterfaces;
-use crate::{QuicInterface, route::Received};
+use crate::{
+    QuicInterface,
+    route::{Packet, Way},
+};
 
-pub struct MutableInterface(RwLock<Box<dyn QuicInterface>>);
+pub struct RwInterface(RwLock<Box<dyn QuicInterface>>);
 
-impl From<Box<dyn QuicInterface>> for MutableInterface {
+impl From<Box<dyn QuicInterface>> for RwInterface {
     fn from(iface: Box<dyn QuicInterface>) -> Self {
         Self(RwLock::new(iface))
     }
 }
 
-impl MutableInterface {
+impl RwInterface {
     pub fn borrow(&self) -> RwLockReadGuard<'_, Box<dyn QuicInterface>> {
         self.0.read().unwrap()
     }
@@ -33,8 +36,8 @@ impl MutableInterface {
     }
 
     pub(super) fn received_packets_stream(
-        iface: Weak<MutableInterface>,
-    ) -> impl Stream<Item = Received> + Send {
+        iface: Weak<RwInterface>,
+    ) -> impl Stream<Item = (Packet, Way)> + Send {
         futures::stream::unfold(
             (iface, vec![], vec![], VecDeque::new()),
             |(iface, mut bufs, mut hdrs, mut pkts)| async move {
@@ -50,7 +53,7 @@ impl MutableInterface {
     }
 }
 
-impl QuicInterface for MutableInterface {
+impl QuicInterface for RwInterface {
     #[inline]
     fn bind_addr(&self) -> BindAddr {
         self.borrow().bind_addr()
@@ -94,14 +97,14 @@ impl QuicInterface for MutableInterface {
 
 pub struct BorrowedInterface {
     bind_addr: BindAddr,
-    iface: Weak<MutableInterface>,
+    iface: Weak<RwInterface>,
     ifaces: Arc<QuicInterfaces>,
 }
 
 impl BorrowedInterface {
     pub(super) fn new(
         bind_addr: BindAddr,
-        iface: Weak<MutableInterface>,
+        iface: Weak<RwInterface>,
         ifaces: Arc<QuicInterfaces>,
     ) -> Self {
         Self {

@@ -63,8 +63,8 @@ impl EmitEvent for ArcEventBroker {
                 }
             }
             Event::ApplicationClose | Event::Failed(..) => {
-                let terminator = GranularConnectionStates::Closing;
-                if self.conn_state.update(terminator.into()).is_none() {
+                let closing_state = GranularConnectionStates::Closing;
+                if self.conn_state.update(closing_state.into()).is_none() {
                     return;
                 }
             }

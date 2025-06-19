@@ -38,6 +38,14 @@ struct Options {
         help = "ALPNs to use for the connection"
     )]
     alpns: Vec<Vec<u8>>,
+    #[arg(
+        long,
+        short,
+        default_value = "128",
+        help = "Maximum number of requests in the backlog. \
+                If the backlog is full, new connections will be refused."
+    )]
+    backlog: usize,
     #[command(flatten)]
     certs: Certs,
 }
@@ -92,7 +100,7 @@ async fn run(options: Options) -> Result<(), Error> {
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_alpns(options.alpns)
-        .listen(128)
+        .listen(options.backlog)
         .await;
     listeners.add_server(
         options.certs.server_name.as_str(),

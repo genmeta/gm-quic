@@ -81,7 +81,7 @@ use termination::Termination;
 use tls::ArcSendGate;
 use tracing::Instrument as _;
 
-use crate::termination::Terminator;
+use crate::{termination::Terminator, tls::ArcTlsHandshake};
 
 /// The kind of frame which guaratend to be received by peer.
 ///
@@ -126,7 +126,7 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     paths: ArcPathContexts,
     send_gate: ArcSendGate,
-    tls_handshake: tls::ArcTlsHandshake,
+    tls_handshake: ArcTlsHandshake,
     quic_handshake: Handshake,
     parameters: ArcParameters,
     token_registry: ArcTokenRegistry,

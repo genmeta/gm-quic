@@ -165,7 +165,6 @@ async fn run(options: Options) -> Result<(), Error> {
                 authority.clone(),
                 paths.clone(),
                 total_pb.clone(),
-                conns_pb.clone(),
                 options.save.clone(),
             ));
         }
@@ -204,7 +203,6 @@ async fn download_files_with_progress(
     authority: Authority,
     paths: impl Iterator<Item = String>,
     total_pb: ProgressBar,
-    conns_pb: ProgressBar,
     save: Option<PathBuf>,
 ) -> Result<usize, Error> {
     let (server_name, server_addr) = lookup(&authority).await?;
@@ -213,7 +211,6 @@ async fn download_files_with_progress(
     let (mut connection, send_request) =
         h3::client::new(h3_shim::QuicConnection::new(connection)).await?;
     tokio::spawn(async move { connection.wait_idle().await });
-    conns_pb.inc_length(1);
 
     let mut requests = JoinSet::new();
     for path in paths {

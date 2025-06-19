@@ -12,7 +12,7 @@ use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
-    route::Router,
+    route::{Router, Way},
     util::Channel,
 };
 use rustls::{
@@ -20,6 +20,7 @@ use rustls::{
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tracing::Instrument;
 
 use crate::*;
 
@@ -321,7 +322,7 @@ impl QuicListeners {
             }
 
             Router::global()
-                .register_unrouted_sink(futures::sink::drain())
+                .register_connectless_packet_sink(|_, _| {})
                 .await;
 
             backlog.close();
@@ -360,15 +361,9 @@ impl QuicListeners {
         INCOMINGS.get_or_init(Default::default)
     }
 
-    pub(crate) async fn try_accept_connection(
-        &self,
-        bind_addr: BindAddr,
-        packet: Packet,
-        pathway: Pathway,
-        link: Link,
-    ) {
+    pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_addr, pathway, link): Way) {
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
-        let Ok(premit) = self.backlog.clone().acquire_owned().await else {
+        let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
             return;
         };
 
@@ -415,7 +410,7 @@ impl QuicListeners {
 
         tokio::spawn(async move {
             Router::global()
-                .deliver((bind_addr.clone(), packet, pathway, link))
+                .deliver(packet, (bind_addr.clone(), pathway, link))
                 .await;
 
             tokio::spawn({
@@ -432,10 +427,13 @@ impl QuicListeners {
                             }
                             Event::Closed(ccf) => connection.enter_draining(ccf),
                             Event::StatelessReset => { /* TOOD: stateless reset */ }
-                            Event::Terminated => return,
+                            Event::Terminated => break,
                         }
                     }
                 }
+                .instrument(tracing::warn_span!(
+                    "quic-listeners:connection-event-handler"
+                ))
             });
 
             match connection.server_name().await {
@@ -741,15 +739,10 @@ impl QuicListenersBuilder<TlsServerConfig> {
         });
 
         Router::global()
-            .register_unrouted_sink(futures::sink::unfold(
-                quic_listeners.clone(),
-                |quic_listeners, (bind_addr, packet, pathway, link)| async move {
-                    quic_listeners
-                        .try_accept_connection(bind_addr, packet, pathway, link)
-                        .await;
-                    Ok(quic_listeners)
-                },
-            ))
+            .register_connectless_packet_sink({
+                let quic_listeners = quic_listeners.clone();
+                move |packet, way| quic_listeners.try_accept_connection(packet, way)
+            })
             .await;
 
         quic_listeners

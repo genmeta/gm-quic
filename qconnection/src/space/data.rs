@@ -126,7 +126,7 @@ impl DataSpace {
         }
     }
 
-    pub fn new_one_rtt(
+    pub fn new_handshaking(
         role: Role,
         local_params: &GeneralParameters,
         // remote_params: &GeneralParameters,
@@ -644,7 +644,6 @@ pub fn spawn_deliver_and_parse(
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
             space.one_rtt_ready().await;
-            tracing::info!("ready for recv 1rtt");
             while let Some((bind_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();

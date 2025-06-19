@@ -28,7 +28,8 @@ use qevent::{
     },
     telemetry::{Instrument, Log, handy::NoopLogger},
 };
-use qinterface::{ifaces::QuicInterfaces, queue::RcvdPacketQueue, route::Router};
+pub use qinterface::route::{Router, Way};
+use qinterface::{ifaces::QuicInterfaces, queue::RcvdPacketQueue};
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
 use tracing::Instrument as _;
@@ -285,7 +286,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
                 (data_space, parameters)
             }
             _ => {
-                let data_space = DataSpace::new_one_rtt(
+                let data_space = DataSpace::new_handshaking(
                     Role::Client,
                     clinet_params.as_ref(),
                     self.streams_ctrl,
@@ -355,7 +356,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
         )
         .expect("Failed to initialize TLS handshake");
 
-        let data_space = DataSpace::new_one_rtt(
+        let data_space = DataSpace::new_handshaking(
             Role::Server,
             server_params.as_ref(),
             self.streams_ctrl,

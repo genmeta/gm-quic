@@ -5,6 +5,9 @@ use gm_quic::{handy::*, *};
 use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;
+use tracing_subscriber::{
+    Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -19,6 +22,14 @@ struct Options {
         help = "What address:port to listen for new connections",
     )]
     listen: Vec<SocketAddr>,
+    #[arg(
+        long,
+        short,
+        default_value = "128",
+        help = "Maximum number of requests in the backlog. \
+                If the backlog is full, new connections will be refused."
+    )]
+    backlog: usize,
     #[command(flatten)]
     certs: Certs,
 }
@@ -45,8 +56,12 @@ struct Certs {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        // .with(console_subscriber::spawn())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+        )
         .init();
 
     if let Err(error) = run(Options::parse()).await {
@@ -66,7 +81,7 @@ async fn run(options: Options) -> io::Result<()> {
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
         .enable_0rtt()
-        .listen(128)
+        .listen(options.backlog)
         .await;
     listeners.add_server(
         options.certs.server_name.as_str(),
