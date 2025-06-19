@@ -1,11 +1,11 @@
 use std::{
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
-use futures::{Sink, SinkExt, Stream, StreamExt, lock::Mutex, never::Never};
+use futures::{Stream, StreamExt, lock::Mutex};
+pub use qbase::packet::Packet;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
@@ -14,18 +14,17 @@ use qbase::{
         address::{BindAddr, RealAddr},
         route::{Link, Pathway},
     },
-    packet::{GetDcid, Packet},
+    packet::GetDcid,
 };
 
 use crate::queue::RcvdPacketQueue;
+pub type Way = (BindAddr, Pathway, Link);
 
-pub type Received = (BindAddr, Packet, Pathway, Link);
-
-type UnroutedPacketSink = Pin<Box<dyn Sink<Received, Error = Never> + Send + Sync>>;
+type ConnectlessPacketSink = Box<dyn FnMut(Packet, Way) + Send>;
 
 pub struct Router {
     table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    unrouted: Mutex<UnroutedPacketSink>,
+    unrouted: Mutex<ConnectlessPacketSink>,
 }
 
 impl Router {
@@ -34,7 +33,7 @@ impl Router {
         GLOBAL_ROUTER.get_or_init(|| {
             Arc::new(Router {
                 table: DashMap::new(),
-                unrouted: Mutex::new(Box::pin(futures::sink::drain())),
+                unrouted: Mutex::new(Box::new(|_, _| {})),
             })
         })
     }
@@ -59,8 +58,9 @@ impl Router {
 
     pub async fn try_deliver(
         &self,
-        (bind_addr, packet, pathway, link): Received,
-    ) -> Result<(), Received> {
+        packet: Packet,
+        (bind_addr, pathway, link): Way,
+    ) -> Result<(), (Packet, Way)> {
         let dcid = match &packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
@@ -75,7 +75,7 @@ impl Router {
                     tracing::warn!(
                         "receive a packet with empty dcid, and failed to fallback to zero length cid"
                     );
-                    return Err((bind_addr, packet, pathway, link));
+                    return Err((packet, (bind_addr, pathway, link)));
                 }
             }
         };
@@ -84,28 +84,26 @@ impl Router {
             _ = rcvd_pkt_q.deliver(bind_addr, packet, pathway, link).await;
             return Ok(());
         }
-        Err((bind_addr, packet, pathway, link))
+        Err((packet, (bind_addr, pathway, link)))
     }
 
-    pub async fn deliver(&self, received: Received) {
-        if let Err(received) = self.try_deliver(received).await {
-            let mut unrouted = self.unrouted.lock().await;
-            _ = unrouted.send(received).await;
-            _ = unrouted.flush().await;
+    pub async fn deliver(&self, packet: Packet, way: Way) {
+        if let Err((packet, way)) = self.try_deliver(packet, way).await {
+            (self.unrouted.lock().await)(packet, way)
         }
     }
 
-    pub async fn deliver_all(&self, mut stream: impl Stream<Item = Received> + Unpin) {
-        while let Some(received) = stream.next().await {
-            self.deliver(received).await;
+    pub async fn deliver_all(&self, mut stream: impl Stream<Item = (Packet, Way)> + Unpin) {
+        while let Some((packet, way)) = stream.next().await {
+            self.deliver(packet, way).await;
         }
     }
 
-    pub async fn register_unrouted_sink<S>(&self, handler: S)
+    pub async fn register_connectless_packet_sink<S>(&self, sink: S)
     where
-        S: Sink<Received, Error = Never> + Send + Sync + 'static,
+        S: FnMut(Packet, Way) + Send + 'static,
     {
-        *self.unrouted.lock().await = Box::pin(handler);
+        *self.unrouted.lock().await = Box::new(sink);
     }
 
     pub fn registry<T>(
