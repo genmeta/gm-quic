@@ -299,12 +299,14 @@ impl Components {
 
         tokio::spawn(
             {
-                let local_cids = self.cid_registry.local.clone();
-                let event_broker = self.event_broker.clone();
                 let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+                let local_cids = self.cid_registry.local.clone();
+                let rcvd_pkt_q = self.rcvd_pkt_q.clone();
+                let event_broker = self.event_broker.clone();
                 async move {
                     tokio::time::sleep(pto_duration).await;
                     local_cids.clear();
+                    rcvd_pkt_q.close_all();
                     event_broker.emit(Event::Terminated);
                 }
             }
@@ -338,12 +340,14 @@ impl Components {
 
         tokio::spawn(
             {
-                let local_cids = self.cid_registry.local.clone();
-                let event_broker = self.event_broker.clone();
                 let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+                let local_cids = self.cid_registry.local.clone();
+                let rcvd_pkt_q = self.rcvd_pkt_q.clone();
+                let event_broker = self.event_broker.clone();
                 async move {
                     tokio::time::sleep(pto_duration).await;
                     local_cids.clear();
+                    rcvd_pkt_q.close_all();
                     event_broker.emit(Event::Terminated);
                 }
             }
