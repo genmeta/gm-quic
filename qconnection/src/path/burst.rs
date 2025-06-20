@@ -9,8 +9,7 @@ use qbase::net::tx::Signals;
 use qinterface::QuicInterface;
 
 use crate::{
-    ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tls::ArcSendGate,
-    tx::Transaction,
+    ArcDcidCell, ArcLocalCids, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,
 };
 
 pub struct Burst {
@@ -18,33 +17,19 @@ pub struct Burst {
     local_cids: ArcLocalCids,
     dcid: ArcDcidCell,
     spin: bool,
-    flow_ctrl: FlowController,
     spaces: Spaces,
-    send_gate: Option<ArcSendGate>,
+    send_gate: ArcSendGate,
 }
 
 impl super::Path {
     pub fn new_burst(self: &Arc<Self>, components: &Components) -> Burst {
-        let local_cids = components.cid_registry.local.clone();
-        let dcid = components.cid_registry.remote.apply_dcid();
-        let flow_ctrl = components.flow_ctrl.clone();
-        let path = self.clone();
-        let spin = false;
-        let spaces = components.spaces.clone();
-        let send_gate = match &components.specific {
-            crate::SpecificComponents::Client => None,
-            crate::SpecificComponents::Server(server_components) => {
-                Some(server_components.send_gate.clone())
-            }
-        };
         Burst {
-            path,
-            local_cids,
-            dcid,
-            spin,
-            flow_ctrl,
-            spaces,
-            send_gate,
+            path: self.clone(),
+            local_cids: components.cid_registry.local.clone(),
+            dcid: components.cid_registry.remote.apply_dcid(),
+            spin: false,
+            spaces: components.spaces.clone(),
+            send_gate: components.send_gate.clone(),
         }
     }
 }
@@ -78,7 +63,6 @@ impl Burst {
             &self.dcid,
             self.path.cc(),
             &self.path.anti_amplifier,
-            &self.flow_ctrl,
             self.path.tx_waker.clone(),
         )?;
         if transaction.is_none() {
@@ -169,9 +153,9 @@ impl Burst {
             }
         };
         match self.load_segments(buffers, transaction)? {
-            Ok(segments) => {
-                debug_assert!(!segments.is_empty());
-                Poll::Ready(io::Result::Ok(segments))
+            Ok(segments_lens) => {
+                debug_assert!(!segments_lens.is_empty());
+                Poll::Ready(io::Result::Ok(segments_lens))
             }
             Err(signals) => {
                 self.path.tx_waker.wait_for(cx, signals);
@@ -187,9 +171,7 @@ impl Burst {
     pub async fn launch(self) -> io::Result<()> {
         let mut buffers = vec![];
 
-        if let Some(send_gate) = &self.send_gate {
-            send_gate.request_permit().await;
-        }
+        self.send_gate.request_permit().await;
 
         loop {
             let segment_lens = self.burst(&mut buffers).await?;

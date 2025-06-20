@@ -38,6 +38,8 @@ rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }
 
+# console-subscriber = "0.4"
+
 [dev-dependencies.tracing-subscriber]
 workspace = true
 features = ["env-filter", "time"]

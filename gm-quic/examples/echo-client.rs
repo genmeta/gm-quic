@@ -57,7 +57,7 @@ async fn main() {
         .init();
 
     if let Err(error) = run(Options::parse()).await {
-        tracing::info!(?error, "client error");
+        tracing::error!(?error);
         std::process::exit(1);
     };
 }

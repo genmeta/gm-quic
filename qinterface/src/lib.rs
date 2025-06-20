@@ -118,7 +118,7 @@ impl dyn QuicInterface {
         &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
-    ) -> io::Result<impl Iterator<Item = route::Received> + Send + 'b> {
+    ) -> io::Result<impl Iterator<Item = (route::Packet, route::Way)> + Send + 'b> {
         use qbase::packet::{self, Packet, PacketReader};
         fn is_initial_packet(pkt: &Packet) -> bool {
             matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
@@ -134,7 +134,7 @@ impl dyn QuicInterface {
                 PacketReader::new(buf, 8)
                     .flatten()
                     .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
-                    .map(move |pkt| (bind_addr.clone(), pkt, hdr.pathway(), hdr.link()))
+                    .map(move |pkt| (pkt, (bind_addr.clone(), hdr.pathway(), hdr.link())))
             }))
     }
 }

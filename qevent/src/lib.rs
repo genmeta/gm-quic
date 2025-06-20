@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{Display, From, Into};
-use qbase::{cid::ConnectionId, util::DescribeData};
+use qbase::{cid::ConnectionId, sid::Role, util::DescribeData};
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +142,15 @@ pub enum VantagePointType {
     Network,
     #[default]
     Unknow,
+}
+
+impl From<Role> for VantagePointType {
+    fn from(role: Role) -> Self {
+        match role {
+            Role::Client => VantagePointType::Client,
+            Role::Server => VantagePointType::Server,
+        }
+    }
 }
 
 impl Display for VantagePointType {

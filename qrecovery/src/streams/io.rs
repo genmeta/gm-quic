@@ -10,7 +10,7 @@ use std::{
 use derive_more::{Deref, DerefMut};
 use qbase::{
     error::Error as QuicError,
-    sid::{Dir, Role, StreamId},
+    sid::{Dir, StreamId},
 };
 
 use crate::{recv::Incoming, send::Outgoing};
@@ -115,8 +115,9 @@ impl<TX> ArcOutputGuard<'_, TX> {
         self.deref_mut().insert(sid, (outgoing, io_state));
     }
 
-    pub(super) fn on_0rtt_rejected(
+    pub(super) fn revise_max_stream_data(
         &self,
+        zero_rtt_rejected: bool,
         opened_bidi: u64,
         opened_uni: u64,
         bidi_snd_wnd_size: u64,
@@ -125,33 +126,12 @@ impl<TX> ArcOutputGuard<'_, TX> {
         self.deref()
             .iter()
             .filter(|(sid, _)| {
-                (sid.dir() == Dir::Bi && sid.id() < opened_bidi)
-                    || (sid.dir() == Dir::Uni && sid.id() < opened_uni)
-            })
-            .for_each(|(sid, (o, _))| match sid.dir() {
-                Dir::Bi => o.on_0rtt_rejected(bidi_snd_wnd_size),
-                Dir::Uni => o.on_0rtt_rejected(uni_snd_wnd_size),
-            })
-    }
-
-    pub(super) fn on_0rtt_accepted(
-        &self,
-        local_role: Role,
-        opened_bidi: u64,
-        opened_uni: u64,
-        bidi_snd_wnd_size: u64,
-        uni_snd_wnd_size: u64,
-    ) {
-        self.deref()
-            .iter()
-            .filter(|(sid, _)| {
-                sid.role() == local_role
-                    && ((sid.dir() == Dir::Bi && sid.id() < opened_bidi)
-                        || (sid.dir() == Dir::Uni && sid.id() < opened_uni))
+                sid.dir() == Dir::Bi && sid.id() < opened_bidi
+                    || sid.dir() == Dir::Uni && sid.id() < opened_uni
             })
             .for_each(|(sid, (outgoing, _))| match sid.dir() {
-                Dir::Bi => outgoing.on_0rtt_accepted(bidi_snd_wnd_size),
-                Dir::Uni => outgoing.on_0rtt_accepted(uni_snd_wnd_size),
+                Dir::Bi => outgoing.revise_max_stream_data(zero_rtt_rejected, bidi_snd_wnd_size),
+                Dir::Uni => outgoing.revise_max_stream_data(zero_rtt_rejected, uni_snd_wnd_size),
             });
     }
 

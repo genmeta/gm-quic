@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use crate::{
     QuicInterface,
     factory::ProductQuicInterface,
-    ifaces::borrowed::{BorrowedInterface, MutableInterface},
+    ifaces::borrowed::{BorrowedInterface, RwInterface},
     route::Router,
 };
 
@@ -118,7 +118,7 @@ pub struct InterfaceContext {
     /// the actual interface being used
     ///
     /// the actual interface may be changed when rebind
-    iface: Arc<MutableInterface>,
+    iface: Arc<RwInterface>,
     /// recv task handle
     task: JoinHandle<()>,
 }
@@ -126,10 +126,10 @@ pub struct InterfaceContext {
 impl InterfaceContext {
     pub fn new(bind_addr: BindAddr, factory: Arc<dyn ProductQuicInterface>) -> io::Result<Self> {
         let iface = factory.bind(bind_addr.clone())?;
-        let iface = Arc::new(MutableInterface::from(iface));
+        let iface = Arc::new(RwInterface::from(iface));
 
         let task = tokio::spawn(Router::global().deliver_all(Box::pin(
-            MutableInterface::received_packets_stream(Arc::downgrade(&iface)),
+            RwInterface::received_packets_stream(Arc::downgrade(&iface)),
         )));
 
         Ok(InterfaceContext {
@@ -148,7 +148,7 @@ impl InterfaceContext {
         _ = (&mut self.task).await;
         // then spawn the new one
         self.task = tokio::spawn(Router::global().deliver_all(Box::pin(
-            MutableInterface::received_packets_stream(Arc::downgrade(&self.iface)),
+            RwInterface::received_packets_stream(Arc::downgrade(&self.iface)),
         )));
 
         Ok(())

@@ -1,8 +1,6 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use qbase::param::ParameterId;
-
-use crate::Components;
+use qbase::param::{ArcParameters, ParameterId};
 
 /// Keep alive configuration.
 ///
@@ -59,8 +57,7 @@ impl super::Path {
         }
     }
 
-    pub fn idle_timeout(self: &Arc<Self>, components: &Components) -> impl Future<Output = bool> {
-        let parameters = components.parameters.clone();
+    pub fn idle_timeout(self: &Arc<Self>, parameters: ArcParameters) -> impl Future<Output = bool> {
         let this = self.clone();
         async move {
             let (Ok(local_max_idle_timeout), Ok(remote_max_idle_timeout)) = (
