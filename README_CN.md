@@ -41,7 +41,7 @@ QUIC协议可谓一个相当复杂的、IO密集型的协议，因此正是适�
 - **qbase**: QUIC协议的基础结构，包括可变整型编码VarInt、连接ID管理、流ID、各种帧以及包类型定义、异步密钥等
 - **qrecovery**: QUIC的可靠传输部分，包括发送端/接收端的状态机演变、应用层与传输层的内部逻辑交互等
 - **qcongestion**: QUIC的拥塞控制，抽象了统一的拥塞控制接口，并实现了BBRv1，未来还会实现Cubic、ETC等更多的传输控制算法
-- **qinterface**: QUIC的数据包路由和对底层IO接口(`QuicInterface`)的定义，令gm-quic可以运行在各种环境。内含一个可选的基于qudp的`QuicInterface`实现
+- **qinterface**: QUIC的数据包路由和对底层I/O接口(`QuicIO`)的定义，令gm-quic可以运行在各种环境。内含一个可选的基于qudp的`QuicIO`实现
 - **qconnection**： QUIC连接封装，将QUIC连接内部所需的各组件、任务串联起来，最终能够完美运行
 - **gm-quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
 - **qudp**： QUIC的高性能UDP封装，使用GSO、GRO等手段极致优化UDP的性能

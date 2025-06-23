@@ -9,7 +9,7 @@ use qbase::{
 };
 use qcongestion::Transport;
 use qevent::telemetry::Instrument;
-use qinterface::QuicInterface;
+use qinterface::QuicIO;
 use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 

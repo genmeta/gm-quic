@@ -14,7 +14,7 @@ mod qudp {
     use qudp::BATCH_SIZE;
 
     use super::super::monitor::InterfacesMonitor;
-    use crate::{PacketHeader, QuicInterface};
+    use crate::{PacketHeader, QuicIO};
 
     pub struct UdpSocketController {
         inner: qudp::UdpSocketController,
@@ -52,7 +52,7 @@ mod qudp {
         }
     }
 
-    impl QuicInterface for UdpSocketController {
+    impl QuicIO for UdpSocketController {
         fn bind_addr(&self) -> BindAddr {
             self.bind_addr.clone()
         }

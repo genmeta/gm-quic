@@ -11,7 +11,8 @@ use handy::UdpSocketController;
 use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
-    ifaces::{QuicInterfaces, borrowed::BorrowedInterface},
+    factory::ProductQuicIO,
+    ifaces::{QuicInterfaces, borrowed::QuicInterface},
     route::{Router, Way},
     util::Channel,
 };
@@ -70,7 +71,7 @@ impl Debug for Server {
 
 /// An interface that has been bound to servers in the [`QuicListeners`].
 struct BoundInterface {
-    iface: Arc<BorrowedInterface>,
+    iface: Arc<QuicInterface>,
     servers: DashSet<String>,
 }
 
@@ -113,7 +114,7 @@ type Incomings = Channel<(
 /// - Rejects connections if the target server isn't listening on the receiving interface
 /// - Returns connections that may still be completing their QUIC handshake
 pub struct QuicListeners {
-    quic_iface_factory: Arc<dyn ProductQuicInterface>,
+    quic_iface_factory: Arc<dyn ProductQuicIO>,
     ifaces: Arc<DashMap<BindAddr, BoundInterface>>,
     servers: Arc<DashMap<String, Server>>,
     backlog: Arc<Semaphore>,
@@ -321,9 +322,7 @@ impl QuicListeners {
                 return;
             }
 
-            Router::global()
-                .register_connectless_packet_sink(|_, _| {})
-                .await;
+            Router::global().on_connectless_packets(|_, _| {}).await;
 
             backlog.close();
             incomings.close();
@@ -458,7 +457,7 @@ impl QuicListeners {
 
 /// The builder for the quic listeners.
 pub struct QuicListenersBuilder<T> {
-    quic_iface_factory: Arc<dyn ProductQuicInterface>,
+    quic_iface_factory: Arc<dyn ProductQuicIO>,
     servers: Arc<DashMap<String, Server>>, // must be empty while building
     incomings: Arc<Incomings>,             // identify the building QuicListeners (TODO)
 
@@ -539,7 +538,7 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// The default interface is [`UdpSocketController`] that support GSO and GRO on linux,
     /// and the factory is [`UdpSocketController::bind`].
-    pub fn with_iface_factory(self, factory: impl ProductQuicInterface + 'static) -> Self {
+    pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),
             ..self
@@ -739,7 +738,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
         });
 
         Router::global()
-            .register_connectless_packet_sink({
+            .on_connectless_packets({
                 let quic_listeners = quic_listeners.clone();
                 move |packet, way| quic_listeners.try_accept_connection(packet, way)
             })

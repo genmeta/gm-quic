@@ -16,7 +16,7 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::QuicInterface;
+    pub use qinterface::QuicIO;
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 
