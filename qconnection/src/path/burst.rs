@@ -6,7 +6,7 @@ use std::{
 };
 
 use qbase::net::tx::Signals;
-use qinterface::QuicInterface;
+use qinterface::QuicIO;
 
 use crate::{
     ArcDcidCell, ArcLocalCids, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,

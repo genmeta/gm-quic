@@ -13,14 +13,14 @@ use qbase::net::address::{BindAddr, RealAddr, SocketBindAddr};
 use tokio::task::JoinHandle;
 
 use crate::{
-    QuicInterface,
-    factory::ProductQuicInterface,
-    ifaces::borrowed::{BorrowedInterface, RwInterface},
+    QuicIO,
+    factory::ProductQuicIO,
+    ifaces::borrowed::{QuicInterface, RwInterface},
     route::Router,
 };
 
 pub struct QuicInterfaces {
-    interfaces: DashMap<BindAddr, (InterfaceContext, Weak<BorrowedInterface>)>,
+    interfaces: DashMap<BindAddr, (InterfaceContext, Weak<QuicInterface>)>,
 }
 
 impl QuicInterfaces {
@@ -77,8 +77,8 @@ impl QuicInterfaces {
     pub fn insert(
         self: &Arc<Self>,
         bind_addr: BindAddr,
-        factory: Arc<dyn ProductQuicInterface>,
-    ) -> io::Result<Arc<BorrowedInterface>> {
+        factory: Arc<dyn ProductQuicIO>,
+    ) -> io::Result<Arc<QuicInterface>> {
         match self.interfaces.entry(bind_addr.clone()) {
             dashmap::Entry::Occupied(..) => Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -86,7 +86,7 @@ impl QuicInterfaces {
             )),
             dashmap::Entry::Vacant(entry) => {
                 let iface_ctx = InterfaceContext::new(bind_addr, factory)?;
-                let borrowed_iface = Arc::new(BorrowedInterface::new(
+                let borrowed_iface = Arc::new(QuicInterface::new(
                     iface_ctx.bind_addr.clone(),
                     Arc::downgrade(&iface_ctx.iface),
                     self.clone(),
@@ -98,7 +98,7 @@ impl QuicInterfaces {
         }
     }
 
-    pub fn get(&self, bind_addr: &BindAddr) -> Option<Arc<BorrowedInterface>> {
+    pub fn get(&self, bind_addr: &BindAddr) -> Option<Arc<QuicInterface>> {
         self.interfaces
             .get(bind_addr)
             .and_then(|entry| entry.value().1.upgrade())
@@ -114,7 +114,7 @@ pub struct InterfaceContext {
     /// factory to rebind the interface
     ///
     /// factory may be changed when manually rebind
-    factory: Arc<dyn ProductQuicInterface>,
+    factory: Arc<dyn ProductQuicIO>,
     /// the actual interface being used
     ///
     /// the actual interface may be changed when rebind
@@ -124,13 +124,30 @@ pub struct InterfaceContext {
 }
 
 impl InterfaceContext {
-    pub fn new(bind_addr: BindAddr, factory: Arc<dyn ProductQuicInterface>) -> io::Result<Self> {
+    pub fn new(bind_addr: BindAddr, factory: Arc<dyn ProductQuicIO>) -> io::Result<Self> {
         let iface = factory.bind(bind_addr.clone())?;
         let iface = Arc::new(RwInterface::from(iface));
 
-        let task = tokio::spawn(Router::global().deliver_all(Box::pin(
-            RwInterface::received_packets_stream(Arc::downgrade(&iface)),
-        )));
+        let task = tokio::spawn({
+            let iface = Arc::downgrade(&iface);
+            let (mut bufs, mut hdrs) = (vec![], vec![]);
+            async move {
+                loop {
+                    let pkts = {
+                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                            return;
+                        };
+                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                            return;
+                        };
+                        pkts
+                    };
+                    for (pkt, way) in pkts {
+                        Router::global().deliver(pkt, way).await;
+                    }
+                }
+            }
+        });
 
         Ok(InterfaceContext {
             bind_addr,
@@ -147,9 +164,26 @@ impl InterfaceContext {
         self.task.abort();
         _ = (&mut self.task).await;
         // then spawn the new one
-        self.task = tokio::spawn(Router::global().deliver_all(Box::pin(
-            RwInterface::received_packets_stream(Arc::downgrade(&self.iface)),
-        )));
+        self.task = tokio::spawn({
+            let iface = Arc::downgrade(&self.iface);
+            let (mut bufs, mut hdrs) = (vec![], vec![]);
+            async move {
+                loop {
+                    let pkts = {
+                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                            return;
+                        };
+                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                            return;
+                        };
+                        pkts
+                    };
+                    for (pkt, way) in pkts {
+                        Router::global().deliver(pkt, way).await;
+                    }
+                }
+            }
+        });
 
         Ok(())
     }

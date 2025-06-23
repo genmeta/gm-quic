@@ -16,21 +16,21 @@ use qbase::net::{
     route::PacketHeader,
 };
 
-/// QUIC network interface trait
+/// QUIC network I/O trait
 ///
 /// Provides a unified interface for different network transport implementations.
 /// Note that some implementations may not support all bind address types.
 ///
-/// `gm-quic` uses [`ProductQuicInterface`] to create (bind) a new [`QuicInterface`] instance.
+/// `gm-quic` uses [`ProductQuicIO`] to create (bind) a new [`QuicIO`] instance.
 /// Read its documentation for more information.
 ///
-/// Wrapping a new [`QuicInterface`] is easy,
+/// Wrapping a new [`QuicIO`] is easy,
 /// you can refer to the [`UdpSocketController`] implementation in the [`handy`] module.
 ///
-/// [`ProductQuicInterface`]: crate::factory::ProductQuicInterface
+/// [`ProductQuicIO`]: crate::factory::ProductQuicIO
 /// [`UdpSocketController`]: crate::ifaces::handy::UdpSocketController
 /// [`handy`]: crate::ifaces::handy
-pub trait QuicInterface: Send + Sync {
+pub trait QuicIO: Send + Sync {
     /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
@@ -79,8 +79,8 @@ pub trait QuicInterface: Send + Sync {
     ) -> Poll<io::Result<usize>>;
 }
 
-impl dyn QuicInterface {
-    pub async fn sendmsgs(
+impl dyn QuicIO {
+    pub async fn sendmmsg(
         &self,
         mut bufs: &[io::IoSlice<'_>],
         hdr: PacketHeader,
@@ -92,7 +92,7 @@ impl dyn QuicInterface {
         Ok(())
     }
 
-    pub async fn recvmsgs<'b>(
+    pub async fn recvmmsg<'b>(
         &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
@@ -114,7 +114,7 @@ impl dyn QuicInterface {
             .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
     }
 
-    pub async fn recvpkts<'b>(
+    pub async fn recvmpkt<'b>(
         &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
@@ -126,7 +126,7 @@ impl dyn QuicInterface {
 
         let bind_addr = self.bind_addr();
         Ok(self
-            .recvmsgs(bufs, hdrs)
+            .recvmmsg(bufs, hdrs)
             .await?
             .flat_map(move |(buf, hdr)| {
                 let size = buf.len();

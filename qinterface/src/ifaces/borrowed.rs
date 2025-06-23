@@ -1,59 +1,37 @@
 use std::{
-    collections::VecDeque,
     io,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
 };
 
-use futures::Stream;
 use qbase::net::{
     address::{BindAddr, RealAddr},
     route::PacketHeader,
 };
 
 use super::QuicInterfaces;
-use crate::{
-    QuicInterface,
-    route::{Packet, Way},
-};
+use crate::QuicIO;
 
-pub struct RwInterface(RwLock<Box<dyn QuicInterface>>);
+pub struct RwInterface(RwLock<Box<dyn QuicIO>>);
 
-impl From<Box<dyn QuicInterface>> for RwInterface {
-    fn from(iface: Box<dyn QuicInterface>) -> Self {
+impl From<Box<dyn QuicIO>> for RwInterface {
+    fn from(iface: Box<dyn QuicIO>) -> Self {
         Self(RwLock::new(iface))
     }
 }
 
 impl RwInterface {
-    pub fn borrow(&self) -> RwLockReadGuard<'_, Box<dyn QuicInterface>> {
+    pub fn borrow(&self) -> RwLockReadGuard<'_, Box<dyn QuicIO>> {
         self.0.read().unwrap()
     }
 
-    pub fn update(&self, iface: Box<dyn QuicInterface>) {
+    pub fn update(&self, iface: Box<dyn QuicIO>) {
         let mut guard = self.0.write().unwrap();
         *guard = iface;
     }
-
-    pub(super) fn received_packets_stream(
-        iface: Weak<RwInterface>,
-    ) -> impl Stream<Item = (Packet, Way)> + Send {
-        futures::stream::unfold(
-            (iface, vec![], vec![], VecDeque::new()),
-            |(iface, mut bufs, mut hdrs, mut pkts)| async move {
-                loop {
-                    if let Some(rcvd) = pkts.pop_front() {
-                        return Some((rcvd, (iface, bufs, hdrs, pkts)));
-                    }
-                    let iface = iface.upgrade()? as Arc<dyn QuicInterface>;
-                    pkts.extend(iface.recvpkts(&mut bufs, &mut hdrs).await.ok()?);
-                }
-            },
-        )
-    }
 }
 
-impl QuicInterface for RwInterface {
+impl QuicIO for RwInterface {
     #[inline]
     fn bind_addr(&self) -> BindAddr {
         self.borrow().bind_addr()
@@ -95,13 +73,13 @@ impl QuicInterface for RwInterface {
     }
 }
 
-pub struct BorrowedInterface {
+pub struct QuicInterface {
     bind_addr: BindAddr,
     iface: Weak<RwInterface>,
     ifaces: Arc<QuicInterfaces>,
 }
 
-impl BorrowedInterface {
+impl QuicInterface {
     pub(super) fn new(
         bind_addr: BindAddr,
         iface: Weak<RwInterface>,
@@ -114,7 +92,7 @@ impl BorrowedInterface {
         }
     }
 
-    fn borrow<T>(&self, f: impl FnOnce(&dyn QuicInterface) -> T) -> io::Result<T> {
+    fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
         let unavailable = || {
             io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -126,7 +104,7 @@ impl BorrowedInterface {
     }
 }
 
-impl Drop for BorrowedInterface {
+impl Drop for QuicInterface {
     fn drop(&mut self) {
         self.ifaces
             .interfaces
@@ -136,7 +114,7 @@ impl Drop for BorrowedInterface {
     }
 }
 
-impl QuicInterface for BorrowedInterface {
+impl QuicIO for QuicInterface {
     #[inline]
     fn bind_addr(&self) -> BindAddr {
         self.bind_addr.clone()

@@ -6,7 +6,7 @@ pub use qconnection::{
     },
     prelude::*,
 };
-pub use qinterface::factory::ProductQuicInterface;
+pub use qinterface::factory::ProductQuicIO;
 
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},

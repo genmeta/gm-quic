@@ -5,7 +5,10 @@ use handy::UdpSocketController;
 use qbase::net::address::{AddrKind, BindAddr, IpFamily};
 use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};
-use qinterface::ifaces::{QuicInterfaces, borrowed::BorrowedInterface};
+use qinterface::{
+    factory::ProductQuicIO,
+    ifaces::{QuicInterfaces, borrowed::QuicInterface},
+};
 use rustls::{
     ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
@@ -34,11 +37,11 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<BindAddr, Arc<BorrowedInterface>>>,
+    bind_interfaces: Option<DashMap<BindAddr, Arc<QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
-    quic_iface_factory: Arc<dyn ProductQuicInterface>,
+    quic_iface_factory: Arc<dyn ProductQuicIO>,
     reuse_connection: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
@@ -230,10 +233,10 @@ impl QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindAddr, Arc<BorrowedInterface>>,
+    bind_interfaces: DashMap<BindAddr, Arc<QuicInterface>>,
     reuse_connection: bool,
     prefer_versions: Vec<u32>,
-    quic_iface_factory: Arc<dyn ProductQuicInterface>,
+    quic_iface_factory: Arc<dyn ProductQuicIO>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     tls_config: T,
@@ -250,7 +253,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
     /// and the factory is [`UdpSocketController::bind`].
-    pub fn with_iface_factory(self, factory: impl ProductQuicInterface + 'static) -> Self {
+    pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),
             ..self

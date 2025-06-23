@@ -252,7 +252,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
 
         let router_registry = self
             .router
-            .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
+            .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
         let mut clinet_params = self.foundation.client_params;
@@ -341,7 +341,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
         let router_registry = self
             .router
-            .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
+            .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
         let odcid_router_entry = self.router.insert(origin_dcid.into(), rcvd_pkt_q.clone());
 

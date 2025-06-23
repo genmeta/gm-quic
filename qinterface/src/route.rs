@@ -1,10 +1,9 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
-use futures::{Stream, StreamExt, lock::Mutex};
 pub use qbase::packet::Packet;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
@@ -20,11 +19,11 @@ use qbase::{
 use crate::queue::RcvdPacketQueue;
 pub type Way = (BindAddr, Pathway, Link);
 
-type ConnectlessPacketSink = Box<dyn FnMut(Packet, Way) + Send>;
+type ConnectlessPacketHandler = Box<dyn FnMut(Packet, Way) + Send>;
 
 pub struct Router {
     table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    unrouted: Mutex<ConnectlessPacketSink>,
+    on_unrouted: Mutex<ConnectlessPacketHandler>,
 }
 
 impl Router {
@@ -33,7 +32,7 @@ impl Router {
         GLOBAL_ROUTER.get_or_init(|| {
             Arc::new(Router {
                 table: DashMap::new(),
-                unrouted: Mutex::new(Box::new(|_, _| {})),
+                on_unrouted: Mutex::new(Box::new(|_, _| {})),
             })
         })
     }
@@ -89,31 +88,25 @@ impl Router {
 
     pub async fn deliver(&self, packet: Packet, way: Way) {
         if let Err((packet, way)) = self.try_deliver(packet, way).await {
-            (self.unrouted.lock().await)(packet, way)
+            (self.on_unrouted.lock().unwrap())(packet, way)
         }
     }
 
-    pub async fn deliver_all(&self, mut stream: impl Stream<Item = (Packet, Way)> + Unpin) {
-        while let Some((packet, way)) = stream.next().await {
-            self.deliver(packet, way).await;
-        }
-    }
-
-    pub async fn register_connectless_packet_sink<S>(&self, sink: S)
+    pub async fn on_connectless_packets<H>(&self, handler: H)
     where
-        S: FnMut(Packet, Way) + Send + 'static,
+        H: FnMut(Packet, Way) + Send + 'static,
     {
-        *self.unrouted.lock().await = Box::new(sink);
+        *self.on_unrouted.lock().unwrap() = Box::new(handler);
     }
 
-    pub fn registry<T>(
+    pub fn registry_on_issuing_scid<T>(
         self: &Arc<Self>,
-        rcvd_pkts_buf: Arc<RcvdPacketQueue>,
+        rcvd_pkts_q: Arc<RcvdPacketQueue>,
         issued_cids: T,
     ) -> RouterRegistry<T> {
         RouterRegistry {
             router: self.clone(),
-            rcvd_pkts_buf,
+            rcvd_pkts_q,
             issued_cids,
         }
     }
@@ -174,7 +167,7 @@ impl Drop for RouterEntry {
 #[derive(Clone)]
 pub struct RouterRegistry<TX> {
     router: Arc<Router>,
-    rcvd_pkts_buf: Arc<RcvdPacketQueue>,
+    rcvd_pkts_q: Arc<RcvdPacketQueue>,
     issued_cids: TX,
 }
 
@@ -192,7 +185,7 @@ where
                     return false;
                 }
 
-                entry.insert(self.rcvd_pkts_buf.clone());
+                entry.insert(self.rcvd_pkts_q.clone());
                 true
             })
             .unwrap()

@@ -2,19 +2,19 @@ use std::io;
 
 use qbase::net::address::BindAddr;
 
-use crate::QuicInterface;
+use crate::QuicIO;
 
-pub trait ProductQuicInterface: Send + Sync {
-    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicInterface>>;
+pub trait ProductQuicIO: Send + Sync {
+    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicIO>>;
 }
 
-impl<F, Q> ProductQuicInterface for F
+impl<F, Q> ProductQuicIO for F
 where
     F: Fn(BindAddr) -> io::Result<Q> + Send + Sync,
-    Q: QuicInterface + 'static,
+    Q: QuicIO + 'static,
 {
     #[inline]
-    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicInterface>> {
+    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicIO>> {
         Ok(Box::new((self)(addr)?))
     }
 }
