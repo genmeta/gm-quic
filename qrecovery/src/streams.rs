@@ -32,7 +32,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     net::tx::ArcSendWakers,
-    param::GeneralParameters,
+    param::core::Parameters,
     sid::{ControlStreamsConcurrency, Role, StreamId},
 };
 
@@ -81,11 +81,11 @@ where
     /// Creates a new instance of [`DataStreams`].
     ///
     /// The `ctrl_frames` is the frame sender, read [`raw::DataStreams`] for more details.
-    pub fn new(
+    pub fn new<LR, RR>(
         role: Role,
-        local_params: &GeneralParameters,
+        local_params: &Parameters<LR>,
         zero_rtt: bool,
-        remote_params: &GeneralParameters,
+        remote_params: &Parameters<RR>,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,

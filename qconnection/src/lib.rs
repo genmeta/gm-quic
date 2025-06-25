@@ -120,6 +120,7 @@ pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
 
 #[derive(Clone)]
 pub struct Components {
+    // TODO: delete this
     interfaces: Arc<QuicInterfaces>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
@@ -143,6 +144,13 @@ pub enum SpecificComponents {
 }
 
 impl Components {
+    pub fn role(&self) -> Role {
+        match self.specific {
+            SpecificComponents::Client { .. } => Role::Client,
+            SpecificComponents::Server { .. } => Role::Server,
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     pub fn open_bi_stream(
         &self,
@@ -213,9 +221,9 @@ impl Components {
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
             let max_datagram_frame_size = params
-                .remote()
+                .remote_ready()
                 .await?
-                .get_as::<u64>(ParameterId::MaxDatagramFrameSize)
+                .get_remote(ParameterId::MaxDatagramFrameSize)
                 .expect("unreachable: default value will be got if the value unset");
             datagrams.writer(max_datagram_frame_size)
         }
@@ -266,11 +274,11 @@ impl Components {
         let parameters = self.parameters.clone();
         let tls_handshake = self.tls_handshake.clone();
         async move {
-            if parameters.role()? == Role::Client {
-                return Ok(parameters
-                    .local()?
-                    .get(tls::CLIENT_NAME_PARAM_ID)
-                    .and_then(|cn| cn.try_into().ok()));
+            {
+                let parameters = parameters.lock_guard()?;
+                if parameters.role() == Role::Client {
+                    return Ok(parameters.get_local(ParameterId::ClientName));
+                }
             }
 
             match tls_handshake.info().await?.as_ref() {

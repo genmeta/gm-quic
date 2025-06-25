@@ -60,18 +60,18 @@ impl super::Path {
     pub fn idle_timeout(self: &Arc<Self>, parameters: ArcParameters) -> impl Future<Output = bool> {
         let this = self.clone();
         async move {
-            let (Ok(local_max_idle_timeout), Ok(remote_max_idle_timeout)) = (
-                parameters.local().map(|local| {
-                    local
-                        .get_as(ParameterId::MaxIdleTimeout)
-                        .expect("unreachable: default value will be got if the value unset")
-                }),
-                parameters.remote().await.map(|remote| {
-                    remote
-                        .get_as(ParameterId::MaxIdleTimeout)
-                        .expect("unreachable: default value will be got if the value unset")
-                }),
-            ) else {
+            let Ok((local_max_idle_timeout, remote_max_idle_timeout)) =
+                parameters.remote_ready().await.map(|parameters| {
+                    (
+                        parameters
+                            .get_local(ParameterId::MaxIdleTimeout)
+                            .expect("unreachable: default value will be got if the value unset"),
+                        parameters
+                            .get_remote(ParameterId::MaxIdleTimeout)
+                            .expect("unreachable: default value will be got if the value unset"),
+                    )
+                })
+            else {
                 // if the connection enter closing state in initial space is not idle_timeout
                 return false;
             };

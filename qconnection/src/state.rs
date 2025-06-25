@@ -66,9 +66,12 @@ impl ArcConnState {
                 socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
 
-            match components.quic_handshake.role() {
+            match components.role() {
                 qbase::sid::Role::Client => {
-                    if let Ok(local_parameters) = components.parameters.local() {
+                    let lock_guard = components.parameters.lock_guard();
+                    if let Some(local_parameters) =
+                        lock_guard.as_ref().ok().and_then(|p| p.client())
+                    {
                         qevent::event!(ParametersSet {
                             owner: Owner::Local,
                             client_parameters: local_parameters.as_ref(),
@@ -76,7 +79,10 @@ impl ArcConnState {
                     }
                 }
                 qbase::sid::Role::Server => {
-                    if let Ok(local_parameters) = components.parameters.local() {
+                    let lock_guard = components.parameters.lock_guard();
+                    if let Some(local_parameters) =
+                        lock_guard.as_ref().ok().and_then(|p| p.server())
+                    {
                         qevent::event!(ParametersSet {
                             owner: Owner::Local,
                             server_parameters: local_parameters.as_ref(),

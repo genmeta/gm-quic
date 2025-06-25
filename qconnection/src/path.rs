@@ -68,8 +68,8 @@ impl Components {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
             let max_ack_delay = self
                 .parameters
-                .local()?
-                .get_as(ParameterId::MaxAckDelay)
+                .lock_guard()?
+                .get_local(ParameterId::MaxAckDelay)
                 .expect("unreachable: default value will be got if the value unset");
 
             let do_validate = !self.conn_state.try_entry_attempted(self, link)?;

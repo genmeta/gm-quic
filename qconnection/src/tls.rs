@@ -10,12 +10,8 @@ use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
     packet::keys::{ArcKeys, ArcOneRttKeys, ArcZeroRttKeys, DirectionalKeys},
-    param::{
-        ArcParameters, ClientParameters, ParameterId, RememberedParameters, ServerParameters,
-        WriteParameters, be_client_parameters, be_server_parameters,
-    },
+    param::{ArcParameters, ClientParameters, ParameterId, ServerParameters, WriteParameters},
     util::Future,
-    varint::VarInt,
 };
 use qevent::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
@@ -36,7 +32,6 @@ pub enum TlsSession {
     Server(ServerTlsSession),
 }
 
-pub const CLIENT_NAME_PARAM_ID: ParameterId = ParameterId::Value(VarInt::from_u32(0xffee));
 pub const QUIC_VERSION: rustls::quic::Version = rustls::quic::Version::V1;
 
 impl TlsSession {
@@ -114,7 +109,7 @@ impl ClientTlsSession {
         client_params: &ClientParameters,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
-        params_buf.put_parameters(client_params.as_ref());
+        params_buf.put_parameters(client_params);
 
         let name = rustls::pki_types::ServerName::try_from(server_name.clone())
             .map_err(|e| rustls::Error::Other(rustls::OtherError(Arc::new(e))))?;
@@ -130,11 +125,10 @@ impl ClientTlsSession {
     }
 
     #[must_use]
-    pub fn remembered_parameters(&self) -> Option<RememberedParameters> {
+    pub fn remembered_parameters(&self) -> Option<ServerParameters> {
         self.tls_conn
             .quic_transport_parameters()
-            .and_then(|raw_params| be_server_parameters(raw_params).ok())
-            .map(RememberedParameters::from)
+            .and_then(|raw_params| ServerParameters::try_from_remembered_bytes(raw_params).ok())
     }
 
     pub fn load_zero_rtt_keys(&self) -> Option<DirectionalKeys> {
@@ -157,8 +151,9 @@ impl ClientTlsSession {
             .tls_conn
             .quic_transport_parameters()
             .expect("Parameters must be known at this point");
-        let remebered = parameters.remembered()?;
-        let params = be_server_parameters(raw_params)?;
+        let mut parameters = parameters.lock_guard()?;
+        let remebered = parameters.remembered().cloned();
+        let params = ServerParameters::try_from_server_bytes(raw_params)?;
         self.zero_rtt = Some(
             matches!(remebered, Some(remembered) if remembered.is_0rtt_accepted(&params))
                 && matches!(handshake_kind, rustls::HandshakeKind::Resumed),
@@ -194,7 +189,7 @@ impl ServerTlsSession {
         client_authers: ClientAuthers,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
-        params_buf.put_parameters(server_params.as_ref());
+        params_buf.put_parameters(server_params);
 
         let tls_conn = ServerConnection::new(tls_config, QUIC_VERSION, params_buf)?;
 
@@ -219,15 +214,13 @@ impl ServerTlsSession {
         parameters: &ArcParameters,
         zero_rtt_keys: &ArcZeroRttKeys,
     ) -> Result<(), Error> {
-        let client_params = be_client_parameters(
+        let client_params = ClientParameters::try_from_bytes(
             self.tls_conn
                 .quic_transport_parameters()
                 .expect("Client parameters must be present in ClientHello"),
         )?;
 
-        self.client_name = client_params
-            .get(CLIENT_NAME_PARAM_ID)
-            .and_then(|v| v.try_into().ok());
+        self.client_name = client_params.get(ParameterId::ClientName);
         self.server_name = self.tls_conn.server_name().map(|s| s.to_string());
         let host = self.server_name.as_ref().ok_or_else(|| {
             QuicError::with_default_fty(ErrorKind::ConnectionRefused, "Missing SNI in client hello")
@@ -247,7 +240,7 @@ impl ServerTlsSession {
             )));
         }
         self.send_gate.grant_permit();
-        parameters.recv_remote_params(client_params)?;
+        parameters.lock_guard()?.recv_remote_params(client_params)?;
 
         match self.tls_conn.zero_rtt_keys() {
             Some(keys) => zero_rtt_keys.set_keys(keys.into()),
@@ -404,12 +397,12 @@ impl ArcTlsHandshake {
                 if session.server_certs.is_none() {
                     session.try_process_sh();
                 }
-                if !parameters.is_remote_params_received()? {
+                if !parameters.lock_guard()?.is_remote_params_received() {
                     session.try_process_ee(parameters)?;
                 }
             }
             TlsSession::Server(session) => {
-                if !parameters.is_remote_params_received()? {
+                if !parameters.lock_guard()?.is_remote_params_received() {
                     session.try_process_ch(parameters, zero_rtt_keys)?;
                 }
                 if session.client_cert.is_none() {

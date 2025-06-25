@@ -146,10 +146,10 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
     {
         let client_params = &self.foundation.client_params;
         let init_max_bidi_streams = client_params
-            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .get(ParameterId::InitialMaxStreamsBidi)
             .expect("unreachable: default value will be got if the value unset");
         let init_max_uni_streams = client_params
-            .get_as(ParameterId::InitialMaxStreamsUni)
+            .get(ParameterId::InitialMaxStreamsUni)
             .expect("unreachable: default value will be got if the value unset");
         ConnectionFoundation {
             streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
@@ -188,10 +188,10 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
     {
         let server_params = &self.foundation.server_params;
         let init_max_bidi_streams = server_params
-            .get_as(ParameterId::InitialMaxStreamsBidi)
+            .get(ParameterId::InitialMaxStreamsBidi)
             .expect("unreachable: default value will be got if the value unset");
         let init_max_uni_streams = server_params
-            .get_as(ParameterId::InitialMaxStreamsUni)
+            .get(ParameterId::InitialMaxStreamsUni)
             .expect("unreachable: default value will be got if the value unset");
         ConnectionFoundation {
             streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
@@ -271,7 +271,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
         let (data_space, parameters) = match (self.zero_rtt, remembered_parameters, zero_rtt_keys) {
             (true, Some(remembered_parameters), Some(zero_rtt_keys)) => {
                 let data_space = DataSpace::new_zero_rtt(
-                    clinet_params.as_ref(),
+                    &clinet_params,
                     &remembered_parameters,
                     self.streams_ctrl,
                     reliable_frames.clone(),
@@ -288,7 +288,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             _ => {
                 let data_space = DataSpace::new_handshaking(
                     Role::Client,
-                    clinet_params.as_ref(),
+                    &clinet_params,
                     self.streams_ctrl,
                     reliable_frames.clone(),
                     tx_wakers.clone(),
@@ -354,11 +354,11 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             &server_params,
             self.foundation.client_authers,
         )
-        .expect("Failed to initialize TLS handshake");
+        .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理
 
         let data_space = DataSpace::new_handshaking(
             Role::Server,
-            server_params.as_ref(),
+            &server_params,
             self.streams_ctrl,
             reliable_frames.clone(),
             tx_wakers.clone(),
@@ -421,6 +421,7 @@ impl PendingConnection {
         let group_id = GroupID::from(self.origin_dcid);
         let qlog_span = self.qlogger.new_trace(self.role.into(), group_id.clone());
         let tracing_span = tracing::info_span!("connection", role = %self.role, odcid = %group_id);
+        let _span = (qlog_span.enter(), tracing_span.clone().entered());
 
         let conn_state = ArcConnState::new();
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
@@ -449,8 +450,7 @@ impl PendingConnection {
         let remote_cids = ArcRemoteCids::new(
             self.initial_dcid,
             self.parameters
-                .local()
-                .get_as(ParameterId::ActiveConnectionIdLimit)
+                .get_local(ParameterId::ActiveConnectionIdLimit)
                 .expect("unreachable: default value will be got if the value unset"),
             self.reliable_frames.clone(),
         );
@@ -458,26 +458,22 @@ impl PendingConnection {
 
         let parameters = ArcParameters::from(self.parameters);
 
-        let tls_handshake = tracing_span.in_scope(|| {
-            qlog_span.in_scope(|| {
-                ArcTlsHandshake::new(
-                    self.tls_session,
-                    parameters.clone(),
-                    quic_handshake.clone(),
-                    [
-                        spaces.initial().crypto_stream().clone(),
-                        spaces.handshake().crypto_stream().clone(),
-                        spaces.data().crypto_stream().clone(),
-                    ],
-                    (
-                        spaces.handshake().keys(),
-                        spaces.data().zero_rtt_keys(),
-                        spaces.data().one_rtt_keys(),
-                    ),
-                    event_broker.clone(),
-                )
-            })
-        });
+        let tls_handshake = ArcTlsHandshake::new(
+            self.tls_session,
+            parameters.clone(),
+            quic_handshake.clone(),
+            [
+                spaces.initial().crypto_stream().clone(),
+                spaces.handshake().crypto_stream().clone(),
+                spaces.data().crypto_stream().clone(),
+            ],
+            (
+                spaces.handshake().keys(),
+                spaces.data().zero_rtt_keys(),
+                spaces.data().one_rtt_keys(),
+            ),
+            event_broker.clone(),
+        );
 
         let paths = ArcPathContexts::new(self.tx_wakers.clone(), event_broker.clone());
 
@@ -498,12 +494,8 @@ impl PendingConnection {
             specific: self.sepcific,
         };
 
-        tracing_span.in_scope(|| {
-            qlog_span.in_scope(|| {
-                spawn_upgrade_1rtt(&components);
-                spawn_deliver_and_parse(&components);
-            })
-        });
+        spawn_upgrade_1rtt(&components);
+        spawn_deliver_and_parse(&components);
 
         Connection {
             state: Ok(components).into(),
@@ -518,6 +510,7 @@ fn spawn_upgrade_1rtt(components: &Components) {
     let data_space = components.spaces.data().clone();
     let local_cids = components.cid_registry.local.clone();
     let tls_handshake = components.tls_handshake.clone();
+    let role = components.role();
 
     let task = async move {
         let zero_rtt_rejected = tls_handshake
@@ -526,46 +519,63 @@ fn spawn_upgrade_1rtt(components: &Components) {
             .zero_rtt_accepted()
             .map(|accepted| !accepted)
             .unwrap_or(false);
+
         if zero_rtt_rejected {
-            debug_assert_eq!(parameters.role()?, Role::Client);
+            debug_assert_eq!(role, Role::Client);
             tracing::warn!("0-RTT is not accepted by the server.");
         }
 
-        let remote_parameters = parameters.remote().await?;
-        match parameters.role()? {
+        let parameters = parameters.remote_ready().await?;
+        match parameters.role() {
             Role::Client => qevent::event!(ParametersSet {
                 owner: Owner::Remote,
-                server_parameters: remote_parameters.as_ref()
+                server_parameters: parameters
+                    .server()
+                    .expect("client and server parameters has been ready"),
             }),
             Role::Server => qevent::event!(ParametersSet {
                 owner: Owner::Remote,
-                client_parameters: remote_parameters.as_ref()
+                client_parameters: parameters
+                    .client()
+                    .expect("client and server parameters has been ready"),
             }),
         }
 
         // accept InitialMaxStreamsBidi, InitialMaxStreamUni,
         // InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
-        data_space
-            .streams()
-            .revise_params(zero_rtt_rejected, remote_parameters.as_ref());
+        match parameters.role() {
+            Role::Client => data_space.streams().revise_params(
+                zero_rtt_rejected,
+                parameters
+                    .server()
+                    .expect("client and server parameters has been ready"),
+            ),
+            Role::Server => data_space.streams().revise_params(
+                zero_rtt_rejected,
+                parameters
+                    .client()
+                    .expect("client and server parameters has been ready"),
+            ),
+        };
         // accept InitialMaxData:
         data_space.flow_ctrl().sender.revise_max_data(
             zero_rtt_rejected,
-            remote_parameters
-                .get_as(ParameterId::InitialMaxData)
+            parameters
+                .get_remote(ParameterId::InitialMaxData)
                 .expect("unreachable: default value will be got if the value unset"),
         );
         // accept ActiveConnectionIdLimit
         local_cids.set_limit(
-            remote_parameters
-                .get_as(ParameterId::ActiveConnectionIdLimit)
+            parameters
+                .get_remote(ParameterId::ActiveConnectionIdLimit)
                 .expect("unreachable: default value will be got if the value unset"),
         )?;
         data_space.journal().of_rcvd_packets().revise_max_ack_delay(
-            remote_parameters
-                .get_as(ParameterId::MaxAckDelay)
+            parameters
+                .get_remote(ParameterId::MaxAckDelay)
                 .expect("unreachable: default value will be got if the value unset"),
         );
+
         // only if data space is initialized in 0rtt
         if !data_space.is_one_rtt_ready() {
             data_space.on_one_rtt_ready();
