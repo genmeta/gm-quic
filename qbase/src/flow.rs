@@ -19,7 +19,7 @@ use crate::{
 struct SendControler<TX> {
     sent_data: u64,
     max_data: u64,
-    blocking: bool,
+    flow_limited: bool,
     broker: TX,
     tx_wakers: ArcSendWakers,
 }
@@ -29,7 +29,7 @@ impl<TX> SendControler<TX> {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
-            blocking: false,
+            flow_limited: false,
             broker,
             tx_wakers,
         }
@@ -38,7 +38,7 @@ impl<TX> SendControler<TX> {
     fn increase_limit(&mut self, max_data: u64) {
         if max_data > self.max_data {
             self.max_data = max_data;
-            self.blocking = false;
+            self.flow_limited = false;
             self.tx_wakers.wake_all_by(Signals::FLOW_CONTROL);
         }
     }
@@ -53,8 +53,8 @@ impl<TX> SendControler<TX> {
     {
         self.sent_data += flow;
 
-        if self.avaliable() == 0 && !self.blocking {
-            self.blocking = true;
+        if self.avaliable() == 0 && !self.flow_limited {
+            self.flow_limited = true;
             self.broker.send_frame([DataBlockedFrame::new(
                 VarInt::from_u64(self.max_data)
                     .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
@@ -72,7 +72,7 @@ impl<TX> SendControler<TX> {
     fn revise_max_data(&mut self, zero_rtt_rejected: bool, max_data: u64) {
         if zero_rtt_rejected {
             self.max_data = 0;
-            self.blocking = false;
+            self.flow_limited = false;
         }
         self.increase_limit(max_data);
     }

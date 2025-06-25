@@ -1,466 +1,292 @@
-use std::fmt::Debug;
+use std::{collections::HashMap, marker::PhantomData, time::Duration};
 
-use derive_more::{AsRef, From, Into, TryInto};
+use bytes::Bytes;
+use derive_more::{From, TryInto, TryIntoError};
 
-use super::GeneralParameters;
-use crate::{
-    error::{ErrorKind, QuicError},
-    frame::FrameType,
-    param::{ParameterFlags, ParameterId, ParameterValue, be_parameter},
-    varint::VarInt,
-};
+use super::prefered_address::PreferredAddress;
+use crate::{cid::ConnectionId, token::ResetToken, varint::VarInt};
 
-fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> QuicError {
-    QuicError::new(
-        ErrorKind::TransportParameter,
-        FrameType::Crypto.into(),
-        format!("parameter 0x{id:x}: {ne}"),
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterType {
+    VarInt,
+    Flag,
+    Bytes,
+    Duration,
+    ResetToken,
+    ConnectionId,
+    PreferredAddress,
 }
 
-fn map_nom_error(ne: impl ToString) -> QuicError {
-    QuicError::new(
-        ErrorKind::TransportParameter,
-        FrameType::Crypto.into(),
-        ne.to_string(),
-    )
+#[derive(Debug, Clone, PartialEq, From)]
+pub enum ParameterValue {
+    Bytes(Bytes),
+    Enabled,
+    VarInt(VarInt),
+    Duration(Duration),
+    ConnectionId(ConnectionId),
+    ResetToken(ResetToken),
+    PreferredAddress(PreferredAddress),
 }
 
-fn must_exist(id: ParameterId) -> QuicError {
-    tracing::error!("   Cause by: validating parameters");
-    parameter_error(id, "must exist")
+impl From<u32> for ParameterValue {
+    fn from(value: u32) -> Self {
+        ParameterValue::VarInt(VarInt::from_u32(value))
+    }
 }
 
-#[derive(Debug, From, TryInto)]
-pub enum PeerParameters {
-    Clinet(ClientParameters),
-    Server(ServerParameters),
-}
-
-impl AsRef<GeneralParameters> for PeerParameters {
-    fn as_ref(&self) -> &GeneralParameters {
-        match self {
-            PeerParameters::Clinet(params) => &params.0,
-            PeerParameters::Server(params) => &params.0,
+impl TryFrom<ParameterValue> for Duration {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::Duration(v) => Ok(v),
+            _ => Err(TryIntoError::new(value, "Duration", "Duration")),
         }
     }
 }
 
-#[derive(Default, Debug, Clone, Into, AsRef, PartialEq)]
-pub struct ClientParameters(GeneralParameters);
+impl TryFrom<ParameterValue> for ConnectionId {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::ConnectionId(v) => Ok(v),
+            _ => Err(TryIntoError::new(value, "ConnectionId", "ConnectionId")),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for VarInt {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::VarInt(v) => Ok(v),
+            _ => Err(TryIntoError::new(value, "VarInt", "VarInt")),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for u64 {
+    type Error = <VarInt as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        VarInt::try_from(value).map(|value| value.into_inner())
+    }
+}
+
+impl TryFrom<ParameterValue> for PreferredAddress {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::PreferredAddress(v) => Ok(v),
+            _ => Err(TryIntoError::new(
+                value,
+                "PreferredAddress",
+                "PreferredAddress",
+            )),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for Bytes {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::Bytes(v) => Ok(v),
+            _ => Err(TryIntoError::new(value, "Bytes", "Bytes")),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for bool {
+    type Error = TryIntoError<ParameterValue>;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        match value {
+            ParameterValue::Enabled => Ok(true),
+            _ => Err(TryIntoError::new(value, "Enabled", "bool")),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for ResetToken {
+    type Error = TryIntoError<ParameterValue>;
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
+        match value {
+            ParameterValue::ResetToken(v) => Ok(v),
+            _ => Err(TryIntoError::new(value, "ResetToken", "ResetToken")),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for String {
+    type Error = <Bytes as TryFrom<ParameterValue>>::Error;
+
+    #[inline]
+    fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
+        Bytes::try_from(value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+#[repr(u64)]
+// qmacro::TransportParameter
+#[derive(qmacro::ParameterId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParameterId {
+    #[param(value_type = ConnectionId)]
+    OriginalDestinationConnectionId = 0x0000,
+    #[param(value_type = Duration, default = Duration::ZERO)]
+    MaxIdleTimeout = 0x0001,
+    #[param(value_type = ResetToken)]
+    StatelessResetToken = 0x0002,
+    #[param(value_type = VarInt, default = 65527u32, bound = 1200..=65527)]
+    MaxUdpPayloadSize = 0x0003,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxData = 0x0004,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxStreamDataBidiLocal = 0x0005,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxStreamDataBidiRemote = 0x0006,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxStreamDataUni = 0x0007,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxStreamsBidi = 0x0008,
+    #[param(value_type = VarInt, default = 0u32)]
+    InitialMaxStreamsUni = 0x0009,
+    #[param(value_type = VarInt, default = 3u32, bound = 0..=20)]
+    AckDelayExponent = 0x000a,
+    #[param(value_type = Duration, default = Duration::from_millis(25))]
+    MaxAckDelay = 0x000b,
+    #[param(value_type = Flag)]
+    DisableActiveMigration = 0x000c,
+    #[param(value_type = PreferredAddress)]
+    PreferredAddress = 0x000d,
+    #[param(value_type = VarInt, default = 2u32)]
+    ActiveConnectionIdLimit = 0x000e,
+    #[param(value_type = ConnectionId)]
+    InitialSourceConnectionId = 0x000f,
+    #[param(value_type = ConnectionId)]
+    RetrySourceConnectionId = 0x0010,
+    #[param(value_type = VarInt, default = 0u32)]
+    MaxDatagramFrameSize = 0x0020,
+    #[param(value_type = Flag)]
+    GreaseQuicBit = 0x2ab2,
+    /// Genemta extension parameter.
+    #[param(value_type = Bytes, default = 0u32)]
+    ClientName = 0xffee,
+}
+
+impl std::fmt::LowerHex for ParameterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", VarInt::from(*self).into_inner())
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct Parameters<Role> {
+    pub(super) map: HashMap<ParameterId, ParameterValue>,
+    _role: PhantomData<Role>,
+}
+
+impl<Role> Parameters<Role> {
+    pub fn get<V>(&self, id: ParameterId) -> Option<V>
+    where
+        V: TryFrom<ParameterValue>,
+    {
+        (self.map.get(&id).cloned().or_else(|| id.default_value()))
+            .and_then(|value| value.try_into().ok())
+    }
+
+    pub fn contains(&self, id: ParameterId) -> bool {
+        self.map.contains_key(&id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+pub mod role {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Client;
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Server;
+}
+
+pub type ClientParameters = Parameters<role::Client>;
 
 impl ClientParameters {
-    #[inline]
-    pub fn get(&self, id: ParameterId) -> Option<ParameterValue> {
-        self.0.get(id)
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    #[inline]
-    pub fn get_as<V>(&self, id: ParameterId) -> Option<V>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        self.0.get_as(id)
-    }
-
-    #[inline]
-    pub fn set<V>(&mut self, id: ParameterId, value: V) -> Result<(), QuicError>
-    where
-        V: Into<ParameterValue>,
-    {
-        if id.flags().contains(ParameterFlags::NOT_CLIENT) {
-            return Err(parameter_error(id, "not allowed in client parameters"));
+    pub fn set(&mut self, id: ParameterId, value: impl Into<ParameterValue>) -> Result<(), String> {
+        if matches!(
+            id,
+            ParameterId::OriginalDestinationConnectionId
+                | ParameterId::StatelessResetToken
+                | ParameterId::PreferredAddress
+                | ParameterId::RetrySourceConnectionId
+        ) {
+            return Err(format!(
+                "Parameter {id:?} is not allowed in client parameters",
+            ));
         }
-        self.0.set(id, value)
-    }
-
-    #[inline]
-    pub fn contains(&self, id: ParameterId) -> bool {
-        self.0.contains(id)
+        let value = value.into();
+        id.validate(&value)?;
+        self.map.insert(id, value);
+        Ok(())
     }
 }
 
-pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, QuicError> {
-    let mut params = ClientParameters::default();
-    while !input.is_empty() {
-        let (id, value);
-        (input, (id, value)) = be_parameter(input).map_err(map_nom_error)?;
-        params.set(id, value)?;
-    }
-
-    if let Some(id) = ParameterId::KNOWNS
-        .iter()
-        .filter(|id| id.flags().contains(ParameterFlags::CLIENT_REQUIRED))
-        .find(|id| !params.contains(**id))
-    {
-        return Err(must_exist(*id));
-    }
-
-    Ok(params)
-}
-
-#[derive(Default, Debug, Clone, Into, AsRef, PartialEq)]
-pub struct ServerParameters(GeneralParameters);
+pub type ServerParameters = Parameters<role::Server>;
 
 impl ServerParameters {
-    #[inline]
-    pub fn get(&self, id: ParameterId) -> Option<ParameterValue> {
-        self.0.get(id)
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    #[inline]
-    pub fn get_as<V>(&self, id: ParameterId) -> Option<V>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        self.0.get_as(id)
-    }
-
-    #[inline]
-    pub fn set<V>(&mut self, id: ParameterId, value: V) -> Result<(), QuicError>
-    where
-        V: Into<ParameterValue>,
-    {
-        if id.flags().contains(ParameterFlags::NOT_SERVER) {
-            return Err(parameter_error(id, "not allowed in client parameters"));
+    pub fn set(&mut self, id: ParameterId, value: impl Into<ParameterValue>) -> Result<(), String> {
+        if matches!(id, ParameterId::ClientName) {
+            return Err(format!(
+                "Parameter {id:?} is not allowed in server parameters",
+            ));
         }
-        self.0.set(id, value)
+        let value = value.into();
+        id.validate(&value)?;
+        self.map.insert(id, value);
+        Ok(())
     }
 
     #[inline]
-    pub fn contains(&self, id: ParameterId) -> bool {
-        self.0.contains(id)
-    }
-}
-
-pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, QuicError> {
-    let mut params = ServerParameters::default();
-    while !input.is_empty() {
-        let (id, value);
-        (input, (id, value)) = be_parameter(input).map_err(map_nom_error)?;
-        params.set(id, value)?;
-    }
-
-    if let Some(id) = ParameterId::KNOWNS
-        .iter()
-        .filter(|id| id.flags().contains(ParameterFlags::SERVER_REQUIRED))
-        .find(|id| !params.contains(**id))
-    {
-        return Err(must_exist(*id));
-    }
-
-    Ok(params)
-}
-
-#[derive(Debug, Into, AsRef)]
-pub struct RememberedParameters(GeneralParameters);
-
-impl RememberedParameters {
-    #[inline]
-    pub fn get(&self, id: ParameterId) -> Option<ParameterValue> {
-        if id.flags().contains(ParameterFlags::NOT_RESUME) {
-            return id.default_value();
-        }
-        self.0.get(id)
-    }
-
-    #[inline]
-    pub fn get_as<V>(&self, id: ParameterId) -> Option<V>
-    where
-        V: TryFrom<ParameterValue>,
-        <V as TryFrom<ParameterValue>>::Error: Debug,
-    {
-        self.get(id).map(|v| v.try_into().expect("type mismatch"))
-    }
-
-    #[inline]
-    pub fn contains(&self, id: ParameterId) -> bool {
-        self.0.contains(id)
-    }
-
     pub fn is_0rtt_accepted(&self, server_params: &ServerParameters) -> bool {
-        ParameterId::KNOWNS
-            .iter()
-            .filter(|id| id.flags().contains(ParameterFlags::NOT_REDUCE))
-            .all(|&id| {
-                match (
-                    self.get_as::<VarInt>(id),
-                    server_params.get_as::<VarInt>(id),
-                ) {
-                    (Some(old_value), Some(new_value)) => old_value <= new_value,
-                    _ => unreachable!("NOT_REDUCE parameters have default values"),
-                }
-            })
+        [
+            ParameterId::InitialMaxData,
+            ParameterId::InitialMaxStreamDataBidiLocal,
+            ParameterId::InitialMaxStreamDataBidiRemote,
+            ParameterId::InitialMaxStreamDataUni,
+            ParameterId::InitialMaxStreamsBidi,
+            ParameterId::InitialMaxStreamsUni,
+            ParameterId::ActiveConnectionIdLimit,
+            ParameterId::MaxDatagramFrameSize,
+        ]
+        .into_iter()
+        .all(
+            |id| match (self.get::<VarInt>(id), server_params.get::<VarInt>(id)) {
+                (Some(old_value), Some(new_value)) => old_value <= new_value,
+                _ => unreachable!("Expected VarInt values for 0-RTT acceptance check"),
+            },
+        )
     }
 }
 
-impl From<ServerParameters> for RememberedParameters {
-    fn from(value: ServerParameters) -> Self {
-        RememberedParameters(value.0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-    use crate::{cid::ConnectionId, param::PreferredAddress, token::ResetToken, varint::VarInt};
-
-    #[test]
-    fn test_client_parameters_default() {
-        let params = ClientParameters::default();
-        assert_eq!(
-            params
-                .get_as::<Duration>(ParameterId::MaxIdleTimeout)
-                .unwrap(),
-            Duration::ZERO
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::MaxUdpPayloadSize)
-                .unwrap()
-                .into_inner(),
-            65527
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::MaxDatagramFrameSize)
-                .unwrap_or_default()
-                .into_inner(),
-            0
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::AckDelayExponent)
-                .unwrap_or_default()
-                .into_inner(),
-            3
-        );
-        assert_eq!(
-            params
-                .get_as::<Duration>(ParameterId::MaxAckDelay)
-                .unwrap_or_default()
-                .as_millis(),
-            25
-        );
-        assert!(
-            !params
-                .get_as::<bool>(ParameterId::DisableActiveMigration)
-                .unwrap_or_default()
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::ActiveConnectionIdLimit)
-                .unwrap_or_default()
-                .into_inner(),
-            2
-        );
-    }
-
-    #[test]
-    fn test_client_parameters_setters() {
-        let mut params = ClientParameters::default();
-        params
-            .set(ParameterId::MaxUdpPayloadSize, VarInt::from_u32(1500))
-            .unwrap();
-        params
-            .set(ParameterId::AckDelayExponent, VarInt::from_u32(10))
-            .unwrap();
-        params
-            .set(ParameterId::MaxAckDelay, Duration::from_millis(100))
-            .unwrap();
-        params
-            .set(ParameterId::ActiveConnectionIdLimit, VarInt::from_u32(4))
-            .unwrap();
-        params
-            .set(ParameterId::InitialMaxStreamsBidi, VarInt::from_u32(100))
-            .unwrap();
-        params
-            .set(ParameterId::InitialMaxStreamsUni, VarInt::from_u32(50))
-            .unwrap();
-
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::MaxUdpPayloadSize)
-                .unwrap()
-                .into_inner(),
-            1500
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::AckDelayExponent)
-                .unwrap()
-                .into_inner(),
-            10
-        );
-        assert_eq!(
-            params
-                .get_as::<Duration>(ParameterId::MaxAckDelay)
-                .unwrap()
-                .as_millis(),
-            100
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::ActiveConnectionIdLimit)
-                .unwrap()
-                .into_inner(),
-            4
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsBidi)
-                .unwrap()
-                .into_inner(),
-            100
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsUni)
-                .unwrap()
-                .into_inner(),
-            50
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "Invalid parameter value: out of bound 1200..=65527")]
-    fn test_invalid_max_udp_payload_size() {
-        let mut params = ClientParameters::default();
-        params
-            .set(ParameterId::MaxUdpPayloadSize, VarInt::from_u32(1000))
-            .unwrap();
-    }
-
-    #[test]
-    #[should_panic(expected = "Invalid parameter value: out of bound 0..=20")]
-    fn test_invalid_ack_delay_exponent() {
-        let mut params = ClientParameters::default();
-        params
-            .set(ParameterId::AckDelayExponent, VarInt::from_u32(30))
-            .unwrap();
-    }
-
-    #[test]
-    fn test_server_parameters() {
-        let mut params = ServerParameters::default();
-        let origin_dcid = ConnectionId::from_slice("origin_dcid".as_bytes());
-        let retry_scid = ConnectionId::from_slice("retry_scid".as_bytes());
-        let token = ResetToken::default();
-        let prefered_addr = PreferredAddress::new(
-            "127.0.0.1:8080".parse().unwrap(),
-            "[::1]:8081".parse().unwrap(),
-            ConnectionId::from_slice(&[1, 2, 3, 4]),
-            ResetToken::new(&[0; 16]),
-        );
-
-        // params.set_original_destination_connection_id(origin_dcid);
-        // params.set_retry_source_connection_id(retry_scid);
-        // params.set_statelss_reset_token(token);
-        // params.set_preferred_address(prefered_addr);
-        params
-            .set(ParameterId::OriginalDestinationConnectionId, origin_dcid)
-            .unwrap();
-        params
-            .set(ParameterId::RetrySourceConnectionId, retry_scid)
-            .unwrap();
-        params.set(ParameterId::StatelessResetToken, token).unwrap();
-        params
-            .set(ParameterId::PreferredAddress, prefered_addr)
-            .unwrap();
-
-        assert_eq!(
-            params
-                .get_as::<ConnectionId>(ParameterId::OriginalDestinationConnectionId)
-                .unwrap(),
-            origin_dcid
-        );
-        assert_eq!(
-            params
-                .get_as::<ConnectionId>(ParameterId::RetrySourceConnectionId)
-                .unwrap(),
-            retry_scid
-        );
-        assert_eq!(
-            params
-                .get_as::<ResetToken>(ParameterId::StatelessResetToken)
-                .unwrap(),
-            token
-        );
-        assert_eq!(
-            params
-                .get_as::<PreferredAddress>(ParameterId::PreferredAddress)
-                .unwrap(),
-            prefered_addr
-        );
-    }
-
-    #[test]
-    fn test_parse_server_parameters() {
-        let input = &[
-            1, 1, 0, // max_idle_timeout
-            3, 4, 128, 0, 255, 247, // max_udp_payload_size
-            4, 1, 0, // initial_max_data
-            5, 1, 0, // initial_max_stream_data_bidi_local
-            6, 1, 0, // initial_max_stream_data_bidi_remote
-            7, 1, 0, // initial_max_stream_data_uni
-            8, 1, 8, // initial_max_streams_bidi
-            9, 1, 2, // initial_max_streams_uni
-            10, 1, 3, // ack_delay_exponent
-            11, 1, 25, // max_ack_delay
-            14, 1, 2, // active_connection_id_limit
-            15, 0, // initial_source_connection_id
-            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
-            0, 0, // original_destination_connection_id
-        ];
-        let params = be_server_parameters(input).unwrap();
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsBidi)
-                .unwrap()
-                .into_inner(),
-            8
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::InitialMaxStreamsUni)
-                .unwrap()
-                .into_inner(),
-            2
-        );
-    }
-
-    #[test]
-    fn test_parse_client_parameters() {
-        let empty_input = &[
-            1, 1, 0, // max_idle_timeout
-            3, 4, 128, 0, 255, 247, // max_udp_payload_size
-            4, 1, 0, // initial_max_data
-            5, 1, 0, // initial_max_stream_data_bidi_local
-            6, 1, 0, // initial_max_stream_data_bidi_remote
-            7, 1, 0, // initial_max_stream_data_uni
-            8, 1, 0, // initial_max_streams_bidi
-            9, 1, 0, // initial_max_streams_uni
-            10, 1, 3, // ack_delay_exponent
-            11, 1, 60, // max_ack_delay
-            14, 1, 10, // active_connection_id_limit
-            15, 0, // initial_source_connection_id
-            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
-        ];
-        let params = be_client_parameters(empty_input).unwrap();
-        assert_eq!(
-            params.get_as::<Duration>(ParameterId::MaxAckDelay).unwrap(),
-            Duration::from_millis(60)
-        );
-        assert_eq!(
-            params
-                .get_as::<VarInt>(ParameterId::ActiveConnectionIdLimit)
-                .unwrap()
-                .into_inner(),
-            10
-        );
-    }
+#[derive(Debug, Clone, PartialEq, From, TryInto)]
+pub enum PeerParameters {
+    Client(ClientParameters),
+    Server(ServerParameters),
 }

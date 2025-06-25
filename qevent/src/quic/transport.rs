@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use derive_builder::Builder;
 use derive_more::From;
-use qbase::param::{GeneralParameters, ParameterId, RememberedParameters};
+use qbase::param::{ClientParameters, ParameterId, ServerParameters};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -183,19 +183,19 @@ macro_rules! extract_parameter {
     };
     (@one $id:ident as $as:ident .map($($tt:tt)*) from $set:ident to $this:ident.$field:ident) => {
         $this.$field = $this.$field.take().or_else(|| {
-            Some($set.get_as::<$as>(ParameterId::$id).map($($tt)*))
+            Some($set.get::<$as>(ParameterId::$id).map($($tt)*))
         });
     };
     (@one $id:ident as $as:ident from $set:ident to $this:ident.$field:ident) => {
         $this.$field = $this.$field.take().or_else(|| {
-            Some($set.get_as::<$as>(ParameterId::$id).map(Into::into))
+            Some($set.get::<$as>(ParameterId::$id).map(Into::into))
         });
     };
 }
 
 impl ParametersSetBuilder {
     /// helper method to set all client parameters at once
-    pub fn client_parameters(&mut self, params: &GeneralParameters) -> &mut Self {
+    pub fn client_parameters(&mut self, params: &ClientParameters) -> &mut Self {
         use qbase::cid::ConnectionId;
         extract_parameter! {
             InitialSourceConnectionId as ConnectionId from params to self.initial_source_connection_id,
@@ -218,8 +218,10 @@ impl ParametersSetBuilder {
     }
 
     /// helper method to set all server parameters at once
-    pub fn server_parameters(&mut self, params: &GeneralParameters) -> &mut Self {
-        use qbase::{cid::ConnectionId, param::PreferredAddress, token::ResetToken};
+    pub fn server_parameters(&mut self, params: &ServerParameters) -> &mut Self {
+        use qbase::{
+            cid::ConnectionId, param::prefered_address::PreferredAddress, token::ResetToken,
+        };
         extract_parameter! {
             OriginalDestinationConnectionId as ConnectionId from params to self.original_destination_connection_id,
             InitialSourceConnectionId as ConnectionId from params to self.initial_source_connection_id,
@@ -256,8 +258,8 @@ pub struct PreferredAddress {
     stateless_reset_token: StatelessResetToken,
 }
 
-impl From<qbase::param::PreferredAddress> for PreferredAddress {
-    fn from(pa: qbase::param::PreferredAddress) -> Self {
+impl From<qbase::param::prefered_address::PreferredAddress> for PreferredAddress {
+    fn from(pa: qbase::param::prefered_address::PreferredAddress) -> Self {
         crate::build!(Self {
             ip_v4: pa.address_v4().ip().to_string(),
             ip_v6: pa.address_v6().ip().to_string(),
@@ -321,7 +323,7 @@ pub struct ParametersRestored {
 
 impl ParametersRestoredBuilder {
     /// helper method to set all client parameters at once
-    pub fn client_parameters(&mut self, params: &RememberedParameters) -> &mut Self {
+    pub fn client_parameters(&mut self, params: &ServerParameters) -> &mut Self {
         extract_parameter! {
             DisableActiveMigration as bool from params to self.disable_active_migration,
             MaxIdleTimeout as Duration.map(|d| d.as_millis() as _) from params to self.max_idle_timeout,

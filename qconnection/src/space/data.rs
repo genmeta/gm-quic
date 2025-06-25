@@ -28,7 +28,7 @@ use qbase::{
         signal::SpinBit,
         r#type::Type,
     },
-    param::{GeneralParameters, ParameterId, RememberedParameters},
+    param::{ClientParameters, ParameterId, ServerParameters, core::Parameters},
     sid::{ControlStreamsConcurrency, Role},
     util::{BoundQueue, Future},
 };
@@ -81,8 +81,8 @@ pub struct DataSpace {
 
 impl DataSpace {
     pub fn new_zero_rtt(
-        local_params: &GeneralParameters,
-        remembered_params: &RememberedParameters,
+        local_params: &ClientParameters,
+        remembered_params: &ServerParameters,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         reliable_frames: ArcReliableFrameDeque,
         tx_wakers: ArcSendWakers,
@@ -94,10 +94,10 @@ impl DataSpace {
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
             flow_ctrl: FlowController::new(
                 remembered_params
-                    .get_as(ParameterId::InitialMaxData)
+                    .get(ParameterId::InitialMaxData)
                     .expect("unreachable: default value will be got if the value unset"),
                 local_params
-                    .get_as(ParameterId::InitialMaxData)
+                    .get(ParameterId::InitialMaxData)
                     .expect("unreachable: default value will be got if the value unset"),
                 reliable_frames.clone(),
                 tx_wakers.clone(),
@@ -106,7 +106,7 @@ impl DataSpace {
                 Role::Client,
                 local_params,
                 true,
-                remembered_params.as_ref(),
+                remembered_params,
                 streams_ctrl,
                 reliable_frames.clone(),
                 tx_wakers.clone(),
@@ -114,7 +114,7 @@ impl DataSpace {
             #[cfg(feature = "unreliable")]
             datagrams: DatagramFlow::new(
                 local_params
-                    .get_as(ParameterId::MaxDatagramFrameSize)
+                    .get(ParameterId::MaxDatagramFrameSize)
                     .expect("unreachable: default value will be got if the value unset"),
                 tx_wakers.clone(),
             ),
@@ -126,15 +126,15 @@ impl DataSpace {
         }
     }
 
-    pub fn new_handshaking(
+    pub fn new_handshaking<R>(
         role: Role,
-        local_params: &GeneralParameters,
+        local_params: &Parameters<R>,
         // remote_params: &GeneralParameters,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         reliable_frames: ArcReliableFrameDeque,
         tx_wakers: ArcSendWakers,
     ) -> Self {
-        let remote_params = GeneralParameters::default();
+        let remote_params = ClientParameters::default();
         Self {
             zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
@@ -142,10 +142,10 @@ impl DataSpace {
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
             flow_ctrl: FlowController::new(
                 remote_params
-                    .get_as(ParameterId::InitialMaxData)
+                    .get(ParameterId::InitialMaxData)
                     .expect("unreachable: default value will be got if the value unset"),
                 local_params
-                    .get_as(ParameterId::InitialMaxData)
+                    .get(ParameterId::InitialMaxData)
                     .expect("unreachable: default value will be got if the value unset"),
                 reliable_frames.clone(),
                 tx_wakers.clone(),
@@ -162,7 +162,7 @@ impl DataSpace {
             #[cfg(feature = "unreliable")]
             datagrams: DatagramFlow::new(
                 local_params
-                    .get_as(ParameterId::MaxDatagramFrameSize)
+                    .get(ParameterId::MaxDatagramFrameSize)
                     .expect("unreachable: default value will be got if the value unset"),
                 tx_wakers.clone(),
             ),
