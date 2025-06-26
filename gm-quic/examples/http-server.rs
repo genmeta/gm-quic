@@ -7,6 +7,7 @@ use tokio::{
     fs,
     io::{self, AsyncReadExt, AsyncWriteExt},
 };
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -73,9 +74,19 @@ struct Certs {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        // .with(console_subscriber::spawn())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
+        )
         .init();
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         // default value 512 out of macos ulimit
