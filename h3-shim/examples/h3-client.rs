@@ -13,6 +13,7 @@ use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     task::JoinSet,
 };
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Clone)]
 struct Options {
@@ -83,9 +84,25 @@ struct Options {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let options = Options::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_ansi(options.ansi)
+    tracing_subscriber::registry()
+        // .with(
+        //     console_subscriber::ConsoleLayer::builder()
+        //         .server_addr("127.0.0.1:6670".parse::<SocketAddr>().unwrap())
+        //         .spawn(),
+        // )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(options.ansi)
+                .with_writer(std::io::stderr)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(match options.progress {
+                            true => tracing::level_filters::LevelFilter::OFF.into(),
+                            false => tracing::level_filters::LevelFilter::INFO.into(),
+                        })
+                        .from_env_lossy(),
+                ),
+        )
         .init();
     if let Err(error) = run(options).await {
         tracing::error!(?error);

@@ -5,9 +5,7 @@ use gm_quic::{handy::*, *};
 use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;
-use tracing_subscriber::{
-    Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -60,7 +58,12 @@ async fn main() {
         // .with(console_subscriber::spawn())
         .with(
             tracing_subscriber::fmt::layer()
-                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+                .with_writer(std::io::stderr)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .init();
 

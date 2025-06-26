@@ -7,9 +7,8 @@ use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing_subscriber::{
-    Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
-};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 #[derive(Parser, Debug)]
 #[command(name = "server")]
@@ -80,10 +79,16 @@ fn main() {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
-                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
-                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+                .with_filter(
+                    EnvFilter::builder()
+                        .with_default_directive(LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .init();
+
+    // 测试日志是否工作
+    tracing::info!("Tracing initialized successfully");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
