@@ -158,6 +158,7 @@ impl Components {
     {
         let data_space = self.spaces.data().clone();
         let terminated = self.conn_state.terminated();
+        let parameters = self.parameters.clone();
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
@@ -165,7 +166,7 @@ impl Components {
                     _ = terminated => {}
                 }
             }
-            data_space.streams().open_bi().await
+            data_space.streams().open_bi(&parameters).await
         }
         .instrument_in_current()
         .in_current_span()
@@ -176,6 +177,7 @@ impl Components {
     ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
         let data_space = self.spaces.data().clone();
         let terminated = self.conn_state.terminated();
+        let parameters = self.parameters.clone();
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
@@ -183,7 +185,7 @@ impl Components {
                     _ = terminated => {}
                 }
             }
-            data_space.streams().open_uni().await
+            data_space.streams().open_uni(&parameters).await
         }
         .instrument_in_current()
         .in_current_span()
@@ -194,7 +196,8 @@ impl Components {
         &self,
     ) -> impl Future<Output = Result<(StreamId, (StreamReader, StreamWriter)), Error>> + Send {
         let streams = self.spaces.data().streams().clone();
-        async move { streams.accept_bi().await }
+        let parameters = self.parameters.clone();
+        async move { streams.accept_bi(&parameters).await }
             .instrument_in_current()
             .in_current_span()
     }
