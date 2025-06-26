@@ -28,7 +28,7 @@ use qbase::{
         signal::SpinBit,
         r#type::Type,
     },
-    param::{ClientParameters, ParameterId, ServerParameters, core::Parameters},
+    param::{ParameterId, ServerParameters, core::Parameters},
     sid::{ControlStreamsConcurrency, Role},
     util::{BoundQueue, Future},
 };
@@ -80,61 +80,27 @@ pub struct DataSpace {
 }
 
 impl DataSpace {
-    pub fn new_zero_rtt(
-        local_params: &ClientParameters,
-        remembered_params: &ServerParameters,
-        streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-        reliable_frames: ArcReliableFrameDeque,
-        tx_wakers: ArcSendWakers,
-    ) -> Self {
-        Self {
-            zero_rtt_keys: ArcZeroRttKeys::new_pending(Role::Client),
-            one_rtt_keys: ArcOneRttKeys::new_pending(),
-            // max_ack_delay: NOT_RESUME
-            crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
-            flow_ctrl: FlowController::new(
-                remembered_params
-                    .get(ParameterId::InitialMaxData)
-                    .expect("unreachable: default value will be got if the value unset"),
-                local_params
-                    .get(ParameterId::InitialMaxData)
-                    .expect("unreachable: default value will be got if the value unset"),
-                reliable_frames.clone(),
-                tx_wakers.clone(),
-            ),
-            streams: DataStreams::new(
-                Role::Client,
-                local_params,
-                true,
-                remembered_params,
-                streams_ctrl,
-                reliable_frames.clone(),
-                tx_wakers.clone(),
-            ),
-            #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(
-                local_params
-                    .get(ParameterId::MaxDatagramFrameSize)
-                    .expect("unreachable: default value will be got if the value unset"),
-                tx_wakers.clone(),
-            ),
-            journal: DataJournal::with_capacity(16, None),
-            reliable_frames: reliable_frames.clone(),
-            tx_wakers,
-
-            one_rtt_ready: Future::new(),
-        }
-    }
-
-    pub fn new_handshaking<R>(
+    pub fn new<LR>(
         role: Role,
-        local_params: &Parameters<R>,
-        // remote_params: &GeneralParameters,
+        local_params: &Parameters<LR>,
+        remembered_params: Option<&ServerParameters>,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         reliable_frames: ArcReliableFrameDeque,
         tx_wakers: ArcSendWakers,
     ) -> Self {
-        let remote_params = ClientParameters::default();
+        let default_parameters = ServerParameters::default();
+        let remote_params = match remembered_params {
+            Some(remembered_params) => {
+                debug_assert_ne!(
+                    role,
+                    Role::Client,
+                    "server should never create 0rtt data space"
+                );
+                remembered_params
+            }
+            None => &default_parameters,
+        };
+
         Self {
             zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
@@ -154,7 +120,7 @@ impl DataSpace {
                 role,
                 local_params,
                 false,
-                &remote_params,
+                remote_params,
                 streams_ctrl,
                 reliable_frames.clone(),
                 tx_wakers.clone(),

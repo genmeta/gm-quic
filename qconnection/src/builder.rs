@@ -115,7 +115,6 @@ pub struct ConnectionFoundation<Foundation, TlsConfig> {
     ifaces: Arc<QuicInterfaces>,
     router: Arc<Router>,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-    zero_rtt: bool,
     defer_idle_timeout: HeartbeatConfig,
 }
 
@@ -133,7 +132,6 @@ impl ClientFoundation {
             ifaces: QuicInterfaces::global().clone(),
             router: Router::global().clone(),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
-            zero_rtt: false,
             defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
@@ -159,7 +157,6 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
 
     pub fn with_zero_rtt(mut self, enabled: bool) -> Self {
         self.tls_config.enable_early_data = enabled;
-        self.zero_rtt = enabled;
         self
     }
 }
@@ -175,7 +172,6 @@ impl ServerFoundation {
             ifaces: QuicInterfaces::global().clone(),
             router: Router::global().clone(),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
-            zero_rtt: false,
             defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
@@ -204,7 +200,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             true => self.tls_config.max_early_data_size = 0xffffffff,
             false => self.tls_config.max_early_data_size = 0,
         }
-        self.zero_rtt = enabled;
         self
     }
 }
@@ -265,14 +260,13 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
         )
         .expect("Failed to initialize TLS handshake");
 
-        let remembered_parameters = tls_session.remembered_parameters();
-        let zero_rtt_keys = tls_session.load_zero_rtt_keys();
         // if zero rtt enabled && loadede remembered parameters && zero rtt keys is available
-        let (data_space, parameters) = match (self.zero_rtt, remembered_parameters, zero_rtt_keys) {
-            (true, Some(remembered_parameters), Some(zero_rtt_keys)) => {
-                let data_space = DataSpace::new_zero_rtt(
+        let (data_space, parameters) = match tls_session.load_zero_rtt() {
+            Some((remembered_parameters, zero_rtt_keys)) => {
+                let data_space = DataSpace::new(
+                    Role::Client,
                     &clinet_params,
-                    &remembered_parameters,
+                    Some(&remembered_parameters),
                     self.streams_ctrl,
                     reliable_frames.clone(),
                     tx_wakers.clone(),
@@ -285,10 +279,11 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
                     Parameters::new_client(clinet_params, Some(remembered_parameters), origin_dcid);
                 (data_space, parameters)
             }
-            _ => {
-                let data_space = DataSpace::new_handshaking(
+            None => {
+                let data_space = DataSpace::new(
                     Role::Client,
                     &clinet_params,
+                    None,
                     self.streams_ctrl,
                     reliable_frames.clone(),
                     tx_wakers.clone(),
@@ -356,9 +351,10 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
         )
         .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理
 
-        let data_space = DataSpace::new_handshaking(
+        let data_space = DataSpace::new(
             Role::Server,
             &server_params,
+            None,
             self.streams_ctrl,
             reliable_frames.clone(),
             tx_wakers.clone(),

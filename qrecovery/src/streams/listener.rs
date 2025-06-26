@@ -3,12 +3,13 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, Waker, ready},
 };
 
 use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamFrame, SendFrame},
+    param::{ArcParameters, ParameterId},
     sid::StreamId,
 };
 
@@ -55,9 +56,20 @@ impl<TX> Listener<TX> {
     fn poll_accept_bi_stream(
         &mut self,
         cx: &mut Context<'_>,
+        arc_params: &ArcParameters,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
-        if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
-            Poll::Ready(Ok((sid, (Reader::new(recever), Writer::new(sender)))))
+        let mut params = arc_params.lock_guard()?;
+        let snd_buf_size = match params.get_remote(ParameterId::InitialMaxStreamDataBidiLocal) {
+            Some(value) => value,
+            None => {
+                ready!(params.poll_ready(cx));
+                return self.poll_accept_bi_stream(cx, arc_params);
+            }
+        };
+        if let Some((sid, (recver, sender))) = self.bi_streams.pop_front() {
+            sender.update_window(snd_buf_size);
+            // recver.update_window(rcv_buf_size);
+            Poll::Ready(Ok((sid, (Reader::new(recver), Writer::new(sender)))))
         } else {
             self.bi_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -68,8 +80,9 @@ impl<TX> Listener<TX> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(StreamId, Reader<TX>), QuicError>> {
-        if let Some((sid, reader)) = self.uni_streams.pop_front() {
-            Poll::Ready(Ok((sid, Reader::new(reader))))
+        if let Some((sid, recver)) = self.uni_streams.pop_front() {
+            // recver.update_window(rcv_buf_size);
+            Poll::Ready(Ok((sid, Reader::new(recver))))
         } else {
             self.uni_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -93,21 +106,25 @@ impl<TX> ArcListener<TX> {
         }
     }
 
-    pub fn accept_bi_stream(&self) -> AcceptBiStream<'_, TX> {
-        AcceptBiStream { inner: self }
+    pub fn accept_bi_stream<'a>(&'a self, params: &'a ArcParameters) -> AcceptBiStream<'a, TX> {
+        AcceptBiStream {
+            listener: self,
+            params,
+        }
     }
 
-    pub fn accept_uni_stream(&'_ self) -> AcceptUniStream<'_, TX> {
-        AcceptUniStream { inner: self }
+    pub fn accept_uni_stream(&self) -> AcceptUniStream<'_, TX> {
+        AcceptUniStream { listener: self }
     }
 
     #[allow(clippy::type_complexity)]
     pub fn poll_accept_bi_stream(
         &self,
         cx: &mut Context<'_>,
+        arc_params: &ArcParameters,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         match self.0.lock().unwrap().as_mut() {
-            Ok(set) => set.poll_accept_bi_stream(cx),
+            Ok(set) => set.poll_accept_bi_stream(cx, arc_params),
             Err(e) => Poll::Ready(Err(e.clone())),
         }
     }
@@ -168,8 +185,9 @@ where
 /// When the peer created a new bidirectional stream, the future will resolve with a [`Reader`] and
 /// a [`Writer`] to read and write data on the stream.
 #[derive(Debug, Clone)]
-pub struct AcceptBiStream<'l, TX> {
-    inner: &'l ArcListener<TX>,
+pub struct AcceptBiStream<'a, TX> {
+    listener: &'a ArcListener<TX>,
+    params: &'a ArcParameters,
 }
 
 impl<TX> Future for AcceptBiStream<'_, TX>
@@ -179,7 +197,7 @@ where
     type Output = Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_accept_bi_stream(cx)
+        self.listener.poll_accept_bi_stream(cx, self.params)
     }
 }
 
@@ -191,7 +209,7 @@ where
 /// read data on the stream.
 #[derive(Debug, Clone)]
 pub struct AcceptUniStream<'l, TX> {
-    inner: &'l ArcListener<TX>,
+    listener: &'l ArcListener<TX>,
 }
 
 impl<TX> Future for AcceptUniStream<'_, TX>
@@ -201,6 +219,6 @@ where
     type Output = Result<(StreamId, Reader<TX>), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_accept_uni_stream(cx)
+        self.listener.poll_accept_uni_stream(cx)
     }
 }

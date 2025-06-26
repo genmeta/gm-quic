@@ -196,7 +196,7 @@ impl Parameters {
     //     self.server.set_retry_source_connection_id(cid);
     // }
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.state == Self::CLIENT_READY | Self::SERVER_READY {
             Poll::Ready(())
         } else {

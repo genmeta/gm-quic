@@ -125,14 +125,17 @@ impl ClientTlsSession {
     }
 
     #[must_use]
-    pub fn remembered_parameters(&self) -> Option<ServerParameters> {
-        self.tls_conn
-            .quic_transport_parameters()
-            .and_then(|raw_params| ServerParameters::try_from_remembered_bytes(raw_params).ok())
-    }
-
-    pub fn load_zero_rtt_keys(&self) -> Option<DirectionalKeys> {
-        self.tls_conn.zero_rtt_keys().map(Into::into)
+    pub fn load_zero_rtt(&self) -> Option<(ServerParameters, DirectionalKeys)> {
+        match (
+            self.tls_conn.quic_transport_parameters(),
+            self.tls_conn.zero_rtt_keys(),
+        ) {
+            (Some(raw_params), Some(keys)) => {
+                let params = ServerParameters::try_from_server_bytes(raw_params).ok()?;
+                Some((params, keys.into()))
+            }
+            _ => None,
+        }
     }
 
     fn try_process_sh(&mut self) {

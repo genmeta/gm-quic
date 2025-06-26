@@ -32,7 +32,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     net::tx::ArcSendWakers,
-    param::core::Parameters,
+    param::{ArcParameters, core::Parameters},
     sid::{ControlStreamsConcurrency, Role, StreamId},
 };
 
@@ -103,20 +103,26 @@ where
 
     /// Create a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_bi(&self) -> OpenBiStream<'_, TX> {
-        OpenBiStream { inner: self }
+    pub fn open_bi<'a>(&'a self, params: &'a ArcParameters) -> OpenBiStream<'a, TX> {
+        OpenBiStream {
+            streams: self,
+            params,
+        }
     }
 
     /// Create a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_uni(&self) -> OpenUniStream<'_, TX> {
-        OpenUniStream { inner: self }
+    pub fn open_uni<'a>(&'a self, params: &'a ArcParameters) -> OpenUniStream<'a, TX> {
+        OpenUniStream {
+            streams: self,
+            params,
+        }
     }
 
     /// accept a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_bi(&self) -> AcceptBiStream<'_, Ext<TX>> {
-        self.0.accept_bi()
+    pub fn accept_bi<'a>(&'a self, params: &'a ArcParameters) -> AcceptBiStream<'a, Ext<TX>> {
+        self.0.accept_bi(params)
     }
 
     /// accept a unidirectional stream, see the method of the same name on `QuicConnection` for more.
@@ -161,7 +167,8 @@ pub struct OpenBiStream<'d, TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d raw::DataStreams<TX>,
+    streams: &'d raw::DataStreams<TX>,
+    params: &'d ArcParameters,
 }
 
 impl<TX> Future for OpenBiStream<'_, TX>
@@ -171,7 +178,7 @@ where
     type Output = Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_open_bi_stream(cx)
+        self.streams.poll_open_bi_stream(cx, self.params)
     }
 }
 
@@ -183,11 +190,12 @@ where
 /// If a connection error occurred, the future will return an error.
 ///
 /// Note that the peer will not be aware of this stream until we send a frame on this stream.
-pub struct OpenUniStream<'d, TX>
+pub struct OpenUniStream<'a, TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d raw::DataStreams<TX>,
+    streams: &'a raw::DataStreams<TX>,
+    params: &'a ArcParameters,
 }
 
 impl<TX> Future for OpenUniStream<'_, TX>
@@ -197,6 +205,6 @@ where
     type Output = Result<Option<(StreamId, Writer<Ext<TX>>)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_open_uni_stream(cx)
+        self.streams.poll_open_uni_stream(cx, self.params)
     }
 }
