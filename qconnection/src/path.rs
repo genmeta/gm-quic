@@ -97,7 +97,7 @@ impl Components {
             }
 
             let burst = path.new_burst(self);
-            let idle_timeout = path.idle_timeout(self.parameters.clone());
+            let idle_timeout = path.idle_timeout(self.parameters.clone(), self.paths.clone());
 
             let task = {
                 let path = path.clone();
@@ -215,6 +215,10 @@ impl Path {
         *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
+    }
+
+    pub fn last_active_time(&self) -> Instant {
+        *self.last_active_time.lock().unwrap()
     }
 
     pub fn grant_anti_amplification(&self) {

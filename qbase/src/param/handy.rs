@@ -17,6 +17,10 @@ pub fn client_parameters() -> super::ClientParameters {
     }
 
     params
+        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(20))
+        .expect("unreachable");
+
+    params
 }
 
 pub fn server_parameters() -> super::ServerParameters {
@@ -33,7 +37,7 @@ pub fn server_parameters() -> super::ServerParameters {
         params.set(id, value).expect("unreachable");
     }
     params
-        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(3))
+        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(30))
         .expect("unreachable");
 
     params

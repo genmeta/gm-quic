@@ -2,6 +2,8 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use qbase::param::{ArcParameters, ParameterId};
 
+use crate::path::ArcPathContexts;
+
 /// Keep alive configuration.
 ///
 /// default: disabled.
@@ -57,36 +59,111 @@ impl super::Path {
         }
     }
 
-    pub fn idle_timeout(self: &Arc<Self>, parameters: ArcParameters) -> impl Future<Output = bool> {
+    pub fn idle_timeout(
+        self: &Arc<Self>,
+        parameters: ArcParameters,
+        paths: ArcPathContexts,
+    ) -> impl Future<Output = bool> {
         let this = self.clone();
-        async move {
-            let Ok((local_max_idle_timeout, remote_max_idle_timeout)) =
-                parameters.remote_ready().await.map(|parameters| {
-                    (
-                        parameters
-                            .get_local(ParameterId::MaxIdleTimeout)
-                            .expect("unreachable: default value will be got if the value unset"),
-                        parameters
-                            .get_remote(ParameterId::MaxIdleTimeout)
-                            .expect("unreachable: default value will be got if the value unset"),
-                    )
-                })
-            else {
-                // if the connection enter closing state in initial space is not idle_timeout
-                return false;
-            };
+
+        use tokio::time::sleep;
+
+        fn get_local_max_idle_timeout(
+            parameters: &ArcParameters,
+            paths: &ArcPathContexts,
+        ) -> Option<Duration> {
+            parameters.lock_guard().ok().and_then(|params| {
+                let local_max_idle_timeout: Duration =
+                    params.get_local(ParameterId::MaxIdleTimeout)?;
+                Some(local_max_idle_timeout.max(paths.max_pto_duration()? * 3))
+            })
+        }
+
+        async fn get_max_idle_timeout(
+            parameters: &ArcParameters,
+            paths: &ArcPathContexts,
+        ) -> Option<Duration> {
+            let (local_max_idle_timeout, remote_max_idle_timeout) =
+                parameters.remote_ready().await.ok().and_then(|params| {
+                    Some((
+                        params.get_local(ParameterId::MaxIdleTimeout)?,
+                        params.get_remote(ParameterId::MaxIdleTimeout)?,
+                    ))
+                })?;
+
             let max_idle_timeout = match (local_max_idle_timeout, remote_max_idle_timeout) {
+                // rfc: https://datatracker.ietf.org/doc/html/rfc9000#name-idle-timeout
+                // Each endpoint advertises a max_idle_timeout, but the effective value
+                // at an endpoint is computed as the minimum of the two advertised
+                // values (or the sole advertised value, if only one endpoint advertises
+                // a non-zero value). By announcing a max_idle_timeout, an endpoint
+                // commits to initiating an immediate close (Section 10.2) if
+                // it abandons the connection prior to the effective value.
                 (Duration::ZERO, Duration::ZERO) => Duration::MAX,
                 (Duration::ZERO, d) | (d, Duration::ZERO) => d,
+                // rfc: https://datatracker.ietf.org/doc/html/rfc9000#name-idle-timeout
+                // If a max_idle_timeout is specified by either endpoint in its
+                // transport parameters (Section 18.2), the connection is silently
+                // closed and its state is discarded when it remains idle for longer
+                // than the minimum of the max_idle_timeout value advertised by both
+                // endpoints.
                 (d1, d2) => d1.min(d2),
             };
 
-            loop {
-                let idle_duration = this.last_active_time.lock().unwrap().elapsed();
-                if idle_duration > max_idle_timeout {
-                    return true;
-                } else {
-                    tokio::time::sleep(max_idle_timeout.saturating_sub(idle_duration)).await;
+            // rfc: https://datatracker.ietf.org/doc/html/rfc9000#name-idle-timeout
+            // To avoid excessively small idle timeout periods, endpoints MUST
+            // increase the idle timeout period to be at least three times the
+            // current Probe Timeout (PTO). This allows for multiple PTOs to expire,
+            // and therefore multiple probes to be sent and lost, prior to idle
+            // timeout.
+            let pto = paths.max_pto_duration()?;
+            Some(max_idle_timeout.max(pto * 3))
+        }
+
+        async move {
+            // if handshake is not done, we use the local max idle timeout
+            let local_idle_timeout = async {
+                loop {
+                    let Some(max_idle_timeout) = get_local_max_idle_timeout(&parameters, &paths)
+                    else {
+                        // connection in closing/draining state, not idle_timeout
+                        return false;
+                    };
+
+                    sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
+
+                    if this.last_active_time().elapsed() > max_idle_timeout {
+                        return true;
+                    }
+                }
+            };
+
+            // once handshake is done, we follow the RFC rules
+            let idle_timeout = async {
+                loop {
+                    let Some(max_idle_timeout) = get_max_idle_timeout(&parameters, &paths).await
+                    else {
+                        // connection in closing/draining state, not idle_timeout
+                        return false;
+                    };
+
+                    sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
+
+                    if this.last_active_time().elapsed() > max_idle_timeout {
+                        return true;
+                    }
+                }
+            };
+
+            tokio::select! {
+                // if handshake is not done, we use the local max idle timeout
+                idle_timeouted = local_idle_timeout => {
+                    idle_timeouted
+                }
+                // once handshake is done, we follow the RFC rules
+                // use _ binding to ignore the result, because the MutexGuard is not Send
+                _ = async { _ = parameters.remote_ready().await } => {
+                    idle_timeout.await
                 }
             }
         }
