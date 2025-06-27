@@ -41,7 +41,7 @@ use std::{
     future::Future,
     io,
     ops::Deref,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
 use enum_dispatch::enum_dispatch;
@@ -140,7 +140,10 @@ pub struct Components {
 #[derive(Clone)]
 pub enum SpecificComponents {
     Client {},
-    Server { odcid_router_entry: RouterEntry },
+    Server {
+        using_odcid: Arc<AtomicBool>,
+        odcid_router_entry: RouterEntry,
+    },
 }
 
 impl Components {
@@ -487,7 +490,9 @@ impl Connection {
     }
 
     pub fn origin_dcid(&self) -> Result<cid::ConnectionId, Error> {
-        self.try_map_components(|core_conn| core_conn.parameters.get_origin_dcid())?
+        self.try_map_components(|core_conn| {
+            Ok(core_conn.parameters.lock_guard()?.get_origin_dcid())
+        })?
     }
 
     pub async fn handshaked(&self) -> bool {

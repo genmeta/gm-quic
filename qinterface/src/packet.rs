@@ -37,6 +37,10 @@ where
         }
     }
 
+    pub fn header(&self) -> &H {
+        &self.header
+    }
+
     fn qlog_header(&self) -> PacketHeader {
         PacketHeaderBuilder::from(&self.header).build()
     }

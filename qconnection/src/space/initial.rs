@@ -1,6 +1,6 @@
 use std::{
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::Ordering::SeqCst},
 };
 
 use bytes::BufMut;
@@ -233,74 +233,84 @@ pub fn spawn_deliver_and_parse(
         while let Some((bind_addr, packet, pathway, link)) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
+
                 // rfc9000 7.2:
                 // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
                 // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
                 // with different Source Connection IDs.
-                if components
-                    .parameters
-                    .initial_scid_from_peer()?
-                    .is_some_and(|scid| scid != *packet.scid())
+                if matches!(components.parameters.lock_guard()?.initial_scid_from_peer(), Some(scid) if scid != *packet.scid())
                 {
                     packet.drop_on_scid_unmatch();
                     return Ok(());
                 }
 
-                if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
-                    let path =
-                        match components.get_or_try_create_path(bind_addr, link, pathway, true) {
-                            Ok(path) => path,
-                            Err(_) => {
-                                packet.drop_on_conenction_closed();
-                                return Ok(());
-                            }
-                        };
+                let Some(packet) = space.decrypt_packet(packet).await.transpose()? else {
+                    return Ok(());
+                };
 
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_frame(frame, &path);
-                            Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
+                let Ok(path) = components.get_or_try_create_path(bind_addr, link, pathway, true)
+                else {
+                    packet.drop_on_conenction_closed();
+                    return Ok(());
+                };
 
-                    space.journal.of_rcvd_packets().register_pn(
-                        packet.pn(),
-                        packet_contains != PacketContains::NonAckEliciting,
-                        path.cc().get_pto(Epoch::Initial),
-                    );
-                    path.on_packet_rcvd(
-                        Epoch::Initial,
-                        packet.pn(),
-                        packet.size(),
-                        packet_contains,
-                    );
-                    if components.parameters.initial_scid_from_peer()?.is_none() {
-                        remote_cids.revise_initial_dcid(*packet.scid());
-                        components
-                            .parameters
-                            .initial_scid_from_peer_need_equal(*packet.scid())?;
-                    }
-                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-                    // A server might wish to validate the client address before starting the cryptographic handshake.
-                    // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
-                    // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
-                    // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-                    if !packet.token().is_empty() {
-                        validate(packet.token(), &path);
-                    }
-
-                    // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
-                    // negotiating done.
-                    // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server { odcid_router_entry } = &components.specific
+                // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
+                // we should stop using the odcid, and drop the subsequent packets with odcid.
+                //
+                // We do not remove the route to odcid, otherwise the server may establish multiple connections.
+                //
+                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                if let SpecificComponents::Server {
+                    odcid_router_entry,
+                    using_odcid,
+                } = &components.specific
+                {
+                    if odcid_router_entry.signpost() == (*packet.dcid()).into()
+                        && !using_odcid.load(SeqCst)
                     {
-                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                            odcid_router_entry.remove();
-                        }
+                        drop(packet); // just drop the packet, It's like we never received this packet.
+                        return Ok(());
                     }
+
+                    if odcid_router_entry.signpost() != (*packet.dcid()).into() {
+                        using_odcid.store(false, SeqCst);
+                    }
+                }
+
+                let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                let packet_contains = FrameReader::new(packet.body(), packet.get_type()).try_fold(
+                    PacketContains::default(),
+                    |packet_contains, frame| {
+                        let (frame, frame_type) = frame?;
+                        frames.extend(Some(&frame));
+                        dispatch_frame(frame, &path);
+                        Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
+                    },
+                )?;
+                packet.log_received(frames);
+
+                space.journal.of_rcvd_packets().register_pn(
+                    packet.pn(),
+                    packet_contains != PacketContains::NonAckEliciting,
+                    path.cc().get_pto(Epoch::Initial),
+                );
+                path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_contains);
+
+                {
+                    let mut parameters = components.parameters.lock_guard()?;
+                    if parameters.initial_scid_from_peer().is_none() {
+                        remote_cids.revise_initial_dcid(*packet.scid());
+                        parameters.initial_scid_from_peer_need_equal(*packet.scid())?;
+                    }
+                }
+
+                // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                // A server might wish to validate the client address before starting the cryptographic handshake.
+                // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+                // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+                // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+                if !packet.token().is_empty() {
+                    validate(packet.token(), &path);
                 }
                 Result::<(), Error>::Ok(())
             };

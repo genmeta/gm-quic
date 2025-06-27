@@ -166,6 +166,14 @@ impl Burst {
 
         self.send_gate.request_permit().await;
 
+        for crypto_stream in [
+            self.spaces.initial().crypto_stream(),
+            self.spaces.handshake().crypto_stream(),
+        ] {
+            // Reset the unacknowledged data in the send buffer
+            crypto_stream.outgoing().resend_unacked();
+        }
+
         loop {
             let segment_lens = self.burst(&mut buffers).await?;
 

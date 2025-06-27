@@ -159,6 +159,11 @@ mod send {
             result
         }
 
+        /// Reset the unacknowledged data to unsend state in the send buffer.
+        pub fn resend_unacked(&self) {
+            self.0.lock().unwrap().sndbuf.resend_unacked();
+        }
+
         /// Called when the crypto frame sent is acknowledged by peer.
         ///
         /// Acknowledgment of data may free up a segment in the [`SendBuf`], thus waking up the
