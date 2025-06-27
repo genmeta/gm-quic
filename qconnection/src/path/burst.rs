@@ -2,7 +2,6 @@ use std::{
     io,
     ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
-    task::{Context, Poll},
 };
 
 use qbase::net::tx::Signals;
@@ -139,33 +138,27 @@ impl Burst {
         Ok(result)
     }
 
-    fn poll_burst(
-        &self,
-        cx: &mut Context,
-        buffers: &mut Vec<Vec<u8>>,
-    ) -> Poll<io::Result<Vec<usize>>> {
-        let (buffers, transaction) = match self.prepare(buffers) {
-            Ok(Some((buffers, transaction))) => (buffers, transaction),
-            Ok(None) => return Poll::Pending, // 发送任务停止但是不结束
-            Err(siginals) => {
-                self.path.tx_waker.wait_for(cx, siginals);
-                return Poll::Pending;
-            }
-        };
-        match self.load_segments(buffers, transaction)? {
-            Ok(segments_lens) => {
-                debug_assert!(!segments_lens.is_empty());
-                Poll::Ready(io::Result::Ok(segments_lens))
-            }
-            Err(signals) => {
-                self.path.tx_waker.wait_for(cx, signals);
-                Poll::Pending
+    async fn burst(&self, buffers: &mut Vec<Vec<u8>>) -> io::Result<Vec<usize>> {
+        loop {
+            let (buffers, transaction) = match self.prepare(buffers) {
+                Ok(Some((buffers, transaction))) => (buffers, transaction),
+                Ok(None) => return std::future::pending().await, // 发送任务停止但是不结束
+                Err(signals) => {
+                    self.path.tx_waker.wait_for(signals).await;
+                    continue; // try load again
+                }
+            };
+            match self.load_segments(buffers, transaction)? {
+                Ok(segments_lens) => {
+                    debug_assert!(!segments_lens.is_empty());
+                    return io::Result::Ok(segments_lens);
+                }
+                Err(signals) => {
+                    self.path.tx_waker.wait_for(signals).await;
+                    continue; // try load again
+                }
             }
         }
-    }
-
-    async fn burst(&self, buffers: &mut Vec<Vec<u8>>) -> io::Result<Vec<usize>> {
-        core::future::poll_fn(|cx| self.poll_burst(cx, buffers)).await
     }
 
     pub async fn launch(self) -> io::Result<()> {
