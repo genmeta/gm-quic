@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    future::poll_fn,
     sync::{Arc, Mutex, RwLock},
-    task::{Context, Waker},
+    task::{Context, Poll, Waker},
 };
 
 use derive_more::Deref;
@@ -39,25 +40,24 @@ impl SendWaker {
 
     const WAITING: SignalsBits = 0;
 
-    pub fn wait_for(&mut self, cx: &mut Context, signals: Signals) {
+    pub fn poll_wait_for(&mut self, cx: &mut Context, signals: Signals) -> Poll<()> {
         if self.state & signals.bits() == 0 {
             self.state = !signals.bits();
             match self.waker.as_ref() {
                 Some(old_waker) if old_waker.will_wake(cx.waker()) => {}
                 _ => self.waker = Some(cx.waker().clone()),
             }
+            Poll::Pending
         } else {
             self.state = Self::WAITING;
-            cx.waker().wake_by_ref();
+            Poll::Ready(())
         }
     }
 
     fn wake_by(&mut self, signals: Signals) {
         if self.state | signals.bits() != self.state {
             if let Some(waker) = self.waker.as_ref() {
-                self.state = Self::WAITING;
                 waker.wake_by_ref();
-                return;
             }
         }
         self.state |= signals.bits();
@@ -75,8 +75,8 @@ impl ArcSendWaker {
         Self(Arc::new(Mutex::new(SendWaker::new())))
     }
 
-    pub fn wait_for(&self, cx: &mut Context, signals: Signals) {
-        self.0.lock().unwrap().wait_for(cx, signals);
+    pub async fn wait_for(&self, signals: Signals) {
+        poll_fn(|cx| self.0.lock().unwrap().poll_wait_for(cx, signals)).await
     }
 
     pub fn wake_by(&self, signals: Signals) {
@@ -119,10 +119,7 @@ pub struct ArcSendWakers(Arc<SendWakers>);
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering::*},
-        task::Poll,
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering::*};
 
     impl ArcSendWaker {
         fn state(&self) -> SignalsBits {
@@ -140,24 +137,25 @@ mod tests {
         tokio::spawn({
             let waker = waker.clone();
             let wake_times = woken_times.clone();
-            core::future::poll_fn(move |cx| {
-                wake_times.fetch_add(1, Release);
-                waker.wait_for(cx, Signals::CONGESTION);
-                Poll::<()>::Pending
-            })
+            async move {
+                loop {
+                    waker.wait_for(Signals::CONGESTION).await;
+                    wake_times.fetch_add(1, Release);
+                }
+            }
         });
 
         waker.wake_by(Signals::FLOW_CONTROL);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 1); // not woken
+        assert_eq!(woken_times.load(Acquire), 0); // not woken
 
         waker.wake_by(Signals::TRANSPORT);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 1); // not woken
+        assert_eq!(woken_times.load(Acquire), 0); // not woken
 
         waker.wake_by(Signals::CONGESTION);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 2); // woken
+        assert_eq!(woken_times.load(Acquire), 1); // woken
     }
 
     #[tokio::test]
@@ -168,28 +166,29 @@ mod tests {
         tokio::spawn({
             let waker = waker.clone();
             let wake_times = woken_times.clone();
-            core::future::poll_fn(move |cx| {
-                wake_times.fetch_add(1, Release);
-                waker.wait_for(cx, Signals::all());
-                Poll::<()>::Pending
-            })
+            async move {
+                loop {
+                    waker.wait_for(Signals::all()).await;
+                    wake_times.fetch_add(1, Release);
+                }
+            }
         });
 
         let wait_for_all_cond_state = !Signals::all().bits();
 
         waker.wake_by(Signals::FLOW_CONTROL);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 2); // woken
+        assert_eq!(woken_times.load(Acquire), 1); // woken
         assert_eq!(waker.state(), wait_for_all_cond_state);
 
         waker.wake_by(Signals::TRANSPORT);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 3); // woken
+        assert_eq!(woken_times.load(Acquire), 2); // woken
         assert_eq!(waker.state(), wait_for_all_cond_state);
 
         waker.wake_by(Signals::CONGESTION);
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 4); // woken
+        assert_eq!(woken_times.load(Acquire), 3); // woken
         assert_eq!(waker.state(), wait_for_all_cond_state);
     }
 
@@ -203,17 +202,18 @@ mod tests {
         tokio::spawn({
             let waker = waker.clone();
             let wake_times = woken_times.clone();
-            core::future::poll_fn(move |cx| {
-                wake_times.fetch_add(1, Release);
-                waker.wait_for(cx, Signals::CONGESTION);
-                Poll::<()>::Pending
-            })
+            async move {
+                loop {
+                    waker.wait_for(Signals::CONGESTION).await;
+                    wake_times.fetch_add(1, Release);
+                }
+            }
         });
 
         let wait_for_quota_state = !Signals::CONGESTION.bits();
 
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 2); // woken
+        assert_eq!(woken_times.load(Acquire), 1); // woken
         assert_eq!(waker.state(), wait_for_quota_state);
     }
 
@@ -229,15 +229,10 @@ mod tests {
             let wait_for = move |r#for| {
                 let wake_times = wake_times.clone();
                 let waker = waker.clone();
-                core::future::poll_fn(move |cx| {
-                    let wake_times = wake_times.fetch_add(1, Release);
-                    waker.wait_for(cx, r#for);
-                    if wake_times % 2 == 1 {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                })
+                async move {
+                    waker.wait_for(r#for).await;
+                    wake_times.fetch_add(1, Release);
+                }
             };
 
             async move {
@@ -254,31 +249,31 @@ mod tests {
         let wait_for_data_state = !Signals::TRANSPORT.bits();
 
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 1); // woken(1 = enter)
+        assert_eq!(woken_times.load(Acquire), 0); // not woken
         assert_eq!(waker.state(), wait_for_all_cond_state);
 
         waker.wake_by(Signals::TRANSPORT); // all condition will be met
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 3); // woken(3 = enter+wake+enter)
+        assert_eq!(woken_times.load(Acquire), 1); // woken
         assert_eq!(waker.state(), wait_for_quota_state);
 
         waker.wake_by(Signals::CONGESTION); // quota\data will be met
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 5); // woken(5 = enter+wake+enter+wake+enter)
+        assert_eq!(woken_times.load(Acquire), 2); // woken
         assert_eq!(waker.state(), wait_for_data_state);
 
         waker.wake_by(Signals::CONGESTION); // only data will be met
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 5); // not woken
+        assert_eq!(woken_times.load(Acquire), 2); // not woken
 
         waker.wake_by(Signals::FLOW_CONTROL); // only data will be met
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 5); // not woken
+        assert_eq!(woken_times.load(Acquire), 2); // not woken
 
         waker.wake_by(Signals::TRANSPORT); // only data will be met
         tokio::task::yield_now().await;
-        assert_eq!(woken_times.load(Acquire), 6); // woken(6 = [enter+wake]*3)
-        assert_eq!(waker.state(), wait_for_data_state);
+        assert_eq!(woken_times.load(Acquire), 3); // woken
+        assert_eq!(waker.state(), SendWaker::WAITING); // state reset 
     }
 
     #[tokio::test]
@@ -289,11 +284,12 @@ mod tests {
         tokio::spawn({
             let waker = waker.clone();
             let wake_times = woken_times.clone();
-            core::future::poll_fn(move |cx| {
-                wake_times.fetch_add(1, Release);
-                waker.wait_for(cx, Signals::TRANSPORT);
-                Poll::<()>::Pending
-            })
+            async move {
+                loop {
+                    wake_times.fetch_add(1, Release);
+                    waker.wait_for(Signals::TRANSPORT).await;
+                }
+            }
         });
 
         tokio::task::yield_now().await;
@@ -319,11 +315,12 @@ mod tests {
         tokio::spawn({
             let waker = waker.clone();
             let wake_times = woken_times.clone();
-            core::future::poll_fn(move |cx| {
-                wake_times.fetch_add(1, Release);
-                waker.wait_for(cx, Signals::CONGESTION);
-                Poll::<()>::Pending
-            })
+            async move {
+                loop {
+                    wake_times.fetch_add(1, Release);
+                    waker.wait_for(Signals::CONGESTION).await;
+                }
+            }
         });
 
         tokio::task::yield_now().await;
