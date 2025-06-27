@@ -61,16 +61,14 @@ async fn main() {
         //         .spawn(),
         // )
         .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_filter(
-                    tracing_subscriber::EnvFilter::builder()
-                        .with_default_directive(match options.progress {
-                            true => tracing::level_filters::LevelFilter::OFF.into(),
-                            false => tracing::level_filters::LevelFilter::INFO.into(),
-                        })
-                        .from_env_lossy(),
-                ),
+            tracing_subscriber::fmt::layer().with_filter(
+                tracing_subscriber::EnvFilter::builder()
+                    .with_default_directive(match options.progress {
+                        true => tracing::level_filters::LevelFilter::OFF.into(),
+                        false => tracing::level_filters::LevelFilter::INFO.into(),
+                    })
+                    .from_env_lossy(),
+            ),
         )
         .init();
 

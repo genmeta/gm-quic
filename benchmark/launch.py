@@ -192,6 +192,7 @@ def gm_quic_runner() -> ServerRunner:
                      "target", "release", "examples", "h3-server"),
         "-c", ecc_certs.server_cert,
         "-k", ecc_certs.server_key,
+        "-b", "4096",  # 设置backlog
         "-l", "[::1]:4431"
     ]
 
@@ -287,7 +288,7 @@ class H3Client:
         self.progress = progress
 
     def run_once(self, server_runner: ServerRunner, file_size: int, seq: int = 0) -> Result:
-        logging.info("Launch server and client")
+        logging.info(f"Launch {server_runner.name} server and client")
         # 在后台启动server
         log_dir = os.path.join(output_dir, "logs")
         if not os.path.exists(log_dir):
@@ -379,8 +380,8 @@ def plot_results(results: dict[str, dict[str, list[Result]]]):
     if not os.path.exists(plot_out_dir):
         os.makedirs(plot_out_dir)
 
-    implementations = list(results.keys())
-    file_sizes = results[implementations[0]].keys()
+    implementations = sorted(results.keys())
+    file_sizes = sorted(results[implementations[0]].keys())
 
     for file_size in file_sizes:
         plt.figure(figsize=(10, 6))
