@@ -4,12 +4,12 @@ use bytes::Bytes;
 use derive_more::{From, TryInto, TryIntoError};
 
 use super::prefered_address::PreferredAddress;
-use crate::{cid::ConnectionId, token::ResetToken, varint::VarInt};
+use crate::{cid::ConnectionId, role, token::ResetToken, varint::VarInt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterType {
     VarInt,
-    Flag,
+    Boolean,
     Bytes,
     Duration,
     ResetToken,
@@ -20,7 +20,7 @@ pub enum ParameterType {
 #[derive(Debug, Clone, PartialEq, From)]
 pub enum ParameterValue {
     Bytes(Bytes),
-    Enabled,
+    True,
     VarInt(VarInt),
     Duration(Duration),
     ConnectionId(ConnectionId),
@@ -36,6 +36,7 @@ impl From<u32> for ParameterValue {
 
 impl TryFrom<ParameterValue> for Duration {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -47,6 +48,7 @@ impl TryFrom<ParameterValue> for Duration {
 
 impl TryFrom<ParameterValue> for ConnectionId {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -58,6 +60,7 @@ impl TryFrom<ParameterValue> for ConnectionId {
 
 impl TryFrom<ParameterValue> for VarInt {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -78,6 +81,7 @@ impl TryFrom<ParameterValue> for u64 {
 
 impl TryFrom<ParameterValue> for PreferredAddress {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -93,6 +97,7 @@ impl TryFrom<ParameterValue> for PreferredAddress {
 
 impl TryFrom<ParameterValue> for Bytes {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -108,7 +113,7 @@ impl TryFrom<ParameterValue> for bool {
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
         match value {
-            ParameterValue::Enabled => Ok(true),
+            ParameterValue::True => Ok(true),
             _ => Err(TryIntoError::new(value, "Enabled", "bool")),
         }
     }
@@ -116,6 +121,7 @@ impl TryFrom<ParameterValue> for bool {
 
 impl TryFrom<ParameterValue> for ResetToken {
     type Error = TryIntoError<ParameterValue>;
+
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, TryIntoError<ParameterValue>> {
         match value {
@@ -162,7 +168,7 @@ pub enum ParameterId {
     AckDelayExponent = 0x000a,
     #[param(value_type = Duration, default = Duration::from_millis(25))]
     MaxAckDelay = 0x000b,
-    #[param(value_type = Flag)]
+    #[param(value_type = Boolean)]
     DisableActiveMigration = 0x000c,
     #[param(value_type = PreferredAddress)]
     PreferredAddress = 0x000d,
@@ -174,11 +180,24 @@ pub enum ParameterId {
     RetrySourceConnectionId = 0x0010,
     #[param(value_type = VarInt, default = 0u32)]
     MaxDatagramFrameSize = 0x0020,
-    #[param(value_type = Flag)]
+    #[param(value_type = Boolean)]
     GreaseQuicBit = 0x2ab2,
     /// Genemta extension parameter.
     #[param(value_type = Bytes, default = 0u32)]
     ClientName = 0xffee,
+}
+
+impl ParameterId {
+    pub fn belong_to(self, role: role::Role) -> bool {
+        match self {
+            ParameterId::OriginalDestinationConnectionId
+            | ParameterId::StatelessResetToken
+            | ParameterId::PreferredAddress
+            | ParameterId::RetrySourceConnectionId => role == role::Role::Server,
+            ParameterId::ClientName => role == role::Role::Client,
+            _ => true,
+        }
+    }
 }
 
 impl std::fmt::LowerHex for ParameterId {
@@ -209,13 +228,6 @@ impl<Role> Parameters<Role> {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
-}
-
-pub mod role {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Client;
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Server;
 }
 
 pub type ClientParameters = Parameters<role::Client>;

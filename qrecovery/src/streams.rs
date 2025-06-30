@@ -33,7 +33,8 @@ use qbase::{
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     net::tx::ArcSendWakers,
     param::{ArcParameters, core::Parameters},
-    sid::{ControlStreamsConcurrency, Role, StreamId},
+    role::Role,
+    sid::{ControlStreamsConcurrency, StreamId},
 };
 
 use crate::{recv::Reader, send::Writer};

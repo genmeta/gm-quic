@@ -6,7 +6,7 @@ use std::sync::{
 use crate::{
     error::{Error, ErrorKind, QuicError},
     frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
-    sid::Role,
+    role::Role,
 };
 
 /// The completion flag for the client handshake.

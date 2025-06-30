@@ -29,7 +29,8 @@ use qbase::{
         r#type::Type,
     },
     param::{ParameterId, ServerParameters, core::Parameters},
-    sid::{ControlStreamsConcurrency, Role},
+    role::Role,
+    sid::ControlStreamsConcurrency,
     util::{BoundQueue, Future},
 };
 use qcongestion::{Feedback, Transport};

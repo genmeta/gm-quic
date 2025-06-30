@@ -49,7 +49,7 @@ impl From<RustlsKeys> for Keys {
 }
 
 use super::KeyPhaseBit;
-use crate::sid::Role;
+use crate::role::Role;
 
 #[derive(Clone)]
 enum KeysState<K> {

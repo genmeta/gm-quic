@@ -171,7 +171,7 @@ impl ParamArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParamType {
     VarInt,
-    Flag,
+    Boolean,
     Bytes,
     Duration,
     ResetToken,
@@ -183,7 +183,7 @@ impl FromMeta for ParamType {
     fn from_string(lit: &str) -> ::darling::Result<Self> {
         match lit {
             "VarInt" => Ok(ParamType::VarInt),
-            "Flag" => Ok(ParamType::Flag),
+            "Boolean" => Ok(ParamType::Boolean),
             "Bytes" => Ok(ParamType::Bytes),
             "Duration" => Ok(ParamType::Duration),
             "ResetToken" => Ok(ParamType::ResetToken),

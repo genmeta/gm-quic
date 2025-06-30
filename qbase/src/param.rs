@@ -9,7 +9,7 @@ use crate::{
     cid::ConnectionId,
     error::{Error, ErrorKind, QuicError},
     frame::FrameType,
-    sid::Role,
+    role::Role,
 };
 
 pub mod core;
