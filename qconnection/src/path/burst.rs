@@ -6,6 +6,7 @@ use std::{
 
 use qbase::net::tx::Signals;
 use qinterface::QuicIO;
+use tracing::Instrument;
 
 use crate::{
     ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,
@@ -56,28 +57,23 @@ impl Burst {
             &mut buffer[..max_segment_size]
         });
 
-        let transaction = match (
+        let Some(transaction) = Transaction::prepare(
             self.cid_registry.local.initial_scid(),
-            self.cid_registry.remote.initial_dcid(),
-        ) {
-            (Some(scid), Some(dcid)) => Transaction::prepare_handshaking(
-                scid,
-                dcid,
-                self.path.cc(),
-                &self.path.anti_amplifier,
-            )
-            .map(Some)?,
-            _ => Transaction::prepare(
-                &self.dcid_cell,
-                self.path.cc(),
-                &self.path.anti_amplifier,
-                self.path.tx_waker.clone(),
-            )?,
-        };
-        if transaction.is_none() {
+            // Not using initial DCID after 1RTT ready
+            self.cid_registry
+                .remote
+                .initial_dcid()
+                .filter(|_| !self.spaces.data().is_one_rtt_ready()),
+            &self.dcid_cell,
+            self.path.cc(),
+            &self.path.anti_amplifier,
+            self.path.tx_waker.clone(),
+        )?
+        else {
             return Ok(None);
-        }
-        Ok(Some((buffers, transaction.unwrap())))
+        };
+
+        Ok(Some((buffers, transaction)))
     }
 
     fn load_segments<'b>(
@@ -190,7 +186,10 @@ impl Burst {
         }
 
         loop {
-            let segment_lens = self.burst(&mut buffers).await?;
+            let segment_lens = self
+                .burst(&mut buffers)
+                .instrument(tracing::debug_span!("burst", link = %self.path.link))
+                .await?;
 
             let segments = segment_lens
                 .into_iter()

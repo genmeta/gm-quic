@@ -503,14 +503,18 @@ mod tests {
         let cid_apply1 = remote_cids.apply_dcid();
         assert!(cid_apply1.borrow_cid(waker.clone()).is_err());
 
-        let cid = ConnectionId::random_gen(8);
-        let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(1), VarInt::from_u32(0));
+        let new_dcid = ConnectionId::random_gen(8);
+        let frame = NewConnectionIdFrame::new(new_dcid, VarInt::from_u32(1), VarInt::from_u32(0));
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 2);
 
         assert!(matches!(
             cid_apply0.borrow_cid(waker.clone()),
             Ok(Some(cid)) if *cid == initial_dcid
+        ));
+        assert!(matches!(
+            cid_apply1.borrow_cid(waker.clone()),
+            Ok(Some(cid)) if *cid == new_dcid
         ));
 
         // Additionally, a new request will be made because if the peer-issued CID is
