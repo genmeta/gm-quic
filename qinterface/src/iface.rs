@@ -189,17 +189,14 @@ impl InterfaceContext {
             let (mut bufs, mut hdrs) = (vec![], vec![]);
             async move {
                 loop {
-                    let pkts = {
-                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
-                            return;
-                        };
-                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
-                            return;
-                        };
-                        pkts
+                    let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                        return;
+                    };
+                    let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                        return;
                     };
                     for (pkt, way) in pkts {
-                        Router::global().deliver(pkt, way).await;
+                        Router::global().deliver(pkt, way);
                     }
                 }
             }
@@ -225,17 +222,14 @@ impl InterfaceContext {
             let (mut bufs, mut hdrs) = (vec![], vec![]);
             async move {
                 loop {
-                    let pkts = {
-                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
-                            return;
-                        };
-                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
-                            return;
-                        };
-                        pkts
+                    let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                        return;
+                    };
+                    let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                        return;
                     };
                     for (pkt, way) in pkts {
-                        Router::global().deliver(pkt, way).await;
+                        Router::global().deliver(pkt, way);
                     }
                 }
             }

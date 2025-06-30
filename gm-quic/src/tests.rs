@@ -72,7 +72,7 @@ where
 
         let result = time::timeout(Duration::from_secs(10), launch_client(server_addr)).await;
 
-        listeners.shutdown().await;
+        listeners.shutdown();
         server_task.abort();
 
         result?.expect("test timeout");
@@ -137,8 +137,7 @@ async fn launch_echo_server(
         .without_client_cert_verifier()
         .with_parameters(parameters)
         .with_qlog(qlogger())
-        .listen(128)
-        .await;
+        .listen(128);
     listeners.add_server(
         "localhost",
         SERVER_CERT,
@@ -219,8 +218,7 @@ fn shutdown() -> Result<(), Error> {
             .without_client_cert_verifier()
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128)
-            .await;
+            .listen(128);
         listeners.add_server(
             "localhost",
             SERVER_CERT,
@@ -483,8 +481,7 @@ fn client_auth() -> Result<(), Error> {
             )
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
-            .listen(128)
-            .await;
+            .listen(128);
         listeners.add_server(
             "localhost",
             SERVER_CERT,

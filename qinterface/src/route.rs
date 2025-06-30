@@ -55,7 +55,8 @@ impl Router {
         self.table.remove(signpost);
     }
 
-    pub async fn try_deliver(
+    #[allow(clippy::result_large_err)] // TODO: needs benchmark
+    pub fn try_deliver(
         &self,
         packet: Packet,
         (bind_addr, pathway, link): Way,
@@ -80,19 +81,19 @@ impl Router {
         };
 
         if let Some(rcvd_pkt_q) = self.table.get(&signpost).map(|queue| queue.clone()) {
-            _ = rcvd_pkt_q.deliver(bind_addr, packet, pathway, link).await;
+            rcvd_pkt_q.try_deliver(packet, (bind_addr, pathway, link));
             return Ok(());
         }
         Err((packet, (bind_addr, pathway, link)))
     }
 
-    pub async fn deliver(&self, packet: Packet, way: Way) {
-        if let Err((packet, way)) = self.try_deliver(packet, way).await {
+    pub fn deliver(&self, packet: Packet, way: Way) {
+        if let Err((packet, way)) = self.try_deliver(packet, way) {
             (self.on_unrouted.lock().unwrap())(packet, way)
         }
     }
 
-    pub async fn on_connectless_packets<H>(&self, handler: H)
+    pub fn on_connectless_packets<H>(&self, handler: H)
     where
         H: FnMut(Packet, Way) + Send + 'static,
     {
