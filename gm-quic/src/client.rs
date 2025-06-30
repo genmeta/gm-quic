@@ -1,7 +1,6 @@
 use std::{io, sync::Arc};
 
 use dashmap::DashMap;
-use handy::UdpSocketController;
 use qbase::net::{
     Family,
     addr::{AddrKind, BindAddr},
@@ -85,7 +84,7 @@ impl QuicClient {
             reuse_connection: false,
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Arc::new(UdpSocketController::bind),
+            quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
             parameters: ClientParameters::default(),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),

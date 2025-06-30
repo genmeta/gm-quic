@@ -130,7 +130,6 @@ where
         let decoded_pn = match pn_decoder(undecoded_pn) {
             Ok(pn) => pn,
             Err(invalid_packet_number) => {
-                tracing::error!(?invalid_packet_number, "Error:");
                 self.drop_on_invalid_pn(invalid_packet_number);
                 return None;
             }
@@ -143,11 +142,6 @@ where
                 return None;
             }
         };
-
-        // tracing::info!(
-        //     "decrypted {} packet with PN {decoded_pn}",
-        //     core::any::type_name::<H>()
-        // );
 
         Some(Ok(PlainPacket {
             header: self.header,
@@ -194,11 +188,6 @@ where
                 return None;
             }
         };
-
-        // tracing::info!(
-        //     "decrypted {} packet with PN {decoded_pn}",
-        //     core::any::type_name::<H>()
-        // );
 
         Some(Ok(PlainPacket {
             header: self.header,

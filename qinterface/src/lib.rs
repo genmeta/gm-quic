@@ -3,7 +3,6 @@ pub mod iface;
 pub mod packet;
 pub mod queue;
 pub mod route;
-pub mod util;
 
 use std::{
     io,

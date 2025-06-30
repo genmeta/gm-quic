@@ -1,5 +1,5 @@
-#[cfg(feature = "qudp")]
-mod qudp {
+#[cfg(all(feature = "qudp", any(unix, windows)))]
+pub mod qudp {
     use std::{
         io::{self, IoSliceMut},
         net::SocketAddr,
@@ -121,5 +121,68 @@ mod qudp {
     }
 }
 
-#[cfg(feature = "qudp")]
-pub use qudp::UdpSocketController;
+pub mod unsuppoeted {
+    use std::{
+        io,
+        task::{Context, Poll},
+    };
+
+    use bytes::BytesMut;
+    use qbase::net::{
+        addr::{BindAddr, RealAddr},
+        route::PacketHeader,
+    };
+
+    use crate::QuicIO;
+
+    pub struct UnsuppoetedQuicIO(pub(crate) BindAddr);
+
+    fn unsupported() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "qudp feature is not enabled or target platform is not supported, you should use your own ProductQuicIO implementation, not DEFAULT_QUIC_IO_FACTORY",
+        )
+    }
+
+    impl UnsuppoetedQuicIO {
+        pub fn bind(_: BindAddr) -> io::Result<Self> {
+            Err(unsupported())
+        }
+    }
+
+    impl QuicIO for UnsuppoetedQuicIO {
+        fn bind_addr(&self) -> BindAddr {
+            self.0.clone()
+        }
+
+        fn real_addr(&self) -> io::Result<RealAddr> {
+            Err(unsupported())
+        }
+
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Err(unsupported())
+        }
+
+        fn max_segments(&self) -> io::Result<usize> {
+            Err(unsupported())
+        }
+
+        fn poll_send(
+            &self,
+            _: &mut Context,
+            _: &[io::IoSlice],
+            _: PacketHeader,
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(unsupported()))
+        }
+
+        fn poll_recv(
+            &self,
+            _: &mut Context,
+            _: &mut [BytesMut],
+            _: &mut [PacketHeader],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(unsupported()))
+        }
+    }
+}

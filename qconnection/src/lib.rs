@@ -25,7 +25,7 @@ pub mod prelude {
     #[allow(unused_imports)]
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
-        pub use qinterface::iface::handy::*;
+        pub use qinterface::{factory::handy::*, iface::handy::*};
     }
 
     pub use crate::{

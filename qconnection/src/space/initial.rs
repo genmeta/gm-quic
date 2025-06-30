@@ -9,11 +9,7 @@ use qbase::{
     cid::ConnectionId,
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{
-        addr::BindAddr,
-        route::{Link, Pathway},
-        tx::{ArcSendWakers, Signals},
-    },
+    net::tx::{ArcSendWakers, Signals},
     packet::{
         FinalPacketLayout, MarshalFrame, PacketContains, PacketWriter,
         header::{
@@ -35,7 +31,10 @@ use qevent::{
     },
     telemetry::Instrument,
 };
-use qinterface::packet::{CipherPacket, PlainPacket};
+use qinterface::{
+    packet::{CipherPacket, PlainPacket},
+    route::Way,
+};
 use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
@@ -51,7 +50,7 @@ use crate::{
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
-pub type ReceivedFrom = (BindAddr, CipherInitialPacket, Pathway, Link);
+pub type ReceivedFrom = (CipherInitialPacket, Way);
 
 pub struct InitialSpace {
     keys: ArcKeys,
@@ -230,7 +229,7 @@ pub fn spawn_deliver_and_parse(
     let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let deliver_and_parse = async move {
-        while let Some((bind_addr, packet, pathway, link)) = packets.recv().await {
+        while let Some((packet, (bind_addr, pathway, link))) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
 
@@ -435,7 +434,7 @@ pub fn spawn_deliver_and_parse_closing(
 ) {
     tokio::spawn(
         async move {
-            while let Some((_, packet, pathway, _socket)) = packets.recv().await {
+            while let Some((packet, (_, pathway, _socket))) = packets.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

@@ -1,20 +1,18 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
-    future::Future,
     io,
     sync::{Arc, RwLock, Weak},
 };
 
 use dashmap::{DashMap, DashSet};
-use handy::UdpSocketController;
+use qbase::util::BoundQueue;
 use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
     iface::{QuicInterface, QuicInterfaces},
     route::{Router, Way},
-    util::Channel,
 };
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
@@ -84,7 +82,7 @@ impl Debug for BoundInterface {
     }
 }
 
-type Incomings = Channel<(
+type Incomings = BoundQueue<(
     (Arc<Connection>, String, Pathway, Link),
     OwnedSemaphorePermit,
 )>;
@@ -172,7 +170,7 @@ impl QuicListeners {
 
         Ok(QuicListenersBuilder {
             incomings,
-            quic_iface_factory: Arc::new(UdpSocketController::bind),
+            quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
             servers: Arc::default(),
             token_provider: None,
             parameters: ServerParameters::default(),
@@ -312,27 +310,22 @@ impl QuicListeners {
     /// Close the QuicListeners, stops accepting new connections.
     ///
     /// Unaccepted connections will be closed
-    pub fn shutdown(&self) -> impl Future<Output = ()> + Send {
-        let incomings = self.incomings.clone();
-        let backlog = self.backlog.clone();
+    pub fn shutdown(&self) {
+        self.incomings.close();
+        self.backlog.close();
 
-        async move {
-            if incomings.close().is_none() {
-                // already closed
-                return;
+        let global = Self::global().read().unwrap();
+        if let Some(global) = global.upgrade() {
+            if global.same_queue(&self.incomings) {
+                Router::global().on_connectless_packets(|_, _| {});
             }
-
-            Router::global().on_connectless_packets(|_, _| {}).await;
-
-            backlog.close();
-            incomings.close();
         }
     }
 }
 
 impl Drop for QuicListeners {
     fn drop(&mut self) {
-        tokio::spawn(self.shutdown());
+        self.shutdown();
     }
 }
 
@@ -408,9 +401,7 @@ impl QuicListeners {
         let incomings = self.incomings.clone();
 
         tokio::spawn(async move {
-            Router::global()
-                .deliver(packet, (bind_addr.clone(), pathway, link))
-                .await;
+            Router::global().deliver(packet, (bind_addr.clone(), pathway, link));
 
             tokio::spawn({
                 let connection = connection.clone();
@@ -459,7 +450,7 @@ impl QuicListeners {
 pub struct QuicListenersBuilder<T> {
     quic_iface_factory: Arc<dyn ProductQuicIO>,
     servers: Arc<DashMap<String, Server>>, // must be empty while building
-    incomings: Arc<Incomings>,             // identify the building QuicListeners (TODO)
+    incomings: Arc<Incomings>,             // identify the building QuicListeners
 
     token_provider: Option<Arc<dyn TokenProvider>>,
     parameters: ServerParameters,
@@ -714,7 +705,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
     /// If the queue is full, new initial packets may be dropped.
     ///
     /// Panic if `backlog` is 0.
-    pub async fn listen(self, backlog: usize) -> Arc<QuicListeners> {
+    pub fn listen(self, backlog: usize) -> Arc<QuicListeners> {
         assert!(backlog > 0, "backlog must be greater than 0");
         debug_assert!(self.servers.is_empty());
 
@@ -723,7 +714,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
             ifaces: Arc::default(),
             servers: self.servers,
             backlog: Arc::new(Semaphore::new(backlog)),
-            incomings: self.incomings, // any number greater than 0
+            incomings: self.incomings, // size: any number greater than 0
             token_provider: self
                 .token_provider
                 .unwrap_or_else(|| Arc::new(handy::NoopTokenRegistry)),
@@ -737,12 +728,10 @@ impl QuicListenersBuilder<TlsServerConfig> {
             _supported_versions: self._supported_versions,
         });
 
-        Router::global()
-            .on_connectless_packets({
-                let quic_listeners = quic_listeners.clone();
-                move |packet, way| quic_listeners.try_accept_connection(packet, way)
-            })
-            .await;
+        Router::global().on_connectless_packets({
+            let quic_listeners = quic_listeners.clone();
+            move |packet, way| quic_listeners.try_accept_connection(packet, way)
+        });
 
         quic_listeners
     }

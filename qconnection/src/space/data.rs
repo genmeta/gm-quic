@@ -61,11 +61,11 @@ use crate::{
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedZeroRttFrom = (BindAddr, CipherZeroRttPacket, Pathway, Link);
+pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, (BindAddr, Pathway, Link));
 
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
-pub type ReceivedOneRttFrom = (BindAddr, CipherOneRttPacket, Pathway, Link);
+pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindAddr, Pathway, Link));
 
 pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
@@ -558,7 +558,7 @@ pub fn spawn_deliver_and_parse(
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
             space.one_rtt_ready().await;
-            while let Some((bind_addr, packet, pathway, link)) = zeor_rtt_packets.recv().await {
+            while let Some((packet, (bind_addr, pathway, link))) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
@@ -629,7 +629,7 @@ pub fn spawn_deliver_and_parse(
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
             space.one_rtt_ready().await;
-            while let Some((bind_addr, packet, pathway, link)) = one_rtt_packets.recv().await {
+            while let Some((packet, (bind_addr, pathway, link))) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
 
@@ -837,7 +837,7 @@ pub fn spawn_deliver_and_parse_closing(
 ) {
     tokio::spawn(
         async move {
-            while let Some((_, packet, pathway, _socket)) = packets.recv().await {
+            while let Some((packet, (_, pathway, _socket))) = packets.recv().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;

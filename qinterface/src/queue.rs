@@ -1,8 +1,4 @@
 use qbase::{
-    net::{
-        addr::BindAddr,
-        route::{Link, Pathway},
-    },
     packet::{
         DataHeader, Packet,
         header::{long, short},
@@ -10,9 +6,9 @@ use qbase::{
     util::BoundQueue,
 };
 
-use crate::packet::CipherPacket;
+use crate::{packet::CipherPacket, route::Way};
 
-type PacketQueue<P> = BoundQueue<(BindAddr, CipherPacket<P>, Pathway, Link)>;
+type PacketQueue<P> = BoundQueue<(CipherPacket<P>, Way)>;
 
 // 需要一个四元组，pathway + src + dst
 pub struct RcvdPacketQueue {
@@ -62,31 +58,28 @@ impl RcvdPacketQueue {
         self.one_rtt.close();
     }
 
-    pub async fn deliver(&self, bind_addr: BindAddr, packet: Packet, pathway: Pathway, link: Link) {
+    pub fn try_deliver(&self, packet: Packet, way: Way) {
         match packet {
             Packet::Data(packet) => match packet.header {
                 DataHeader::Long(long::DataHeader::Initial(header)) => {
                     // tracing::warn!("deliver initial packet from {}", link.dst());
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.initial.send((bind_addr, packet, pathway, link)).await;
+                    _ = self.initial.try_send((packet, way));
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     // tracing::warn!("deliver handshake packet from {}", link.dst());
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self
-                        .handshake
-                        .send((bind_addr, packet, pathway, link))
-                        .await;
+                    _ = self.handshake.try_send((packet, way));
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     // tracing::warn!("deliver 0rtt packet from {}", link.dst());
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.zero_rtt.send((bind_addr, packet, pathway, link)).await;
+                    _ = self.zero_rtt.try_send((packet, way));
                 }
                 DataHeader::Short(header) => {
                     // tracing::warn!("deliver 1rtt packet from {}", link.dst());
                     let packet = CipherPacket::new(header, packet.bytes, packet.offset);
-                    _ = self.one_rtt.send((bind_addr, packet, pathway, link)).await;
+                    _ = self.one_rtt.try_send((packet, way));
                 }
             },
             Packet::VN(_vn) => {}
