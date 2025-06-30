@@ -1,5 +1,7 @@
 use std::{fmt, ops};
 
+use crate::param::ParameterId;
+
 /// Roles in the QUIC protocol, including client and server.
 ///
 /// The least significant bit (0x01) of the [`StreamId`](crate::sid) identifies the initiator role of the stream.
@@ -61,6 +63,10 @@ pub trait IntoRole {
     fn into_role() -> Role;
 }
 
+pub trait RequiredParameters {
+    fn required_parameters() -> impl IntoIterator<Item = ParameterId>;
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Client;
 
@@ -76,6 +82,12 @@ impl IntoRole for Client {
     }
 }
 
+impl RequiredParameters for Client {
+    fn required_parameters() -> impl IntoIterator<Item = ParameterId> {
+        [ParameterId::InitialSourceConnectionId].into_iter()
+    }
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Server;
 
@@ -88,5 +100,15 @@ impl From<Server> for Role {
 impl IntoRole for Server {
     fn into_role() -> Role {
         Role::Server
+    }
+}
+
+impl RequiredParameters for Server {
+    fn required_parameters() -> impl IntoIterator<Item = ParameterId> {
+        [
+            ParameterId::InitialSourceConnectionId,
+            ParameterId::OriginalDestinationConnectionId,
+        ]
+        .into_iter()
     }
 }

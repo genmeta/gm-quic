@@ -1,27 +1,35 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use nom::Parser;
+use nom::{Parser, multi::length_data};
 
 use crate::{
-    cid::{ConnectionId, WriteConnectionId, be_connection_id_with_len},
-    error::{ErrorKind, QuicError},
-    frame::FrameType,
+    cid::{ConnectionId, WriteConnectionId},
+    error::QuicError,
     param::{
-        core::{
-            ClientParameters, ParameterId, ParameterValue, ParameterValueType, Parameters,
-            ServerParameters,
-        },
+        core::{ParameterId, ParameterValue, ParameterValueType, Parameters, ServerParameters},
+        error::Error,
         prefered_address::{PreferredAddress, WirtePreferredAddress, be_preferred_address},
     },
+    role::{IntoRole, RequiredParameters, Role},
     token::{ResetToken, WriteResetToken, be_reset_token},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// Parse the parameter id from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
-pub(super) fn be_parameter_id(input: &[u8]) -> nom::IResult<&[u8], Result<ParameterId, VarInt>> {
-    be_varint(input).map(|(remain, id)| (remain, id.try_into()))
+pub(super) fn be_parameter_id_of_role(
+    input: &[u8],
+    role: Role,
+) -> nom::IResult<&[u8], ParameterId, Error> {
+    let (remain, param_id) = crate::varint::be_varint(input).map_err(|_| {
+        nom::Err::Error(Error::IncompleteParameterId(format!(
+            "incomplete frame type from input: {input:?}"
+        )))
+    })?;
+    let param_id = ParameterId::try_from(param_id).map_err(nom::Err::Error)?;
+    param_id.belong_to(role).map_err(nom::Err::Error)?;
+    Ok((remain, param_id))
 }
 
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly
@@ -38,41 +46,50 @@ impl<T: bytes::BufMut> WriteParameterId for T {
 }
 
 // 未知ID返回错误（ID，len），qbase解析忽略未知ID
-pub fn be_parameter(
+pub fn be_parameter_of_role(
     input: &[u8],
-) -> nom::IResult<&[u8], (Result<ParameterId, VarInt>, ParameterValue)> {
-    use nom::{bytes::streaming::take, combinator::map};
+    role: Role,
+) -> nom::IResult<&[u8], (ParameterId, ParameterValue), Error> {
+    use nom::combinator::map;
 
-    let (remain, id) = be_parameter_id(input)?;
-    let (remain, len) = be_varint(remain)?;
-    let (remain, value) = match id
-        .map(|id| id.value_type())
-        .unwrap_or(ParameterValueType::Bytes)
-    {
-        ParameterValueType::VarInt => map(be_varint, ParameterValue::VarInt).parse(remain)?,
+    let (remain, param_id) = be_parameter_id_of_role(input, role)?;
+    let (remain, data) = length_data(be_varint).parse(remain).map_err(|_| {
+        nom::Err::Error(Error::IncompleteParameterId(format!(
+            "incomplete frame type from input: {input:?}"
+        )))
+    })?;
+    let incomplete_value_error = |id: ParameterId, data: &[u8]| {
+        nom::Err::Error(Error::IncompleteValue(
+            id,
+            format!("incomplete frame type from input: {data:?}"),
+        ))
+    };
+    let (_, param_value) = match param_id.value_type() {
+        ParameterValueType::VarInt => map(be_varint, ParameterValue::VarInt)
+            .parse(data)
+            .map_err(|_| incomplete_value_error(param_id, data))?,
         ParameterValueType::Boolean => (remain, ParameterValue::True),
-        ParameterValueType::Bytes => map(take(len.into_inner() as usize), |bytes| {
-            Bytes::copy_from_slice(bytes).into()
-        })
-        .parse(remain)?,
-        ParameterValueType::Duration => map(be_varint, |varint| {
-            let millis = varint.into_inner();
-            Duration::from_millis(millis).into()
-        })
-        .parse(remain)?,
-        ParameterValueType::ResetToken => {
-            map(be_reset_token, ParameterValue::ResetToken).parse(remain)?
+        ParameterValueType::Bytes => (remain, ParameterValue::Bytes(Bytes::copy_from_slice(data))),
+        ParameterValueType::Duration => {
+            map(be_varint, |v| Duration::from_millis(v.into_inner()).into())
+                .parse(data)
+                .map_err(|_| incomplete_value_error(param_id, data))?
         }
-        ParameterValueType::ConnectionId => {
-            let parser = |input| be_connection_id_with_len(input, len.into_inner() as usize);
-            map(parser, ParameterValue::ConnectionId).parse(remain)?
-        }
+        ParameterValueType::ResetToken => map(be_reset_token, ParameterValue::ResetToken)
+            .parse(data)
+            .map_err(|_| incomplete_value_error(param_id, data))?,
+        ParameterValueType::ConnectionId => (
+            remain,
+            ParameterValue::ConnectionId(ConnectionId::from_slice(data)),
+        ),
         ParameterValueType::PreferredAddress => {
-            map(be_preferred_address, ParameterValue::PreferredAddress).parse(remain)?
+            map(be_preferred_address, ParameterValue::PreferredAddress)
+                .parse(data)
+                .map_err(|_| incomplete_value_error(param_id, data))?
         }
     };
 
-    Ok((remain, (id, value)))
+    Ok((remain, (param_id, param_value)))
 }
 
 // A trait for writing parameters to the buffer.
@@ -159,43 +176,32 @@ impl<Role, T: bytes::BufMut> WriteParameters<Role> for T {
     }
 }
 
-fn parameter_error(id: ParameterId, e: impl std::fmt::Display) -> QuicError {
-    QuicError::new(
-        ErrorKind::TransportParameter,
-        FrameType::Crypto.into(),
-        format!("parameter 0x{id:x}: {e}"),
-    )
-}
-
-fn map_nom_error(ne: impl ToString) -> QuicError {
-    tracing::error!("   Cause by: parsing parameters");
-    QuicError::new(
-        ErrorKind::TransportParameter,
-        FrameType::Crypto.into(),
-        ne.to_string(),
-    )
-}
-
-fn must_exist(id: ParameterId) -> QuicError {
-    tracing::error!("   Cause by: validating parameters");
-    parameter_error(id, "must be exist")
-}
-
-impl ClientParameters {
-    pub fn try_from_bytes(mut buf: &[u8]) -> Result<Self, QuicError> {
+impl<R: IntoRole + RequiredParameters + Default> Parameters<R> {
+    pub fn parse_from_bytes(mut buf: &[u8]) -> Result<Self, QuicError> {
         let mut parameters = Self::default();
         while !buf.is_empty() {
-            let (id, value);
-            (buf, (id, value)) = be_parameter(buf).map_err(map_nom_error)?;
-            if let Ok(knwon_id) = id {
-                parameters
-                    .set(knwon_id, value)
-                    .map_err(|e| parameter_error(knwon_id, e))?;
-            }
+            let (param_id, param_value);
+            (buf, (param_id, param_value)) = match be_parameter_of_role(buf, R::into_role()) {
+                Ok((remain, pair)) => (remain, pair),
+                Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+                    if let Error::UnknownParameterId(varint) = e {
+                        tracing::warn!("Unknown parameter id: {varint}");
+                        // Ignore unknown parameters
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+                Err(nom::Err::Incomplete(_)) => {
+                    unreachable!(
+                        "Because the parsing of QUIC packets and frames is not stream-based."
+                    );
+                }
+            };
+            parameters.set(param_id, param_value)?;
         }
-        for id in [ParameterId::InitialSourceConnectionId] {
+        for id in R::required_parameters() {
             if !parameters.contains(id) {
-                return Err(must_exist(id));
+                return Err(Error::LackParameterId(R::into_role(), id).into());
             }
         }
         Ok(parameters)
@@ -203,49 +209,22 @@ impl ClientParameters {
 }
 
 impl ServerParameters {
-    pub fn try_from_server_bytes(mut buf: &[u8]) -> Result<Self, QuicError> {
-        let mut parameters = Self::default();
-        while !buf.is_empty() {
-            let (id, value);
-            (buf, (id, value)) = be_parameter(buf).map_err(map_nom_error)?;
-            if let Ok(knwon_id) = id {
-                parameters
-                    .set(knwon_id, value)
-                    .map_err(|e| parameter_error(knwon_id, e))?;
-            }
-        }
-        for id in [
-            ParameterId::InitialSourceConnectionId,
-            ParameterId::OriginalDestinationConnectionId,
-        ] {
-            if !parameters.contains(id) {
-                return Err(must_exist(id));
-            }
-        }
-        Ok(parameters)
-    }
-
     pub fn try_from_remembered_bytes(mut buf: &[u8]) -> Result<Self, QuicError> {
         let mut parameters = Self::new();
         while !buf.is_empty() {
-            let (id, value);
-            (buf, (id, value)) = be_parameter(buf).map_err(map_nom_error)?;
-            if let Ok(knwon_id) = id {
-                if matches!(
-                    knwon_id,
-                    ParameterId::OriginalDestinationConnectionId
-                        | ParameterId::AckDelayExponent
-                        | ParameterId::MaxAckDelay
-                        | ParameterId::PreferredAddress
-                        | ParameterId::InitialSourceConnectionId
-                        | ParameterId::RetrySourceConnectionId
-                ) {
-                    continue;
+            let (param_id, param_value);
+            (buf, (param_id, param_value)) = match be_parameter_of_role(buf, Role::Server) {
+                Ok((remain, pair)) => (remain, pair),
+                Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+                    return Err(e.into());
                 }
-                parameters
-                    .set(knwon_id, value)
-                    .map_err(|e| parameter_error(knwon_id, e))?;
-            }
+                Err(nom::Err::Incomplete(_)) => {
+                    unreachable!(
+                        "Because the parsing of QUIC packets and frames is not stream-based."
+                    );
+                }
+            };
+            parameters.set(param_id, param_value)?;
         }
         Ok(parameters)
     }

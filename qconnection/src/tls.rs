@@ -131,7 +131,7 @@ impl ClientTlsSession {
             self.tls_conn.zero_rtt_keys(),
         ) {
             (Some(raw_params), Some(keys)) => {
-                let params = ServerParameters::try_from_server_bytes(raw_params).ok()?;
+                let params = ServerParameters::parse_from_bytes(raw_params).ok()?;
                 Some((params, keys.into()))
             }
             _ => None,
@@ -156,7 +156,7 @@ impl ClientTlsSession {
             .expect("Parameters must be known at this point");
         let mut parameters = parameters.lock_guard()?;
         let remebered = parameters.remembered().cloned();
-        let params = ServerParameters::try_from_server_bytes(raw_params)?;
+        let params = ServerParameters::parse_from_bytes(raw_params)?;
         self.zero_rtt = Some(
             matches!(remebered, Some(remembered) if remembered.is_0rtt_accepted(&params))
                 && matches!(handshake_kind, rustls::HandshakeKind::Resumed),
@@ -217,7 +217,7 @@ impl ServerTlsSession {
         parameters: &ArcParameters,
         zero_rtt_keys: &ArcZeroRttKeys,
     ) -> Result<(), Error> {
-        let client_params = ClientParameters::try_from_bytes(
+        let client_params = ClientParameters::parse_from_bytes(
             self.tls_conn
                 .quic_transport_parameters()
                 .expect("Client parameters must be present in ClientHello"),

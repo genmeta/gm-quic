@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use super::FrameType;
 use crate::{
-    error::{ErrorKind as TransportErrorKind, QuicError as TransportError},
+    error::{ErrorKind as QuicErrorKind, QuicError},
     packet::r#type::Type,
     varint::VarInt,
 };
@@ -25,28 +25,28 @@ pub enum Error {
     ParseError(FrameType, String),
 }
 
-impl From<Error> for TransportError {
+impl From<Error> for QuicError {
     fn from(e: Error) -> Self {
         tracing::error!("   Cause by: parse frame error {e}");
         match e {
             // An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
             Error::NoFrames => {
-                Self::with_default_fty(TransportErrorKind::ProtocolViolation, e.to_string())
+                Self::with_default_fty(QuicErrorKind::ProtocolViolation, e.to_string())
             }
             Error::IncompleteType(_) => {
-                Self::with_default_fty(TransportErrorKind::FrameEncoding, e.to_string())
+                Self::with_default_fty(QuicErrorKind::FrameEncoding, e.to_string())
             }
             Error::InvalidType(_) => {
-                Self::with_default_fty(TransportErrorKind::FrameEncoding, e.to_string())
+                Self::with_default_fty(QuicErrorKind::FrameEncoding, e.to_string())
             }
             Error::WrongType(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
+                Self::new(QuicErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
             Error::IncompleteFrame(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
+                Self::new(QuicErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
             Error::ParseError(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
+                Self::new(QuicErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
         }
     }
@@ -93,32 +93,32 @@ mod tests {
     #[test]
     fn test_error_conversion_to_transport_error() {
         let cases = vec![
-            (Error::NoFrames, TransportErrorKind::ProtocolViolation),
+            (Error::NoFrames, QuicErrorKind::ProtocolViolation),
             (
                 Error::IncompleteType("test".to_string()),
-                TransportErrorKind::FrameEncoding,
+                QuicErrorKind::FrameEncoding,
             ),
             (
                 Error::InvalidType(VarInt::from_u32(0x1f)),
-                TransportErrorKind::FrameEncoding,
+                QuicErrorKind::FrameEncoding,
             ),
             (
                 Error::WrongType(FrameType::Ping, Type::Long(V1(Ver1::INITIAL))),
-                TransportErrorKind::FrameEncoding,
+                QuicErrorKind::FrameEncoding,
             ),
             (
                 Error::IncompleteFrame(FrameType::Ping, "incomplete".to_string()),
-                TransportErrorKind::FrameEncoding,
+                QuicErrorKind::FrameEncoding,
             ),
             (
                 Error::ParseError(FrameType::Ping, "parse error".to_string()),
-                TransportErrorKind::FrameEncoding,
+                QuicErrorKind::FrameEncoding,
             ),
         ];
 
         for (error, expected_kind) in cases {
-            let transport_error: TransportError = error.into();
-            assert_eq!(transport_error.kind(), expected_kind);
+            let quic_error: QuicError = error.into();
+            assert_eq!(quic_error.kind(), expected_kind);
         }
     }
 
