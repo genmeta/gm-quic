@@ -7,7 +7,7 @@ use qbase::{
     frame::AckFrame,
     net::tx::Signals,
     packet::{InvalidPacketNumber, PacketNumber},
-    util::IndexDeque,
+    util::{IndexDeque, IndexError},
     varint::{VARINT_MAX, VarInt},
 };
 use tokio::time::{Duration, Instant};
@@ -112,10 +112,11 @@ impl RcvdJournal {
         if let Some(record) = self.queue.get_mut(pn) {
             assert!(matches!(record, State::Empty));
             *record = State::PacketReceived(now, ack_time, expire_time);
-        } else {
-            self.queue
-                .insert(pn, State::PacketReceived(now, ack_time, expire_time))
-                .expect("packet number never exceed limit");
+        } else if let Err(e @ IndexError::ExceedLimit(..)) = self
+            .queue
+            .insert(pn, State::PacketReceived(now, ack_time, expire_time))
+        {
+            panic!("packet number never exceed limit: {e}")
         }
         if self.earliest_not_ack_time.is_none() {
             self.earliest_not_ack_time = Some((pn, now));
