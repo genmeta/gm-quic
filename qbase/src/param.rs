@@ -605,7 +605,7 @@ mod tests {
     fn test_validate_remote_params() {
         // Test invalid max_udp_payload_size
         assert_eq!(
-            ClientParameters::try_from_bytes(&[
+            ClientParameters::parse_from_bytes(&[
                 1, 1, 0, // max_idle_timeout
                 3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
                 4, 1, 0, // initial_max_data
@@ -623,7 +623,7 @@ mod tests {
             Err(QuicError::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
-                "parameter 0x3: Parameter MaxUdpPayloadSize out of bounds 1200 ..= 65527: 1000",
+                "MaxUdpPayloadSize's value 1000 is out of bounds 1200..=65527",
             ))
         );
     }

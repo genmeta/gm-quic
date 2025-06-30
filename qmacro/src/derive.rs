@@ -57,12 +57,12 @@ pub fn quic_parameters(item: TokenStream) -> Result<TokenStream2, Error> {
     Ok(quote! {
         // TODO: try from
         impl ::core::convert::TryFrom<VarInt> for #enum_name {
-            type Error = VarInt;
+            type Error = Error;
 
             fn try_from(value: VarInt) -> Result<Self, Self::Error> {
                 Ok(match value.into_inner() {
                     #try_from_varint_match_arms
-                    unknown => return Err(value)
+                    unknown => return Err(Error::UnknownParameterId(value))
                 })
             }
         }

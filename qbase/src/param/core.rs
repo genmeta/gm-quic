@@ -1,7 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData, time::Duration};
 
 use bytes::Bytes;
-use derive_more::{Display, From, TryInto, TryIntoError};
+use derive_more::{From, TryInto, TryIntoError};
 
 use super::{error::Error, prefered_address::PreferredAddress};
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     varint::{VARINT_MAX, VarInt},
 };
 
-#[derive(Debug, Display, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterValueType {
     VarInt,
     Boolean,
@@ -161,7 +161,7 @@ impl TryFrom<ParameterValue> for String {
 
 #[repr(u64)]
 // qmacro::TransportParameter
-#[derive(qmacro::ParameterId, Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(qmacro::ParameterId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParameterId {
     #[param(value_type = ConnectionId)]
     OriginalDestinationConnectionId = 0x0000,
