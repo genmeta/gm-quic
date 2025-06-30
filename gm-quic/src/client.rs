@@ -49,7 +49,7 @@ pub struct QuicClient {
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     tls_config: TlsClientConfig,
-    token_sink: Option<Arc<dyn TokenSink>>,
+    token_sink: Arc<dyn TokenSink>,
 }
 
 impl QuicClient {
@@ -97,9 +97,9 @@ impl QuicClient {
     fn new_connection(
         &self,
         server_name: String,
-        server_ep: EndpointAddr,
+        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
     ) -> io::Result<Arc<Connection>> {
-        let quic_iface = match &self.bind_interfaces {
+        let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &self.bind_interfaces {
             None => {
                 let bind_addr: BindAddr = match server_ep.kind() {
                     AddrKind::Internet(Family::V4) => "inet://0.0.0.0/alloc".into(),
@@ -110,34 +110,62 @@ impl QuicClient {
                         ));
                     }
                 };
-                QuicInterfaces::global()
-                    .insert(bind_addr.clone(), self.quic_iface_factory.clone())?
+                Ok(vec![QuicInterfaces::global().insert(
+                    bind_addr.clone(),
+                    self.quic_iface_factory.clone(),
+                )?])
             }
-            Some(bind_interfaces) => bind_interfaces
+            Some(bind_interfaces) => Ok(bind_interfaces
                 .iter()
-                .find(|entry| entry.key().kind() == server_ep.kind())
+                .filter(|entry| entry.key().kind() == server_ep.kind())
                 .map(|entry| entry.value().clone())
-                .ok_or(io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    "No suitable address available",
-                ))?,
+                .collect()),
         };
 
-        let local_addr = quic_iface.real_addr()?;
-        let link = Link::new(local_addr, *server_ep);
-        //  TODO: 是否要outer addr，agent addr
-        let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
+        let mut error_accumulator = vec![];
+        let local_binds = server_eps
+            .into_iter()
+            .map(ToEndpointAddr::to_endpoint_addr)
+            .flat_map(|server_ep| {
+                select_or_bind_ifaces(&server_ep)
+                    // bind inet://xx/alloc error
+                    .map_err(|e| {
+                        error_accumulator
+                            .push(format!("Failed to bind suitable for {server_ep}: {e:?}"))
+                    })
+                    .ok()
+                    .and_then(|ifaces| match ifaces {
+                        ifaces if ifaces.is_empty() => {
+                            error_accumulator
+                                .push(format!("No suitable bind interface for {server_ep}"));
+                            None
+                        }
+                        ifaces => Some(ifaces.into_iter().filter_map(move |iface| {
+                            let real_addr = iface.real_addr().ok()?;
+                            let link = Link::new(real_addr, *server_ep);
+                            let pathway = Pathway::new(EndpointAddr::direct(real_addr), server_ep);
+                            Some((iface, link, pathway))
+                        })),
+                    })
+            })
+            .flatten()
+            .collect::<Vec<_>>();
 
-        let token_sink = self
-            .token_sink
-            .clone()
-            .unwrap_or_else(|| Arc::new(NoopTokenRegistry));
+        if local_binds.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!(
+                    "No suitable bind interface and failed to bind suitable interfaces for server {server_name}: {}",
+                    error_accumulator.join(", ")
+                ),
+            ));
+        }
 
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
         let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
-            Connection::new_client(server_name.clone(), token_sink)
+            Connection::new_client(server_name.clone(), self.token_sink.clone())
                 .with_parameters(self.parameters.clone())
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
@@ -180,7 +208,10 @@ impl QuicClient {
             }
         });
 
-        connection.add_path(quic_iface.bind_addr(), link, pathway)??;
+        for (iface, link, pathway) in local_binds {
+            connection.add_path(iface.bind_addr(), link, pathway)??;
+        }
+
         Ok(connection)
     }
 
@@ -217,19 +248,18 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: impl Into<String>,
-        server_ep: impl ToEndpointAddr,
+        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
-        let server_ep = server_ep.to_endpoint_addr();
         if self.reuse_connection {
             match Self::reuseable_connections().entry(server_name.clone()) {
                 dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().clone()),
                 dashmap::Entry::Vacant(vacant_entry) => Ok(vacant_entry
-                    .insert(self.new_connection(server_name, server_ep)?)
+                    .insert(self.new_connection(server_name, server_eps)?)
                     .clone()),
             }
         } else {
-            self.new_connection(server_name, server_ep)
+            self.new_connection(server_name, server_eps)
         }
     }
 }
@@ -605,7 +635,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),
-            token_sink: self.token_sink,
+            token_sink: self.token_sink.unwrap_or(Arc::new(NoopTokenRegistry)),
         }
     }
 }

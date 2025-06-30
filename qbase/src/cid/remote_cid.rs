@@ -79,6 +79,12 @@ where
         }
     }
 
+    fn initial_dcid(&self) -> Option<ConnectionId> {
+        self.cid_deque
+            .get(0)
+            .and_then(|opt| opt.as_ref().map(|(_, cid, _)| *cid))
+    }
+
     /// Receive a [`NewConnectionIdFrame`] from peer.
     ///
     /// Add the new connection id to the deque, and retire the old cids before
@@ -250,6 +256,10 @@ where
     /// should be updated based on the scid in the response packet.
     pub fn revise_initial_dcid(&self, initial_dcid: ConnectionId) {
         self.0.lock().unwrap().revise_initial_dcid(initial_dcid);
+    }
+
+    pub fn initial_dcid(&self) -> Option<ConnectionId> {
+        self.0.lock().unwrap().initial_dcid()
     }
 
     /// Apply for a new connection ID, which is used when the Path is created.

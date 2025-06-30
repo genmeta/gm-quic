@@ -1,4 +1,7 @@
-use std::{ops::Deref, sync::Arc};
+use std::{
+    ops::Deref,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 pub use qbase::{
     cid::ConnectionId,
@@ -381,7 +384,10 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             tls_session: TlsSession::Server(tls_session),
             initial_keys,
             data_space,
-            sepcific: SpecificComponents::Server { odcid_router_entry },
+            sepcific: SpecificComponents::Server {
+                odcid_router_entry,
+                using_odcid: Arc::new(AtomicBool::new(true)),
+            },
             qlogger: Arc::new(NoopLogger),
         }
     }
