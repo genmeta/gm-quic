@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use qbase::{error::Error, net::route::Link};
+use qbase::{error::Error, net::route::Link, role::Role};
 use qevent::{
     quic::{
         Owner,
@@ -67,7 +67,7 @@ impl ArcConnState {
             });
 
             match components.role() {
-                qbase::sid::Role::Client => {
+                Role::Client => {
                     let lock_guard = components.parameters.lock_guard();
                     if let Some(local_parameters) =
                         lock_guard.as_ref().ok().and_then(|p| p.client())
@@ -78,7 +78,7 @@ impl ArcConnState {
                         })
                     }
                 }
-                qbase::sid::Role::Server => {
+                Role::Server => {
                     let lock_guard = components.parameters.lock_guard();
                     if let Some(local_parameters) =
                         lock_guard.as_ref().ok().and_then(|p| p.server())

@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use qbase::{
     error::Error,
     frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
-    sid::Role,
+    role::Role,
 };
 use qcongestion::HandshakeStatus;
 

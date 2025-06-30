@@ -47,7 +47,7 @@ pub fn be_parameter(
     let (remain, len) = be_varint(remain)?;
     let (remain, value) = match id.map(|id| id.value_type()).unwrap_or(ParameterType::Bytes) {
         ParameterType::VarInt => map(be_varint, ParameterValue::VarInt).parse(remain)?,
-        ParameterType::Flag => (remain, ParameterValue::Enabled),
+        ParameterType::Boolean => (remain, ParameterValue::True),
         ParameterType::Bytes => map(take(len.into_inner() as usize), |bytes| {
             Bytes::copy_from_slice(bytes).into()
         })
@@ -83,7 +83,7 @@ pub trait WriteParameter {
         self.put_varint_parameter(id, &value);
     }
 
-    fn put_flag_parameter(&mut self, id: ParameterId);
+    fn put_bool_parameter(&mut self, id: ParameterId);
 
     fn put_preferred_address_parameter(&mut self, id: ParameterId, addr: &PreferredAddress);
 
@@ -96,7 +96,7 @@ pub trait WriteParameter {
             ParameterValue::Bytes(bytes) => self.put_bytes_parameter(id, bytes),
             ParameterValue::ConnectionId(cid) => self.put_cid_parameter(id, cid),
             ParameterValue::Duration(dur) => self.put_duration_parameter(id, dur),
-            ParameterValue::Enabled => self.put_flag_parameter(id),
+            ParameterValue::True => self.put_bool_parameter(id),
             ParameterValue::PreferredAddress(addr) => {
                 self.put_preferred_address_parameter(id, addr)
             }
@@ -120,7 +120,7 @@ impl<T: bytes::BufMut> WriteParameter for T {
         self.put_connection_id(cid);
     }
 
-    fn put_flag_parameter(&mut self, id: ParameterId) {
+    fn put_bool_parameter(&mut self, id: ParameterId) {
         self.put_parameter_id(id);
         self.put_varint(&VarInt::from_u32(0));
     }

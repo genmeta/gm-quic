@@ -16,7 +16,8 @@ use qbase::{
     error::Error,
     net::tx::ArcSendWakers,
     param::{ArcParameters, ParameterId, Parameters},
-    sid::{Role, handy::DemandConcurrency},
+    role::Role,
+    sid::handy::DemandConcurrency,
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::HandshakeStatus;

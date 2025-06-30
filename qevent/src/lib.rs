@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{Display, From, Into};
-use qbase::{cid::ConnectionId, sid::Role, util::DescribeData};
+use qbase::{cid::ConnectionId, role::Role, util::DescribeData};
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 

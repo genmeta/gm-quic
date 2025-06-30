@@ -14,8 +14,9 @@ use qbase::{
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     param::{ArcParameters, ParameterId, core::Parameters},
+    role::Role,
     sid::{
-        ControlStreamsConcurrency, Dir, Role, StreamId, StreamIds,
+        ControlStreamsConcurrency, Dir, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
     },
     varint::VarInt,

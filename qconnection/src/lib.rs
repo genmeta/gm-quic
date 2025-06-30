@@ -57,7 +57,8 @@ use qbase::{
         route::{Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
-    sid::{Role, StreamId},
+    role::Role,
+    sid::StreamId,
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qevent::{

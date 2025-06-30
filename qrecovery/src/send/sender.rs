@@ -623,7 +623,7 @@ impl<TX> ArcSender<TX> {
 
 #[cfg(test)]
 mod tests {
-    use qbase::sid::{Dir, Role};
+    use qbase::{role::Role, sid::Dir};
 
     use super::*;
 
