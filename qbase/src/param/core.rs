@@ -1,13 +1,18 @@
 use std::{collections::HashMap, marker::PhantomData, time::Duration};
 
 use bytes::Bytes;
-use derive_more::{From, TryInto, TryIntoError};
+use derive_more::{Display, From, TryInto, TryIntoError};
 
-use super::prefered_address::PreferredAddress;
-use crate::{cid::ConnectionId, role, token::ResetToken, varint::VarInt};
+use super::{error::Error, prefered_address::PreferredAddress};
+use crate::{
+    cid::ConnectionId,
+    role::*,
+    token::ResetToken,
+    varint::{VARINT_MAX, VarInt},
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParameterType {
+#[derive(Debug, Display, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterValueType {
     VarInt,
     Boolean,
     Bytes,
@@ -26,6 +31,20 @@ pub enum ParameterValue {
     ConnectionId(ConnectionId),
     ResetToken(ResetToken),
     PreferredAddress(PreferredAddress),
+}
+
+impl ParameterValue {
+    pub fn value_type(&self) -> ParameterValueType {
+        match self {
+            ParameterValue::VarInt(_) => ParameterValueType::VarInt,
+            ParameterValue::True => ParameterValueType::Boolean,
+            ParameterValue::Bytes(_) => ParameterValueType::Bytes,
+            ParameterValue::Duration(_) => ParameterValueType::Duration,
+            ParameterValue::ConnectionId(_) => ParameterValueType::ConnectionId,
+            ParameterValue::ResetToken(_) => ParameterValueType::ResetToken,
+            ParameterValue::PreferredAddress(_) => ParameterValueType::PreferredAddress,
+        }
+    }
 }
 
 impl From<u32> for ParameterValue {
@@ -142,7 +161,7 @@ impl TryFrom<ParameterValue> for String {
 
 #[repr(u64)]
 // qmacro::TransportParameter
-#[derive(qmacro::ParameterId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(qmacro::ParameterId, Debug, Display, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParameterId {
     #[param(value_type = ConnectionId)]
     OriginalDestinationConnectionId = 0x0000,
@@ -172,7 +191,7 @@ pub enum ParameterId {
     DisableActiveMigration = 0x000c,
     #[param(value_type = PreferredAddress)]
     PreferredAddress = 0x000d,
-    #[param(value_type = VarInt, default = 2u32)]
+    #[param(value_type = VarInt, default = 2u32, bound = 2..=VARINT_MAX)]
     ActiveConnectionIdLimit = 0x000e,
     #[param(value_type = ConnectionId)]
     InitialSourceConnectionId = 0x000f,
@@ -188,14 +207,20 @@ pub enum ParameterId {
 }
 
 impl ParameterId {
-    pub fn belong_to(self, role: role::Role) -> bool {
+    pub fn belong_to(self, role: Role) -> Result<(), Error> {
         match self {
             ParameterId::OriginalDestinationConnectionId
             | ParameterId::StatelessResetToken
             | ParameterId::PreferredAddress
-            | ParameterId::RetrySourceConnectionId => role == role::Role::Server,
-            ParameterId::ClientName => role == role::Role::Client,
-            _ => true,
+            | ParameterId::RetrySourceConnectionId
+                if role != Role::Server =>
+            {
+                Err(Error::InvalidParameterId(self, role))
+            }
+            ParameterId::ClientName if role != Role::Client => {
+                Err(Error::InvalidParameterId(self, role))
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -230,25 +255,14 @@ impl<Role> Parameters<Role> {
     }
 }
 
-pub type ClientParameters = Parameters<role::Client>;
-
-impl ClientParameters {
+impl<R: IntoRole + Default> Parameters<R> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn set(&mut self, id: ParameterId, value: impl Into<ParameterValue>) -> Result<(), String> {
-        if matches!(
-            id,
-            ParameterId::OriginalDestinationConnectionId
-                | ParameterId::StatelessResetToken
-                | ParameterId::PreferredAddress
-                | ParameterId::RetrySourceConnectionId
-        ) {
-            return Err(format!(
-                "Parameter {id:?} is not allowed in client parameters",
-            ));
-        }
+    pub fn set(&mut self, id: ParameterId, value: impl Into<ParameterValue>) -> Result<(), Error> {
+        let role: Role = R::into_role();
+        id.belong_to(role)?;
         let value = value.into();
         id.validate(&value)?;
         self.map.insert(id, value);
@@ -256,25 +270,10 @@ impl ClientParameters {
     }
 }
 
-pub type ServerParameters = Parameters<role::Server>;
+pub type ClientParameters = Parameters<Client>;
+pub type ServerParameters = Parameters<Server>;
 
 impl ServerParameters {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set(&mut self, id: ParameterId, value: impl Into<ParameterValue>) -> Result<(), String> {
-        if matches!(id, ParameterId::ClientName) {
-            return Err(format!(
-                "Parameter {id:?} is not allowed in server parameters",
-            ));
-        }
-        let value = value.into();
-        id.validate(&value)?;
-        self.map.insert(id, value);
-        Ok(())
-    }
-
     #[inline]
     pub fn is_0rtt_accepted(&self, server_params: &ServerParameters) -> bool {
         [

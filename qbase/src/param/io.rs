@@ -9,7 +9,7 @@ use crate::{
     frame::FrameType,
     param::{
         core::{
-            ClientParameters, ParameterId, ParameterType, ParameterValue, Parameters,
+            ClientParameters, ParameterId, ParameterValue, ParameterValueType, Parameters,
             ServerParameters,
         },
         prefered_address::{PreferredAddress, WirtePreferredAddress, be_preferred_address},
@@ -45,26 +45,29 @@ pub fn be_parameter(
 
     let (remain, id) = be_parameter_id(input)?;
     let (remain, len) = be_varint(remain)?;
-    let (remain, value) = match id.map(|id| id.value_type()).unwrap_or(ParameterType::Bytes) {
-        ParameterType::VarInt => map(be_varint, ParameterValue::VarInt).parse(remain)?,
-        ParameterType::Boolean => (remain, ParameterValue::True),
-        ParameterType::Bytes => map(take(len.into_inner() as usize), |bytes| {
+    let (remain, value) = match id
+        .map(|id| id.value_type())
+        .unwrap_or(ParameterValueType::Bytes)
+    {
+        ParameterValueType::VarInt => map(be_varint, ParameterValue::VarInt).parse(remain)?,
+        ParameterValueType::Boolean => (remain, ParameterValue::True),
+        ParameterValueType::Bytes => map(take(len.into_inner() as usize), |bytes| {
             Bytes::copy_from_slice(bytes).into()
         })
         .parse(remain)?,
-        ParameterType::Duration => map(be_varint, |varint| {
+        ParameterValueType::Duration => map(be_varint, |varint| {
             let millis = varint.into_inner();
             Duration::from_millis(millis).into()
         })
         .parse(remain)?,
-        ParameterType::ResetToken => {
+        ParameterValueType::ResetToken => {
             map(be_reset_token, ParameterValue::ResetToken).parse(remain)?
         }
-        ParameterType::ConnectionId => {
+        ParameterValueType::ConnectionId => {
             let parser = |input| be_connection_id_with_len(input, len.into_inner() as usize);
             map(parser, ParameterValue::ConnectionId).parse(remain)?
         }
-        ParameterType::PreferredAddress => {
+        ParameterValueType::PreferredAddress => {
             map(be_preferred_address, ParameterValue::PreferredAddress).parse(remain)?
         }
     };

@@ -76,7 +76,7 @@ pub fn quic_parameters(item: TokenStream) -> Result<TokenStream2, Error> {
         }
 
         impl #enum_name {
-            pub fn validate(&self, value: &ParameterValue) -> Result<(), String> {
+            pub fn validate(&self, value: &ParameterValue) -> Result<(), Error> {
                 match self {
                     #validate_match_arms
                 }
@@ -89,7 +89,7 @@ pub fn quic_parameters(item: TokenStream) -> Result<TokenStream2, Error> {
                 }
             }
 
-            pub fn value_type(&self) -> ParameterType {
+            pub fn value_type(&self) -> ParameterValueType {
                 match self {
                     #value_type_match_arms
                 }
@@ -135,22 +135,28 @@ impl ParamArgs {
 
         let value_type = format_ident!("{}", format!("{:?}", self.value_type));
         let mut convert_value = quote! {
-            let ParameterValue::#value_type(value) = value else {
-                return Err(format!("Parameter {} expect type {}, but got {:?}", stringify!(#id), stringify!(#value_type), value));
+            let ParameterValue::#value_type(v) = value else {
+                return Err(Error::InvalidValueType(
+                    Self::#id,
+                    value.value_type(),
+                ));
             };
         };
 
         convert_value.extend(match self.value_type {
-            ParamType::VarInt => quote! { value.into_inner() },
-            ParamType::Duration => quote! { value.as_millis() as u64 },
+            ParamType::VarInt => quote! { v.into_inner() },
+            ParamType::Duration => quote! { v.as_millis() as u64 },
             _ => return Err("Bound is only applicable to VarInt or Duration types"),
         });
 
-        let bound_string = bound.to_token_stream().to_string();
         Ok(quote! {
             let value = { #convert_value };
             if !(#bound).contains(&value) {
-                return Err(format!("Parameter {} out of bounds {}: {:?}", stringify!(#id), #bound_string, value));
+                return Err(Error::OutOfBounds (
+                    Self::#id,
+                    value,
+                    #bound,
+                ));
             }
         })
     }
@@ -164,7 +170,7 @@ impl ParamArgs {
 
     fn gen_value_type(&self) -> TokenStream2 {
         let value_type = format_ident!("{}", format!("{:?}", self.value_type));
-        quote! { ParameterType::#value_type }
+        quote! { ParameterValueType::#value_type }
     }
 }
 

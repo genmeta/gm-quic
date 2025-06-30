@@ -13,13 +13,14 @@ use crate::{
 };
 
 pub mod core;
+pub mod error;
 pub mod handy;
 pub mod io;
 pub mod prefered_address;
 
 pub use self::{
     core::{
-        ClientParameters, ParameterId, ParameterType, ParameterValue, PeerParameters,
+        ClientParameters, ParameterId, ParameterValue, ParameterValueType, PeerParameters,
         ServerParameters,
     },
     io::*,
