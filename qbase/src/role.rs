@@ -56,6 +56,11 @@ impl ops::Not for Role {
     }
 }
 
+pub trait IntoRole {
+    /// Convert the type into a [`Role`].
+    fn into_role() -> Role;
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Client;
 
@@ -65,11 +70,23 @@ impl From<Client> for Role {
     }
 }
 
+impl IntoRole for Client {
+    fn into_role() -> Role {
+        Role::Client
+    }
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Server;
 
 impl From<Server> for Role {
     fn from(_: Server) -> Self {
+        Role::Server
+    }
+}
+
+impl IntoRole for Server {
+    fn into_role() -> Role {
         Role::Server
     }
 }
