@@ -310,13 +310,20 @@ impl Parameters {
     /// the server will echo it back to the client.
     ///
     /// This value is well suited to be used to identify a connection.
-    fn get_origin_dcid(&self) -> ConnectionId {
+    pub fn get_origin_dcid(&self) -> ConnectionId {
         match self.requirements {
             Requirements::Client { origin_dcid, .. } => origin_dcid,
             Requirements::Server { .. } => self
                 .server
                 .get(ParameterId::OriginalDestinationConnectionId)
                 .expect("this value must be set"),
+        }
+    }
+
+    pub fn initial_scid_from_peer(&self) -> Option<ConnectionId> {
+        match self.requirements {
+            Requirements::Client { initial_scid, .. } => initial_scid,
+            Requirements::Server { initial_scid, .. } => initial_scid,
         }
     }
 
@@ -455,43 +462,6 @@ impl ArcParameters {
     //         params.set_retry_scid(cid);
     //     }
     // }
-
-    pub fn get_origin_dcid(&self) -> Result<ConnectionId, Error> {
-        let guard = self.0.lock().unwrap();
-        let params = guard.as_ref().map_err(Clone::clone)?;
-        Ok(params.get_origin_dcid())
-    }
-
-    pub fn initial_scid_from_peer(&self) -> Result<Option<ConnectionId>, Error> {
-        let guard = self.0.lock().unwrap();
-        let parameters = guard.as_ref().map_err(Clone::clone)?;
-        Ok(match parameters.requirements {
-            Requirements::Client { initial_scid, .. } => initial_scid,
-            Requirements::Server { initial_scid, .. } => initial_scid,
-        })
-    }
-
-    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) -> Result<(), QuicError> {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(params) = guard.deref_mut() {
-            params.initial_scid_from_peer_need_equal(cid)?;
-        }
-        Ok(())
-    }
-
-    pub fn retry_scid_from_server_need_equal(&self, cid: ConnectionId) {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(params) = guard.deref_mut() {
-            params.retry_scid_from_server_need_equal(cid);
-        }
-    }
-
-    pub fn is_remote_params_ready(&self) -> Result<bool, Error> {
-        (self.0.lock().unwrap())
-            .as_mut()
-            .map(|params| params.is_remote_params_ready())
-            .map_err(|e| e.clone())
-    }
 
     /// When some connection error occurred, convert this parameters
     /// into error state.

@@ -8,13 +8,13 @@ use qbase::net::tx::Signals;
 use qinterface::QuicIO;
 
 use crate::{
-    ArcDcidCell, ArcLocalCids, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,
+    ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,
 };
 
 pub struct Burst {
     path: Arc<super::Path>,
-    local_cids: ArcLocalCids,
-    dcid: ArcDcidCell,
+    cid_registry: CidRegistry,
+    dcid_cell: ArcDcidCell,
     spin: bool,
     spaces: Spaces,
     send_gate: ArcSendGate,
@@ -24,8 +24,8 @@ impl super::Path {
     pub fn new_burst(self: &Arc<Self>, components: &Components) -> Burst {
         Burst {
             path: self.clone(),
-            local_cids: components.cid_registry.local.clone(),
-            dcid: components.cid_registry.remote.apply_dcid(),
+            cid_registry: components.cid_registry.clone(),
+            dcid_cell: components.cid_registry.remote.apply_dcid(),
             spin: false,
             spaces: components.spaces.clone(),
             send_gate: components.send_gate.clone(),
@@ -56,14 +56,24 @@ impl Burst {
             &mut buffer[..max_segment_size]
         });
 
-        let scid = self.local_cids.initial_scid();
-        let transaction = Transaction::prepare(
-            scid.unwrap_or_default(),
-            &self.dcid,
-            self.path.cc(),
-            &self.path.anti_amplifier,
-            self.path.tx_waker.clone(),
-        )?;
+        let transaction = match (
+            self.cid_registry.local.initial_scid(),
+            self.cid_registry.remote.initial_dcid(),
+        ) {
+            (Some(scid), Some(dcid)) => Transaction::prepare_handshaking(
+                scid,
+                dcid,
+                self.path.cc(),
+                &self.path.anti_amplifier,
+            )
+            .map(Some)?,
+            _ => Transaction::prepare(
+                &self.dcid_cell,
+                self.path.cc(),
+                &self.path.anti_amplifier,
+                self.path.tx_waker.clone(),
+            )?,
+        };
         if transaction.is_none() {
             return Ok(None);
         }
@@ -77,7 +87,6 @@ impl Burst {
     ) -> io::Result<Result<Vec<usize>, Signals>> {
         use core::ops::ControlFlow::*;
 
-        let scid = self.local_cids.initial_scid();
         let reversed_size = 0; // TODO
         let max_segments = self.path.interface.max_segments()?;
 
@@ -85,7 +94,7 @@ impl Burst {
             .map(move |segment| {
                 let buffer_size = segment.len().min(self.path.mtu() as _);
                 let buffer = &mut segment[..buffer_size];
-                if scid.is_some() {
+                if transaction.has_scid() {
                     transaction.load_spaces(
                         &mut buffer[reversed_size..],
                         &self.spaces,
@@ -132,7 +141,7 @@ impl Burst {
                         segments.push(segment.len());
                         Continue(Ok(segments))
                     }
-                    (Err(_), _) => unreachable!(),
+                    (Err(_), _) => unreachable!("segments should not be Err in this context"),
                 },
             );
         Ok(result)
@@ -142,7 +151,9 @@ impl Burst {
         loop {
             let (buffers, transaction) = match self.prepare(buffers) {
                 Ok(Some((buffers, transaction))) => (buffers, transaction),
-                Ok(None) => return std::future::pending().await, // 发送任务停止但是不结束
+                // When a connection error occurs, we should not try to load the segment again.
+                // We should also not end the send task, otherwise the path will be removed.
+                Ok(None) => return std::future::pending().await,
                 Err(signals) => {
                     self.path.tx_waker.wait_for(signals).await;
                     continue; // try load again
@@ -151,7 +162,7 @@ impl Burst {
             match self.load_segments(buffers, transaction)? {
                 Ok(segments_lens) => {
                     debug_assert!(!segments_lens.is_empty());
-                    return io::Result::Ok(segments_lens);
+                    return Ok(segments_lens);
                 }
                 Err(signals) => {
                     self.path.tx_waker.wait_for(signals).await;
@@ -164,7 +175,19 @@ impl Burst {
     pub async fn launch(self) -> io::Result<()> {
         let mut buffers = vec![];
 
+        // Anti port scan
         self.send_gate.request_permit().await;
+
+        // Support for multipath handshake
+        if !self.spaces.data().is_one_rtt_ready() {
+            for crypto_stream in [
+                self.spaces.initial().crypto_stream(),
+                self.spaces.handshake().crypto_stream(),
+            ] {
+                // Reset the unacknowledged data in the send buffer
+                crypto_stream.outgoing().resend_unacked();
+            }
+        }
 
         loop {
             let segment_lens = self.burst(&mut buffers).await?;

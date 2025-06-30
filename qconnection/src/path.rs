@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -108,14 +108,14 @@ impl Components {
                             path.validate().await
                         } else {
                             path.skip_validation();
-                            true
+                            Ok(())
                         }
                     };
                     let reason: String = tokio::select! {
-                        false = validate => "failed to validate".into(),
-                        true = idle_timeout => "idle timeout".into(),
-                        Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
-                        _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
+                        Err(e) = validate =>format!("Path validate failed: {e}"),
+                        true = idle_timeout => "Idle timeout".into(),
+                        Err(e) = burst.launch() => format!("Failed to send packets: {e:?}"),
+                        Err(e) = path.defer_idle_timeout(defer_idle_timeout) => format!("Failed to defer idle timeout: Path validate failed: {e}"),
                     };
                     Err(reason)
                 }
@@ -174,7 +174,7 @@ impl Path {
         self.validated.store(true, Ordering::Release);
     }
 
-    pub async fn validate(&self) -> bool {
+    pub async fn validate(&self) -> Result<(), &'static str> {
         let challenge = PathChallengeFrame::random();
         for _ in 0..3 {
             let pto = self.cc().get_pto(qbase::Epoch::Data);
@@ -182,15 +182,15 @@ impl Path {
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {
                     self.anti_amplifier.grant();
-                    return true;
+                    return Ok(());
                 }
                 // 外部发生变化，导致路径验证任务作废
-                Ok(None) => return false,
+                Ok(None) => return Err("connection closed"),
                 // 超时或者收到不对的response，按"停-等协议"，继续再发一次Challenge，最多3次
                 _ => continue,
             }
         }
-        false
+        Err("timeout")
     }
 
     pub fn cc(&self) -> &ArcCC {

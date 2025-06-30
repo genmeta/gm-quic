@@ -44,15 +44,13 @@ impl HeartbeatConfig {
 }
 
 impl super::Path {
-    pub async fn defer_idle_timeout(&self, config: HeartbeatConfig) {
+    pub async fn defer_idle_timeout(&self, config: HeartbeatConfig) -> Result<(), &'static str> {
         loop {
             let idle_duration = self.last_active_time.lock().unwrap().elapsed();
             if idle_duration > config.duration {
                 core::future::pending::<()>().await;
             } else if idle_duration > config.interval {
-                if !self.validate().await {
-                    return;
-                }
+                self.validate().await?;
             } else {
                 tokio::time::sleep(config.interval.saturating_sub(idle_duration)).await;
             }

@@ -130,7 +130,7 @@ impl<TX> ReadySender<TX> {
 
     pub(super) fn revise_max_stream_data(&mut self, zero_rtt_rejected: bool, max_stream_data: u64) {
         if zero_rtt_rejected {
-            self.sndbuf.reset_sent();
+            self.sndbuf.resend_sent();
             self.max_stream_data = 0
         }
         self.update_window(max_stream_data);
@@ -326,7 +326,7 @@ impl<TX> SendingSender<TX> {
 
     pub(super) fn revise_max_stream_data(&mut self, zero_rtt_rejected: bool, max_stream_data: u64) {
         if zero_rtt_rejected {
-            self.sndbuf.reset_sent();
+            self.sndbuf.resend_sent();
             self.tx_wakers.wake_all_by(Signals::WRITTEN);
             self.max_stream_data = 0
         }
@@ -506,7 +506,7 @@ impl<TX> DataSentSender<TX> {
 
     pub(super) fn revise_max_stream_data(&mut self, zero_rtt_rejected: bool, max_stream_data: u64) {
         if zero_rtt_rejected {
-            self.sndbuf.reset_sent();
+            self.sndbuf.resend_sent();
             self.tx_wakers.wake_all_by(Signals::WRITTEN);
             self.max_stream_data = max_stream_data;
         }

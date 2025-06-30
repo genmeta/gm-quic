@@ -170,13 +170,13 @@ async fn download(
     save: Option<&PathBuf>,
     reuse: bool,
 ) -> Result<(), Error> {
-    let (server_name, server_addr) =
+    let (server_name, server_addrs) =
         lookup(uri.authority().ok_or("authority must be present in uri")?).await?;
 
     let file_path = uri.path().strip_prefix('/');
     let file_path = file_path.ok_or_else(|| format!("invalid path `{}`", uri.path()))?;
 
-    let connection = client.connect(server_name, server_addr)?;
+    let connection = client.connect(server_name, server_addrs)?;
     let (_sid, (mut response, mut request)) = connection
         .open_bi_stream()
         .await?
@@ -199,12 +199,16 @@ async fn download(
     Ok(())
 }
 
-async fn lookup(auth: &Authority) -> Result<(&str, SocketAddr), Error> {
+async fn lookup(auth: &Authority) -> Result<(&str, Vec<SocketAddr>), Error> {
     let mut addrs = tokio::net::lookup_host((auth.host(), auth.port_u16().unwrap_or(443)))
         .await?
         .collect::<Vec<_>>();
-    addrs.sort_by_key(|a| a.is_ipv4());
-    let addr = *addrs.first().ok_or("dns found no ipv6 addresses")?;
-    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addr);
-    Ok((auth.host(), addr))
+    // Sort addresses to ensure IPv6 addresses are preferred over IPv4.
+    addrs.sort_by(|a, b| match (a, b) {
+        (SocketAddr::V4(_), SocketAddr::V6(_)) => std::cmp::Ordering::Greater,
+        (SocketAddr::V6(_), SocketAddr::V4(_)) => std::cmp::Ordering::Less,
+        (a, b) => a.cmp(b),
+    });
+    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addrs);
+    Ok((auth.host(), addrs))
 }
