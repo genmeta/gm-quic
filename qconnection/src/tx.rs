@@ -4,7 +4,7 @@ use bytes::BufMut;
 use derive_more::Deref;
 use qbase::{
     Epoch,
-    cid::ConnectionId,
+    cid::{BorrowedCid, ConnectionId},
     frame::{
         AckFrame, CryptoFrame, DatagramFrame, EncodeFrame, FrameFeture, PathChallengeFrame,
         PathResponseFrame, PingFrame, ReliableFrame, StreamFrame,
@@ -29,7 +29,7 @@ use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    ArcDcidCell, GuaranteedFrame,
+    ArcDcidCell, ArcReliableFrameDeque, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };
@@ -371,17 +371,35 @@ where
     }
 }
 
+pub enum Dcid<'a> {
+    Borrowed(BorrowedCid<'a, ArcReliableFrameDeque>),
+    Owned(ConnectionId),
+}
+
+impl Deref for Dcid<'_> {
+    type Target = ConnectionId;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Dcid::Borrowed(borrowed) => borrowed.deref(),
+            Dcid::Owned(owned) => owned,
+        }
+    }
+}
+
 pub struct Transaction<'a> {
     // empty scid -> no scid -> transaction cannot be used for loading initial, handshake, zero-RTT
-    scid: ConnectionId,
-    dcid: Box<dyn Deref<Target = ConnectionId> + Send + Sync + 'a>,
+    scid: Option<ConnectionId>,
+    dcid: Dcid<'a>,
     cc: &'a ArcCC,
     constraints: Constraints,
 }
 
 impl<'a> Transaction<'a> {
     pub fn prepare(
-        dcid: &'a ArcDcidCell,
+        initial_scid: Option<ConnectionId>,
+        initial_dcid: Option<ConnectionId>,
+        dcid_cell: &'a ArcDcidCell,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         tx_waker: ArcSendWaker,
@@ -390,63 +408,35 @@ impl<'a> Transaction<'a> {
         let Some(credit_limit) = anti_amplifier.balance()? else {
             return Ok(None);
         };
-        let Some(dcid) = dcid.borrow_cid(tx_waker)?.map(Box::new) else {
+
+        let Some(borrow_dcid) = dcid_cell.borrow_cid(tx_waker).transpose() else {
             return Ok(None);
         };
 
+        let dcid = borrow_dcid
+            .map(Dcid::Borrowed)
+            .or_else(|signals| initial_dcid.ok_or(signals).map(Dcid::Owned))?;
+
         let constraints = Constraints::new(credit_limit, send_quota);
         Ok(Some(Self {
-            scid: Default::default(),
+            scid: initial_scid,
             dcid,
             cc,
             constraints,
         }))
     }
 
-    pub fn prepare_handshaking(
-        scid: ConnectionId,
-        dcid: ConnectionId,
-        cc: &'a ArcCC,
-        anti_amplifier: &'a AntiAmplifier,
-    ) -> Result<Self, Signals> {
-        let send_quota = cc.send_quota()?;
-        let Some(credit_limit) = anti_amplifier.balance()? else {
-            return Err(Signals::TRANSPORT);
-        };
-        let constraints = Constraints::new(credit_limit, send_quota);
-
-        struct Deref<T>(T);
-
-        impl<T> core::ops::Deref for Deref<T> {
-            type Target = T;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        Ok(Self {
-            scid,
-            dcid: Box::new(Deref(dcid)),
-            cc,
-            constraints,
-        })
-    }
-
     pub fn has_scid(&self) -> bool {
-        !self.scid.is_empty()
+        self.scid.is_some()
     }
 
     pub fn scid(&self) -> ConnectionId {
-        assert!(
-            self.has_scid(),
-            "SCID should not be empty when loading packets"
-        );
         self.scid
+            .expect("SCID should not be empty when loading packets")
     }
 
     pub fn dcid(&self) -> ConnectionId {
-        **self.dcid
+        *self.dcid
     }
 
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
