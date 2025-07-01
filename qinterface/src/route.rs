@@ -89,7 +89,15 @@ impl Router {
 
     pub fn deliver(&self, packet: Packet, way: Way) {
         if let Err((packet, way)) = self.try_deliver(packet, way) {
-            (self.on_unrouted.lock().unwrap())(packet, way)
+            // For packets that cannot be routed, this likely indicates a new connection.
+            // In some cases, multiple threads (e.g., A and B) may be waiting for the lock,
+            // and both would cause the server to create separate new connections.
+            let mut on_unrouted = self.on_unrouted.lock().unwrap();
+            // Therefore, we retry routing here to allow thread B to route its packet
+            // to the connection created by thread A, instead of creating another new connection.
+            if let Err((packet, way)) = self.try_deliver(packet, way) {
+                (on_unrouted)(packet, way)
+            }
         }
     }
 
