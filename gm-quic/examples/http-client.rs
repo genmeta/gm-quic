@@ -48,7 +48,7 @@ struct Options {
     uris: Vec<Uri>,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     let options = Options::parse();
     tracing_subscriber::registry()

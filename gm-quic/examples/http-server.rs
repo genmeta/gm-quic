@@ -109,8 +109,7 @@ async fn run(options: Options) -> Result<(), Error> {
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_alpns(options.alpns)
-        .listen(options.backlog)
-        .await;
+        .listen(options.backlog);
     listeners.add_server(
         options.certs.server_name.as_str(),
         options.certs.cert.as_path(),

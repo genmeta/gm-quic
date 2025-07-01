@@ -88,7 +88,7 @@ fn main() {
     // 测试日志是否工作
     tracing::info!("Tracing initialized successfully");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         // default value 512 out of macos ulimit
         .max_blocking_threads(256)
@@ -124,8 +124,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_alpns(options.alpns)
-        .listen(options.backlog)
-        .await;
+        .listen(options.backlog);
     listeners.add_server(
         server_name.as_str(),
         cert.as_path(),
