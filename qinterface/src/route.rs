@@ -69,7 +69,7 @@ impl Router {
             Signpost::from(*dcid)
         } else {
             match *pathway.local() {
-                RealAddr::Inet(socket_addr) => Signpost::from(socket_addr),
+                RealAddr::Internet(socket_addr) => Signpost::from(socket_addr),
                 _ => {
                     tracing::warn!(
                         "receive a packet with empty dcid, and failed to fallback to zero length cid"

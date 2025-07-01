@@ -166,7 +166,7 @@ impl From<SocketAddr> for PathEndpointInfo {
 impl From<RealAddr> for PathEndpointInfo {
     fn from(value: RealAddr) -> Self {
         match value {
-            RealAddr::Inet(socket_addr) => socket_addr.into(),
+            RealAddr::Internet(socket_addr) => socket_addr.into(),
             _ => crate::build!(Self {}),
         }
     }

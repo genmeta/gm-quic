@@ -140,7 +140,7 @@ pub trait WriteRealAddr {
 impl<T: BufMut> WriteRealAddr for T {
     fn put_socket_addr(&mut self, addr: &RealAddr) {
         match addr {
-            RealAddr::Inet(sock_addr) => {
+            RealAddr::Internet(sock_addr) => {
                 self.put_u16(sock_addr.port());
                 match sock_addr.ip() {
                     IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
@@ -157,7 +157,7 @@ impl<T: BufMut> WriteRealAddr for T {
 pub fn be_socket_addr(input: &[u8], family: Family) -> IResult<&[u8], RealAddr> {
     flat_map(be_u16, |port| {
         map(be_ip_addr(family), move |ip| {
-            RealAddr::Inet(SocketAddr::new(ip, port))
+            RealAddr::Internet(SocketAddr::new(ip, port))
         })
     })
     .parse(input)

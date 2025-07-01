@@ -39,10 +39,10 @@ pub struct ServerListening {
 impl ServerListeningBuilder {
     pub fn address(&mut self, socket_addr: RealAddr) -> &mut Self {
         match socket_addr {
-            RealAddr::Inet(SocketAddr::V4(addr)) => {
+            RealAddr::Internet(SocketAddr::V4(addr)) => {
                 self.ip_v4(addr.ip().to_string()).port_v4(addr.port())
             }
-            RealAddr::Inet(SocketAddr::V6(addr)) => {
+            RealAddr::Internet(SocketAddr::V6(addr)) => {
                 self.ip_v6(addr.ip().to_string()).port_v6(addr.port())
             }
             _ => self,
@@ -84,7 +84,7 @@ impl ConnectionStartedBuilder {
     /// helper method to set the source and destination socket addresses
     pub fn socket(&mut self, (src, dst): (RealAddr, RealAddr)) -> &mut Self {
         match (src, dst) {
-            (RealAddr::Inet(src), RealAddr::Inet(dst)) => {
+            (RealAddr::Internet(src), RealAddr::Internet(dst)) => {
                 debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
                 self.ip_version(if src.is_ipv4() {
                     IpVersion::V4

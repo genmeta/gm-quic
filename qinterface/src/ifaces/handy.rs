@@ -8,7 +8,7 @@ mod qudp {
 
     use bytes::BytesMut;
     use qbase::net::{
-        addr::{BindAddr, RealAddr, SocketBindAddr},
+        addr::{BindAddr, BindUri, RealAddr},
         route::{Link, Pathway, ToEndpointAddr},
     };
     use qudp::BATCH_SIZE;
@@ -24,10 +24,10 @@ mod qudp {
     impl UdpSocketController {
         pub fn bind(bind_addr: BindAddr) -> io::Result<Self> {
             let socket_addr = match &bind_addr {
-                BindAddr::Socket(SocketBindAddr::Inet(inet_bind_addr)) => {
+                BindAddr::Socket(BindUri::Internet(inet_bind_addr)) => {
                     SocketAddr::from(*inet_bind_addr)
                 }
-                BindAddr::Socket(SocketBindAddr::Iface(iface_bind_addr)) => {
+                BindAddr::Socket(BindUri::Interface(iface_bind_addr)) => {
                     InterfacesMonitor::global()
                         .get(iface_bind_addr)
                         .ok_or_else(|| {
@@ -58,7 +58,7 @@ mod qudp {
         }
 
         fn real_addr(&self) -> io::Result<RealAddr> {
-            self.inner.local_addr().map(RealAddr::Inet)
+            self.inner.local_addr().map(RealAddr::Internet)
         }
 
         fn max_segments(&self) -> io::Result<usize> {
