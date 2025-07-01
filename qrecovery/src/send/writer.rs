@@ -10,6 +10,23 @@ use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
 
+pub trait CancelStream {
+    /// Cancels the stream with the given error code.
+    ///
+    /// If all data has been sent and acknowledged by the peer, or the stream has been reset, this
+    /// method will do nothing.
+    ///
+    /// Otherwise, a [`RESET_STREAM frame`] will be sent to the peer, and the stream will be reset,
+    /// neither new data nor lost data will be sent.
+    ///
+    /// Unlike TCP, canceling a QUIC stream needs an error code, which is used to indicate
+    /// the reason for the cancellation. The error code should be a `u64` value,
+    /// defined by the application protocol using QUIC, such as HTTP/3 or gRPC.
+    ///
+    /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
+    fn cancel(&mut self, err_code: u64);
+}
+
 /// The writer part of a QUIC stream.
 ///
 /// This struct implements the [`AsyncWrite`] trait, allowing you to write data to the stream.
@@ -80,7 +97,7 @@ impl<TX> Writer<TX> {
     }
 }
 
-impl<TX> Writer<TX>
+impl<TX> CancelStream for Writer<TX>
 where
     TX: SendFrame<ResetStreamFrame>,
 {
@@ -93,7 +110,7 @@ where
     /// neither new data nor lost data will be sent.
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn cancel(&mut self, err_code: u64) {
+    fn cancel(&mut self, err_code: u64) {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
 
         let mut sender = self.inner.sender();

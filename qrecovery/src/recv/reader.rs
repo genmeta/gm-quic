@@ -14,6 +14,23 @@ use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
 
+pub trait StopSending {
+    /// Tell peer to stop sending data with the given error code.
+    ///
+    /// If all data has been received (the stream has closed), or the stream has been reset, this method will do
+    /// nothing.
+    ///
+    /// Otherwise, a [`STOP_SENDING frame`] will be sent to the peer, and then the stream will be reset by peer,
+    /// neither new data nor lost data will be sent.
+    ///
+    /// Unlike TCP, stopping a QUIC stream needs an error code, which is used to indicate
+    /// the reason for the stopping. The error code should be a `u64` value,
+    /// defined by the application protocol using QUIC, such as HTTP/3 or gRPC.
+    ///
+    /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
+    fn stop(&mut self, error_code: u64);
+}
+
 /// The reader part of a QUIC stream.
 ///
 /// A QUIC stream is *reliable*, *ordered*, and *flow-controlled*.
@@ -84,7 +101,7 @@ impl<TX> Reader<TX> {
     }
 }
 
-impl<TX> Reader<TX>
+impl<TX> StopSending for Reader<TX>
 where
     TX: SendFrame<StopSendingFrame>,
 {
@@ -96,7 +113,7 @@ where
     /// Otherwise, a [`STOP_SENDING frame`] will be sent to the peer, and then the stream will be reset by peer.
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
-    pub fn stop(&mut self, error_code: u64) {
+    fn stop(&mut self, error_code: u64) {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
 
         debug_assert!(error_code <= VARINT_MAX);

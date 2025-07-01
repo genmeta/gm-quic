@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::Buf;
-use gm_quic::{StreamReader, StreamWriter};
+use gm_quic::{CancelStream, StopSending, StreamReader, StreamWriter};
 use h3::quic::StreamErrorIncoming;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
