@@ -1,4 +1,4 @@
-use std::ops::{Deref, Range};
+use std::ops::Range;
 
 use bytes::BufMut;
 use derive_more::Deref;
@@ -371,26 +371,11 @@ where
     }
 }
 
-pub enum Dcid<'a> {
-    Borrowed(BorrowedCid<'a, ArcReliableFrameDeque>),
-    Owned(ConnectionId),
-}
-
-impl Deref for Dcid<'_> {
-    type Target = ConnectionId;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Dcid::Borrowed(borrowed) => borrowed.deref(),
-            Dcid::Owned(owned) => owned,
-        }
-    }
-}
-
 pub struct Transaction<'a> {
-    // empty scid -> no scid -> transaction cannot be used for loading initial, handshake, zero-RTT
     scid: Option<ConnectionId>,
-    dcid: Dcid<'a>,
+    initial_dcid: Option<ConnectionId>,
+    borrowed_dcid: Result<BorrowedCid<'a, ArcReliableFrameDeque>, Signals>,
+    path_validated: bool,
     cc: &'a ArcCC,
     constraints: Constraints,
 }
@@ -400,6 +385,7 @@ impl<'a> Transaction<'a> {
         initial_scid: Option<ConnectionId>,
         initial_dcid: Option<ConnectionId>,
         dcid_cell: &'a ArcDcidCell,
+        path_validaed: bool,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         tx_waker: ArcSendWaker,
@@ -409,18 +395,23 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         };
 
-        let Some(borrow_dcid) = dcid_cell.borrow_cid(tx_waker).transpose() else {
+        let Some(borrowed_dcid) = dcid_cell.borrow_cid(tx_waker).transpose() else {
             return Ok(None);
         };
 
-        let dcid = borrow_dcid
-            .map(Dcid::Borrowed)
-            .or_else(|signals| initial_dcid.ok_or(signals).map(Dcid::Owned))?;
+        if let Err(signals) = borrowed_dcid.as_ref() {
+            if initial_dcid.is_none() {
+                // 如果没有提供初始DCID，且借用失败，则无法创建Transaction
+                return Err(*signals);
+            }
+        }
 
         let constraints = Constraints::new(credit_limit, send_quota);
         Ok(Some(Self {
             scid: initial_scid,
-            dcid,
+            initial_dcid,
+            borrowed_dcid,
+            path_validated: path_validaed,
             cc,
             constraints,
         }))
@@ -436,7 +427,12 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn dcid(&self) -> ConnectionId {
-        *self.dcid
+        self.borrowed_dcid
+            .as_deref()
+            .ok()
+            .copied()
+            .or(self.initial_dcid)
+            .expect("DCID should not be empty when loading packets")
     }
 
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
@@ -484,7 +480,7 @@ impl Transaction<'_> {
         let mut containing_initial = false;
         let mut signals = Signals::empty();
 
-        let load_initial = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+        let load_initial = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
             spaces
                 .initial()
                 .try_assemble_initial_packet(tx, &mut buf[buf_range.clone()])
@@ -496,7 +492,7 @@ impl Transaction<'_> {
                 })
         };
 
-        let load_0rtt = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+        let load_0rtt = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
             spaces
                 .data()
                 .try_assemble_0rtt_packet(tx, path_challenge_frames, &mut buf[buf_range.clone()])
@@ -508,7 +504,7 @@ impl Transaction<'_> {
                 })
         };
 
-        let load_handshake = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+        let load_handshake = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
             spaces
                 .handshake()
                 .try_assemble_packet(tx, &mut buf[buf_range.clone()])
@@ -520,7 +516,7 @@ impl Transaction<'_> {
                 })
         };
 
-        let load_data = |tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+        let load_1rtt_data = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
             spaces
                 .data()
                 .try_assemble_1rtt_packet(
@@ -538,13 +534,48 @@ impl Transaction<'_> {
                 })
         };
 
+        let load_validate = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
+            spaces
+                .data()
+                .try_assemble_probe_packet(
+                    tx,
+                    spin,
+                    path_challenge_frames,
+                    path_response_frames,
+                    &mut buf[buf_range.clone()],
+                )
+                .map(|packet| LevelState {
+                    epoch: Epoch::Data,
+                    packet,
+                    ack: None,
+                    buf_range,
+                })
+        };
+
         #[allow(clippy::complexity)]
-        let loads: [&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _; 3] =
-            if spaces.data().is_one_rtt_ready() {
-                [&load_initial, &load_handshake, &load_data]
-            } else {
-                [&load_initial, &load_0rtt, &load_handshake]
-            };
+        let mut loads: Vec<&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _> = vec![];
+
+        if self.has_scid() {
+            loads.push(load_initial);
+            loads.push(load_handshake);
+        }
+
+        if spaces.data().is_one_rtt_keys_ready() {
+            match self.borrowed_dcid {
+                Ok(_) => {
+                    if self.path_validated {
+                        if spaces.data().is_one_rtt_ready() {
+                            loads.push(load_1rtt_data)
+                        }
+                    } else {
+                        loads.push(load_validate);
+                    }
+                }
+                Err(s) => signals |= s,
+            }
+        } else if self.has_scid() {
+            loads.push(load_0rtt);
+        }
 
         for load in loads {
             // calculate the buffer size of this data packet
@@ -675,7 +706,7 @@ impl Transaction<'_> {
             })
     }
 
-    pub fn load_ping(
+    pub fn load_one_ping(
         &mut self,
         buf: &mut [u8],
         spin: SpinBit,

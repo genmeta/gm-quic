@@ -60,11 +60,9 @@ impl Burst {
         let Some(transaction) = Transaction::prepare(
             self.cid_registry.local.initial_scid(),
             // Not using initial DCID after 1RTT ready
-            self.cid_registry
-                .remote
-                .initial_dcid()
-                .filter(|_| !self.spaces.data().is_one_rtt_ready()),
+            self.cid_registry.remote.initial_dcid(),
             &self.dcid_cell,
+            self.path.validated.load(Ordering::Acquire),
             self.path.cc(),
             &self.path.anti_amplifier,
             self.path.tx_waker.clone(),
@@ -90,37 +88,24 @@ impl Burst {
             .map(move |segment| {
                 let buffer_size = segment.len().min(self.path.mtu() as _);
                 let buffer = &mut segment[..buffer_size];
-                if transaction.has_scid() {
-                    transaction.load_spaces(
+                transaction
+                    .load_spaces(
                         &mut buffer[reversed_size..],
                         &self.spaces,
                         self.spin.into(),
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
                     )
-                } else if self.path.validated.load(Ordering::Acquire) {
-                    transaction.load_one_rtt(
-                        &mut buffer[reversed_size..],
-                        self.spin.into(),
-                        &self.path.challenge_sndbuf,
-                        &self.path.response_sndbuf,
-                        self.spaces.data(),
-                    )
-                } else {
-                    transaction.load_validation(
-                        &mut buffer[reversed_size..],
-                        self.spin.into(),
-                        &self.path.challenge_sndbuf,
-                        &self.path.response_sndbuf,
-                        self.spaces.data(),
-                    )
-                }
-                .or_else(|signals| {
-                    transaction
-                        .load_ping(&mut buffer[reversed_size..], self.spin.into(), &self.spaces)
-                        .map_err(|s| s | signals)
-                })
-                .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
+                    .or_else(|signals| {
+                        transaction
+                            .load_one_ping(
+                                &mut buffer[reversed_size..],
+                                self.spin.into(),
+                                &self.spaces,
+                            )
+                            .map_err(|s| s | signals)
+                    })
+                    .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
             })
             .try_fold(
                 Ok(Vec::with_capacity(max_segments)),
@@ -181,6 +166,7 @@ impl Burst {
                 self.spaces.handshake().crypto_stream(),
             ] {
                 // Reset the unacknowledged data in the send buffer
+                // 加载时 try_reload
                 crypto_stream.outgoing().resend_unacked();
             }
         }

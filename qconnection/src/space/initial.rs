@@ -247,6 +247,7 @@ pub fn spawn_deliver_and_parse(
                     return Ok(());
                 };
 
+                // TODO: 错误处理
                 let Ok(path) = components.get_or_try_create_path(bind_addr, link, pathway, true)
                 else {
                     packet.drop_on_conenction_closed();

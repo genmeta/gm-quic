@@ -386,6 +386,10 @@ impl DataSpace {
         self.one_rtt_ready.try_get().is_some()
     }
 
+    pub fn is_one_rtt_keys_ready(&self) -> bool {
+        self.one_rtt_keys.get_local_keys().is_some()
+    }
+
     pub fn is_zero_rtt_avaliable(&self) -> bool {
         self.zero_rtt_keys.get_encrypt_keys().is_some()
     }
