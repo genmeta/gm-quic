@@ -7,4 +7,4 @@ mod writer;
 pub use outgoing::Outgoing;
 pub use sender::ArcSender;
 pub use sndbuf::SendBuf;
-pub use writer::Writer;
+pub use writer::{CancelStream, Writer};

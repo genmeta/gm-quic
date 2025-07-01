@@ -13,10 +13,12 @@ pub mod prelude {
         frame::ConnectionCloseFrame,
         net::{addr::*, route::*},
         param::ParameterId,
+        role::{Client, IntoRole, Role, Server},
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
     pub use qinterface::QuicIO;
+    pub use qrecovery::{recv::StopSending, send::CancelStream};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 
