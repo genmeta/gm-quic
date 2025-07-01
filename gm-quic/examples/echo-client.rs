@@ -51,7 +51,7 @@ struct Options {
     auth: Authority,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     let options = Options::parse();
     tracing_subscriber::registry()
@@ -95,7 +95,7 @@ async fn run(options: Options) -> Result<(), Error> {
         .without_cert()
         .with_parameters(client_parameters())
         .with_qlog(qlogger)
-        .reuse_connection()
+        // .reuse_connection()
         .enable_sslkeylog()
         .enable_0rtt()
         .build();

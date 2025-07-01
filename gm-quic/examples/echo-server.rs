@@ -52,7 +52,7 @@ struct Certs {
     key: PathBuf,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
         // .with(console_subscriber::spawn())
@@ -82,8 +82,7 @@ async fn run(options: Options) -> io::Result<()> {
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
         .enable_0rtt()
-        .listen(options.backlog)
-        .await;
+        .listen(options.backlog);
     listeners.add_server(
         options.certs.server_name.as_str(),
         options.certs.cert.as_path(),

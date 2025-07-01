@@ -36,7 +36,7 @@ qevent = { workspace = true, features = ["enabled"] }
 rcgen = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-std"] }
+tokio = { workspace = true, features = ["fs", "io-std", "rt-multi-thread"] }
 
 # console-subscriber = "0.4"
 
