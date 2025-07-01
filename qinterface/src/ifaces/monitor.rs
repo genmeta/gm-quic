@@ -6,7 +6,7 @@ use std::{
 };
 
 use netdev::Interface;
-use qbase::net::address::{IfaceBindAddr, IpFamily};
+use qbase::net::{Family, address::IfaceBindAddr};
 use tokio::sync::watch;
 
 struct Devices(RwLock<HashMap<String, Interface>>);
@@ -103,11 +103,11 @@ impl InterfacesMonitor {
         self.devices()
             .get(bind_addr.device_name())
             .and_then(|interface| match bind_addr.ip_family() {
-                IpFamily::V4 => interface
+                Family::V4 => interface
                     .ipv4
                     .first()
                     .map(|ipnet| SocketAddr::new(ipnet.addr().into(), bind_addr.port().into())),
-                IpFamily::V6 => interface
+                Family::V6 => interface
                     .ipv6
                     .iter()
                     .map(|ipnet| ipnet.addr())
