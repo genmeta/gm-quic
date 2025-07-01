@@ -4,7 +4,7 @@ use qbase::{
     error::QuicError,
     frame::ConnectionCloseFrame,
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, Pathway},
     },
 };

@@ -7,7 +7,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },

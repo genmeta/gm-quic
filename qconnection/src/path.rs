@@ -11,7 +11,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },

@@ -4,7 +4,7 @@ use derive_builder::Builder;
 use derive_more::From;
 use qbase::{
     frame::{ConnectionCloseFrame, QuicCloseFrame},
-    net::address::RealAddr,
+    net::addr::RealAddr,
 };
 
 use super::{

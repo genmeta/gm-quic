@@ -10,7 +10,7 @@ use qbase::{
         ReceiveFrame, SendFrame,
     },
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },

@@ -12,7 +12,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use qbase::net::{
-    address::{BindAddr, RealAddr},
+    addr::{BindAddr, RealAddr},
     route::PacketHeader,
 };
 

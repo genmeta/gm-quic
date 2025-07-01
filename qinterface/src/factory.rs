@@ -1,6 +1,6 @@
 use std::io;
 
-use qbase::net::address::BindAddr;
+use qbase::net::addr::BindAddr;
 
 use crate::QuicIO;
 

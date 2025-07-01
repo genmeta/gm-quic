@@ -5,7 +5,7 @@ use std::{
 };
 
 use qbase::net::{
-    address::{BindAddr, RealAddr},
+    addr::{BindAddr, RealAddr},
     route::PacketHeader,
 };
 

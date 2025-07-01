@@ -11,7 +11,7 @@ use qbase::{
         Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
-    net::address::RealAddr,
+    net::addr::RealAddr,
     packet::header::{
         GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
