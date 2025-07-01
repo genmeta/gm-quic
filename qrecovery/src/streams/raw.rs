@@ -197,7 +197,7 @@ where
         // 不一定所有流都允许被发送，比如，0rtt被拒绝max_streams会倒缩，此时大于max_streams的流就不允许被发送
         let remote_role = self.stream_ids.remote.role();
         let max_streams_bidi = self.stream_ids.local.opened_streams(Dir::Bi);
-        let max_streams_uni = self.stream_ids.local.opened_streams(Dir::Bi);
+        let max_streams_uni = self.stream_ids.local.opened_streams(Dir::Uni);
         let stream_allowed = |sid: &StreamId| {
             sid.role() == remote_role
                 || sid.dir() == Dir::Bi && sid.id() < max_streams_bidi
