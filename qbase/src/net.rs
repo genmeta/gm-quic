@@ -3,7 +3,7 @@ use std::{fmt::Display, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod address;
+pub mod addr;
 pub mod route;
 pub mod tx;
 

@@ -1,6 +1,6 @@
 use qbase::{
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, Pathway},
     },
     packet::{

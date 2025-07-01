@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use handy::UdpSocketController;
 use qbase::net::{
     Family,
-    address::{AddrKind, BindAddr},
+    addr::{AddrKind, BindAddr},
 };
 use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};

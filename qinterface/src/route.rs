@@ -10,7 +10,7 @@ use qbase::{
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::{
-        address::{BindAddr, RealAddr},
+        addr::{BindAddr, RealAddr},
         route::{Link, Pathway},
     },
     packet::GetDcid,

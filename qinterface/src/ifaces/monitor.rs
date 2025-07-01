@@ -6,7 +6,7 @@ use std::{
 };
 
 use netdev::Interface;
-use qbase::net::{Family, address::IfaceBindAddr};
+use qbase::net::{Family, addr::IfaceBindAddr};
 use tokio::sync::watch;
 
 struct Devices(RwLock<HashMap<String, Interface>>);

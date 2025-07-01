@@ -9,7 +9,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use qbase::net::address::{BindAddr, RealAddr, SocketBindAddr};
+use qbase::net::addr::{BindAddr, RealAddr, SocketBindAddr};
 use tokio::task::JoinHandle;
 
 use crate::{

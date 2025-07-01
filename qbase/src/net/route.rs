@@ -2,7 +2,7 @@ use std::{fmt, net::SocketAddr, ops::Deref, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use super::address::{ParseRealAddrError, RealAddr};
+use super::addr::{ParseRealAddrError, RealAddr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {

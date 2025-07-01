@@ -11,7 +11,7 @@ pub mod prelude {
     pub use qbase::{
         cid::ConnectionId,
         frame::ConnectionCloseFrame,
-        net::{address::*, route::*},
+        net::{addr::*, route::*},
         param::ParameterId,
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
@@ -53,7 +53,7 @@ use qbase::{
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
-        address::BindAddr,
+        addr::BindAddr,
         route::{Link, Pathway},
     },
     param::{ArcParameters, ParameterId},

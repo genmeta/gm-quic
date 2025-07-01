@@ -8,7 +8,7 @@ mod qudp {
 
     use bytes::BytesMut;
     use qbase::net::{
-        address::{BindAddr, RealAddr, SocketBindAddr},
+        addr::{BindAddr, RealAddr, SocketBindAddr},
         route::{Link, Pathway, ToEndpointAddr},
     };
     use qudp::BATCH_SIZE;
