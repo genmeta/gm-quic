@@ -24,11 +24,9 @@ use qbase::net::{
 /// Read its documentation for more information.
 ///
 /// Wrapping a new [`QuicIO`] is easy,
-/// you can refer to the [`UdpSocketController`] implementation in the [`handy`] module.
+/// you can refer to the implementations in the [`iface::handy`] module.
 ///
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
-/// [`UdpSocketController`]: crate::iface::handy::UdpSocketController
-/// [`handy`]: crate::iface::handy
 pub trait QuicIO: Send + Sync {
     /// Get the bind address that this interface is bound to
     ///

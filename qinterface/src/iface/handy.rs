@@ -135,36 +135,32 @@ pub mod unsuppoeted {
 
     use crate::QuicIO;
 
-    pub struct UnsuppoetedQuicIO(pub(crate) BindAddr);
+    pub struct Unsuppoeted(());
 
-    fn unsupported() -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "qudp feature is not enabled or target platform is not supported, you should use your own ProductQuicIO implementation, not DEFAULT_QUIC_IO_FACTORY",
-        )
-    }
-
-    impl UnsuppoetedQuicIO {
+    impl Unsuppoeted {
         pub fn bind(_: BindAddr) -> io::Result<Self> {
-            Err(unsupported())
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "qudp feature is not enabled or target platform is not supported, you should use your own ProductQuicIO implementation, not DEFAULT_QUIC_IO_FACTORY",
+            ))
         }
     }
 
-    impl QuicIO for UnsuppoetedQuicIO {
+    impl QuicIO for Unsuppoeted {
         fn bind_addr(&self) -> BindAddr {
-            self.0.clone()
+            unreachable!()
         }
 
         fn real_addr(&self) -> io::Result<RealAddr> {
-            Err(unsupported())
+            unreachable!()
         }
 
         fn max_segment_size(&self) -> io::Result<usize> {
-            Err(unsupported())
+            unreachable!()
         }
 
         fn max_segments(&self) -> io::Result<usize> {
-            Err(unsupported())
+            unreachable!()
         }
 
         fn poll_send(
@@ -173,7 +169,7 @@ pub mod unsuppoeted {
             _: &[io::IoSlice],
             _: PacketHeader,
         ) -> Poll<io::Result<usize>> {
-            Poll::Ready(Err(unsupported()))
+            unreachable!()
         }
 
         fn poll_recv(
@@ -182,7 +178,7 @@ pub mod unsuppoeted {
             _: &mut [BytesMut],
             _: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
-            Poll::Ready(Err(unsupported()))
+            unreachable!()
         }
     }
 }
