@@ -25,7 +25,7 @@ pub mod prelude {
     #[allow(unused_imports)]
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
-        pub use qinterface::ifaces::handy::*;
+        pub use qinterface::iface::handy::*;
     }
 
     pub use crate::{
@@ -68,7 +68,7 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
-    ifaces::QuicInterfaces,
+    iface::QuicInterfaces,
     queue::RcvdPacketQueue,
     route::{self, RouterEntry},
 };

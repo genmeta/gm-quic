@@ -30,7 +30,7 @@ use qevent::{
     telemetry::{Instrument, Log, handy::NoopLogger},
 };
 pub use qinterface::route::{Router, Way};
-use qinterface::{ifaces::QuicInterfaces, queue::RcvdPacketQueue};
+use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
 use tracing::Instrument as _;

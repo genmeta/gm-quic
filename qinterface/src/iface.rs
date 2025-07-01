@@ -1,16 +1,25 @@
 use std::{
     io,
+    ops::Deref,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
 };
 
+use derive_more::Deref;
 use qbase::net::{
     addr::{BindAddr, RealAddr},
     route::PacketHeader,
 };
+use tokio::task::JoinHandle;
 
-use super::QuicInterfaces;
-use crate::QuicIO;
+use crate::{QuicIO, factory::ProductQuicIO, route::Router};
+
+pub mod global;
+pub mod monitor;
+// handy（qudp）是可选的
+pub mod handy;
+
+pub use global::QuicInterfaces;
 
 pub struct RwInterface(RwLock<Box<dyn QuicIO>>);
 
@@ -106,11 +115,9 @@ impl QuicInterface {
 
 impl Drop for QuicInterface {
     fn drop(&mut self) {
-        self.ifaces
-            .interfaces
-            .remove_if(&self.bind_addr, |_, (iface_ctx, _)| {
-                Weak::ptr_eq(&Arc::downgrade(&iface_ctx.iface), &self.iface)
-            });
+        self.ifaces.remove_if(&self.bind_addr, |_, (iface_ctx, _)| {
+            Weak::ptr_eq(&Arc::downgrade(iface_ctx.deref()), &self.iface)
+        });
     }
 }
 
@@ -153,5 +160,94 @@ impl QuicIO for QuicInterface {
         hdrs: &mut [PacketHeader],
     ) -> Poll<io::Result<usize>> {
         self.borrow(|iface| iface.poll_recv(cx, pkts, hdrs))?
+    }
+}
+
+#[derive(Deref)]
+pub struct InterfaceContext {
+    bind_addr: BindAddr,
+    /// factory to rebind the interface
+    ///
+    /// factory may be changed when manually rebind
+    factory: Arc<dyn ProductQuicIO>,
+    /// the actual interface being used
+    ///
+    /// the actual interface may be changed when rebind
+    #[deref]
+    iface: Arc<RwInterface>,
+    /// recv task handle
+    task: JoinHandle<()>,
+}
+
+impl InterfaceContext {
+    pub fn new(bind_addr: BindAddr, factory: Arc<dyn ProductQuicIO>) -> io::Result<Self> {
+        let iface = factory.bind(bind_addr.clone())?;
+        let iface = Arc::new(RwInterface::from(iface));
+
+        let task = tokio::spawn({
+            let iface = Arc::downgrade(&iface);
+            let (mut bufs, mut hdrs) = (vec![], vec![]);
+            async move {
+                loop {
+                    let pkts = {
+                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                            return;
+                        };
+                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                            return;
+                        };
+                        pkts
+                    };
+                    for (pkt, way) in pkts {
+                        Router::global().deliver(pkt, way).await;
+                    }
+                }
+            }
+        });
+
+        Ok(InterfaceContext {
+            bind_addr,
+            factory,
+            iface,
+            task,
+        })
+    }
+
+    pub async fn rebind(&mut self, bind_addr: BindAddr) -> io::Result<()> {
+        self.iface.update(self.factory.bind(bind_addr.clone())?);
+
+        // abort the current task
+        self.task.abort();
+        _ = (&mut self.task).await;
+        // then spawn the new one
+        self.task = tokio::spawn({
+            let iface = Arc::downgrade(&self.iface);
+            let (mut bufs, mut hdrs) = (vec![], vec![]);
+            async move {
+                loop {
+                    let pkts = {
+                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
+                            return;
+                        };
+                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
+                            return;
+                        };
+                        pkts
+                    };
+                    for (pkt, way) in pkts {
+                        Router::global().deliver(pkt, way).await;
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+}
+
+impl Drop for InterfaceContext {
+    fn drop(&mut self) {
+        // When the context is dropped, we abort the task that is managing this interface.
+        self.task.abort();
     }
 }

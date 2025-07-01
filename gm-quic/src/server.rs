@@ -12,7 +12,7 @@ use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    ifaces::{QuicInterfaces, borrowed::QuicInterface},
+    iface::{QuicInterface, QuicInterfaces},
     route::{Router, Way},
     util::Channel,
 };
