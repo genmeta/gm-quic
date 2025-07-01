@@ -66,6 +66,8 @@ use derive_more::{From, TryInto};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::{Family, InvalidFamily};
+
 /// Network address type
 ///
 /// Represents different IP protocol family types.
@@ -73,7 +75,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AddrKind {
     /// IP address
-    Ip(IpFamily),
+    Ip(Family),
     /// Bluetooth address
     Ble,
 }
@@ -219,7 +221,7 @@ pub enum SocketBindAddr {
 }
 
 impl SocketBindAddr {
-    pub fn ip_family(&self) -> IpFamily {
+    pub fn ip_family(&self) -> Family {
         match self {
             SocketBindAddr::Iface(iface) => iface.ip_family(),
             SocketBindAddr::Inet(inet) => inet.ip_family(),
@@ -260,14 +262,14 @@ impl Display for SocketBindAddr {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IfaceBindAddr {
     device_name: String,
-    ip_family: IpFamily,
+    ip_family: Family,
     port: Port,
 }
 
 impl IfaceBindAddr {
     pub const SCHEME: &'static str = "iface";
 
-    pub fn new(device_name: impl Into<String>, ip_family: IpFamily, port: Port) -> Self {
+    pub fn new(device_name: impl Into<String>, ip_family: Family, port: Port) -> Self {
         Self {
             device_name: device_name.into(),
             ip_family,
@@ -284,7 +286,7 @@ impl IfaceBindAddr {
         &self.device_name
     }
 
-    pub fn ip_family(&self) -> IpFamily {
+    pub fn ip_family(&self) -> Family {
         self.ip_family
     }
 
@@ -321,7 +323,7 @@ impl FromStr for IfaceBindAddr {
         }
         let (device_name, ip_port) = s
             .split_once('/')
-            .ok_or(ParseIfaceBindAddrError::MissingIpFamily)?;
+            .ok_or(ParseIfaceBindAddrError::MissingFamily)?;
         let (ip_family, port) = ip_port
             .rsplit_once('/')
             .ok_or(ParseIfaceBindAddrError::MissingPort)?;
@@ -329,7 +331,7 @@ impl FromStr for IfaceBindAddr {
             device_name: device_name.to_owned(),
             ip_family: ip_family
                 .parse()
-                .map_err(ParseIfaceBindAddrError::InvalidIpFamily)?,
+                .map_err(ParseIfaceBindAddrError::InvalidFamily)?,
             port: port.parse().map_err(ParseIfaceBindAddrError::InvalidPort)?,
         })
     }
@@ -349,10 +351,10 @@ pub enum ParseIfaceBindAddrError {
     MissingDeviceName,
     /// Missing IP protocol family
     #[error("Missing IP family in interface addr")]
-    MissingIpFamily,
+    MissingFamily,
     /// Invalid IP protocol family
     #[error("Invalid IP family in interface addr: {0}")]
-    InvalidIpFamily(InvalidIpFamily),
+    InvalidFamily(InvalidFamily),
     /// Missing port number
     #[error("Missing port in interface addr")]
     MissingPort,
@@ -374,10 +376,10 @@ impl InetBindAddr {
         Self { ip, port }
     }
 
-    pub fn ip_family(&self) -> IpFamily {
+    pub fn ip_family(&self) -> Family {
         match self.ip {
-            IpAddr::V4(_) => IpFamily::V4,
-            IpAddr::V6(_) => IpFamily::V6,
+            IpAddr::V4(_) => Family::V4,
+            IpAddr::V6(_) => Family::V6,
         }
     }
 
@@ -552,47 +554,6 @@ impl Default for AllocPort {
     }
 }
 
-/// IP protocol family
-///
-/// Represents IPv4 or IPv6 protocol family.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum IpFamily {
-    /// IPv4 protocol family
-    V4,
-    /// IPv6 protocol family
-    V6,
-}
-
-impl Display for IpFamily {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IpFamily::V4 => write!(f, "v4"),
-            IpFamily::V6 => write!(f, "v6"),
-        }
-    }
-}
-
-/// Invalid IP protocol family error
-///
-/// Returned when attempting to parse an unsupported IP protocol family string.
-///
-/// Supported values: `v4`, `V4`, `v6`, `V6`
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
-#[error("Invalid IP family: {0}")]
-pub struct InvalidIpFamily(String);
-
-impl FromStr for IpFamily {
-    type Err = InvalidIpFamily;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "v4" => Ok(IpFamily::V4),
-            "v6" => Ok(IpFamily::V6),
-            invalid => Err(InvalidIpFamily(invalid.to_string())),
-        }
-    }
-}
-
 /// Concrete network address
 ///
 /// Represents concrete network addresses, currently supporting Internet socket addresses and Bluetooth addresses.
@@ -621,8 +582,8 @@ impl RealAddr {
     /// Get the IP protocol family type of the concrete address
     pub fn kind(&self) -> AddrKind {
         match self {
-            RealAddr::Inet(SocketAddr::V4(_)) => AddrKind::Ip(IpFamily::V4),
-            RealAddr::Inet(SocketAddr::V6(_)) => AddrKind::Ip(IpFamily::V6),
+            RealAddr::Inet(SocketAddr::V4(_)) => AddrKind::Ip(Family::V4),
+            RealAddr::Inet(SocketAddr::V6(_)) => AddrKind::Ip(Family::V6),
             RealAddr::Ble(_) => AddrKind::Ble,
         }
     }
@@ -716,7 +677,7 @@ mod tests {
         // Test interface address display
         let iface = BindAddr::Socket(SocketBindAddr::Iface(IfaceBindAddr::new(
             "enp17s0",
-            IpFamily::V4,
+            Family::V4,
             Port::Special(NonZeroU16::new(1234).unwrap()),
         )));
         assert_eq!(iface.to_string(), "iface://enp17s0/v4/1234");
@@ -752,7 +713,7 @@ mod tests {
         let iface: BindAddr = "iface://enp17s0/v4/5678".parse().unwrap();
         if let BindAddr::Socket(SocketBindAddr::Iface(iface_addr)) = iface {
             assert_eq!(iface_addr.device_name(), "enp17s0");
-            assert_eq!(iface_addr.ip_family(), IpFamily::V4);
+            assert_eq!(iface_addr.ip_family(), Family::V4);
             assert_eq!(
                 iface_addr.port(),
                 Port::Special(NonZeroU16::new(5678).unwrap())
@@ -854,7 +815,7 @@ mod tests {
     fn test_iface_bind_addr_display_and_parse() {
         let iface = IfaceBindAddr::new(
             "wlp18s0",
-            IpFamily::V6,
+            Family::V6,
             Port::Special(NonZeroU16::new(443).unwrap()),
         );
         assert_eq!(iface.to_string(), "iface://wlp18s0/v6/443");
@@ -889,7 +850,7 @@ mod tests {
 
         assert!(matches!(
             "iface://enp17s0".parse::<IfaceBindAddr>(),
-            Err(ParseIfaceBindAddrError::MissingIpFamily)
+            Err(ParseIfaceBindAddrError::MissingFamily)
         ));
 
         assert!(matches!(
@@ -899,7 +860,7 @@ mod tests {
 
         assert!(matches!(
             "iface://enp17s0/v7/8080".parse::<IfaceBindAddr>(),
-            Err(ParseIfaceBindAddrError::InvalidIpFamily(_))
+            Err(ParseIfaceBindAddrError::InvalidFamily(_))
         ));
 
         assert!(matches!(
@@ -997,19 +958,16 @@ mod tests {
 
     #[test]
     fn test_ip_family_display_and_parse() {
-        assert_eq!(IpFamily::V4.to_string(), "v4");
-        assert_eq!(IpFamily::V6.to_string(), "v6");
+        assert_eq!(Family::V4.to_string(), "v4");
+        assert_eq!(Family::V6.to_string(), "v6");
 
-        assert_eq!("v4".parse::<IpFamily>().unwrap(), IpFamily::V4);
-        assert_eq!("V4".parse::<IpFamily>().unwrap(), IpFamily::V4);
-        assert_eq!("v6".parse::<IpFamily>().unwrap(), IpFamily::V6);
-        assert_eq!("V6".parse::<IpFamily>().unwrap(), IpFamily::V6);
+        assert_eq!("v4".parse::<Family>().unwrap(), Family::V4);
+        assert_eq!("V4".parse::<Family>().unwrap(), Family::V4);
+        assert_eq!("v6".parse::<Family>().unwrap(), Family::V6);
+        assert_eq!("V6".parse::<Family>().unwrap(), Family::V6);
 
-        assert!(matches!("v7".parse::<IpFamily>(), Err(InvalidIpFamily(_))));
-        assert!(matches!(
-            "invalid".parse::<IpFamily>(),
-            Err(InvalidIpFamily(_))
-        ));
+        assert!(matches!("v7".parse::<Family>(), Err(InvalidFamily(_))));
+        assert!(matches!("invalid".parse::<Family>(), Err(InvalidFamily(_))));
     }
 
     #[test]
@@ -1051,7 +1009,7 @@ mod tests {
         assert_eq!(ble.to_string(), "ble://[aa, bb, cc, dd, ee, ff]");
 
         // Test kind method
-        assert_eq!(inet.kind(), AddrKind::Ip(IpFamily::V4));
+        assert_eq!(inet.kind(), AddrKind::Ip(Family::V4));
         assert_eq!(ble.kind(), AddrKind::Ble);
 
         // Test error cases
@@ -1079,16 +1037,16 @@ mod tests {
     fn test_addr_kind() {
         let v4_iface = BindAddr::Socket(SocketBindAddr::Iface(IfaceBindAddr::new(
             "eth0",
-            IpFamily::V4,
+            Family::V4,
             Port::Any,
         )));
-        assert_eq!(v4_iface.kind(), AddrKind::Ip(IpFamily::V4));
+        assert_eq!(v4_iface.kind(), AddrKind::Ip(Family::V4));
 
         let v6_inet = BindAddr::Socket(SocketBindAddr::Inet(InetBindAddr::new(
             IpAddr::V6(Ipv6Addr::LOCALHOST),
             Port::Special(NonZeroU16::new(8080).unwrap()),
         )));
-        assert_eq!(v6_inet.kind(), AddrKind::Ip(IpFamily::V6));
+        assert_eq!(v6_inet.kind(), AddrKind::Ip(Family::V6));
 
         let ble = BindAddr::Bluetooth([0; 6]);
         assert_eq!(ble.kind(), AddrKind::Ble);

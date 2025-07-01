@@ -2,7 +2,10 @@ use std::{io, sync::Arc};
 
 use dashmap::DashMap;
 use handy::UdpSocketController;
-use qbase::net::address::{AddrKind, BindAddr, IpFamily};
+use qbase::net::{
+    Family,
+    address::{AddrKind, BindAddr},
+};
 use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
@@ -99,8 +102,8 @@ impl QuicClient {
         let quic_iface = match &self.bind_interfaces {
             None => {
                 let bind_addr: BindAddr = match server_ep.kind() {
-                    AddrKind::Ip(IpFamily::V4) => "inet://0.0.0.0/alloc".into(),
-                    AddrKind::Ip(IpFamily::V6) => "inet://::/alloc".into(),
+                    AddrKind::Ip(Family::V4) => "inet://0.0.0.0/alloc".into(),
+                    AddrKind::Ip(Family::V6) => "inet://::/alloc".into(),
                     _ => {
                         return Err(io::Error::other(
                             "Failed to bind an unspecified address for this kind of endpoint address",
