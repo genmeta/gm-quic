@@ -1,8 +1,22 @@
-use std::{fmt, net::SocketAddr, ops::Deref, str::FromStr};
+use std::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    ops::Deref,
+    str::FromStr,
+};
 
+use bytes::BufMut;
+use nom::{
+    IResult, Parser,
+    combinator::{flat_map, map},
+    number::complete::{be_u16, be_u32, be_u128},
+};
 use serde::{Deserialize, Serialize};
 
-use super::addr::{ParseRealAddrError, RealAddr};
+use super::{
+    Family,
+    addr::{ParseRealAddrError, RealAddr},
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
@@ -85,67 +99,76 @@ impl FromStr for EndpointAddr {
     }
 }
 
-// pub trait WriteEndpointAddr {
-//     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
-// }
+pub trait WriteEndpointAddr {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
+}
 
-// impl<T: BufMut> WriteEndpointAddr for T {
-//     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
-//         match endpoint {
-//             EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
-//             EndpointAddr::Agent {
-//                 agent,
-//                 outer: inner,
-//             } => {
-//                 self.put_socket_addr(&agent);
-//                 self.put_socket_addr(&inner);
-//             }
-//         }
-//     }
-// }
+impl<T: BufMut> WriteEndpointAddr for T {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
+        match endpoint {
+            EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
+            EndpointAddr::Agent {
+                agent,
+                outer: inner,
+            } => {
+                self.put_socket_addr(&agent);
+                self.put_socket_addr(&inner);
+            }
+        }
+    }
+}
 
-// pub fn be_endpoint_addr(
-//     input: &[u8],
-//     is_relay: bool,
-//     is_ipv6: bool,
-// ) -> nom::IResult<&[u8], EndpointAddr> {
-//     if is_relay {
-//         let (remain, agent) = be_socket_addr(input, is_ipv6)?;
-//         let (remain, outer) = be_socket_addr(remain, is_ipv6)?;
-//         Ok((remain, EndpointAddr::Agent { agent, outer }))
-//     } else {
-//         let (remain, addr) = be_socket_addr(input, is_ipv6)?;
-//         Ok((remain, EndpointAddr::Direct { addr }))
-//     }
-// }
+pub fn be_endpoint_addr(
+    input: &[u8],
+    is_relay: bool,
+    family: Family,
+) -> nom::IResult<&[u8], EndpointAddr> {
+    if is_relay {
+        let (remain, agent) = be_socket_addr(input, family)?;
+        let (remain, outer) = be_socket_addr(remain, family)?;
+        Ok((remain, EndpointAddr::Agent { agent, outer }))
+    } else {
+        let (remain, addr) = be_socket_addr(input, family)?;
+        Ok((remain, EndpointAddr::Direct { addr }))
+    }
+}
 
-// pub trait WriteRealAddr {
-//     fn put_socket_addr(&mut self, addr: &RealAddr);
-// }
+pub trait WriteRealAddr {
+    fn put_socket_addr(&mut self, addr: &RealAddr);
+}
 
-// impl<T: BufMut> WriteRealAddr for T {
-//     fn put_socket_addr(&mut self, addr: &RealAddr) {
-//         self.put_u16(addr.port());
-//         match addr.ip() {
-//             IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
-//             IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
-//         }
-//     }
-// }
+impl<T: BufMut> WriteRealAddr for T {
+    fn put_socket_addr(&mut self, addr: &RealAddr) {
+        match addr {
+            RealAddr::Inet(sock_addr) => {
+                self.put_u16(sock_addr.port());
+                match sock_addr.ip() {
+                    IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
+                    IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
+                }
+            }
+            _ => {
+                unimplemented!("Unix socket addresses are not supported in this context");
+            }
+        }
+    }
+}
 
-// pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], RealAddr> {
-//     flat_map(be_u16, |port| {
-//         map(be_ip_addr(is_ipv6), move |ip| RealAddr::new(ip, port))
-//     })
-//     .parse(input)
-// }
+pub fn be_socket_addr(input: &[u8], family: Family) -> IResult<&[u8], RealAddr> {
+    flat_map(be_u16, |port| {
+        map(be_ip_addr(family), move |ip| {
+            RealAddr::Inet(SocketAddr::new(ip, port))
+        })
+    })
+    .parse(input)
+}
 
-// pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
-//     move |input| match is_v6 {
-//         true => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
-//         false => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
-//     }
-// }
+pub fn be_ip_addr(family: Family) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
+    move |input| match family {
+        Family::V6 => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
+        Family::V4 => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
+    }
+}
 
 pub trait ToEndpointAddr {
     fn to_endpoint_addr(self) -> EndpointAddr;
@@ -244,6 +267,15 @@ impl Link {
             src: self.dst,
             dst: self.src,
         }
+    }
+}
+
+impl From<Link> for Pathway {
+    fn from(link: Link) -> Self {
+        Pathway::new(
+            EndpointAddr::direct(link.src),
+            EndpointAddr::direct(link.dst),
+        )
     }
 }
 
