@@ -527,8 +527,9 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// If you call this multiple times, only the last `factory` will be used.
     ///
-    /// The default interface is [`UdpSocketController`] that support GSO and GRO on linux,
-    /// and the factory is [`UdpSocketController::bind`].
+    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
+    /// provided by `qudp` crate. For other platforms, please specify you own factory.
     pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),

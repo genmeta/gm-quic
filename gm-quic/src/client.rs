@@ -283,8 +283,9 @@ impl<T> QuicClientBuilder<T> {
     /// The given factory will be used by [`Self::bind`],
     /// and/or [`QuicClient::connect`] if no interface bound when client built.
     ///
-    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
-    /// and the factory is [`UdpSocketController::bind`].
+    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
+    /// provided by `qudp` crate. For other platforms, please specify you own factory.
     pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),
@@ -296,8 +297,10 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// If the bind failed, the error will be returned immediately.
     ///
-    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO.
-    /// You can let the client bind custom interfaces by calling the [`Self::with_iface_factory`] method.
+    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
+    /// provided by `qudp` crate. For other platforms, please specify you own factory with
+    /// [`QuicClientBuilder::with_iface_factory`].
     ///
     /// If you dont bind any address, each time the client initiates a new connection,
     /// the client will use bind a new interface on address and port that dynamic assigned by the system.
