@@ -6,7 +6,7 @@ use std::{
 };
 
 use qevent::telemetry::{Log, handy::*};
-use qinterface::ifaces::QuicInterfaces;
+use qinterface::iface::QuicInterfaces;
 use rustls::server::WebPkiClientVerifier;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},

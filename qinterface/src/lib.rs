@@ -1,5 +1,5 @@
 pub mod factory;
-pub mod ifaces;
+pub mod iface;
 pub mod packet;
 pub mod queue;
 pub mod route;
@@ -28,8 +28,8 @@ use qbase::net::{
 /// you can refer to the [`UdpSocketController`] implementation in the [`handy`] module.
 ///
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
-/// [`UdpSocketController`]: crate::ifaces::handy::UdpSocketController
-/// [`handy`]: crate::ifaces::handy
+/// [`UdpSocketController`]: crate::iface::handy::UdpSocketController
+/// [`handy`]: crate::iface::handy
 pub trait QuicIO: Send + Sync {
     /// Get the bind address that this interface is bound to
     ///
