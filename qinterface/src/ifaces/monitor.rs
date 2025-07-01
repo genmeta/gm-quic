@@ -6,7 +6,7 @@ use std::{
 };
 
 use netdev::Interface;
-use qbase::net::{Family, addr::IfaceBindAddr};
+use qbase::net::{AddrFamily, Family, addr::BindIfaceUri};
 use tokio::sync::watch;
 
 struct Devices(RwLock<HashMap<String, Interface>>);
@@ -99,10 +99,10 @@ impl InterfacesMonitor {
         self.devices.get()
     }
 
-    pub fn get(&self, bind_addr: &IfaceBindAddr) -> Option<SocketAddr> {
+    pub fn get(&self, bind_addr: &BindIfaceUri) -> Option<SocketAddr> {
         self.devices()
             .get(bind_addr.device_name())
-            .and_then(|interface| match bind_addr.ip_family() {
+            .and_then(|interface| match bind_addr.family() {
                 Family::V4 => interface
                     .ipv4
                     .first()

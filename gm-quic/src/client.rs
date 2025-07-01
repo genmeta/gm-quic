@@ -102,8 +102,8 @@ impl QuicClient {
         let quic_iface = match &self.bind_interfaces {
             None => {
                 let bind_addr: BindAddr = match server_ep.kind() {
-                    AddrKind::Ip(Family::V4) => "inet://0.0.0.0/alloc".into(),
-                    AddrKind::Ip(Family::V6) => "inet://::/alloc".into(),
+                    AddrKind::Internet(Family::V4) => "inet://0.0.0.0/alloc".into(),
+                    AddrKind::Internet(Family::V6) => "inet://::/alloc".into(),
                     _ => {
                         return Err(io::Error::other(
                             "Failed to bind an unspecified address for this kind of endpoint address",

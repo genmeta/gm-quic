@@ -9,7 +9,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use qbase::net::addr::{BindAddr, RealAddr, SocketBindAddr};
+use qbase::net::addr::{BindAddr, BindUri, RealAddr};
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -50,7 +50,7 @@ impl QuicInterfaces {
                 this.interfaces
                     .iter_mut()
                     .filter_map(|entry| match entry.key() {
-                        BindAddr::Socket(SocketBindAddr::Iface(bind_addr)) => {
+                        BindAddr::Socket(BindUri::Interface(bind_addr)) => {
                             Some((bind_addr.clone(), entry))
                         }
                         _ => None,
@@ -64,7 +64,7 @@ impl QuicInterfaces {
 
                 // keep if real address is ok, and task is not finished, and new address same as real addr address
                 if (iface_ctx.iface.real_addr()).is_ok_and(|read_addr| {
-                    !iface_ctx.task.is_finished() && read_addr == RealAddr::Inet(socket_addr)
+                    !iface_ctx.task.is_finished() && read_addr == RealAddr::Internet(socket_addr)
                 }) {
                     continue;
                 }
