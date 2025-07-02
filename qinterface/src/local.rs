@@ -23,7 +23,7 @@ pub struct Locations<T: PartialEq + Eq + Hash + Clone> {
 /// A handle to a subscription.
 /// It allows receiving messages and automatically unsubscribes when dropped.
 #[derive(Deref, DerefMut)]
-pub struct Topic<T> {
+pub struct Observer<T> {
     id: u64,
     #[deref]
     #[deref_mut]
@@ -31,7 +31,7 @@ pub struct Topic<T> {
     subscribers: Arc<DashMap<u64, UnboundedSender<T>>>,
 }
 
-impl<T> Drop for Topic<T> {
+impl<T> Drop for Observer<T> {
     fn drop(&mut self) {
         // When the Topic is dropped, try to upgrade the weak reference to an Arc
         // and remove the corresponding subscriber from the HashMap.
@@ -80,7 +80,7 @@ where
     /// Subscribes to address changes.
     /// Returns a `Topic` handle which contains a receiver.
     /// The new subscriber will immediately receive all currently known addresses.
-    pub fn subscribe(&mut self) -> Topic<T> {
+    pub fn subscribe(&mut self) -> Observer<T> {
         let (tx, rx) = mpsc::unbounded_channel(); // Channel capacity can be configured.
 
         // Send all existing addresses to the new subscriber.
@@ -92,7 +92,7 @@ where
         self.subscribers.insert(id, tx);
         self.next_id += 1;
 
-        Topic {
+        Observer {
             id,
             receiver: rx,
             subscribers: self.subscribers.clone(),
@@ -139,21 +139,21 @@ mod tests {
         locations.insert("addr1".to_string());
 
         // 2. Subscribe and get a topic.
-        let mut topic1 = locations.subscribe();
+        let mut observer1 = locations.subscribe();
         // It should immediately receive the existing address.
-        assert_eq!(topic1.recv().await.unwrap(), "addr1");
+        assert_eq!(observer1.recv().await.unwrap(), "addr1");
 
         // 3. Insert another address.
         locations.insert("addr2".to_string());
         // The first subscriber should receive it.
-        assert_eq!(topic1.recv().await.unwrap(), "addr2");
+        assert_eq!(observer1.recv().await.unwrap(), "addr2");
 
         // 4. Create a second subscriber.
-        let mut topic2 = locations.subscribe();
+        let mut observer2 = locations.subscribe();
         // It should receive all current addresses.
         let mut received_addrs = HashSet::new();
-        received_addrs.insert(topic2.recv().await.unwrap());
-        received_addrs.insert(topic2.recv().await.unwrap());
+        received_addrs.insert(observer2.recv().await.unwrap());
+        received_addrs.insert(observer2.recv().await.unwrap());
         assert_eq!(
             received_addrs,
             ["addr1".to_string(), "addr2".to_string()]
@@ -163,15 +163,15 @@ mod tests {
 
         // 5. Insert a third address, both subscribers should get it.
         locations.insert("addr3".to_string());
-        assert_eq!(topic1.recv().await.unwrap(), "addr3");
-        assert_eq!(topic2.recv().await.unwrap(), "addr3");
+        assert_eq!(observer1.recv().await.unwrap(), "addr3");
+        assert_eq!(observer2.recv().await.unwrap(), "addr3");
 
         // 6. Test auto-cleanup via Drop.
         {
             let num_subscribers = locations.subscribers.len();
             assert_eq!(num_subscribers, 2);
         }
-        drop(topic1); // Drop the first topic.
+        drop(observer1); // Drop the first topic.
         {
             // The subscriber should be removed.
             let num_subscribers = locations.subscribers.len();
@@ -180,15 +180,15 @@ mod tests {
 
         // 7. The remaining subscriber should still work.
         locations.insert("addr4".to_string());
-        assert_eq!(topic2.recv().await.unwrap(), "addr4");
+        assert_eq!(observer2.recv().await.unwrap(), "addr4");
 
         // 8. Remove an address.
         assert!(locations.remove(&"addr1".to_string()));
-        let mut topic3 = locations.subscribe();
+        let mut observer3 = locations.subscribe();
         let mut received_addrs = HashSet::new();
-        received_addrs.insert(topic3.recv().await.unwrap());
-        received_addrs.insert(topic3.recv().await.unwrap());
-        received_addrs.insert(topic3.recv().await.unwrap());
+        received_addrs.insert(observer3.recv().await.unwrap());
+        received_addrs.insert(observer3.recv().await.unwrap());
+        received_addrs.insert(observer3.recv().await.unwrap());
         assert_eq!(
             received_addrs,
             [

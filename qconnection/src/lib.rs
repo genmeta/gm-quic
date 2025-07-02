@@ -56,7 +56,7 @@ use qbase::{
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
         addr::BindAddr,
-        route::{Link, Pathway},
+        route::{EndpointAddr, Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
     role::Role,
@@ -238,6 +238,14 @@ impl Components {
         }
         .instrument_in_current()
         .in_current_span()
+    }
+
+    pub fn add_local_endpoint(&self, _bind: BindAddr, _addr: EndpointAddr) {
+        todo!("Implement this method to add a local endpoint.")
+    }
+
+    pub fn add_peer_endpoint(&self, _bind: BindAddr, _addr: EndpointAddr) {
+        todo!("Implement this method to add a peer endpoint.")
     }
 
     pub fn add_path(&self, ifaca_addr: BindAddr, link: Link, pathway: Pathway) -> io::Result<()> {
@@ -525,6 +533,14 @@ impl Connection {
     pub async fn client_name(&self) -> Result<Option<String>, Error> {
         self.try_map_components(|core_conn| core_conn.client_name())?
             .await
+    }
+
+    pub fn add_local_endpoint(&self, bind: BindAddr, addr: EndpointAddr) -> Result<(), Error> {
+        self.try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
+    }
+
+    pub fn add_peer_endpoint(&self, bind: BindAddr, addr: EndpointAddr) -> Result<(), Error> {
+        self.try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
     }
 }
 
