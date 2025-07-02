@@ -1,5 +1,6 @@
 pub mod factory;
 pub mod iface;
+pub mod local;
 pub mod packet;
 pub mod queue;
 pub mod route;

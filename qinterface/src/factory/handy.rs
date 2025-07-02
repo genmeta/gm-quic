@@ -1,6 +1,5 @@
 use std::io;
 
-#[cfg(all(feature = "qudp", any(unix, windows)))]
 use qbase::net::addr::BindAddr;
 
 use crate::{factory::ProductQuicIO, iface::handy::*};
