@@ -54,7 +54,7 @@ impl super::GetFrameType for StopSendingFrame {
     }
 }
 
-impl super::EncodeFrame for StopSendingFrame {
+impl super::EncodeSize for StopSendingFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -89,7 +89,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
 mod tests {
     use super::{STOP_SENDING_FRAME_TYPE, StopSendingFrame, be_stop_sending_frame};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 

@@ -28,7 +28,7 @@ impl super::GetFrameType for NewTokenFrame {
     }
 }
 
-impl super::EncodeFrame for NewTokenFrame {
+impl super::EncodeSize for NewTokenFrame {
     fn max_encoding_size(&self) -> usize {
         // token's length could not exceed 20
         1 + 1 + self.token.len()
@@ -84,7 +84,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_new_token_frame() {

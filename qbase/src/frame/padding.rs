@@ -19,7 +19,7 @@ impl super::GetFrameType for PaddingFrame {
     }
 }
 
-impl super::EncodeFrame for PaddingFrame {}
+impl super::EncodeSize for PaddingFrame {}
 
 /// Parse a PADDING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -37,7 +37,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PADDING_FRAME_TYPE, PaddingFrame, be_padding_frame};
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_padding_frame() {

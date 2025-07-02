@@ -6,7 +6,7 @@ use qbase::{
     Epoch,
     cid::{BorrowedCid, ConnectionId},
     frame::{
-        AckFrame, CryptoFrame, DatagramFrame, EncodeFrame, FrameFeture, PathChallengeFrame,
+        AckFrame, CryptoFrame, DatagramFrame, EncodeSize, FrameFeture, PathChallengeFrame,
         PathResponseFrame, PingFrame, ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
@@ -309,7 +309,7 @@ where
 
 impl<'b, F> MarshalFrame<F> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
-    F: EncodeFrame + FrameFeture + Into<ReliableFrame>,
+    F: EncodeSize + FrameFeture + Into<ReliableFrame>,
     PacketWriter<'b>: WriteFrame<F>,
 {
     fn dump_frame(&mut self, frame: F) -> Option<F> {

@@ -34,7 +34,7 @@ impl super::GetFrameType for CryptoFrame {
     }
 }
 
-impl super::EncodeFrame for CryptoFrame {
+impl super::EncodeSize for CryptoFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -132,7 +132,7 @@ where
 mod tests {
     use super::{CRYPTO_FRAME_TYPE, CryptoFrame};
     use crate::{
-        frame::{EncodeFrame, GetFrameType, io::WriteDataFrame},
+        frame::{EncodeSize, GetFrameType, io::WriteDataFrame},
         varint::VarInt,
     };
 

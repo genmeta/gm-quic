@@ -6,7 +6,7 @@ use std::{
 
 use bytes::BufMut;
 use qbase::{
-    frame::{EncodeFrame, FrameFeture, SendFrame},
+    frame::{EncodeSize, FrameFeture, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalFrame,
 };
@@ -31,7 +31,7 @@ use qbase::{
 #[derive(Debug, Default, Clone)]
 pub struct ArcReliableFrameDeque<F>
 where
-    F: EncodeFrame + FrameFeture,
+    F: EncodeSize + FrameFeture,
 {
     frames: Arc<Mutex<VecDeque<F>>>,
     tx_wakers: ArcSendWakers,
@@ -39,7 +39,7 @@ where
 
 impl<F> ArcReliableFrameDeque<F>
 where
-    F: EncodeFrame + FrameFeture,
+    F: EncodeSize + FrameFeture,
 {
     /// Create a new empty deque with at least the specified capacity.
     pub fn with_capacity_and_wakers(capacity: usize, tx_wakers: ArcSendWakers) -> Self {
@@ -76,7 +76,7 @@ where
 
 impl<T, F> SendFrame<T> for ArcReliableFrameDeque<F>
 where
-    F: EncodeFrame + FrameFeture,
+    F: EncodeSize + FrameFeture,
     T: Into<F>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {

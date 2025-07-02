@@ -41,7 +41,7 @@ impl super::GetFrameType for PathChallengeFrame {
     }
 }
 
-impl super::EncodeFrame for PathChallengeFrame {
+impl super::EncodeSize for PathChallengeFrame {
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -68,7 +68,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::EncodeFrame;
+    use crate::frame::EncodeSize;
 
     #[test]
     fn test_path_challenge_frame() {

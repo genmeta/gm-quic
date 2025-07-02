@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use super::GetFrameType;
 use crate::{
-    frame::EncodeFrame,
+    frame::EncodeSize,
     sid::{StreamId, WriteStreamId, be_streamid},
     util::{DescribeData, WriteData},
     varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
@@ -49,7 +49,7 @@ impl GetFrameType for StreamFrame {
     }
 }
 
-impl super::EncodeFrame for StreamFrame {
+impl super::EncodeSize for StreamFrame {
     fn max_encoding_size(&self) -> usize {
         STREAM_FRAME_MAX_ENCODING_SIZE
     }
@@ -276,7 +276,7 @@ mod tests {
 
     use super::{STREAM_FRAME_TYPE, StreamFrame, stream_frame_with_flag};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteDataFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteDataFrame},
         varint::{VarInt, be_varint},
     };
 

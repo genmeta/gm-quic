@@ -24,7 +24,7 @@ impl super::GetFrameType for DataBlockedFrame {
     }
 }
 
-impl super::EncodeFrame for DataBlockedFrame {
+impl super::EncodeSize for DataBlockedFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -64,7 +64,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
 mod tests {
     use super::{DATA_BLOCKED_FRAME_TYPE, DataBlockedFrame};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

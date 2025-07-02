@@ -7,7 +7,7 @@ use std::{
 use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
-    frame::{EncodeFrame, io::WriteFrame},
+    frame::{EncodeSize, io::WriteFrame},
     net::tx::{ArcSendWaker, Signals},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
@@ -41,7 +41,7 @@ impl<T> SendBuffer<T> {
 
 impl<F> SendBuffer<F>
 where
-    F: EncodeFrame,
+    F: EncodeSize,
     for<'a> &'a mut [u8]: WriteFrame<F>,
 {
     /// Try load the frame to be sent into the `packet`.

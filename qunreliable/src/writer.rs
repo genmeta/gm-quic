@@ -8,7 +8,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
-    frame::{DatagramFrame, EncodeFrame},
+    frame::{DatagramFrame, EncodeSize},
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     varint::VarInt,

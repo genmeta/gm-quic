@@ -49,7 +49,7 @@ impl super::GetFrameType for MaxStreamDataFrame {
     }
 }
 
-impl super::EncodeFrame for MaxStreamDataFrame {
+impl super::EncodeSize for MaxStreamDataFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -85,7 +85,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
 mod tests {
     use super::{MAX_STREAM_DATA_FRAME_TYPE, MaxStreamDataFrame};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 
