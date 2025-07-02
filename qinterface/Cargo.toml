@@ -20,7 +20,7 @@ qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
