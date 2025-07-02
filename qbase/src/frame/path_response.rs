@@ -42,7 +42,7 @@ impl super::GetFrameType for PathResponseFrame {
     }
 }
 
-impl super::EncodeFrame for PathResponseFrame {
+impl super::EncodeSize for PathResponseFrame {
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -69,7 +69,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_path_response_frame() {

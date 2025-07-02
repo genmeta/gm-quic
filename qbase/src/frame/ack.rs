@@ -45,7 +45,7 @@ impl super::GetFrameType for AckFrame {
     }
 }
 
-impl super::EncodeFrame for AckFrame {
+impl super::EncodeSize for AckFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
     }
@@ -255,7 +255,7 @@ mod tests {
 
     use super::{ACK_FRAME_TYPE, AckFrame, EcnCounts, ack_frame_with_flag, be_ecn_counts};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 

@@ -10,7 +10,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind, QuicError},
-    frame::{DatagramFrame, EncodeFrame, GetFrameType},
+    frame::{DatagramFrame, EncodeSize, GetFrameType},
 };
 
 #[derive(Debug)]

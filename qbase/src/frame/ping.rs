@@ -19,7 +19,7 @@ impl super::GetFrameType for PingFrame {
     }
 }
 
-impl super::EncodeFrame for PingFrame {}
+impl super::EncodeSize for PingFrame {}
 
 /// Parse a PING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -36,7 +36,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PING_FRAME_TYPE, PingFrame};
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_ping_frame() {

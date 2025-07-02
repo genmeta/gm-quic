@@ -49,7 +49,7 @@ impl GetFrameType for DatagramFrame {
     }
 }
 
-impl super::EncodeFrame for DatagramFrame {
+impl super::EncodeSize for DatagramFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -102,7 +102,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{EncodeFrame, io::WriteDataFrame};
+    use crate::frame::{EncodeSize, io::WriteDataFrame};
 
     #[test]
     fn test_datagram_frame() {

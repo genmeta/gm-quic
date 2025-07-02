@@ -1,4 +1,4 @@
-use super::EncodeFrame;
+use super::EncodeSize;
 
 /// HandshakeDone frame
 ///
@@ -21,7 +21,7 @@ impl super::GetFrameType for HandshakeDoneFrame {
     }
 }
 
-impl EncodeFrame for HandshakeDoneFrame {}
+impl EncodeSize for HandshakeDoneFrame {}
 
 /// Parse a HANDSHAKE_DONE frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -38,7 +38,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, HandshakeDoneFrame, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, HandshakeDoneFrame, io::WriteFrame};
 
     #[test]
     fn test_handshake_done_frame() {

@@ -24,7 +24,7 @@ impl super::GetFrameType for RetireConnectionIdFrame {
     }
 }
 
-impl super::EncodeFrame for RetireConnectionIdFrame {
+impl super::EncodeSize for RetireConnectionIdFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -64,7 +64,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
 mod tests {
     use super::{RetireConnectionIdFrame, be_retire_connection_id_frame};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

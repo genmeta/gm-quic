@@ -96,7 +96,7 @@ impl super::GetFrameType for ConnectionCloseFrame {
     }
 }
 
-impl super::EncodeFrame for ConnectionCloseFrame {
+impl super::EncodeSize for ConnectionCloseFrame {
     fn max_encoding_size(&self) -> usize {
         // reason's length could not exceed 16KB, so it can be encoded in 2 bytes.
         match self {
@@ -227,7 +227,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
 mod tests {
     use crate::{
         error::ErrorKind,
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

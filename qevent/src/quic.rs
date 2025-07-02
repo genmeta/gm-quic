@@ -7,7 +7,7 @@ use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
 use qbase::{
     frame::{
-        AckFrame, AppCloseFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeFrame,
+        AckFrame, AppCloseFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize,
         Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },

@@ -68,7 +68,7 @@ impl super::GetFrameType for NewConnectionIdFrame {
     }
 }
 
-impl super::EncodeFrame for NewConnectionIdFrame {
+impl super::EncodeSize for NewConnectionIdFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 21 + RESET_TOKEN_SIZE
     }
@@ -136,7 +136,7 @@ mod tests {
     use bytes::{BufMut, BytesMut};
 
     use super::*;
-    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_new_connection_id_frame() {

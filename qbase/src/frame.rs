@@ -20,7 +20,7 @@ mod max_streams;
 mod new_connection_id;
 mod new_token;
 mod padding;
-pub mod path_challenge;
+mod path_challenge;
 mod path_response;
 mod ping;
 mod reset_stream;
@@ -67,7 +67,7 @@ pub trait GetFrameType: Debug {
 }
 
 #[enum_dispatch]
-pub trait EncodeFrame {
+pub trait EncodeSize {
     /// Return the max number of bytes needed to encode this value
     ///
     /// Calculate the maximum size by summing up the maximum length of each field.
@@ -353,7 +353,7 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 
 /// Sum type of all the stream related frames except [`StreamFrame`].
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(EncodeFrame, GetFrameType)]
+#[enum_dispatch(EncodeSize, GetFrameType)]
 pub enum StreamCtlFrame {
     /// RESET_STREAM frame, see [`ResetStreamFrame`].
     ResetStream(ResetStreamFrame),
@@ -371,7 +371,7 @@ pub enum StreamCtlFrame {
 
 /// Sum type of all the reliable frames.
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(EncodeFrame, GetFrameType)]
+#[enum_dispatch(EncodeSize, GetFrameType)]
 pub enum ReliableFrame {
     /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken(NewTokenFrame),

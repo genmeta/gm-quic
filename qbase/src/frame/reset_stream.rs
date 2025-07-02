@@ -33,7 +33,7 @@ impl super::GetFrameType for ResetStreamFrame {
     }
 }
 
-impl super::EncodeFrame for ResetStreamFrame {
+impl super::EncodeSize for ResetStreamFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 8
     }
@@ -139,7 +139,7 @@ mod tests {
 
     use super::{RESET_STREAM_FRAME_TYPE, ResetStreamError, ResetStreamFrame};
     use crate::{
-        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
+        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 
