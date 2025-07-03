@@ -55,50 +55,47 @@ impl Router {
         self.table.remove(signpost);
     }
 
-    #[allow(clippy::result_large_err)] // TODO: needs benchmark
-    pub fn try_deliver(
-        &self,
-        packet: Packet,
-        (bind_addr, pathway, link): Way,
-    ) -> Result<(), (Packet, Way)> {
-        let dcid = match &packet {
+    fn find_entry(&self, packet: &Packet, link: &Link) -> Option<Arc<RcvdPacketQueue>> {
+        let dcid = match packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
             Packet::Data(data_packet) => data_packet.dcid(),
         };
-        let signpost = if !dcid.is_empty() {
-            Signpost::from(*dcid)
+
+        if !dcid.is_empty() {
+            let signpost = Signpost::from(*dcid);
+            self.table.get(&signpost).map(|queue| queue.clone())
         } else {
-            match *pathway.local() {
-                RealAddr::Internet(socket_addr) => Signpost::from(socket_addr),
-                _ => {
-                    tracing::warn!(
-                        "receive a packet with empty dcid, and failed to fallback to zero length cid"
-                    );
-                    return Err((packet, (bind_addr, pathway, link)));
+            match link.dst() {
+                RealAddr::Internet(socket_addr) => {
+                    let signpost = Signpost::from(socket_addr);
+                    self.table.get(&signpost).map(|queue| queue.clone())
+                }
+                _ => None,
+            }
+        }
+    }
+
+    pub async fn deliver(&self, packet: Packet, way: Way) {
+        let rcvd_pkt_q = match self.find_entry(&packet, &way.2) {
+            Some(rcvd_pkt_q) => rcvd_pkt_q,
+            None => {
+                // For packets that cannot be routed, this likely indicates a new connection.
+                // In some cases, multiple threads (e.g., A and B) may be waiting for the lock,
+                // and both would cause the server to create separate new connections.
+                let mut on_unrouted = self.on_unrouted.lock().unwrap();
+                // Therefore, we retry routing here to allow thread B to route its packet
+                // to the connection created by thread A, instead of creating another new connection.
+                match self.find_entry(&packet, &way.2) {
+                    Some(rcvd_pkt_q) => rcvd_pkt_q,
+                    None => {
+                        (on_unrouted)(packet.clone(), way.clone());
+                        return;
+                    }
                 }
             }
         };
-
-        if let Some(rcvd_pkt_q) = self.table.get(&signpost).map(|queue| queue.clone()) {
-            rcvd_pkt_q.try_deliver(packet, (bind_addr, pathway, link));
-            return Ok(());
-        }
-        Err((packet, (bind_addr, pathway, link)))
-    }
-
-    pub fn deliver(&self, packet: Packet, way: Way) {
-        if let Err((packet, way)) = self.try_deliver(packet, way) {
-            // For packets that cannot be routed, this likely indicates a new connection.
-            // In some cases, multiple threads (e.g., A and B) may be waiting for the lock,
-            // and both would cause the server to create separate new connections.
-            let mut on_unrouted = self.on_unrouted.lock().unwrap();
-            // Therefore, we retry routing here to allow thread B to route its packet
-            // to the connection created by thread A, instead of creating another new connection.
-            if let Err((packet, way)) = self.try_deliver(packet, way) {
-                (on_unrouted)(packet, way)
-            }
-        }
+        rcvd_pkt_q.deliver(packet, way).await;
     }
 
     pub fn on_connectless_packets<H>(&self, handler: H)

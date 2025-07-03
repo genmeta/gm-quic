@@ -401,7 +401,9 @@ impl QuicListeners {
         let incomings = self.incomings.clone();
 
         tokio::spawn(async move {
-            Router::global().deliver(packet, (bind_addr.clone(), pathway, link));
+            Router::global()
+                .deliver(packet, (bind_addr.clone(), pathway, link))
+                .await;
 
             tokio::spawn({
                 let connection = connection.clone();
