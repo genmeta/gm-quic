@@ -1,34 +1,36 @@
 use std::{
-    collections::HashSet,
     hash::Hash,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use derive_more::{Deref, DerefMut};
-use qbase::net::{addr::BindUri, route::EndpointAddr};
+use qbase::{
+    net::{addr::BindUri, route::EndpointAddr},
+    util::{UniqueId, UniqueIdGenerator},
+};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 /// Manages a collection of local addresses and notifies subscribers of changes.
 /// T is a generic type for the address, which must be comparable, hashable, and cloneable.
 pub struct Locations<T: PartialEq + Eq + Hash + Clone> {
     /// A set of unique local addresses.
-    addresses: HashSet<T>,
+    addresses: DashSet<T>,
     /// A map of subscribers, mapping a unique ID to a sender.
-    subscribers: Arc<DashMap<u64, UnboundedSender<T>>>,
+    subscribers: Arc<DashMap<UniqueId, UnboundedSender<T>>>,
     /// The next available ID for a new subscriber.
-    next_id: u64,
+    id_generator: UniqueIdGenerator,
 }
 
 /// A handle to a subscription.
 /// It allows receiving messages and automatically unsubscribes when dropped.
 #[derive(Deref, DerefMut)]
 pub struct Observer<T> {
-    id: u64,
+    id: UniqueId,
     #[deref]
     #[deref_mut]
     receiver: UnboundedReceiver<T>,
-    subscribers: Arc<DashMap<u64, UnboundedSender<T>>>,
+    subscribers: Arc<DashMap<UniqueId, UnboundedSender<T>>>,
 }
 
 impl<T> Drop for Observer<T> {
@@ -55,16 +57,16 @@ where
     /// Creates a new, empty `Locations` instance.
     pub fn new() -> Self {
         Self {
-            addresses: HashSet::new(),
+            addresses: DashSet::new(),
             subscribers: Arc::new(DashMap::new()),
-            next_id: 0,
+            id_generator: UniqueIdGenerator::new(),
         }
     }
 
     /// Inserts an address into the local set.
     /// If the address is new, it notifies all subscribers.
     /// Returns `true` if the address was newly inserted, `false` otherwise.
-    pub fn insert(&mut self, address: T) -> bool {
+    pub fn insert(&self, address: T) -> bool {
         let is_new_item = self.addresses.insert(address.clone());
         if is_new_item {
             self.notify_all(address);
@@ -73,24 +75,23 @@ where
     }
 
     /// Removes an address from the local set.
-    pub fn remove(&mut self, address: &T) -> bool {
-        self.addresses.remove(address)
+    pub fn remove(&self, address: &T) -> bool {
+        self.addresses.remove(address).is_some()
     }
 
     /// Subscribes to address changes.
     /// Returns a `Topic` handle which contains a receiver.
     /// The new subscriber will immediately receive all currently known addresses.
-    pub fn subscribe(&mut self) -> Observer<T> {
+    pub fn subscribe(&self) -> Observer<T> {
         let (tx, rx) = mpsc::unbounded_channel(); // Channel capacity can be configured.
 
         // Send all existing addresses to the new subscriber.
-        for address in &self.addresses {
+        for address in self.addresses.iter() {
             _ = tx.send(address.clone());
         }
 
-        let id = self.next_id;
+        let id = self.id_generator.generate();
         self.subscribers.insert(id, tx);
-        self.next_id += 1;
 
         Observer {
             id,
@@ -100,7 +101,7 @@ where
     }
 
     /// Notifies all subscribers of a new address.
-    fn notify_all(&mut self, address: T) {
+    fn notify_all(&self, address: T) {
         // Retain only the subscribers that are still active.
         self.subscribers
             .retain(|_, subscriber| subscriber.send(address.clone()).is_ok());
@@ -119,9 +120,9 @@ pub struct Endpoint {
 impl Locations<Endpoint> {
     /// Returns a global, singleton instance of `Locations<Endpoint>`.
     /// This is useful for sharing local endpoint information across the application.
-    pub fn global() -> &'static Arc<Mutex<Self>> {
-        static GLOBAL_LOCAL_ENDPOINTS: OnceLock<Arc<Mutex<Locations<Endpoint>>>> = OnceLock::new();
-        GLOBAL_LOCAL_ENDPOINTS.get_or_init(|| Arc::new(Mutex::new(Self::new())))
+    pub fn global() -> &'static Arc<Self> {
+        static GLOBAL_LOCAL_ENDPOINTS: OnceLock<Arc<Locations<Endpoint>>> = OnceLock::new();
+        GLOBAL_LOCAL_ENDPOINTS.get_or_init(|| Arc::new(Self::new()))
     }
 }
 
@@ -133,7 +134,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_locations_with_topic() {
-        let mut locations = Locations::<String>::new();
+        let locations = Locations::<String>::new();
 
         // 1. Insert an address.
         locations.insert("addr1".to_string());

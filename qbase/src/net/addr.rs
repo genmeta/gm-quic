@@ -59,7 +59,6 @@ use std::{
     net::{AddrParseError, IpAddr, SocketAddr},
     num::{IntErrorKind, NonZeroU16, ParseIntError},
     str::FromStr,
-    sync::{Mutex, OnceLock},
 };
 
 use derive_more::{From, TryInto};
@@ -67,6 +66,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{AddrFamily, Family, InvalidFamily};
+use crate::util::{UniqueId, UniqueIdGenerator};
 
 /// Network address type
 ///
@@ -526,14 +526,12 @@ pub enum ParsePortError {
 
 /// An opaque ID that uniquely identifies a alloc port.
 #[derive(Debug, Clone, Copy, From, PartialEq, Eq, Hash)]
-pub struct AllocPort(u128);
+pub struct AllocPort(UniqueId);
 
 impl AllocPort {
     pub fn new() -> AllocPort {
-        static ALLOCATED: OnceLock<Mutex<u128>> = OnceLock::new();
-        let mut allocated = ALLOCATED.get_or_init(Mutex::default).lock().unwrap();
-        *allocated += 1;
-        AllocPort(*allocated - 1)
+        static ID_GENERATOR: UniqueIdGenerator = UniqueIdGenerator::new();
+        AllocPort(ID_GENERATOR.generate())
     }
 }
 
