@@ -71,8 +71,10 @@ impl super::Path {
             paths: &ArcPathContexts,
         ) -> Option<Duration> {
             parameters.lock_guard().ok().and_then(|params| {
-                let local_max_idle_timeout: Duration =
-                    params.get_local(ParameterId::MaxIdleTimeout)?;
+                let local_max_idle_timeout = match params.get_local(ParameterId::MaxIdleTimeout)? {
+                    Duration::ZERO => Duration::MAX,
+                    local_max_idle_timeout => local_max_idle_timeout,
+                };
                 Some(local_max_idle_timeout.max(paths.max_pto_duration()? * 3))
             })
         }
