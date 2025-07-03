@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt::Debug, time::Duration};
 
 use bytes::Bytes;
 use nom::{Parser, multi::length_data};
@@ -16,22 +16,6 @@ use crate::{
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
-/// Parse the parameter id from the input buffer,
-/// [nom](https://docs.rs/nom/latest/nom/) parser style.
-pub(super) fn be_parameter_id_of_role(
-    input: &[u8],
-    role: Role,
-) -> nom::IResult<&[u8], ParameterId, Error> {
-    let (remain, param_id) = crate::varint::be_varint(input).map_err(|_| {
-        nom::Err::Error(Error::IncompleteParameterId(format!(
-            "incomplete frame type from input: {input:?}"
-        )))
-    })?;
-    let param_id = ParameterId::try_from(param_id).map_err(nom::Err::Error)?;
-    param_id.belong_to(role).map_err(nom::Err::Error)?;
-    Ok((remain, param_id))
-}
-
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly
 /// to write the parameter id.
 pub trait WriteParameterId: bytes::BufMut {
@@ -45,51 +29,35 @@ impl<T: bytes::BufMut> WriteParameterId for T {
     }
 }
 
-// 未知ID返回错误（ID，len），qbase解析忽略未知ID
-pub fn be_parameter_of_role(
-    input: &[u8],
-    role: Role,
-) -> nom::IResult<&[u8], (ParameterId, ParameterValue), Error> {
+pub fn be_raw_parameter(input: &[u8]) -> nom::IResult<&[u8], (VarInt, &[u8])> {
+    let (remain, param_id) = crate::varint::be_varint(input)?;
+    let (remain, data) = length_data(be_varint).parse(remain)?;
+    Ok((remain, (param_id, data)))
+}
+
+pub fn be_parameter_value(input: &[u8], id: ParameterId) -> nom::IResult<&[u8], ParameterValue> {
     use nom::combinator::map;
 
-    let (remain, param_id) = be_parameter_id_of_role(input, role)?;
-    let (remain, data) = length_data(be_varint).parse(remain).map_err(|_| {
-        nom::Err::Error(Error::IncompleteParameterId(format!(
-            "incomplete frame type from input: {input:?}"
-        )))
-    })?;
-    let incomplete_value_error = |id: ParameterId, data: &[u8]| {
-        nom::Err::Error(Error::IncompleteValue(
-            id,
-            format!("incomplete frame type from input: {data:?}"),
-        ))
-    };
-    let (_, param_value) = match param_id.value_type() {
-        ParameterValueType::VarInt => map(be_varint, ParameterValue::VarInt)
-            .parse(data)
-            .map_err(|_| incomplete_value_error(param_id, data))?,
-        ParameterValueType::Boolean => (remain, ParameterValue::True),
-        ParameterValueType::Bytes => (remain, ParameterValue::Bytes(Bytes::copy_from_slice(data))),
+    match id.value_type() {
+        ParameterValueType::VarInt => map(be_varint, ParameterValue::VarInt).parse(input),
+        ParameterValueType::Boolean => Ok((input, ParameterValue::True)),
+        ParameterValueType::Bytes => {
+            Ok((&[], ParameterValue::Bytes(Bytes::copy_from_slice(input))))
+        }
         ParameterValueType::Duration => {
-            map(be_varint, |v| Duration::from_millis(v.into_inner()).into())
-                .parse(data)
-                .map_err(|_| incomplete_value_error(param_id, data))?
+            map(be_varint, |v| Duration::from_millis(v.into_inner()).into()).parse(input)
         }
-        ParameterValueType::ResetToken => map(be_reset_token, ParameterValue::ResetToken)
-            .parse(data)
-            .map_err(|_| incomplete_value_error(param_id, data))?,
-        ParameterValueType::ConnectionId => (
-            remain,
-            ParameterValue::ConnectionId(ConnectionId::from_slice(data)),
-        ),
+        ParameterValueType::ResetToken => {
+            map(be_reset_token, ParameterValue::ResetToken).parse(input)
+        }
+        ParameterValueType::ConnectionId => Ok((
+            &[],
+            ParameterValue::ConnectionId(ConnectionId::from_slice(input)),
+        )),
         ParameterValueType::PreferredAddress => {
-            map(be_preferred_address, ParameterValue::PreferredAddress)
-                .parse(data)
-                .map_err(|_| incomplete_value_error(param_id, data))?
+            map(be_preferred_address, ParameterValue::PreferredAddress).parse(input)
         }
-    };
-
-    Ok((remain, (param_id, param_value)))
+    }
 }
 
 // A trait for writing parameters to the buffer.
@@ -176,27 +144,39 @@ impl<Role, T: bytes::BufMut> WriteParameters<Role> for T {
     }
 }
 
+fn handle_nom_error<F: Debug, E: Debug>(input: &[u8], nom_error: nom::Err<F, E>) -> Error {
+    assert!(
+        matches!(nom_error, nom::Err::Incomplete(..)),
+        "Only incomplete errors should occur, but {nom_error:?} happened for input: {input:?}"
+    );
+    Error::IncompleteParameterId(format!("incomplete parameter data for input: {input:?}"))
+}
+
 impl<R: IntoRole + RequiredParameters + Default> Parameters<R> {
     pub fn parse_from_bytes(mut buf: &[u8]) -> Result<Self, QuicError> {
         let mut parameters = Self::default();
         while !buf.is_empty() {
             let (param_id, param_value);
-            (buf, (param_id, param_value)) = match be_parameter_of_role(buf, R::into_role()) {
-                Ok((remain, pair)) => (remain, pair),
-                Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
-                    if let Error::UnknownParameterId(varint) = e {
-                        tracing::warn!("Unknown parameter id: {varint}");
-                        // Ignore unknown parameters
-                        continue;
-                    }
-                    return Err(e.into());
+            (buf, (param_id, param_value)) =
+                be_raw_parameter(buf).map_err(|nom_error| handle_nom_error(buf, nom_error))?;
+            tracing::info!("Parsed parameter id: {param_id:?}, value: {param_value:?}");
+
+            let param_id = match ParameterId::try_from(param_id) {
+                Ok(param_id) => param_id,
+                Err(unknown @ Error::UnknownParameterId(..)) => {
+                    tracing::warn!("{unknown}, ignore");
+                    continue; // Ignore unknown parameters
                 }
-                Err(nom::Err::Incomplete(_)) => {
-                    unreachable!(
-                        "Because the parsing of QUIC packets and frames is not stream-based."
-                    );
-                }
+                Err(e) => return Err(e.into()),
             };
+            tracing::info!("Parameter ID validated: {param_id:?}");
+
+            ParameterId::belong_to(param_id, R::into_role())?;
+            let (remain, param_value) = be_parameter_value(param_value, param_id)
+                .map_err(|nom_error| handle_nom_error(param_value, nom_error))?;
+            assert!(remain.is_empty(), "Parameter value should consume all data");
+            tracing::info!("Parameter value parsed: {param_value:?}");
+
             parameters.set(param_id, param_value)?;
         }
         for id in R::required_parameters() {
@@ -213,17 +193,23 @@ impl ServerParameters {
         let mut parameters = Self::new();
         while !buf.is_empty() {
             let (param_id, param_value);
-            (buf, (param_id, param_value)) = match be_parameter_of_role(buf, Role::Server) {
-                Ok((remain, pair)) => (remain, pair),
-                Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
-                    return Err(e.into());
+            (buf, (param_id, param_value)) =
+                be_raw_parameter(buf).map_err(|nom_error| handle_nom_error(buf, nom_error))?;
+
+            let param_id = match ParameterId::try_from(param_id) {
+                Ok(param_id) => param_id,
+                Err(unknown @ Error::UnknownParameterId(..)) => {
+                    tracing::warn!("{unknown}, ignore");
+                    continue; // Ignore unknown parameters
                 }
-                Err(nom::Err::Incomplete(_)) => {
-                    unreachable!(
-                        "Because the parsing of QUIC packets and frames is not stream-based."
-                    );
-                }
+                Err(e) => return Err(e.into()),
             };
+
+            ParameterId::belong_to(param_id, Role::Server)?;
+            let (remain, param_value) = be_parameter_value(param_value, param_id)
+                .map_err(|nom_error| handle_nom_error(param_value, nom_error))?;
+            assert!(remain.is_empty(), "Parameter value should consume all data");
+
             parameters.set(param_id, param_value)?;
         }
         Ok(parameters)
