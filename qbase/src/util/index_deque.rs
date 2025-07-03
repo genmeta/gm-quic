@@ -235,8 +235,12 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         })
     }
 
-    pub fn front(&self) -> Option<&T> {
-        self.deque.front()
+    pub fn front(&self) -> Option<(u64, &T)> {
+        self.deque.front().map(|v| (self.offset, v))
+    }
+
+    pub fn back(&self) -> Option<(u64, &T)> {
+        self.deque.back().map(|v| (self.largest() - 1, v))
     }
 
     /// Returns a front-to-back iterator.

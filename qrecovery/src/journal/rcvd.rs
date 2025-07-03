@@ -147,7 +147,7 @@ impl RcvdJournal {
         while self
             .queue
             .front()
-            .is_some_and(|state| state.is_expired(now))
+            .is_some_and(|(_pn, state)| state.is_expired(now))
         {
             self.queue.pop_front();
         }
@@ -268,8 +268,7 @@ impl RcvdJournal {
         if earliest_not_ack_time + max_ack_delay >= now {
             return None;
         }
-        let largest = self.queue.largest();
-        let state = self.queue.get(largest)?;
+        let (largest, state) = self.queue.back()?;
         let recv_time = match state {
             State::PacketReceived(rt, _, _)
             | State::AckSent(_, rt, _, _)
