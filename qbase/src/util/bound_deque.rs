@@ -1,6 +1,10 @@
-use std::{self, sync::Arc};
+use std::{
+    self,
+    future::poll_fn,
+    sync::{Arc, Mutex},
+};
 
-use futures::{SinkExt, StreamExt, channel::mpsc, lock::Mutex};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 
 struct BoundQueueInner<T> {
     tx: mpsc::Sender<T>,
@@ -34,7 +38,7 @@ impl<T> BoundQueue<T> {
 
     #[inline]
     pub async fn recv(&self) -> Option<T> {
-        self.0.rx.lock().await.next().await
+        poll_fn(|cx| self.0.rx.lock().unwrap().poll_next_unpin(cx)).await
     }
 
     #[inline]
