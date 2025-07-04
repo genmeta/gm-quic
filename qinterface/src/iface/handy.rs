@@ -9,7 +9,7 @@ pub mod qudp {
     use bytes::BytesMut;
     use qbase::net::{
         addr::{BindUri, RealAddr, TryIntoSocketAddrError},
-        route::{Link, Pathway, ToEndpointAddr},
+        route::{Link, Pathway},
     };
     use qudp::BATCH_SIZE;
 
@@ -97,8 +97,8 @@ pub mod qudp {
 
             for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
                 let dst = self.real_addr()?;
-                let way = Pathway::new(qudp_hdr.src.to_endpoint_addr(), dst.to_endpoint_addr());
-                let link = Link::new(qudp_hdr.src, self.inner.local_addr()?);
+                let way = Pathway::new(qudp_hdr.src.into(), dst.into());
+                let link = Link::new(qudp_hdr.src.into(), self.inner.local_addr()?.into());
                 qbase_hdrs[idx] = PacketHeader::new(
                     way.flip(),
                     link.flip(),
