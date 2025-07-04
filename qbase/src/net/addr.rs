@@ -56,7 +56,11 @@ fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, String, u16), ParseBindUri
 fn parse_inet_bind_uri(uri: &Uri) -> Result<SocketAddr, ParseBindUriError> {
     let authority = uri.authority().expect("BindUri is absolute URI");
     let port = authority.port_u16().ok_or(ParseBindUriError::MissingPort)?;
-    match IpAddr::from_str(authority.host()) {
+    let host = match authority.host().as_bytes() {
+        [b'[', .., b']'] => authority.host().trim_matches(|c| matches!(c, '[' | ']')),
+        _ => authority.host(),
+    };
+    match IpAddr::from_str(host) {
         Ok(ip) => Ok(SocketAddr::new(ip, port)),
         Err(e) => Err(ParseBindUriError::InvalidIpAddr(e)),
     }
@@ -66,19 +70,14 @@ fn parse_ble_bind_uri(_: &Uri) -> ! {
     unimplemented!("BLE address is not implemented yet")
 }
 
-impl TryFrom<Cow<'static, str>> for BindUri {
-    type Error = ParseBindUriError;
-
-    fn try_from(value: Cow<'static, str>) -> Result<Self, Self::Error> {
-        BindUri::from_str(&value)
-    }
-}
-
 impl FromStr for BindUri {
     type Err = ParseBindUriError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s: String = s.to_owned();
+        if let Ok(socket_addr) = s.parse::<SocketAddr>() {
+            return Ok(socket_addr.into());
+        }
+
         let uri: Uri = s.parse().map_err(ParseBindUriError::InvalidUri)?;
 
         let schema = uri
@@ -124,7 +123,7 @@ impl From<SocketAddr> for BindUri {
     fn from(value: SocketAddr) -> Self {
         match BindUri::from_str(&format!("inet://{value}")) {
             Ok(bind_uri) => bind_uri,
-            Err(e) => panic!("This convert should never fail, but {e}"),
+            Err(e) => panic!("{e}"),
         }
     }
 }
