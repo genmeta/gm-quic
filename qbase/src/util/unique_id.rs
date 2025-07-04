@@ -3,8 +3,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use derive_more::Into;
+
 /// Opque, hashable, unique ID type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Into, PartialEq, Eq, Hash)]
 pub struct UniqueId(usize);
 
 /// Thread safe, lock free unique ID generator.

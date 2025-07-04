@@ -11,7 +11,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        addr::BindAddr,
+        addr::BindUri,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
@@ -56,7 +56,7 @@ pub struct Path {
 impl Components {
     pub fn get_or_try_create_path(
         &self,
-        bind_addr: BindAddr,
+        bind_uri: BindUri,
         link: Link,
         pathway: Pathway,
         is_probed: bool,
@@ -64,7 +64,7 @@ impl Components {
         let try_create = || {
             let interface = self
                 .interfaces
-                .get(&bind_addr)
+                .get(&bind_uri)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
             let max_ack_delay = self
                 .parameters

@@ -1,9 +1,9 @@
-use std::{io, sync::Arc};
+use std::{io, str::FromStr, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::net::{
     Family,
-    addr::{AddrKind, BindAddr},
+    addr::{AddrKind, BindUri},
 };
 use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};
@@ -39,7 +39,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<BindAddr, Arc<QuicInterface>>>,
+    bind_interfaces: Option<DashMap<BindUri, Arc<QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
@@ -96,13 +96,17 @@ impl QuicClient {
     fn new_connection(
         &self,
         server_name: String,
-        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
+        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> io::Result<Arc<Connection>> {
         let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &self.bind_interfaces {
             None => {
-                let bind_addr: BindAddr = match server_ep.kind() {
-                    AddrKind::Internet(Family::V4) => "inet://0.0.0.0/alloc".into(),
-                    AddrKind::Internet(Family::V6) => "inet://::/alloc".into(),
+                let bind_uri: BindUri = match server_ep.addr_kind() {
+                    AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
+                        .expect("URL should be valid")
+                        .alloc_port(),
+                    AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
+                        .expect("URL should be valid")
+                        .alloc_port(),
                     _ => {
                         return Err(io::Error::other(
                             "Failed to bind an unspecified address for this kind of endpoint address",
@@ -110,13 +114,13 @@ impl QuicClient {
                     }
                 };
                 Ok(vec![QuicInterfaces::global().insert(
-                    bind_addr.clone(),
+                    bind_uri.clone(),
                     self.quic_iface_factory.clone(),
                 )?])
             }
             Some(bind_interfaces) => Ok(bind_interfaces
                 .iter()
-                .filter(|entry| entry.key().kind() == server_ep.kind())
+                .filter(|entry| entry.key().addr_kind() == server_ep.addr_kind())
                 .map(|entry| entry.value().clone())
                 .collect()),
         };
@@ -124,7 +128,7 @@ impl QuicClient {
         let mut error_accumulator = vec![];
         let local_binds = server_eps
             .into_iter()
-            .map(ToEndpointAddr::to_endpoint_addr)
+            .map(Into::into)
             .flat_map(|server_ep| {
                 select_or_bind_ifaces(&server_ep)
                     // bind inet://xx/alloc error
@@ -141,8 +145,16 @@ impl QuicClient {
                         }
                         ifaces => Some(ifaces.into_iter().filter_map(move |iface| {
                             let real_addr = iface.real_addr().ok()?;
-                            let link = Link::new(real_addr, *server_ep);
-                            let pathway = Pathway::new(EndpointAddr::direct(real_addr), server_ep);
+                            let dst = match server_ep {
+                                EndpointAddr::Socket(socket_endpoint_addr) => {
+                                    RealAddr::Internet(*socket_endpoint_addr)
+                                }
+                                EndpointAddr::Ble(ble_endpont_addr) => {
+                                    RealAddr::Bluetooth(*ble_endpont_addr)
+                                }
+                            };
+                            let link = Link::new(real_addr, dst);
+                            let pathway = Pathway::new(real_addr.into(), server_ep);
                             Some((iface, link, pathway))
                         })),
                     })
@@ -208,7 +220,7 @@ impl QuicClient {
         });
 
         for (iface, link, pathway) in local_binds {
-            connection.add_path(iface.bind_addr(), link, pathway)??;
+            connection.add_path(iface.bind_uri(), link, pathway)??;
         }
 
         Ok(connection)
@@ -247,7 +259,7 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: impl Into<String>,
-        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
+        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
         if self.reuse_connection {
@@ -265,7 +277,7 @@ impl QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindAddr, Arc<QuicInterface>>,
+    bind_interfaces: DashMap<BindUri, Arc<QuicInterface>>,
     reuse_connection: bool,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
@@ -315,16 +327,16 @@ impl<T> QuicClientBuilder<T> {
     /// returns an error), only the log will be printed.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindAddr>>) -> io::Result<Self> {
+    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> io::Result<Self> {
         self.bind_interfaces.clear();
 
-        for bind_addr in addrs.into_iter().map(Into::into) {
-            if self.bind_interfaces.contains_key(&bind_addr) {
+        for bind_uri in addrs.into_iter().map(Into::into) {
+            if self.bind_interfaces.contains_key(&bind_uri) {
                 continue;
             }
             let interface = QuicInterfaces::global()
-                .insert(bind_addr.clone(), self.quic_iface_factory.clone())?;
-            self.bind_interfaces.insert(bind_addr, interface);
+                .insert(bind_uri.clone(), self.quic_iface_factory.clone())?;
+            self.bind_interfaces.insert(bind_uri, interface);
         }
 
         Ok(self)

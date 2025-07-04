@@ -90,7 +90,7 @@ impl ArcPathContexts {
         if let Some((_, path)) = self.paths.remove(pathway) {
             self.tx_wakers.remove(pathway);
             self.broker.emit(Event::PathInactivated(
-                path.interface.bind_addr(),
+                path.interface.bind_uri(),
                 path.pathway,
                 path.link,
             ));

@@ -12,7 +12,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use qbase::net::{
-    addr::{BindAddr, RealAddr},
+    addr::{BindUri, RealAddr},
     route::PacketHeader,
 };
 
@@ -33,11 +33,11 @@ pub trait QuicIO: Send + Sync {
     ///
     /// This value cannot change after the interface is bound,
     /// as it is used as the unique identifier for the interface.
-    fn bind_addr(&self) -> BindAddr;
+    fn bind_uri(&self) -> BindUri;
 
     /// Get the actual address that this interface is bound to.
     ///
-    /// For example, if this interface is bound to an [`BindAddr`],
+    /// For example, if this interface is bound to an [`BindUri`],
     /// this function should return the actual IP address and port address of this interface.
     ///
     /// Just like [`UdpSocket::local_addr`] may return an error,
@@ -122,17 +122,17 @@ impl dyn QuicIO {
             matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
         }
 
-        let bind_addr = self.bind_addr();
+        let bind_uri = self.bind_uri();
         Ok(self
             .recvmmsg(bufs, hdrs)
             .await?
             .flat_map(move |(buf, hdr)| {
                 let size = buf.len();
-                let bind_addr = bind_addr.clone();
+                let bind_uri = bind_uri.clone();
                 PacketReader::new(buf, 8)
                     .flatten()
                     .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
-                    .map(move |pkt| (pkt, (bind_addr.clone(), hdr.pathway(), hdr.link())))
+                    .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
             }))
     }
 }

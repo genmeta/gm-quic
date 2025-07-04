@@ -142,7 +142,7 @@ async fn launch_echo_server(
         "localhost",
         SERVER_CERT,
         SERVER_KEY,
-        ["inet://127.0.0.1/alloc"],
+        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
         None,
     )?;
     Ok((listeners.clone(), serve_echo(listeners)))
@@ -223,7 +223,7 @@ fn shutdown() -> Result<(), Error> {
             "localhost",
             SERVER_CERT,
             SERVER_KEY,
-            ["inet://127.0.0.1/alloc"],
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
             None,
         )?;
         Ok((listeners.clone(), serve_only_one_stream(listeners)))
@@ -486,7 +486,7 @@ fn client_auth() -> Result<(), Error> {
             "localhost",
             SERVER_CERT,
             SERVER_KEY,
-            ["inet://127.0.0.1/alloc"],
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
             None,
         )?;
         Ok((listeners.clone(), auth_client(listeners)))

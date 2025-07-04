@@ -922,7 +922,7 @@ mod tests {
             protocol_types = protocol_types()
         )
         .in_scope(|| {
-            let src = "inet://127.0.0.1/23456".parse().unwrap();
+            let src = "127.0.0.1:23456".parse().unwrap();
             let dst = "192.168.31.1:21".parse().unwrap();
             event!(ConnectionStarted { socket: (src, dst) }, to_router = true)
         })

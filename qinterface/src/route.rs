@@ -10,14 +10,14 @@ use qbase::{
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::{
-        addr::{BindAddr, RealAddr},
+        addr::{BindUri, RealAddr},
         route::{Link, Pathway},
     },
     packet::GetDcid,
 };
 
 use crate::queue::RcvdPacketQueue;
-pub type Way = (BindAddr, Pathway, Link);
+pub type Way = (BindUri, Pathway, Link);
 
 type ConnectlessPacketHandler = Box<dyn FnMut(Packet, Way) + Send>;
 
