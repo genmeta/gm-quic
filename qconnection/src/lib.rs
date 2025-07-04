@@ -55,7 +55,7 @@ use qbase::{
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
-        addr::BindAddr,
+        addr::BindUri,
         route::{EndpointAddr, Link, Pathway},
     },
     param::{ArcParameters, ParameterId},
@@ -240,15 +240,15 @@ impl Components {
         .in_current_span()
     }
 
-    pub fn add_local_endpoint(&self, _bind: BindAddr, _addr: EndpointAddr) {
+    pub fn add_local_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
         todo!("Implement this method to add a local endpoint.")
     }
 
-    pub fn add_peer_endpoint(&self, _bind: BindAddr, _addr: EndpointAddr) {
+    pub fn add_peer_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
         todo!("Implement this method to add a peer endpoint.")
     }
 
-    pub fn add_path(&self, ifaca_addr: BindAddr, link: Link, pathway: Pathway) -> io::Result<()> {
+    pub fn add_path(&self, ifaca_addr: BindUri, link: Link, pathway: Pathway) -> io::Result<()> {
         self.get_or_try_create_path(ifaca_addr, link, pathway, false)
             .map(|_| ())
     }
@@ -485,11 +485,11 @@ impl Connection {
 
     pub fn add_path(
         &self,
-        bind_addr: BindAddr,
+        bind_uri: BindUri,
         link: Link,
         pathway: Pathway,
     ) -> Result<io::Result<()>, Error> {
-        self.try_map_components(|core_conn| core_conn.add_path(bind_addr, link, pathway))
+        self.try_map_components(|core_conn| core_conn.add_path(bind_uri, link, pathway))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> Result<(), Error> {
@@ -535,11 +535,11 @@ impl Connection {
             .await
     }
 
-    pub fn add_local_endpoint(&self, bind: BindAddr, addr: EndpointAddr) -> Result<(), Error> {
+    pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {
         self.try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
     }
 
-    pub fn add_peer_endpoint(&self, bind: BindAddr, addr: EndpointAddr) -> Result<(), Error> {
+    pub fn add_peer_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {
         self.try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
     }
 }

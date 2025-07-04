@@ -229,7 +229,7 @@ pub fn spawn_deliver_and_parse(
     let conn_state = components.conn_state.clone();
     let remote_cids = components.cid_registry.remote.clone();
     let deliver_and_parse = async move {
-        while let Some((packet, (bind_addr, pathway, link))) = packets.recv().await {
+        while let Some((packet, (bind_uri, pathway, link))) = packets.recv().await {
             let parse = async {
                 let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
 
@@ -248,7 +248,7 @@ pub fn spawn_deliver_and_parse(
                 };
 
                 // TODO: 错误处理
-                let Ok(path) = components.get_or_try_create_path(bind_addr, link, pathway, true)
+                let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
                 else {
                     packet.drop_on_conenction_closed();
                     return Ok(());

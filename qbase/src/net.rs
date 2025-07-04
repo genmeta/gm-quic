@@ -33,17 +33,17 @@ impl Display for Family {
 ///
 /// Supported values: `v4`, `V4`, `v6`, `V6`
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
-#[error("Invalid inet family: {0}")]
-pub struct InvalidFamily(String);
+#[error("Invalid ip family")]
+pub struct ParseFamilyError;
 
 impl FromStr for Family {
-    type Err = InvalidFamily;
+    type Err = ParseFamilyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "v4" => Ok(Family::V4),
             "v6" => Ok(Family::V6),
-            invalid => Err(InvalidFamily(invalid.to_string())),
+            _ => Err(ParseFamilyError),
         }
     }
 }
@@ -96,7 +96,6 @@ mod tests {
         assert_eq!("v6".parse::<Family>().unwrap(), Family::V6);
         assert_eq!("V6".parse::<Family>().unwrap(), Family::V6);
 
-        assert!(matches!("v7".parse::<Family>(), Err(InvalidFamily(_))));
-        assert!(matches!("invalid".parse::<Family>(), Err(InvalidFamily(_))));
+        assert!(matches!("v7".parse::<Family>(), Err(ParseFamilyError)));
     }
 }

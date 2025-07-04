@@ -19,6 +19,7 @@ derive_more = { workspace = true, features = [
     "as_ref",
     "deref",
     "deref_mut",
+    "display",
     "from",
     "into",
     "try_into",
@@ -26,6 +27,8 @@ derive_more = { workspace = true, features = [
 enum_dispatch = { workspace = true }
 futures = { workspace = true }
 getset = { workspace = true }
+http = { workspace = true }
+netdev = { workspace = true }
 nom = { workspace = true }
 qmacro = { workspace = true }
 tracing = { workspace = true }

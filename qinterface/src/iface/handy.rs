@@ -8,53 +8,45 @@ pub mod qudp {
 
     use bytes::BytesMut;
     use qbase::net::{
-        addr::{BindAddr, BindUri, RealAddr},
+        addr::{BindUri, RealAddr, TryIntoSocketAddrError},
         route::{Link, Pathway, ToEndpointAddr},
     };
     use qudp::BATCH_SIZE;
 
-    use super::super::monitor::InterfacesMonitor;
     use crate::{PacketHeader, QuicIO};
 
     pub struct UdpSocketController {
         inner: qudp::UdpSocketController,
-        bind_addr: BindAddr,
+        bind_uri: BindUri,
     }
 
     impl UdpSocketController {
-        pub fn bind(bind_addr: BindAddr) -> io::Result<Self> {
-            let socket_addr = match &bind_addr {
-                BindAddr::Socket(BindUri::Internet(inet_bind_addr)) => {
-                    SocketAddr::from(*inet_bind_addr)
-                }
-                BindAddr::Socket(BindUri::Interface(iface_bind_addr)) => {
-                    InterfacesMonitor::global()
-                        .get(iface_bind_addr)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                format!("Interface not found: {iface_bind_addr}"),
-                            )
-                        })?
-                }
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        format!("USC can only bind to socket addresses, got: {bind_addr:?}"),
-                    ));
-                }
-            };
-            let usc = qudp::UdpSocketController::bind(socket_addr)?;
-            Ok(Self {
-                bind_addr,
-                inner: usc,
-            })
+        pub fn bind(bind_uri: BindUri) -> io::Result<Self> {
+            match SocketAddr::try_from(&bind_uri) {
+                Ok(socket_addr) => Ok(Self {
+                    bind_uri,
+                    inner: qudp::UdpSocketController::bind(socket_addr)?,
+                }),
+                Err(error) => match error {
+                    TryIntoSocketAddrError::NotSocketBindUri => Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Failed to bind {bind_uri}: BLE is not supported by UdpSocketController",
+                        ),
+                    )),
+                    e @ (TryIntoSocketAddrError::InterfaceNotFound
+                    | TryIntoSocketAddrError::LinkNotFound) => Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Failed to bind {bind_uri}: {e}"),
+                    )),
+                },
+            }
         }
     }
 
     impl QuicIO for UdpSocketController {
-        fn bind_addr(&self) -> BindAddr {
-            self.bind_addr.clone()
+        fn bind_uri(&self) -> BindUri {
+            self.bind_uri.clone()
         }
 
         fn real_addr(&self) -> io::Result<RealAddr> {
@@ -129,7 +121,7 @@ pub mod unsuppoeted {
 
     use bytes::BytesMut;
     use qbase::net::{
-        addr::{BindAddr, RealAddr},
+        addr::{BindUri, RealAddr},
         route::PacketHeader,
     };
 
@@ -138,7 +130,7 @@ pub mod unsuppoeted {
     pub struct Unsuppoeted(());
 
     impl Unsuppoeted {
-        pub fn bind(_: BindAddr) -> io::Result<Self> {
+        pub fn bind(_: BindUri) -> io::Result<Self> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "qudp feature is not enabled or target platform is not supported, you should use your own ProductQuicIO implementation, not DEFAULT_QUIC_IO_FACTORY",
@@ -147,7 +139,7 @@ pub mod unsuppoeted {
     }
 
     impl QuicIO for Unsuppoeted {
-        fn bind_addr(&self) -> BindAddr {
+        fn bind_uri(&self) -> BindUri {
             unreachable!()
         }
 

@@ -2,21 +2,21 @@ pub mod handy;
 
 use std::io;
 
-use qbase::net::addr::BindAddr;
+use qbase::net::addr::BindUri;
 
 use crate::QuicIO;
 
 pub trait ProductQuicIO: Send + Sync {
-    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicIO>>;
+    fn bind(&self, bind_uri: BindUri) -> io::Result<Box<dyn QuicIO>>;
 }
 
 impl<F, Q> ProductQuicIO for F
 where
-    F: Fn(BindAddr) -> io::Result<Q> + Send + Sync,
+    F: Fn(BindUri) -> io::Result<Q> + Send + Sync,
     Q: QuicIO + 'static,
 {
     #[inline]
-    fn bind(&self, addr: BindAddr) -> io::Result<Box<dyn QuicIO>> {
-        Ok(Box::new((self)(addr)?))
+    fn bind(&self, bind_uri: BindUri) -> io::Result<Box<dyn QuicIO>> {
+        Ok(Box::new((self)(bind_uri)?))
     }
 }

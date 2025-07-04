@@ -7,7 +7,7 @@ use std::{
 
 use derive_more::Deref;
 use qbase::net::{
-    addr::{BindAddr, RealAddr},
+    addr::{BindUri, RealAddr},
     route::PacketHeader,
 };
 use tokio::task::JoinHandle;
@@ -42,8 +42,8 @@ impl RwInterface {
 
 impl QuicIO for RwInterface {
     #[inline]
-    fn bind_addr(&self) -> BindAddr {
-        self.borrow().bind_addr()
+    fn bind_uri(&self) -> BindUri {
+        self.borrow().bind_uri()
     }
 
     #[inline]
@@ -83,19 +83,19 @@ impl QuicIO for RwInterface {
 }
 
 pub struct QuicInterface {
-    bind_addr: BindAddr,
+    bind_uri: BindUri,
     iface: Weak<RwInterface>,
     ifaces: Arc<QuicInterfaces>,
 }
 
 impl QuicInterface {
     pub(super) fn new(
-        bind_addr: BindAddr,
+        bind_uri: BindUri,
         iface: Weak<RwInterface>,
         ifaces: Arc<QuicInterfaces>,
     ) -> Self {
         Self {
-            bind_addr,
+            bind_uri,
             iface,
             ifaces,
         }
@@ -105,7 +105,7 @@ impl QuicInterface {
         let unavailable = || {
             io::Error::new(
                 io::ErrorKind::NotConnected,
-                format!("Interface {} is not available", self.bind_addr),
+                format!("Interface {} is not available", self.bind_uri),
             )
         };
         let muteable_iface = self.iface.upgrade().ok_or_else(unavailable)?;
@@ -115,7 +115,7 @@ impl QuicInterface {
 
 impl Drop for QuicInterface {
     fn drop(&mut self) {
-        self.ifaces.remove_if(&self.bind_addr, |_, (iface_ctx, _)| {
+        self.ifaces.remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
             Weak::ptr_eq(&Arc::downgrade(iface_ctx.deref()), &self.iface)
         });
     }
@@ -123,8 +123,8 @@ impl Drop for QuicInterface {
 
 impl QuicIO for QuicInterface {
     #[inline]
-    fn bind_addr(&self) -> BindAddr {
-        self.bind_addr.clone()
+    fn bind_uri(&self) -> BindUri {
+        self.bind_uri.clone()
     }
 
     #[inline]
@@ -165,7 +165,7 @@ impl QuicIO for QuicInterface {
 
 #[derive(Deref)]
 pub struct InterfaceContext {
-    bind_addr: BindAddr,
+    bind_uri: BindUri,
     /// factory to rebind the interface
     ///
     /// factory may be changed when manually rebind
@@ -180,8 +180,8 @@ pub struct InterfaceContext {
 }
 
 impl InterfaceContext {
-    pub fn new(bind_addr: BindAddr, factory: Arc<dyn ProductQuicIO>) -> io::Result<Self> {
-        let iface = factory.bind(bind_addr.clone())?;
+    pub fn new(bind_uri: BindUri, factory: Arc<dyn ProductQuicIO>) -> io::Result<Self> {
+        let iface = factory.bind(bind_uri.clone())?;
         let iface = Arc::new(RwInterface::from(iface));
 
         let task = tokio::spawn({
@@ -206,19 +206,18 @@ impl InterfaceContext {
         });
 
         Ok(InterfaceContext {
-            bind_addr,
+            bind_uri,
             factory,
             iface,
             task,
         })
     }
 
-    pub async fn rebind(&mut self, bind_addr: BindAddr) -> io::Result<()> {
-        self.iface.update(self.factory.bind(bind_addr.clone())?);
+    pub fn rebind(&mut self, bind_uri: BindUri) -> io::Result<()> {
+        self.iface.update(self.factory.bind(bind_uri.clone())?);
 
         // abort the current task
         self.task.abort();
-        _ = (&mut self.task).await;
         // then spawn the new one
         self.task = tokio::spawn({
             let iface = Arc::downgrade(&self.iface);
