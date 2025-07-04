@@ -1,221 +1,204 @@
 use std::{
-    fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    convert::Infallible,
+    fmt::Display,
+    net::{AddrParseError, SocketAddr},
     ops::Deref,
     str::FromStr,
 };
 
-use bytes::BufMut;
-use nom::{
-    IResult, Parser,
-    combinator::{flat_map, map},
-    number::complete::{be_u16, be_u32, be_u128},
-};
+use derive_more::{Deref, From, TryInto};
 use serde::{Deserialize, Serialize};
 
-use super::Family;
-use crate::net::addr::{ParseRealAddrError, RealAddr};
+use crate::net::{
+    Family,
+    addr::{AddrKind, RealAddr},
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum EndpointAddr {
-    Direct { addr: RealAddr },
-    Agent { agent: RealAddr, outer: RealAddr },
+pub enum SocketEndpointAddr {
+    Direct {
+        addr: SocketAddr,
+    },
+    Agent {
+        agent: SocketAddr,
+        outer: SocketAddr,
+    },
 }
 
-impl EndpointAddr {
-    pub fn direct(addr: impl Into<RealAddr>) -> Self {
-        EndpointAddr::Direct { addr: addr.into() }
+impl SocketEndpointAddr {
+    pub fn direct(addr: SocketAddr) -> Self {
+        SocketEndpointAddr::Direct { addr }
     }
 
-    pub fn with_agent(agent: impl Into<RealAddr>, outer: impl Into<RealAddr>) -> Self {
-        EndpointAddr::Agent {
-            agent: agent.into(),
-            outer: outer.into(),
-        }
+    pub fn with_agent(agent: SocketAddr, outer: SocketAddr) -> Self {
+        SocketEndpointAddr::Agent { agent, outer }
     }
 
-    /// Returns the outer addr of this EndpointAddr
+    /// Returns the outer addr of this SocketEndpointAddr
     ///
     /// Note: Before successful hole punching with this Endpoint, packets should be sent to the addr
     /// returned by deref() to establish communication. Once hole punching is successful or about to
     /// begin, use the addr returned by this function.
-    pub fn addr(&self) -> RealAddr {
+    pub fn addr(&self) -> SocketAddr {
         match self {
-            EndpointAddr::Direct { addr } => *addr,
-            EndpointAddr::Agent { outer, .. } => *outer,
-        }
-    }
-
-    // pub fn encoding_size(&self) -> usize {
-    //     let addr_size = |addr: &RealAddr| {
-    //         if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
-    //     };
-    //     match self {
-    //         EndpointAddr::Direct { addr } => addr_size(addr),
-    //         EndpointAddr::Agent {
-    //             agent,
-    //             outer: inner,
-    //         } => addr_size(agent) + addr_size(inner),
-    //     }
-    // }
-}
-
-impl fmt::Display for EndpointAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EndpointAddr::Direct { addr } => write!(f, "Direct({addr})"),
-            EndpointAddr::Agent { agent, outer } => write!(f, "Agent({agent}-{outer})"),
+            SocketEndpointAddr::Direct { addr } => *addr,
+            SocketEndpointAddr::Agent { outer, .. } => *outer,
         }
     }
 }
 
-impl Deref for EndpointAddr {
-    type Target = RealAddr;
+impl Display for SocketEndpointAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketEndpointAddr::Direct { addr } => write!(f, "Direct({addr})"),
+            SocketEndpointAddr::Agent { agent, outer } => write!(f, "Agent({agent}-{outer})"),
+        }
+    }
+}
+
+impl Deref for SocketEndpointAddr {
+    type Target = SocketAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            EndpointAddr::Direct { addr } => addr,
-            EndpointAddr::Agent { agent, .. } => agent,
+            SocketEndpointAddr::Direct { addr } => addr,
+            SocketEndpointAddr::Agent { agent, .. } => agent,
         }
     }
 }
 
-impl FromStr for EndpointAddr {
-    type Err = ParseRealAddrError;
+impl FromStr for SocketEndpointAddr {
+    type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = s.split_once("-") {
             // Agent format: "inet:1.12.124.56:1234-inet:202.106.68.43:6080"
-            let agent: RealAddr = first.trim().parse()?;
-            let outer: RealAddr = second.trim().parse()?;
-            Ok(EndpointAddr::with_agent(agent, outer))
+            let agent = first.trim().parse()?;
+            let outer = second.trim().parse()?;
+            Ok(SocketEndpointAddr::with_agent(agent, outer))
         } else {
             // Direct format: "1.12.124.56:1234"
-            let addr: RealAddr = s.trim().parse()?;
-            Ok(EndpointAddr::direct(addr))
+            let addr = s.trim().parse()?;
+            Ok(SocketEndpointAddr::direct(addr))
         }
     }
 }
 
-pub trait WriteEndpointAddr {
-    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
+impl From<SocketAddr> for SocketEndpointAddr {
+    fn from(addr: SocketAddr) -> Self {
+        SocketEndpointAddr::direct(addr)
+    }
 }
 
-impl<T: BufMut> WriteEndpointAddr for T {
-    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
-        match endpoint {
-            EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
-            EndpointAddr::Agent {
-                agent,
-                outer: inner,
-            } => {
-                self.put_socket_addr(&agent);
-                self.put_socket_addr(&inner);
-            }
+impl From<(SocketAddr, SocketAddr)> for SocketEndpointAddr {
+    fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
+        SocketEndpointAddr::with_agent(agent, outer)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deref, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct BleEndpontAddr([u8; 6]);
+
+impl BleEndpontAddr {
+    pub fn new(addr: [u8; 6]) -> Self {
+        BleEndpontAddr(addr)
+    }
+}
+
+impl Display for BleEndpontAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02x?}", self.0)
+    }
+}
+
+impl FromStr for BleEndpontAddr {
+    type Err = Infallible;
+
+    fn from_str(_: &str) -> Result<Self, Self::Err> {
+        unimplemented!()
+    }
+}
+
+#[derive(Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum EndpointAddr {
+    Socket(SocketEndpointAddr),
+    Ble(BleEndpontAddr),
+}
+
+impl EndpointAddr {
+    pub fn addr_kind(&self) -> AddrKind {
+        match self {
+            EndpointAddr::Socket(addr) => AddrKind::Internet(match addr.deref() {
+                SocketAddr::V4(..) => Family::V4,
+                SocketAddr::V6(..) => Family::V6,
+            }),
+            EndpointAddr::Ble(_) => AddrKind::Bluetooth,
         }
     }
 }
 
-pub fn be_endpoint_addr(
-    input: &[u8],
-    is_relay: bool,
-    family: Family,
-) -> nom::IResult<&[u8], EndpointAddr> {
-    if is_relay {
-        let (remain, agent) = be_socket_addr(input, family)?;
-        let (remain, outer) = be_socket_addr(remain, family)?;
-        Ok((remain, EndpointAddr::Agent { agent, outer }))
-    } else {
-        let (remain, addr) = be_socket_addr(input, family)?;
-        Ok((remain, EndpointAddr::Direct { addr }))
+impl Display for EndpointAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointAddr::Socket(addr) => addr.fmt(f),
+            EndpointAddr::Ble(addr) => addr.fmt(f),
+        }
     }
 }
 
-pub trait WriteRealAddr {
-    fn put_socket_addr(&mut self, addr: &RealAddr);
-}
-
-impl<T: BufMut> WriteRealAddr for T {
-    fn put_socket_addr(&mut self, addr: &RealAddr) {
+impl From<RealAddr> for EndpointAddr {
+    fn from(addr: RealAddr) -> Self {
         match addr {
-            RealAddr::Internet(sock_addr) => {
-                self.put_u16(sock_addr.port());
-                match sock_addr.ip() {
-                    IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
-                    IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
-                }
-            }
-            _ => {
-                unimplemented!("Unix socket addresses are not supported in this context");
-            }
+            RealAddr::Internet(socket_addr) => SocketEndpointAddr::direct(socket_addr).into(),
+            RealAddr::Bluetooth(ble_addr) => BleEndpontAddr::new(ble_addr).into(),
         }
     }
 }
 
-pub fn be_socket_addr(input: &[u8], family: Family) -> IResult<&[u8], RealAddr> {
-    flat_map(be_u16, |port| {
-        map(be_ip_addr(family), move |ip| {
-            RealAddr::Internet(SocketAddr::new(ip, port))
-        })
-    })
-    .parse(input)
-}
-
-pub fn be_ip_addr(family: Family) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
-    move |input| match family {
-        Family::V6 => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
-        Family::V4 => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
+impl From<SocketAddr> for EndpointAddr {
+    fn from(addr: SocketAddr) -> Self {
+        SocketEndpointAddr::from(addr).into()
     }
 }
 
-pub trait ToEndpointAddr {
-    fn to_endpoint_addr(self) -> EndpointAddr;
-}
-
-impl ToEndpointAddr for EndpointAddr {
-    fn to_endpoint_addr(self) -> EndpointAddr {
-        self
+impl From<(SocketAddr, SocketAddr)> for EndpointAddr {
+    fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
+        SocketEndpointAddr::from((agent, outer)).into()
     }
 }
 
-impl<T: Into<RealAddr>> ToEndpointAddr for T {
-    fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::direct(self.into())
-    }
-}
-
-impl<A: Into<RealAddr>, O: Into<RealAddr>> ToEndpointAddr for (A, O) {
-    fn to_endpoint_addr(self) -> EndpointAddr {
-        EndpointAddr::with_agent(self.0.into(), self.1.into())
+impl From<[u8; 6]> for EndpointAddr {
+    fn from(addr: [u8; 6]) -> Self {
+        BleEndpontAddr::from(addr).into()
     }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Pathway {
-    local: EndpointAddr,
-    remote: EndpointAddr,
+pub struct Pathway<E = EndpointAddr> {
+    local: E,
+    remote: E,
 }
 
-impl fmt::Display for Pathway {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} -> {}", self.local, self.remote)
-    }
-}
-
-impl Pathway {
+impl<E> Pathway<E> {
     #[inline]
-    pub fn new(local: EndpointAddr, remote: EndpointAddr) -> Self {
+    pub fn new(local: E, remote: E) -> Self {
         Self { local, remote }
     }
 
     #[inline]
-    pub fn local(&self) -> EndpointAddr {
-        self.local
+    pub fn local(&self) -> E
+    where
+        E: Clone,
+    {
+        self.local.clone()
     }
 
     #[inline]
-    pub fn remote(&self) -> EndpointAddr {
-        self.remote
+    pub fn remote(&self) -> E
+    where
+        E: Clone,
+    {
+        self.remote.clone()
     }
 
     #[inline]
@@ -227,36 +210,44 @@ impl Pathway {
     }
 }
 
-/// Network way, representing the quadruple of source and destination addres.
+impl<E: Display> Display for Pathway<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}---{}", self.local, self.remote)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Link {
-    src: RealAddr,
-    dst: RealAddr,
+pub struct Link<A = RealAddr> {
+    src: A,
+    dst: A,
 }
 
-impl fmt::Display for Link {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} <-> {}", self.src, self.dst)
+impl<A: Display> Display for Link<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<->{}", self.src, self.dst)
     }
 }
 
-impl Link {
+impl<A> Link<A> {
     #[inline]
-    pub fn new(src: impl Into<RealAddr>, dst: impl Into<RealAddr>) -> Self {
-        Self {
-            src: src.into(),
-            dst: dst.into(),
-        }
+    pub fn new(src: A, dst: A) -> Self {
+        Self { src, dst }
     }
 
     #[inline]
-    pub fn src(&self) -> RealAddr {
-        self.src
+    pub fn src(&self) -> A
+    where
+        A: Clone,
+    {
+        self.src.clone()
     }
 
     #[inline]
-    pub fn dst(&self) -> RealAddr {
-        self.dst
+    pub fn dst(&self) -> A
+    where
+        A: Clone,
+    {
+        self.dst.clone()
     }
 
     #[inline]
@@ -268,12 +259,9 @@ impl Link {
     }
 }
 
-impl From<Link> for Pathway {
-    fn from(link: Link) -> Self {
-        Pathway::new(
-            EndpointAddr::direct(link.src),
-            EndpointAddr::direct(link.dst),
-        )
+impl<A, E: From<A>> From<Link<A>> for Pathway<E> {
+    fn from(link: Link<A>) -> Self {
+        Pathway::new(E::from(link.src), E::from(link.dst))
     }
 }
 
@@ -301,9 +289,8 @@ impl PacketHeader {
     pub fn empty() -> Self {
         let src = SocketAddr::from(([0, 0, 0, 0], 0));
         let dst = SocketAddr::from(([0, 0, 0, 0], 0));
-        let way = Pathway::new(src.to_endpoint_addr(), dst.to_endpoint_addr());
-        let link = Link::new(src, dst);
-        Self::new(way, link, 0, None, 0)
+        let link = Link::new(RealAddr::from(src), RealAddr::from(dst));
+        Self::new(link.into(), link, 0, None, 0)
     }
 
     pub fn pathway(&self) -> Pathway {
@@ -334,22 +321,22 @@ mod tests {
     #[test]
     fn test_endpoint_addr_from_str() {
         // Test direct format
-        let addr = "127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
-        assert!(matches!(addr, EndpointAddr::Direct { .. }));
+        let addr = "127.0.0.1:8080".parse::<SocketEndpointAddr>().unwrap();
+        assert!(matches!(addr, SocketEndpointAddr::Direct { .. }));
 
         // Test agent format
         let addr = "127.0.0.1:8080-192.168.1.1:9000"
-            .parse::<EndpointAddr>()
+            .parse::<SocketEndpointAddr>()
             .unwrap();
-        assert!(matches!(addr, EndpointAddr::Agent { .. }));
+        assert!(matches!(addr, SocketEndpointAddr::Agent { .. }));
 
         // Test with whitespace
         let addr = "  127.0.0.1:8080  -  192.168.1.1:9000  "
-            .parse::<EndpointAddr>()
+            .parse::<SocketEndpointAddr>()
             .unwrap();
-        assert!(matches!(addr, EndpointAddr::Agent { .. }));
+        assert!(matches!(addr, SocketEndpointAddr::Agent { .. }));
 
         // Test invalid format
-        assert!("invalid".parse::<EndpointAddr>().is_err());
+        assert!("invalid".parse::<SocketEndpointAddr>().is_err());
     }
 }

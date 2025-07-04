@@ -96,11 +96,11 @@ impl QuicClient {
     fn new_connection(
         &self,
         server_name: String,
-        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
+        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> io::Result<Arc<Connection>> {
         let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &self.bind_interfaces {
             None => {
-                let bind_uri: BindUri = match server_ep.kind() {
+                let bind_uri: BindUri = match server_ep.addr_kind() {
                     AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
                         .expect("URL should be valid")
                         .alloc_port(),
@@ -120,7 +120,7 @@ impl QuicClient {
             }
             Some(bind_interfaces) => Ok(bind_interfaces
                 .iter()
-                .filter(|entry| entry.key().addr_kind() == server_ep.kind())
+                .filter(|entry| entry.key().addr_kind() == server_ep.addr_kind())
                 .map(|entry| entry.value().clone())
                 .collect()),
         };
@@ -128,7 +128,7 @@ impl QuicClient {
         let mut error_accumulator = vec![];
         let local_binds = server_eps
             .into_iter()
-            .map(ToEndpointAddr::to_endpoint_addr)
+            .map(Into::into)
             .flat_map(|server_ep| {
                 select_or_bind_ifaces(&server_ep)
                     // bind inet://xx/alloc error
@@ -145,8 +145,16 @@ impl QuicClient {
                         }
                         ifaces => Some(ifaces.into_iter().filter_map(move |iface| {
                             let real_addr = iface.real_addr().ok()?;
-                            let link = Link::new(real_addr, *server_ep);
-                            let pathway = Pathway::new(EndpointAddr::direct(real_addr), server_ep);
+                            let dst = match server_ep {
+                                EndpointAddr::Socket(socket_endpoint_addr) => {
+                                    RealAddr::Internet(*socket_endpoint_addr)
+                                }
+                                EndpointAddr::Ble(ble_endpont_addr) => {
+                                    RealAddr::Bluetooth(*ble_endpont_addr)
+                                }
+                            };
+                            let link = Link::new(real_addr, dst);
+                            let pathway = Pathway::new(real_addr.into(), server_ep);
                             Some((iface, link, pathway))
                         })),
                     })
@@ -251,7 +259,7 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: impl Into<String>,
-        server_eps: impl IntoIterator<Item = impl ToEndpointAddr>,
+        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
         if self.reuse_connection {
