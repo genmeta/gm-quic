@@ -1,12 +1,13 @@
 use std::{
     io,
+    net::SocketAddr,
     ops::Deref,
     sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
 use derive_more::Deref;
-use qbase::net::addr::{BindAddr, BindUri, RealAddr};
+use qbase::net::addr::{BindUri, BindUriSchema, RealAddr};
 
 use crate::{
     QuicIO,
@@ -17,7 +18,7 @@ use crate::{
 #[derive(Deref)]
 pub struct QuicInterfaces {
     #[deref]
-    interfaces: DashMap<BindAddr, (InterfaceContext, Weak<QuicInterface>)>,
+    interfaces: DashMap<BindUri, (InterfaceContext, Weak<QuicInterface>)>,
 }
 
 impl QuicInterfaces {
@@ -43,48 +44,41 @@ impl QuicInterfaces {
             let Some(this) = this.upgrade() else {
                 return;
             };
-            let iface_bind_addrs =
-                this.interfaces
-                    .iter_mut()
-                    .filter_map(|entry| match entry.key() {
-                        BindAddr::Socket(BindUri::Interface(bind_addr)) => {
-                            Some((bind_addr.clone(), entry))
-                        }
-                        _ => None,
-                    });
+            this.interfaces
+                .iter_mut()
+                .filter(|entry| entry.key().scheme() == BindUriSchema::Iface)
+                .for_each(|mut entry| {
+                    let (bind_uri, (iface_ctx, ..)) = entry.pair_mut();
+                    let Ok(socket_addr) = SocketAddr::try_from(bind_uri) else {
+                        return;
+                    };
 
-            for (bind_addr, mut iface_ctx) in iface_bind_addrs {
-                let (iface_ctx, ..) = iface_ctx.value_mut();
-                let Some(socket_addr) = monitor.get(&bind_addr) else {
-                    continue;
-                };
-
-                // keep if real address is ok, and task is not finished, and new address same as real addr address
-                if (iface_ctx.real_addr()).is_ok_and(|read_addr| {
-                    !iface_ctx.task.is_finished() && read_addr == RealAddr::Internet(socket_addr)
-                }) {
-                    continue;
-                }
-
-                _ = iface_ctx.rebind(bind_addr.into()).await;
-            }
+                    // keep if real address is ok, and task is not finished, and new address same as real addr address
+                    if (iface_ctx.real_addr()).is_ok_and(|real_addr| {
+                        !iface_ctx.task.is_finished()
+                            && real_addr == RealAddr::Internet(socket_addr)
+                    }) {
+                        return;
+                    }
+                    _ = iface_ctx.rebind(bind_uri.clone());
+                });
         }
     }
 
     pub fn insert(
         self: &Arc<Self>,
-        bind_addr: BindAddr,
+        bind_uri: BindUri,
         factory: Arc<dyn ProductQuicIO>,
     ) -> io::Result<Arc<QuicInterface>> {
-        match self.interfaces.entry(bind_addr.clone()) {
+        match self.interfaces.entry(bind_uri.clone()) {
             dashmap::Entry::Occupied(..) => Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                format!("Interface already exists for {bind_addr}"),
+                format!("Interface already exists for {bind_uri}"),
             )),
             dashmap::Entry::Vacant(entry) => {
-                let iface_ctx = InterfaceContext::new(bind_addr, factory)?;
+                let iface_ctx = InterfaceContext::new(bind_uri, factory)?;
                 let borrowed_iface = Arc::new(QuicInterface::new(
-                    iface_ctx.bind_addr.clone(),
+                    iface_ctx.bind_uri.clone(),
                     Arc::downgrade(iface_ctx.deref()),
                     self.clone(),
                 ));
@@ -95,13 +89,13 @@ impl QuicInterfaces {
         }
     }
 
-    pub fn get(&self, bind_addr: &BindAddr) -> Option<Arc<QuicInterface>> {
+    pub fn get(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
         self.interfaces
-            .get(bind_addr)
+            .get(bind_uri)
             .and_then(|entry| entry.value().1.upgrade())
     }
 
-    pub fn remove(&self, bind_addr: BindAddr) {
-        self.interfaces.remove(&bind_addr);
+    pub fn remove(&self, bind_uri: BindUri) {
+        self.interfaces.remove(&bind_uri);
     }
 }

@@ -13,10 +13,8 @@ use nom::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{
-    Family,
-    addr::{ParseRealAddrError, RealAddr},
-};
+use super::Family;
+use crate::net::addr::{ParseRealAddrError, RealAddr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
@@ -336,17 +334,17 @@ mod tests {
     #[test]
     fn test_endpoint_addr_from_str() {
         // Test direct format
-        let addr = "inet://127.0.0.1/8080".parse::<EndpointAddr>().unwrap();
+        let addr = "127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
         assert!(matches!(addr, EndpointAddr::Direct { .. }));
 
         // Test agent format
-        let addr = "inet://127.0.0.1/8080-inet://192.168.1.1/9000"
+        let addr = "127.0.0.1:8080-192.168.1.1:9000"
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));
 
         // Test with whitespace
-        let addr = "  inet://127.0.0.1/8080  -  inet://192.168.1.1/9000  "
+        let addr = "  127.0.0.1:8080  -  192.168.1.1:9000  "
             .parse::<EndpointAddr>()
             .unwrap();
         assert!(matches!(addr, EndpointAddr::Agent { .. }));

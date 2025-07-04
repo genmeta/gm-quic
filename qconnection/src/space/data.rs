@@ -10,7 +10,7 @@ use qbase::{
         ReceiveFrame, SendFrame,
     },
     net::{
-        addr::BindAddr,
+        addr::BindUri,
         route::{Link, Pathway},
         tx::{ArcSendWakers, Signals},
     },
@@ -61,11 +61,11 @@ use crate::{
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, (BindAddr, Pathway, Link));
+pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, (BindUri, Pathway, Link));
 
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
-pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindAddr, Pathway, Link));
+pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindUri, Pathway, Link));
 
 pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
@@ -562,15 +562,14 @@ pub fn spawn_deliver_and_parse(
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
             space.one_rtt_ready().await;
-            while let Some((packet, (bind_addr, pathway, link))) = zeor_rtt_packets.recv().await {
+            while let Some((packet, (bind_uri, pathway, link))) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
                         return Ok(());
                     };
 
-                    let Ok(path) =
-                        components.get_or_try_create_path(bind_addr, link, pathway, true)
+                    let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
                     else {
                         packet.drop_on_conenction_closed();
                         return Ok(());
@@ -633,7 +632,7 @@ pub fn spawn_deliver_and_parse(
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
             space.one_rtt_ready().await;
-            while let Some((packet, (bind_addr, pathway, link))) = one_rtt_packets.recv().await {
+            while let Some((packet, (bind_uri, pathway, link))) = one_rtt_packets.recv().await {
                 let parse = async {
                     let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
 
@@ -641,8 +640,7 @@ pub fn spawn_deliver_and_parse(
                         return Ok(());
                     };
 
-                    let Ok(path) =
-                        components.get_or_try_create_path(bind_addr, link, pathway, true)
+                    let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
                     else {
                         packet.drop_on_conenction_closed();
                         return Ok(());

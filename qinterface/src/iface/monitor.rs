@@ -1,12 +1,10 @@
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, OnceLock, RwLock, RwLockReadGuard},
     time::Duration,
 };
 
 use netdev::Interface;
-use qbase::net::{AddrFamily, Family, addr::BindIfaceUri};
 use tokio::sync::watch;
 
 struct Devices(RwLock<HashMap<String, Interface>>);
@@ -97,23 +95,6 @@ impl InterfacesMonitor {
 
     pub fn devices(&self) -> RwLockReadGuard<'_, HashMap<String, Interface>> {
         self.devices.get()
-    }
-
-    pub fn get(&self, bind_addr: &BindIfaceUri) -> Option<SocketAddr> {
-        self.devices()
-            .get(bind_addr.device_name())
-            .and_then(|interface| match bind_addr.family() {
-                Family::V4 => interface
-                    .ipv4
-                    .first()
-                    .map(|ipnet| SocketAddr::new(ipnet.addr().into(), bind_addr.port().into())),
-                Family::V6 => interface
-                    .ipv6
-                    .iter()
-                    .map(|ipnet| ipnet.addr())
-                    .find(|ip| !matches!(ip.octets(), [0xfe, 0x80, ..]))
-                    .map(|ip| SocketAddr::new(ip.into(), bind_addr.port().into())),
-            })
     }
 }
 

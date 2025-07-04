@@ -44,7 +44,7 @@ impl ResolvesServerCert for VirtualHosts {
 }
 
 struct Server {
-    bind_addresses: DashSet<BindAddr>,
+    bind_uris: DashSet<BindUri>,
     cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     private_key: Arc<dyn rustls::sign::SigningKey>,
     ocsp: Option<Vec<u8>>,
@@ -56,7 +56,7 @@ impl Debug for Server {
             .field(
                 "bind_interfaces",
                 &self
-                    .bind_addresses
+                    .bind_uris
                     .iter()
                     .map(|e| e.key().clone())
                     .collect::<Vec<_>>(),
@@ -76,7 +76,7 @@ struct BoundInterface {
 impl Debug for BoundInterface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListenedInterface")
-            .field("interface", &self.iface.bind_addr())
+            .field("interface", &self.iface.bind_uri())
             .field("servers", &self.servers)
             .finish()
     }
@@ -113,7 +113,7 @@ type Incomings = BoundQueue<(
 /// - Returns connections that may still be completing their QUIC handshake
 pub struct QuicListeners {
     quic_iface_factory: Arc<dyn ProductQuicIO>,
-    ifaces: Arc<DashMap<BindAddr, BoundInterface>>,
+    ifaces: Arc<DashMap<BindUri, BoundInterface>>,
     servers: Arc<DashMap<String, Server>>,
     backlog: Arc<Semaphore>,
     #[allow(clippy::type_complexity)]
@@ -205,7 +205,7 @@ impl QuicListeners {
         server_name: impl Into<String>,
         cert_chain: impl ToCertificate,
         private_key: impl ToPrivateKey,
-        bind_addresses: impl IntoIterator<Item = impl Into<BindAddr>>,
+        bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
         ocsp: impl Into<Option<Vec<u8>>>,
     ) -> io::Result<()> {
         let server_name = server_name.into();
@@ -234,35 +234,35 @@ impl QuicListeners {
             })?;
         let ocsp = ocsp.into();
 
-        let bind_addresses = bind_addresses.into_iter().map(Into::into).try_fold(
+        let bind_uris = bind_uris.into_iter().map(Into::into).try_fold(
             DashSet::new(),
-            |bind_addresses, bind_addr| {
-                let bind_address = {
-                    if let Some(listened_interface) = self.ifaces.get(&bind_addr) {
+            |bind_uris, bind_uri| {
+                let bind_uri = {
+                    if let Some(listened_interface) = self.ifaces.get(&bind_uri) {
                         let inserted = listened_interface.servers.insert(server_name.clone());
                         assert!(!inserted);
-                        listened_interface.iface.bind_addr()
+                        listened_interface.iface.bind_uri()
                     } else {
                         let iface = QuicInterfaces::global()
-                            .insert(bind_addr.clone(), self.quic_iface_factory.clone())?;
+                            .insert(bind_uri.clone(), self.quic_iface_factory.clone())?;
                         let previous = self.ifaces.insert(
-                            bind_addr.clone(),
+                            bind_uri.clone(),
                             BoundInterface {
                                 iface,
                                 servers: [server_name.clone()].into_iter().collect(),
                             },
                         );
                         assert!(previous.is_none());
-                        bind_addr
+                        bind_uri
                     }
                 };
-                bind_addresses.insert(bind_address);
-                io::Result::Ok(bind_addresses)
+                bind_uris.insert(bind_uri);
+                io::Result::Ok(bind_uris)
             },
         )?;
 
         server_entry.insert(Server {
-            bind_addresses,
+            bind_uris,
             cert_chain,
             private_key: signed_key,
             ocsp,
@@ -276,13 +276,13 @@ impl QuicListeners {
     ///
     /// If the Interface corresponding to an abstract address doesn't exist or is damaged,
     /// the corresponding actual address will be None.
-    pub fn servers(&self) -> HashMap<String, HashSet<BindAddr>> {
+    pub fn servers(&self) -> HashMap<String, HashSet<BindUri>> {
         self.servers
             .iter()
             .map(|entry| {
                 let addresses = entry
                     .value()
-                    .bind_addresses
+                    .bind_uris
                     .iter()
                     .map(|addr| addr.key().clone())
                     .collect();
@@ -330,7 +330,7 @@ impl Drop for QuicListeners {
 }
 
 struct ServerAuther {
-    iface: BindAddr,
+    iface: BindUri,
     servers: Arc<DashMap<String, Server>>,
 }
 
@@ -338,7 +338,7 @@ impl AuthClient for ServerAuther {
     fn verify_client_params(&self, host: &str, _: Option<&str>) -> bool {
         self.servers
             .get(host)
-            .is_some_and(|server| server.bind_addresses.contains(&self.iface))
+            .is_some_and(|server| server.bind_uris.contains(&self.iface))
     }
 
     fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> bool {
@@ -353,7 +353,7 @@ impl QuicListeners {
         INCOMINGS.get_or_init(Default::default)
     }
 
-    pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_addr, pathway, link): Way) {
+    pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_uri, pathway, link): Way) {
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
             return;
@@ -374,7 +374,7 @@ impl QuicListeners {
         }
 
         let server_auther: Arc<dyn AuthClient> = Arc::new(ServerAuther {
-            iface: bind_addr.clone(),
+            iface: bind_uri.clone(),
             servers: self.servers.clone(),
         });
 
@@ -402,7 +402,7 @@ impl QuicListeners {
 
         tokio::spawn(async move {
             Router::global()
-                .deliver(packet, (bind_addr.clone(), pathway, link))
+                .deliver(packet, (bind_uri.clone(), pathway, link))
                 .await;
 
             tokio::spawn({
