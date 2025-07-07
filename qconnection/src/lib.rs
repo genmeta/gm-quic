@@ -81,7 +81,7 @@ use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ArcConnState;
 use termination::Termination;
-use tls::ArcSendGate;
+use tls::ArcSendLock;
 use tracing::Instrument as _;
 
 use crate::{termination::Terminator, tls::ArcTlsHandshake};
@@ -129,7 +129,7 @@ pub struct Components {
     conn_state: ArcConnState,
     defer_idle_timeout: HeartbeatConfig,
     paths: ArcPathContexts,
-    send_gate: ArcSendGate,
+    send_lock: ArcSendLock,
     tls_handshake: ArcTlsHandshake,
     quic_handshake: Handshake,
     parameters: ArcParameters,
@@ -339,7 +339,7 @@ impl Components {
             .in_current_span(),
         );
 
-        if self.send_gate.is_permitted() {
+        if self.send_lock.is_permitted() {
             let terminator = Arc::new(Terminator::new(ccf, &self));
             tokio::spawn(
                 self.spaces
@@ -380,7 +380,7 @@ impl Components {
             .in_current_span(),
         );
 
-        if self.send_gate.is_permitted() {
+        if self.send_lock.is_permitted() {
             let terminator = Arc::new(Terminator::new(ccf, &self));
             tokio::spawn(
                 self.spaces

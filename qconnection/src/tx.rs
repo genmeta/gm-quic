@@ -132,6 +132,10 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
             },
         })
     }
+
+    pub fn payload_len(&self) -> usize {
+        self.writer.payload_len()
+    }
 }
 
 #[derive(Deref)]
@@ -376,16 +380,19 @@ pub struct Transaction<'a> {
     initial_dcid: Option<ConnectionId>,
     borrowed_dcid: Result<BorrowedCid<'a, ArcReliableFrameDeque>, Signals>,
     path_validated: bool,
+    path_first_load: bool,
     cc: &'a ArcCC,
     constraints: Constraints,
 }
 
 impl<'a> Transaction<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         initial_scid: Option<ConnectionId>,
         initial_dcid: Option<ConnectionId>,
         dcid_cell: &'a ArcDcidCell,
-        path_validaed: bool,
+        path_validated: bool,
+        path_first_load: bool,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         tx_waker: ArcSendWaker,
@@ -411,7 +418,8 @@ impl<'a> Transaction<'a> {
             scid: initial_scid,
             initial_dcid,
             borrowed_dcid,
-            path_validated: path_validaed,
+            path_validated,
+            path_first_load,
             cc,
             constraints,
         }))
@@ -424,6 +432,10 @@ impl<'a> Transaction<'a> {
     pub fn scid(&self) -> ConnectionId {
         self.scid
             .expect("SCID should not be empty when loading packets")
+    }
+
+    pub fn path_first_load(&mut self) -> bool {
+        self.path_first_load
     }
 
     pub fn dcid(&self) -> ConnectionId {

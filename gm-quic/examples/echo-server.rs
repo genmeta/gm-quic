@@ -28,6 +28,13 @@ struct Options {
                 If the backlog is full, new connections will be refused."
     )]
     backlog: usize,
+    #[arg(
+        long,
+        default_value = "true",
+        action = clap::ArgAction::Set,
+        help = "Enable ANSI color output in logs"
+    )]
+    ansi: bool,
     #[command(flatten)]
     certs: Certs,
 }
@@ -54,18 +61,21 @@ struct Certs {
 
 #[tokio::main]
 async fn main() {
+    let options = Options::parse();
     tracing_subscriber::registry()
         // .with(console_subscriber::spawn())
         .with(
-            tracing_subscriber::fmt::layer().with_filter(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            ),
+            tracing_subscriber::fmt::layer()
+                .with_ansi(options.ansi)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .init();
 
-    if let Err(error) = run(Options::parse()).await {
+    if let Err(error) = run(options).await {
         tracing::info!(?error, "server error");
         std::process::exit(1);
     }

@@ -140,12 +140,15 @@ mod send {
 
     impl CryptoStreamOutgoing {
         /// Try to load the crypto data  into the `packet`.
-        pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), Signals>
+        pub fn try_load_data_into<P>(&self, packet: &mut P, force: bool) -> Result<(), Signals>
         where
             P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
             use std::ops::ControlFlow::*;
             let mut inner = self.0.lock().unwrap();
+            if force {
+                inner.sndbuf.resend_flighting();
+            }
             let (Continue(result) | Break(result)) =
                 core::iter::from_fn(|| Some(inner.try_load_data(packet))).try_fold(
                     Err(Signals::empty()),
@@ -157,11 +160,6 @@ mod send {
                     },
                 );
             result
-        }
-
-        /// Reset the unacknowledged data to unsend state in the send buffer.
-        pub fn resend_unacked(&self) {
-            self.0.lock().unwrap().sndbuf.resend_unacked();
         }
 
         /// Called when the crypto frame sent is acknowledged by peer.
