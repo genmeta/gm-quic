@@ -39,7 +39,7 @@ use super::AckHandshakeSpace;
 use crate::{
     Components, HandshakeJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::Path,
+    path::{CreatePathFailure, Path},
     space::pipe,
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
@@ -200,89 +200,96 @@ pub fn spawn_deliver_and_parse(
     let conn_state = components.conn_state.clone();
     let deliver_and_parse = async move {
         while let Some((packet, (bind_uri, pathway, link))) = packets.recv().await {
-            let parse =
-                async {
-                    let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
+            let parse = async {
+                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
 
-                    let Some(packet) = space.decrypt_packet(packet).await.transpose()? else {
-                        return Ok(());
-                    };
+                let Some(packet) = space.decrypt_packet(packet).await.transpose()? else {
+                    return Ok(());
+                };
 
-                    let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
-                    else {
+                let path = match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+                    Ok(path) => path,
+                    Err(CreatePathFailure::ConnectionClosed(..)) => {
                         packet.drop_on_conenction_closed();
                         return Ok(());
-                    };
-
-                    // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
-                    // we should stop using the odcid, and drop the subsequent packets with odcid.
-                    //
-                    // We do not remove the route to odcid, otherwise the server may establish multiple connections.
-                    //
-                    // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server {
-                        odcid_router_entry,
-                        using_odcid,
-                    } = &components.specific
-                    {
-                        if odcid_router_entry.signpost() == (*packet.dcid()).into()
-                            && !using_odcid.load(SeqCst)
-                        {
-                            drop(packet); // just drop the packet, It's like we never received this packet.
-                            return Ok(());
-                        }
-
-                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                            using_odcid.store(false, SeqCst);
-                        }
                     }
-
-                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-                    // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
-                    // address to have been validated.
-                    // It may have already been verified using tokens in the Handshake space
-                    path.grant_anti_amplification();
-
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_frame(frame, &path);
-                            Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
-
-                    space.journal.of_rcvd_packets().register_pn(
-                        packet.pn(),
-                        packet_contains != PacketContains::NonAckEliciting,
-                        path.cc().get_pto(Epoch::Handshake),
-                    );
-                    path.on_packet_rcvd(
-                        Epoch::Handshake,
-                        packet.pn(),
-                        packet.size(),
-                        packet_contains,
-                    );
-
-                    // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
-                    // we should stop using the odcid, and drop the subsequent packets with odcid.
-                    //
-                    // We do not remove the route to odcid, otherwise the server may establish multiple connections.
-                    //
-                    // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server {
-                        odcid_router_entry,
-                        using_odcid,
-                    } = &components.specific
-                    {
-                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                            using_odcid.store(false, SeqCst);
-                        }
+                    Err(CreatePathFailure::InterfaceNotFound(..)) => {
+                        packet.drop_on_interface_not_found();
+                        return Ok(());
                     }
-
-                    Result::<(), Error>::Ok(())
                 };
+
+                // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
+                // we should stop using the odcid, and drop the subsequent packets with odcid.
+                //
+                // We do not remove the route to odcid, otherwise the server may establish multiple connections.
+                //
+                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                if let SpecificComponents::Server {
+                    odcid_router_entry,
+                    using_odcid,
+                } = &components.specific
+                {
+                    if odcid_router_entry.signpost() == (*packet.dcid()).into()
+                        && !using_odcid.load(SeqCst)
+                    {
+                        drop(packet); // just drop the packet, It's like we never received this packet.
+                        return Ok(());
+                    }
+
+                    if odcid_router_entry.signpost() != (*packet.dcid()).into() {
+                        using_odcid.store(false, SeqCst);
+                    }
+                }
+
+                // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+                // address to have been validated.
+                // It may have already been verified using tokens in the Handshake space
+                path.grant_anti_amplification();
+
+                let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                let packet_contains = FrameReader::new(packet.body(), packet.get_type()).try_fold(
+                    PacketContains::default(),
+                    |packet_contains, frame| {
+                        let (frame, frame_type) = frame?;
+                        frames.extend(Some(&frame));
+                        dispatch_frame(frame, &path);
+                        Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
+                    },
+                )?;
+                packet.log_received(frames);
+
+                space.journal.of_rcvd_packets().register_pn(
+                    packet.pn(),
+                    packet_contains != PacketContains::NonAckEliciting,
+                    path.cc().get_pto(Epoch::Handshake),
+                );
+                path.on_packet_rcvd(
+                    Epoch::Handshake,
+                    packet.pn(),
+                    packet.size(),
+                    packet_contains,
+                );
+
+                // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
+                // we should stop using the odcid, and drop the subsequent packets with odcid.
+                //
+                // We do not remove the route to odcid, otherwise the server may establish multiple connections.
+                //
+                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                if let SpecificComponents::Server {
+                    odcid_router_entry,
+                    using_odcid,
+                } = &components.specific
+                {
+                    if odcid_router_entry.signpost() != (*packet.dcid()).into() {
+                        using_odcid.store(false, SeqCst);
+                    }
+                }
+
+                Result::<(), Error>::Ok(())
+            };
             if let Err(Error::Quic(error)) = parse.await {
                 event_broker.emit(Event::Failed(error));
             };

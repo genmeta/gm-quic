@@ -265,6 +265,17 @@ where
         builder.build()
     }
 
+    pub fn drop_on_interface_not_found(self) {
+        qevent::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.raw_info(),
+            details: Map {
+                reason: "interface not found"
+            },
+            trigger: PacketDroppedTrigger::Genera
+        })
+    }
+
     pub fn drop_on_conenction_closed(self) {
         qevent::event!(PacketDropped {
             header: self.qlog_header(),

@@ -1,6 +1,5 @@
 use std::{
     io,
-    ops::Deref,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
 };
@@ -110,14 +109,6 @@ impl QuicInterface {
         };
         let muteable_iface = self.iface.upgrade().ok_or_else(unavailable)?;
         return Ok(f(muteable_iface.borrow().as_ref()));
-    }
-}
-
-impl Drop for QuicInterface {
-    fn drop(&mut self) {
-        self.ifaces.remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
-            Weak::ptr_eq(&Arc::downgrade(iface_ctx.deref()), &self.iface)
-        });
     }
 }
 

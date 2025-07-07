@@ -6,7 +6,6 @@ use std::{
 };
 
 use dashmap::DashMap;
-use derive_more::Deref;
 use qbase::net::addr::{BindUri, BindUriSchema, RealAddr};
 
 use crate::{
@@ -15,9 +14,7 @@ use crate::{
     iface::{InterfaceContext, QuicInterface},
 };
 
-#[derive(Deref)]
 pub struct QuicInterfaces {
-    #[deref]
     interfaces: DashMap<BindUri, (InterfaceContext, Weak<QuicInterface>)>,
 }
 
@@ -97,5 +94,15 @@ impl QuicInterfaces {
 
     pub fn remove(&self, bind_uri: BindUri) {
         self.interfaces.remove(&bind_uri);
+    }
+}
+
+impl Drop for QuicInterface {
+    fn drop(&mut self) {
+        self.ifaces
+            .interfaces
+            .remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
+                Weak::ptr_eq(&Arc::downgrade(iface_ctx.deref()), &self.iface)
+            });
     }
 }

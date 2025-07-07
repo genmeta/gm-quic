@@ -84,7 +84,11 @@ use termination::Termination;
 use tls::ArcSendLock;
 use tracing::Instrument as _;
 
-use crate::{termination::Terminator, tls::ArcTlsHandshake};
+use crate::{
+    path::{CreatePathFailure, PathDeactivated},
+    termination::Terminator,
+    tls::ArcTlsHandshake,
+};
 
 /// The kind of frame which guaratend to be received by peer.
 ///
@@ -248,13 +252,19 @@ impl Components {
         todo!("Implement this method to add a peer endpoint.")
     }
 
-    pub fn add_path(&self, ifaca_addr: BindUri, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.get_or_try_create_path(ifaca_addr, link, pathway, false)
+    pub fn add_path(
+        &self,
+        bind_uri: BindUri,
+        link: Link,
+        pathway: Pathway,
+    ) -> Result<(), CreatePathFailure> {
+        self.get_or_try_create_path(bind_uri, link, pathway, false)
             .map(|_| ())
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
-        self.paths.remove(pathway, "application removed");
+        self.paths
+            .remove(pathway, &PathDeactivated::ApplicationRemoved);
     }
 
     pub fn peer_certs(&self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send {
@@ -488,8 +498,9 @@ impl Connection {
         bind_uri: BindUri,
         link: Link,
         pathway: Pathway,
-    ) -> Result<io::Result<()>, Error> {
+    ) -> Result<(), CreatePathFailure> {
         self.try_map_components(|core_conn| core_conn.add_path(bind_uri, link, pathway))
+            .unwrap_or_else(|cc| Err(CreatePathFailure::ConnectionClosed(cc)))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> Result<(), Error> {

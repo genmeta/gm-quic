@@ -43,7 +43,7 @@ use super::{AckInitialSpace, pipe};
 use crate::{
     Components, InitialJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::Path,
+    path::{CreatePathFailure, Path},
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
@@ -249,11 +249,16 @@ pub fn spawn_deliver_and_parse(
                     return Ok(());
                 };
 
-                // TODO: 错误处理
-                let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
-                else {
-                    packet.drop_on_conenction_closed();
-                    return Ok(());
+                let path = match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+                    Ok(path) => path,
+                    Err(CreatePathFailure::ConnectionClosed(..)) => {
+                        packet.drop_on_conenction_closed();
+                        return Ok(());
+                    }
+                    Err(CreatePathFailure::InterfaceNotFound(..)) => {
+                        packet.drop_on_interface_not_found();
+                        return Ok(());
+                    }
                 };
 
                 // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,

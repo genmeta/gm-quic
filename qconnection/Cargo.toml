@@ -15,7 +15,7 @@ rust-version.workspace = true
 [dependencies]
 bytes = { workspace = true }
 dashmap = { workspace = true }
-derive_more = { workspace = true, features = ["deref"] }
+derive_more = { workspace = true, features = ["deref", "display", "from"] }
 enum_dispatch = { workspace = true }
 futures = { workspace = true }
 qbase = { workspace = true }
@@ -23,6 +23,7 @@ qcongestion = { workspace = true }
 qevent = { workspace = true }
 qrecovery = { workspace = true }
 rustls = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
 qinterface = { workspace = true }

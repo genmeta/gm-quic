@@ -1,7 +1,10 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
+use derive_more::From;
 use qbase::param::{ArcParameters, ParameterId};
+use thiserror::Error;
 
+use super::validate::ValidateFailure;
 use crate::path::ArcPathContexts;
 
 /// Keep alive configuration.
@@ -43,8 +46,21 @@ impl HeartbeatConfig {
     }
 }
 
+#[derive(Debug, From, Error, Clone, Copy)]
+pub enum DeferIdleTimeoutFailure {
+    #[error("Path validation failed during idle period: {0}")]
+    ValidateFailure(ValidateFailure),
+}
+
+#[derive(Debug, Error, Clone, Copy)]
+#[error("Path has been idle for too long ({} ms) and timed out", self.0.as_millis())]
+pub struct IdleTimedOut(Duration);
+
 impl super::Path {
-    pub async fn defer_idle_timeout(&self, config: HeartbeatConfig) -> Result<(), &'static str> {
+    pub async fn defer_idle_timeout(
+        &self,
+        config: HeartbeatConfig,
+    ) -> Result<(), DeferIdleTimeoutFailure> {
         loop {
             let idle_duration = self.last_active_time.lock().unwrap().elapsed();
             if idle_duration > config.duration {
@@ -61,7 +77,7 @@ impl super::Path {
         self: &Arc<Self>,
         parameters: ArcParameters,
         paths: ArcPathContexts,
-    ) -> impl Future<Output = bool> {
+    ) -> impl Future<Output = Result<(), IdleTimedOut>> {
         let this = self.clone();
 
         use tokio::time::sleep;
@@ -127,13 +143,13 @@ impl super::Path {
                     let Some(max_idle_timeout) = get_local_max_idle_timeout(&parameters, &paths)
                     else {
                         // connection in closing/draining state, not idle_timeout
-                        return false;
+                        return Ok(());
                     };
 
                     sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
 
                     if this.last_active_time().elapsed() > max_idle_timeout {
-                        return true;
+                        return Err(IdleTimedOut(max_idle_timeout));
                     }
                 }
             };
@@ -144,13 +160,13 @@ impl super::Path {
                     let Some(max_idle_timeout) = get_max_idle_timeout(&parameters, &paths).await
                     else {
                         // connection in closing/draining state, not idle_timeout
-                        return false;
+                        return Ok(());
                     };
 
                     sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
 
                     if this.last_active_time().elapsed() > max_idle_timeout {
-                        return true;
+                        return Err(IdleTimedOut(max_idle_timeout));
                     }
                 }
             };
