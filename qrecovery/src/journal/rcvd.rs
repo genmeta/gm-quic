@@ -118,7 +118,7 @@ impl RcvdJournal {
         {
             panic!("packet number never exceed limit: {e}")
         }
-        if self.earliest_not_ack_time.is_none() {
+        if is_ack_eliciting && self.earliest_not_ack_time.is_none() {
             self.earliest_not_ack_time = Some((pn, now));
         }
     }
