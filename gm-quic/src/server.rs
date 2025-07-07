@@ -19,7 +19,6 @@ use rustls::{
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
-use tracing::Instrument;
 
 use crate::*;
 
@@ -412,7 +411,7 @@ impl QuicListeners {
                         match event {
                             Event::Handshaked => {}
                             Event::ProbedNewPath(..) => {}
-                            Event::PathInactivated(..) => {}
+                            Event::PathDeactivated(..) => {}
                             Event::ApplicationClose => {}
                             Event::Failed(error) => {
                                 connection.enter_closing(qbase::error::Error::from(error).into())
@@ -423,9 +422,6 @@ impl QuicListeners {
                         }
                     }
                 }
-                .instrument(tracing::warn_span!(
-                    "quic-listeners:connection-event-handler"
-                ))
             });
 
             match connection.server_name().await {

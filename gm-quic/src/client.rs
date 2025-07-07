@@ -1,4 +1,9 @@
-use std::{io, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    str::FromStr,
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use qbase::net::{
@@ -15,6 +20,7 @@ use rustls::{
     ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
 };
+use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::*;
@@ -92,13 +98,60 @@ impl QuicClient {
             token_sink: None,
         }
     }
+}
 
+#[derive(Debug, Error)]
+pub enum ConnectEndpointError {
+    #[error("No suitable bound interface found for endpoint")]
+    NoSuitableInterface,
+    #[error("Failed to bind interface {bind_uri}: {bind_error}")]
+    InterfaceBindFailed {
+        bind_uri: BindUri,
+        #[source]
+        bind_error: io::Error,
+    },
+}
+
+#[derive(Debug, Error)]
+pub struct ConnectServerError {
+    server_name: String,
+    accumulator: HashMap<EndpointAddr, ConnectEndpointError>,
+}
+
+impl std::fmt::Display for ConnectServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Failed to connect to server '{}': {}",
+            self.server_name,
+            self.accumulator
+                .iter()
+                .map(|(server_ep, error)| format!("endpoint {server_ep}: {error}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl From<ConnectServerError> for io::Error {
+    fn from(error: ConnectServerError) -> Self {
+        io::Error::new(io::ErrorKind::AddrNotAvailable, error)
+    }
+}
+
+impl QuicClient {
     fn new_connection(
         &self,
         server_name: String,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> io::Result<Arc<Connection>> {
-        let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &self.bind_interfaces {
+    ) -> Result<Arc<Connection>, ConnectServerError> {
+        let avaliable_ifaces = self.bind_interfaces.as_ref().map(|map| {
+            map.iter()
+                .filter_map(|entry| Some((entry.value().clone(), entry.value().real_addr().ok()?)))
+                .collect::<Vec<_>>()
+        });
+
+        let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &avaliable_ifaces {
             None => {
                 let bind_uri: BindUri = match server_ep.addr_kind() {
                     AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
@@ -108,73 +161,72 @@ impl QuicClient {
                         .expect("URL should be valid")
                         .alloc_port(),
                     _ => {
-                        return Err(io::Error::other(
-                            "Failed to bind an unspecified address for this kind of endpoint address",
-                        ));
+                        return Err(ConnectEndpointError::NoSuitableInterface);
                     }
                 };
-                Ok(vec![QuicInterfaces::global().insert(
-                    bind_uri.clone(),
-                    self.quic_iface_factory.clone(),
-                )?])
+                let iface = QuicInterfaces::global()
+                    .insert(bind_uri.clone(), self.quic_iface_factory.clone())
+                    .and_then(|iface| Ok((iface.clone(), iface.real_addr()?)))
+                    .map_err(|bind_error| ConnectEndpointError::InterfaceBindFailed {
+                        bind_uri,
+                        bind_error,
+                    })?;
+                Ok(vec![iface])
             }
-            Some(bind_interfaces) => Ok(bind_interfaces
-                .iter()
-                .filter(|entry| entry.key().addr_kind() == server_ep.addr_kind())
-                .map(|entry| entry.value().clone())
-                .collect()),
+            Some(bind_interfaces) => {
+                let ifaces = bind_interfaces
+                    .iter()
+                    .filter(|(_, addr)| addr.kind() == server_ep.addr_kind())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if ifaces.is_empty() {
+                    return Err(ConnectEndpointError::NoSuitableInterface);
+                };
+                Ok(ifaces)
+            }
         };
 
-        let mut error_accumulator = vec![];
-        let local_binds = server_eps
+        let mut error_accumulator = HashMap::new();
+        let paths = server_eps
             .into_iter()
             .map(Into::into)
+            .collect::<HashSet<_>>() // dedup
+            .into_iter()
             .flat_map(|server_ep| {
                 select_or_bind_ifaces(&server_ep)
-                    // bind inet://xx/alloc error
-                    .map_err(|e| {
-                        error_accumulator
-                            .push(format!("Failed to bind suitable for {server_ep}: {e:?}"))
+                    .map_err(|connect_error| {
+                        assert!(
+                            error_accumulator.insert(server_ep, connect_error).is_none(),
+                            "Duplicate error for the same server endpoint"
+                        );
                     })
-                    .ok()
-                    .and_then(|ifaces| match ifaces {
-                        ifaces if ifaces.is_empty() => {
-                            error_accumulator
-                                .push(format!("No suitable bind interface for {server_ep}"));
-                            None
-                        }
-                        ifaces => Some(ifaces.into_iter().filter_map(move |iface| {
-                            let real_addr = iface.real_addr().ok()?;
-                            let dst = match server_ep {
-                                EndpointAddr::Socket(socket_endpoint_addr) => {
-                                    RealAddr::Internet(*socket_endpoint_addr)
-                                }
-                                EndpointAddr::Ble(ble_endpont_addr) => {
-                                    RealAddr::Bluetooth(*ble_endpont_addr)
-                                }
-                            };
-                            let link = Link::new(real_addr, dst);
-                            let pathway = Pathway::new(real_addr.into(), server_ep);
-                            Some((iface, link, pathway))
-                        })),
+                    .into_iter()
+                    .flatten()
+                    .map(move |(iface, real_addr)| {
+                        let dst = match server_ep {
+                            EndpointAddr::Socket(socket_endpoint_addr) => {
+                                RealAddr::Internet(*socket_endpoint_addr)
+                            }
+                            EndpointAddr::Ble(ble_endpont_addr) => {
+                                RealAddr::Bluetooth(*ble_endpont_addr)
+                            }
+                        };
+                        let link = Link::new(real_addr, dst);
+                        let pathway = Pathway::new(real_addr.into(), server_ep);
+                        (iface, link, pathway)
                     })
             })
-            .flatten()
             .collect::<Vec<_>>();
 
-        if local_binds.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                format!(
-                    "No suitable bind interface and failed to bind suitable interfaces for server {server_name}: {}",
-                    error_accumulator.join(", ")
-                ),
-            ));
+        if paths.is_empty() {
+            return Err(ConnectServerError {
+                server_name,
+                accumulator: error_accumulator,
+            });
         }
 
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
-        let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
             Connection::new_client(server_name.clone(), self.token_sink.clone())
                 .with_parameters(self.parameters.clone())
@@ -182,7 +234,7 @@ impl QuicClient {
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_zero_rtt(self.tls_config.enable_early_data)
                 .with_defer_idle_timeout(self.defer_idle_timeout)
-                .with_cids(origin_dcid)
+                .with_cids(ConnectionId::random_gen(8))
                 .with_qlog(self.logger.clone())
                 .run(event_broker),
         );
@@ -194,7 +246,7 @@ impl QuicClient {
                     match event {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(..) => {}
+                        Event::PathDeactivated(..) => {}
                         Event::ApplicationClose => {
                             Self::reuseable_connections().remove_if(&server_name, |_, exist| {
                                 Arc::ptr_eq(&connection, exist)
@@ -219,8 +271,8 @@ impl QuicClient {
             }
         });
 
-        for (iface, link, pathway) in local_binds {
-            connection.add_path(iface.bind_uri(), link, pathway)??;
+        for (iface, link, pathway) in paths {
+            _ = connection.add_path(iface.bind_uri(), link, pathway);
         }
 
         Ok(connection)
@@ -260,7 +312,7 @@ impl QuicClient {
         &self,
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> io::Result<Arc<Connection>> {
+    ) -> Result<Arc<Connection>, ConnectServerError> {
         let server_name = server_name.into();
         if self.reuse_connection {
             match Self::reuseable_connections().entry(server_name.clone()) {

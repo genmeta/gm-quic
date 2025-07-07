@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use derive_more::From;
 use qbase::{
     Epoch,
     error::Error,
@@ -21,6 +22,7 @@ use qbase::{
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{QuicIO, iface::QuicInterface};
+use thiserror::Error;
 use tokio::{
     task::AbortHandle,
     time::{Duration, Instant},
@@ -29,6 +31,7 @@ use tokio::{
 mod aa;
 mod paths;
 mod util;
+mod validate;
 pub use aa::*;
 pub use paths::*;
 pub use util::*;
@@ -53,6 +56,28 @@ pub struct Path {
     status: PathStatus,
 }
 
+#[derive(Debug, From, Error)]
+pub enum CreatePathFailure {
+    #[error("Network interface not found for bind URI: {0}")]
+    InterfaceNotFound(BindUri),
+    #[error("Connection is closed: {0}")]
+    ConnectionClosed(Error),
+}
+
+#[derive(Debug, From, Error)]
+pub enum PathDeactivated {
+    #[error("Path validation failed: {0}")]
+    ValidationFailed(validate::ValidateFailure),
+    #[error("Path became inactive due to idle timeout: {0}")]
+    IdleTimeout(idle::IdleTimedOut),
+    #[error("Failed to send packets on path: {0}")]
+    SendError(io::Error),
+    #[error("Failed to defer idle timeout: {0}")]
+    IdleTimeoutDefer(idle::DeferIdleTimeoutFailure),
+    #[error("Manually removed by application")]
+    ApplicationRemoved,
+}
+
 impl Components {
     pub fn get_or_try_create_path(
         &self,
@@ -60,12 +85,12 @@ impl Components {
         link: Link,
         pathway: Pathway,
         is_probed: bool,
-    ) -> io::Result<Arc<Path>> {
+    ) -> Result<Arc<Path>, CreatePathFailure> {
         let try_create = || {
             let interface = self
                 .interfaces
                 .get(&bind_uri)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
+                .ok_or(CreatePathFailure::InterfaceNotFound(bind_uri))?;
             let max_ack_delay = self
                 .parameters
                 .lock_guard()?
@@ -90,7 +115,7 @@ impl Components {
                     self.spaces.data().clone(),
                 ],
                 self.quic_handshake.status(),
-            )?);
+            ));
 
             if !is_probed {
                 path.grant_anti_amplification();
@@ -111,13 +136,12 @@ impl Components {
                             Ok(())
                         }
                     };
-                    let reason: String = tokio::select! {
-                        Err(e) = validate =>format!("Path validate failed: {e}"),
-                        true = idle_timeout => "Idle timeout".into(),
-                        Err(e) = burst.launch() => format!("Failed to send packets: {e:?}"),
-                        Err(e) = path.defer_idle_timeout(defer_idle_timeout) => format!("Failed to defer idle timeout: Path validate failed: {e}"),
-                    };
-                    Err(reason)
+                    Err(tokio::select! {
+                        Err(e) = validate => PathDeactivated::from(e),
+                        Err(e) = idle_timeout => PathDeactivated::from(e),
+                        Err(e) = burst.launch() => PathDeactivated::from(e),
+                        Err(e) = path.defer_idle_timeout(defer_idle_timeout) => PathDeactivated::from(e),
+                    })
                 }
             };
 
@@ -140,7 +164,7 @@ impl Path {
         max_ack_delay: Duration,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let pmtu = Arc::new(AtomicU16::new(MSS as u16));
         let path_status = PathStatus::new(handshake_status, pmtu.clone());
         let tx_waker = ArcSendWaker::new();
@@ -153,7 +177,7 @@ impl Path {
             tx_waker.clone(),
         );
         let handle = cc.launch();
-        Ok(Self {
+        Self {
             interface,
             link,
             pathway,
@@ -167,30 +191,7 @@ impl Path {
             tx_waker,
             pmtu,
             status: path_status,
-        })
-    }
-
-    pub fn skip_validation(&self) {
-        self.validated.store(true, Ordering::Release);
-    }
-
-    pub async fn validate(&self) -> Result<(), &'static str> {
-        let challenge = PathChallengeFrame::random();
-        for _ in 0..3 {
-            let pto = self.cc().get_pto(qbase::Epoch::Data);
-            self.challenge_sndbuf.write(challenge);
-            match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
-                Ok(Some(response)) if *response == *challenge => {
-                    self.anti_amplifier.grant();
-                    return Ok(());
-                }
-                // 外部发生变化，导致路径验证任务作废
-                Ok(None) => return Err("connection closed"),
-                // 超时或者收到不对的response，按"停-等协议"，继续再发一次Challenge，最多3次
-                _ => continue,
-            }
         }
-        Err("timeout")
     }
 
     pub fn cc(&self) -> &ArcCC {

@@ -53,7 +53,7 @@ use crate::{
     ArcReliableFrameDeque, Components, DataJournal, DataStreams, FlowController, GuaranteedFrame,
     SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{Path, SendBuffer},
+    path::{CreatePathFailure, Path, SendBuffer},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
@@ -569,11 +569,18 @@ pub fn spawn_deliver_and_parse(
                         return Ok(());
                     };
 
-                    let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
-                    else {
-                        packet.drop_on_conenction_closed();
-                        return Ok(());
-                    };
+                    let path =
+                        match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+                            Ok(path) => path,
+                            Err(CreatePathFailure::ConnectionClosed(..)) => {
+                                packet.drop_on_conenction_closed();
+                                return Ok(());
+                            }
+                            Err(CreatePathFailure::InterfaceNotFound(..)) => {
+                                packet.drop_on_interface_not_found();
+                                return Ok(());
+                            }
+                        };
 
                     // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
                     // we should stop using the odcid, and drop the subsequent packets with odcid.
@@ -640,11 +647,18 @@ pub fn spawn_deliver_and_parse(
                         return Ok(());
                     };
 
-                    let Ok(path) = components.get_or_try_create_path(bind_uri, link, pathway, true)
-                    else {
-                        packet.drop_on_conenction_closed();
-                        return Ok(());
-                    };
+                    let path =
+                        match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+                            Ok(path) => path,
+                            Err(CreatePathFailure::ConnectionClosed(..)) => {
+                                packet.drop_on_conenction_closed();
+                                return Ok(());
+                            }
+                            Err(CreatePathFailure::InterfaceNotFound(..)) => {
+                                packet.drop_on_interface_not_found();
+                                return Ok(());
+                            }
+                        };
 
                     // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
                     // we should stop using the odcid, and drop the subsequent packets with odcid.

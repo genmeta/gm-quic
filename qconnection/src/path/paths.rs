@@ -1,4 +1,4 @@
-use std::{future::Future, io, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use derive_more::Deref;
@@ -16,6 +16,7 @@ use tracing::Instrument as _;
 use super::Path;
 use crate::{
     events::ArcEventBroker,
+    path::{CreatePathFailure, PathDeactivated},
     prelude::{EmitEvent, Event},
 };
 
@@ -57,10 +58,10 @@ impl ArcPathContexts {
     pub fn get_or_try_create_with<T>(
         &self,
         pathway: Pathway,
-        try_create: impl FnOnce() -> io::Result<(Arc<Path>, T)>,
-    ) -> io::Result<Arc<Path>>
+        try_create: impl FnOnce() -> Result<(Arc<Path>, T), CreatePathFailure>,
+    ) -> Result<Arc<Path>, CreatePathFailure>
     where
-        T: Future<Output = Result<(), String>> + Send + 'static,
+        T: Future<Output = Result<(), PathDeactivated>> + Send + 'static,
     {
         match self.paths.entry(pathway) {
             dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().path.clone()),
@@ -86,15 +87,15 @@ impl ArcPathContexts {
         self.paths.get(pathway).map(|p| p.path.clone())
     }
 
-    pub fn remove(&self, pathway: &Pathway, reason: &str) {
+    pub fn remove(&self, pathway: &Pathway, reason: &PathDeactivated) {
         if let Some((_, path)) = self.paths.remove(pathway) {
             self.tx_wakers.remove(pathway);
-            self.broker.emit(Event::PathInactivated(
+            self.broker.emit(Event::PathDeactivated(
                 path.interface.bind_uri(),
                 path.pathway,
                 path.link,
             ));
-            tracing::warn!(%pathway, reason, "path removed");
+            tracing::warn!(%pathway, %reason, "path removed");
             if self.is_empty() {
                 let error = QuicError::with_default_fty(
                     ErrorKind::NoViablePath,
