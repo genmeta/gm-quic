@@ -20,7 +20,7 @@ pub trait AuthClient: Send + Sync {
 
 /// A gate that controls server transmission permissions during parameter verification.
 ///
-/// `SendGate` is used by the server to restrict data transmission until transport
+/// `SendLock` is used by the server to restrict data transmission until transport
 /// parameter validation and server name verification are completed. It provides operations to:
 /// - `request_permit()`: Request permission to send (public method)
 /// - `grant_permit()`: Grant permission to send (internal method, pub(super) visibility)
@@ -29,10 +29,10 @@ pub trait AuthClient: Send + Sync {
 /// the client's transport parameters and verified the requested server name (SNI),
 /// enhancing security by preventing premature data transmission before proper validation.
 #[derive(Default, Debug, Clone)]
-pub struct ArcSendGate(Arc<Future<()>>);
+pub struct ArcSendLock(Arc<Future<()>>);
 
-impl ArcSendGate {
-    /// Create a new `SendGate` in the restricted state.
+impl ArcSendLock {
+    /// Create a new `SendLock` in the restricted state.
     ///
     /// Transmission will be blocked until client parameters and server
     /// verification are completed, or when silent rejection is not enabled.
@@ -40,7 +40,7 @@ impl ArcSendGate {
         Self::default()
     }
 
-    /// Create a new `SendGate` in the unrestricted state.
+    /// Create a new `SendLock` in the unrestricted state.
     ///
     /// Transmission is immediately permitted, used when silent rejection
     /// is disabled or verification has already been completed.

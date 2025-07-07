@@ -290,7 +290,7 @@ impl DataSpace {
         _ = self
             .crypto_stream
             .outgoing()
-            .try_load_data_into(&mut packet)
+            .try_load_data_into(&mut packet, false)
             .map_err(|s| signals |= s);
         // try to load reliable frames into this 1RTT packet to send
         _ = self

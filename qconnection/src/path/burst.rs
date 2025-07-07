@@ -1,7 +1,10 @@
 use std::{
     io,
     ops::ControlFlow,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use qbase::net::tx::Signals;
@@ -9,16 +12,17 @@ use qinterface::QuicIO;
 use tracing::Instrument;
 
 use crate::{
-    ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendGate, tx::Transaction,
+    ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction,
 };
 
 pub struct Burst {
     path: Arc<super::Path>,
     cid_registry: CidRegistry,
     dcid_cell: ArcDcidCell,
+    launched: AtomicBool,
     spin: bool,
     spaces: Spaces,
-    send_gate: ArcSendGate,
+    send_lock: ArcSendLock,
 }
 
 impl super::Path {
@@ -27,9 +31,10 @@ impl super::Path {
             path: self.clone(),
             cid_registry: components.cid_registry.clone(),
             dcid_cell: components.cid_registry.remote.apply_dcid(),
+            launched: AtomicBool::new(false),
             spin: false,
             spaces: components.spaces.clone(),
-            send_gate: components.send_gate.clone(),
+            send_lock: components.send_lock.clone(),
         }
     }
 }
@@ -63,6 +68,7 @@ impl Burst {
             self.cid_registry.remote.initial_dcid(),
             &self.dcid_cell,
             self.path.validated.load(Ordering::Acquire),
+            !self.launched.swap(true, Ordering::Acquire),
             self.path.cc(),
             &self.path.anti_amplifier,
             self.path.tx_waker.clone(),
@@ -157,19 +163,7 @@ impl Burst {
         let mut buffers = vec![];
 
         // Anti port scan
-        self.send_gate.request_permit().await;
-
-        // Support for multipath handshake
-        if !self.spaces.data().is_one_rtt_ready() {
-            for crypto_stream in [
-                self.spaces.initial().crypto_stream(),
-                self.spaces.handshake().crypto_stream(),
-            ] {
-                // Reset the unacknowledged data in the send buffer
-                // 加载时 try_reload
-                crypto_stream.outgoing().resend_unacked();
-            }
-        }
+        self.send_lock.request_permit().await;
 
         loop {
             let segment_lens = self

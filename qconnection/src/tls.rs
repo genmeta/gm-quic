@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-pub use client_auth::{ArcSendGate, AuthClient, ClientAuthers};
+pub use client_auth::{ArcSendLock, AuthClient, ClientAuthers};
 use futures::{future::poll_fn, never::Never};
 use qbase::{
     Epoch,
@@ -180,7 +180,7 @@ pub struct ServerTlsSession {
 
     client_name: Option<String>,
     server_name: Option<String>,
-    send_gate: ArcSendGate,
+    send_lock: ArcSendLock,
     client_authers: ClientAuthers,
     client_cert: Option<Vec<u8>>,
 }
@@ -201,15 +201,15 @@ impl ServerTlsSession {
             read_waker: None,
             client_name: None,
             server_name: None,
-            send_gate: ArcSendGate::new(),
+            send_lock: ArcSendLock::new(),
             client_authers,
             client_cert: None,
         };
         Ok(tls_session)
     }
 
-    pub fn send_gate(&self) -> &ArcSendGate {
-        &self.send_gate
+    pub fn send_lock(&self) -> &ArcSendLock {
+        &self.send_lock
     }
 
     fn try_process_ch(
@@ -242,7 +242,7 @@ impl ServerTlsSession {
                 "",
             )));
         }
-        self.send_gate.grant_permit();
+        self.send_lock.grant_permit();
         parameters.lock_guard()?.recv_remote_params(client_params)?;
 
         match self.tls_conn.zero_rtt_keys() {

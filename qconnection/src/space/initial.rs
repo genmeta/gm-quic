@@ -137,10 +137,12 @@ impl InitialSpace {
             .map_err(|s| signals |= s)
             .ok();
 
+        // support for multi path handshake
+        let load_crypto_force = tx.path_first_load() && packet.payload_len() == 0;
         _ = self
             .crypto_stream
             .outgoing()
-            .try_load_data_into(&mut packet)
+            .try_load_data_into(&mut packet, load_crypto_force)
             .map_err(|s| signals |= s);
 
         Ok((
