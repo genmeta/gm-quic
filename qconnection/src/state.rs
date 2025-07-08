@@ -95,7 +95,11 @@ impl ArcConnState {
     }
 
     /// Try to update the connection state, return the old state if successful.
-    pub fn update(&self, state: QlogConnectionState) -> Option<QlogConnectionState> {
+    pub fn update(
+        &self,
+        state: QlogConnectionState,
+        reason: impl FnOnce() -> Option<String>,
+    ) -> Option<QlogConnectionState> {
         let new_state_code = encode(state);
         let mut old_state_code = self.state.load(Ordering::Acquire);
         loop {
@@ -126,10 +130,13 @@ impl ArcConnState {
                         }
                         _ => {}
                     }
-                    qevent::event!(ConnectionStateUpdated {
-                        new: state,
-                        old: old_state
-                    });
+                    qevent::event!(
+                        ConnectionStateUpdated {
+                            new: state,
+                            old: old_state
+                        },
+                        details = Map { reason: reason() }
+                    );
                     return Some(old_state);
                 }
                 Err(current_state_code) => old_state_code = current_state_code,

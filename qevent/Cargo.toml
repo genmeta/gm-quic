@@ -20,6 +20,7 @@ derive_more = { workspace = true, features = ["from", "into", "display"] }
 serde = { workspace = true, features = ["derive"] }
 pin-project-lite = { workspace = true }
 qbase = { workspace = true }
+rand = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
 tokio = { workspace = true, features = ["fs", "rt", "sync", "io-util"] }

@@ -34,8 +34,8 @@ impl<T> SendBuffer<T> {
     /// [`SendBuffer`] can only buffer one frame at a time. If you write a new frame to the buffer before the previous
     /// frame is sent, the previous frame will be overwritten.
     pub fn write(&self, frame: T) {
-        self.tx_waker.wake_by(Signals::TRANSPORT);
         *self.item.lock().unwrap() = Some(frame);
+        self.tx_waker.wake_by(Signals::TRANSPORT);
     }
 }
 

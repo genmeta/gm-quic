@@ -31,7 +31,7 @@ use tokio::time::{Duration, Instant};
 use crate::{
     ArcDcidCell, ArcReliableFrameDeque, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
-    space::{Spaces, data::DataSpace},
+    space::Spaces,
 };
 
 pub struct PacketLogger {
@@ -519,7 +519,7 @@ impl Transaction<'_> {
         let load_handshake = &|tx: &mut Self, buf: &mut [u8], buf_range: Range<usize>| {
             spaces
                 .handshake()
-                .try_assemble_packet(tx, &mut buf[buf_range.clone()])
+                .try_assemble_handshake_packet(tx, &mut buf[buf_range.clone()])
                 .map(|(packet, ack)| LevelState {
                     epoch: Epoch::Handshake,
                     packet,
@@ -580,6 +580,17 @@ impl Transaction<'_> {
                             loads.push(load_1rtt_data)
                         }
                     } else {
+                        tracing::warn!(
+                            scid = {
+                                self.scid
+                                    .as_ref()
+                                    .map(|scid| format!("{scid:x}",))
+                                    .unwrap_or_default()
+                            },
+                            dcid = { format!("{:x}", self.dcid()) },
+                            constraints = ?{ self.constraints },
+                            "path is not validated, load validate packet"
+                        );
                         loads.push(load_validate);
                     }
                 }
@@ -658,64 +669,6 @@ impl Transaction<'_> {
         } else {
             Err(signals)
         }
-    }
-
-    pub fn load_one_rtt(
-        &mut self,
-        buf: &mut [u8],
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        data_space: &DataSpace,
-    ) -> Result<usize, Signals> {
-        let buf = self.constraints.constrain(buf);
-        data_space
-            .try_assemble_1rtt_packet(self, spin, path_challenge_frames, path_response_frames, buf)
-            .map(|(packet, ack)| {
-                let final_layout = if packet.probe_new_path() {
-                    packet.complete(buf)
-                } else {
-                    packet.fill_and_complete(buf)
-                };
-                self.constraints
-                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
-                self.cc.on_pkt_sent(
-                    Epoch::Data,
-                    final_layout.pn(),
-                    final_layout.is_ack_eliciting(),
-                    final_layout.sent_bytes(),
-                    final_layout.in_flight(),
-                    ack,
-                );
-                final_layout.sent_bytes()
-            })
-    }
-
-    pub fn load_validation(
-        &mut self,
-        buf: &mut [u8],
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        data_space: &DataSpace,
-    ) -> Result<usize, Signals> {
-        let buf = self.constraints.constrain(buf);
-        data_space
-            .try_assemble_probe_packet(self, spin, path_challenge_frames, path_response_frames, buf)
-            .map(|packet| {
-                let final_layout = packet.fill_and_complete(buf);
-                self.constraints
-                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
-                self.cc.on_pkt_sent(
-                    Epoch::Data,
-                    final_layout.pn(),
-                    final_layout.is_ack_eliciting(),
-                    final_layout.sent_bytes(),
-                    final_layout.in_flight(),
-                    None,
-                );
-                final_layout.sent_bytes()
-            })
     }
 
     pub fn load_one_ping(

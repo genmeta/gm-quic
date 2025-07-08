@@ -564,7 +564,6 @@ pub fn spawn_deliver_and_parse(
             space.one_rtt_ready().await;
             while let Some((packet, (bind_uri, pathway, link))) = zeor_rtt_packets.recv().await {
                 let parse = async {
-                    let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
                     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
                         return Ok(());
                     };
@@ -624,7 +623,11 @@ pub fn spawn_deliver_and_parse(
 
                     Result::<(), Error>::Ok(())
                 };
-                if let Err(Error::Quic(error)) = parse.await {
+
+                if let Err(Error::Quic(error)) =
+                    Instrument::instrument(parse, qevent::span!(@current, path=pathway.to_string()))
+                        .await
+                {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -641,8 +644,6 @@ pub fn spawn_deliver_and_parse(
             space.one_rtt_ready().await;
             while let Some((packet, (bind_uri, pathway, link))) = one_rtt_packets.recv().await {
                 let parse = async {
-                    let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-
                     let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {
                         return Ok(());
                     };
@@ -706,7 +707,11 @@ pub fn spawn_deliver_and_parse(
 
                     Result::<(), Error>::Ok(())
                 };
-                if let Err(Error::Quic(error)) = parse.await {
+
+                if let Err(Error::Quic(error)) =
+                    Instrument::instrument(parse, qevent::span!(@current, path=pathway.to_string()))
+                        .await
+                {
                     event_broker.emit(Event::Failed(error));
                 };
             }

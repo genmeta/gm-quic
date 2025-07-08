@@ -118,8 +118,10 @@ impl ArcPathContexts {
         self.paths.iter().map(|p| p.path.clone())
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn discard_initial_and_handshake_space(&self) {
         self.paths.iter().for_each(|p| {
+            tracing::info!("discard initial and handshake space for {}", p.link);
             p.cc().discard_epoch(Epoch::Initial);
             p.cc().discard_epoch(Epoch::Handshake);
         });

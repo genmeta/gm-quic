@@ -355,6 +355,7 @@ impl QuicListeners {
     pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_uri, pathway, link): Way) {
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
+            tracing::warn!("packet dropped duo to backlog limit");
             return;
         };
 
@@ -400,6 +401,11 @@ impl QuicListeners {
         let incomings = self.incomings.clone();
 
         tokio::spawn(async move {
+            if let Err(e) = connection.add_path(bind_uri.clone(), link, pathway) {
+                tracing::error!(%bind_uri, %link, %pathway, origin_dcid=format!("{origin_dcid:x}"),"Failed to accept connection because {e}");
+                return;
+            }
+
             Router::global()
                 .deliver(packet, (bind_uri.clone(), pathway, link))
                 .await;

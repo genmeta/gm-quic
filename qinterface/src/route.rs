@@ -95,9 +95,57 @@ impl Router {
                 }
             }
         };
-        rcvd_pkt_q.deliver(packet, way).await;
-    }
 
+        pub fn type_name_of_val<T: ?Sized>(_val: &T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+
+        let (&dcid, header_type) = match &packet {
+            Packet::VN(long_header) => (
+                qbase::packet::GetDcid::dcid(long_header),
+                type_name_of_val(long_header),
+            ),
+            Packet::Retry(long_header) => (
+                qbase::packet::GetDcid::dcid(long_header),
+                type_name_of_val(long_header),
+            ),
+            Packet::Data(data_packet) => match &data_packet.header {
+                qbase::packet::DataHeader::Long(data_header) => match data_header {
+                    qbase::packet::header::long::DataHeader::Initial(long_header) => (
+                        qbase::packet::GetDcid::dcid(long_header),
+                        type_name_of_val(&long_header),
+                    ),
+                    qbase::packet::header::long::DataHeader::ZeroRtt(long_header) => (
+                        qbase::packet::GetDcid::dcid(long_header),
+                        type_name_of_val(&long_header),
+                    ),
+                    qbase::packet::header::long::DataHeader::Handshake(long_header) => (
+                        qbase::packet::GetDcid::dcid(long_header),
+                        type_name_of_val(&long_header),
+                    ),
+                },
+                qbase::packet::DataHeader::Short(one_rtt_header) => (
+                    qbase::packet::GetDcid::dcid(one_rtt_header),
+                    type_name_of_val(&one_rtt_header),
+                ),
+            },
+        };
+        let bind_uri = way.0.clone();
+        let timer = async {
+            let start = tokio::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tracing::warn!(
+                    "Routing {header_type} packet with DCID {dcid:x}. Interface {bind_uri} blocked for {}ms.",
+                    start.elapsed().as_millis()
+                );
+            }
+        };
+        tokio::select! {
+            _ = timer => unreachable!("timer should never complete"),
+            _ = rcvd_pkt_q.deliver(packet, way) => {}
+        };
+    }
     pub fn on_connectless_packets<H>(&self, handler: H)
     where
         H: FnMut(Packet, Way) + Send + 'static,

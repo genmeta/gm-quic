@@ -307,5 +307,5 @@ async fn lookup(auth: &Authority) -> Result<(&str, Vec<SocketAddr>), Error> {
         (a, b) => a.cmp(b),
     });
     tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addrs);
-    Ok((auth.host(), addrs))
+    Ok((auth.host(), vec![addrs[0]]))
 }

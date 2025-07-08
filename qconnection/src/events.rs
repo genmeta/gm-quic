@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use qbase::{
-    error::QuicError,
+    error::{Error, QuicError},
     frame::ConnectionCloseFrame,
     net::{
         addr::BindUri,
@@ -57,26 +57,35 @@ impl EmitEvent for ArcEventBroker {
     fn emit(&self, event: Event) {
         match &event {
             Event::Handshaked => {
-                let handshaked_state = GranularConnectionStates::HandshakeConfirmed;
-                if self.conn_state.update(handshaked_state.into()).is_none() {
+                let state = GranularConnectionStates::HandshakeConfirmed;
+                if self.conn_state.update(state.into(), || None).is_none() {
                     return;
                 }
             }
-            Event::ApplicationClose | Event::Failed(..) => {
-                let closing_state = GranularConnectionStates::Closing;
-                if self.conn_state.update(closing_state.into()).is_none() {
+            Event::ApplicationClose => {
+                let state = GranularConnectionStates::Closing;
+                let reason = || Some("application close".to_string());
+                if self.conn_state.update(state.into(), reason).is_none() {
                     return;
                 }
             }
-            Event::Closed(..) => {
-                let draining_state = GranularConnectionStates::Draining;
-                if self.conn_state.update(draining_state.into()).is_none() {
+            Event::Failed(error) => {
+                let state = GranularConnectionStates::Closing;
+                let reason = || Some(error.to_string());
+                if self.conn_state.update(state.into(), reason).is_none() {
+                    return;
+                }
+            }
+            Event::Closed(ccf) => {
+                let state = GranularConnectionStates::Draining;
+                let reason = || Some(Error::from(ccf.clone()).to_string());
+                if self.conn_state.update(state.into(), reason).is_none() {
                     return;
                 }
             }
             Event::Terminated => {
-                let terminated_state = BaseConnectionStates::Closed;
-                self.conn_state.update(terminated_state.into());
+                let state = BaseConnectionStates::Closed;
+                self.conn_state.update(state.into(), || None);
             }
             Event::StatelessReset => todo!("unsupported"),
             _ => { /* path create/inactive: no need */ }

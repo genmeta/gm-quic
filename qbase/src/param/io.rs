@@ -159,7 +159,6 @@ impl<R: IntoRole + RequiredParameters + Default> Parameters<R> {
             let (param_id, param_value);
             (buf, (param_id, param_value)) =
                 be_raw_parameter(buf).map_err(|nom_error| handle_nom_error(buf, nom_error))?;
-            tracing::info!("Parsed parameter id: {param_id:?}, value: {param_value:?}");
 
             let param_id = match ParameterId::try_from(param_id) {
                 Ok(param_id) => param_id,
@@ -169,13 +168,11 @@ impl<R: IntoRole + RequiredParameters + Default> Parameters<R> {
                 }
                 Err(e) => return Err(e.into()),
             };
-            tracing::info!("Parameter ID validated: {param_id:?}");
 
             ParameterId::belong_to(param_id, R::into_role())?;
             let (remain, param_value) = be_parameter_value(param_value, param_id)
                 .map_err(|nom_error| handle_nom_error(param_value, nom_error))?;
             assert!(remain.is_empty(), "Parameter value should consume all data");
-            tracing::info!("Parameter value parsed: {param_value:?}");
 
             parameters.set(param_id, param_value)?;
         }

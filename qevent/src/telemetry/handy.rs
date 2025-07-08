@@ -141,6 +141,12 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
+        #[cfg(debug_assertions)]
+        let file_name = format!(
+            "{group_id}_{vantage_point}_{rand:x}.sqlog",
+            rand = rand::random::<u64>()
+        );
+        #[cfg(not(debug_assertions))]
         let file_name = format!("{group_id}_{vantage_point}.sqlog");
         let file = self.storage.join(&file_name);
 

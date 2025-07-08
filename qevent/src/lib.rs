@@ -645,7 +645,7 @@ macro_rules! build {
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: Map        { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
-        $builder.$field($crate::map!{{ $($tt)* }});
+        $builder.$field($crate::map!({ $($tt)* }));
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: $struct:ty { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
