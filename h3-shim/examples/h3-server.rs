@@ -40,7 +40,6 @@ struct Options {
         help = "ALPNs to use for the connection"
     )]
     alpns: Vec<Vec<u8>>,
-
     #[arg(
         long,
         short,
@@ -49,6 +48,13 @@ struct Options {
                 If the backlog is full, new connections will be refused."
     )]
     backlog: usize,
+    #[arg(
+        long,
+        action = clap::ArgAction::Set,
+        default_value = "true",
+        help = "Enable ANSI color output in logs"
+    )]
+    ansi: bool,
     #[command(flatten)]
     certs: Certs,
 }
@@ -74,14 +80,17 @@ struct Certs {
 }
 
 fn main() {
+    let options = Options::parse();
     tracing_subscriber::registry()
         // .with(console_subscriber::spawn())
         .with(
-            tracing_subscriber::fmt::layer().with_filter(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            ),
+            tracing_subscriber::fmt::layer()
+                .with_ansi(options.ansi)
+                .with_filter(
+                    EnvFilter::builder()
+                        .with_default_directive(LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .init();
 
@@ -95,7 +104,7 @@ fn main() {
         .build()
         .expect("failed to build tokio runtime");
 
-    if let Err(error) = rt.block_on(run(Options::parse())) {
+    if let Err(error) = rt.block_on(run(options)) {
         tracing::info!(?error, "server error");
         std::process::exit(1);
     }

@@ -38,6 +38,13 @@ struct Options {
         help = "ALPNs to use for the connection"
     )]
     alpns: Vec<Vec<u8>>,
+    #[arg(
+        long,
+        default_value = "true",
+        action = clap::ArgAction::Set,
+        help = "Enable ANSI color output in logs"
+    )]
+    ansi: bool,
     #[arg(long, help = "Save the response to a dir", value_name = "PATH")]
     save: Option<PathBuf>,
     #[arg(
@@ -58,11 +65,13 @@ async fn main() {
         //         .spawn(),
         // )
         .with(
-            tracing_subscriber::fmt::layer().with_filter(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            ),
+            tracing_subscriber::fmt::layer()
+                .with_ansi(options.ansi)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .init();
 

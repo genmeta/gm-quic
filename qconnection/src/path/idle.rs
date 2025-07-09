@@ -66,7 +66,7 @@ impl super::Path {
             if idle_duration > config.duration {
                 core::future::pending::<()>().await;
             } else if idle_duration > config.interval {
-                self.validate().await?;
+                // self.validate().await?;
             } else {
                 tokio::time::sleep(config.interval.saturating_sub(idle_duration)).await;
             }
