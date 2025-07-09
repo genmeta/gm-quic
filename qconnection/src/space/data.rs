@@ -192,7 +192,11 @@ impl DataSpace {
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
+            LongHeaderBuilder::with_cid(
+                tx.applied_dcid()?,
+                tx.initial_scid().ok_or(Signals::empty())?,
+            )
+            .zero_rtt(),
             buf,
             keys,
             &sent_journal,
@@ -249,7 +253,7 @@ impl DataSpace {
         let need_ack = tx.need_ack(Epoch::Data);
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.dcid()),
+            OneRttHeader::new(spin, tx.applied_dcid()?),
             buf,
             DirectionalKeys {
                 header: hpk,
@@ -330,7 +334,7 @@ impl DataSpace {
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.dcid()),
+            OneRttHeader::new(spin, tx.applied_dcid()?),
             buf,
             DirectionalKeys {
                 header: hpk,
@@ -365,7 +369,7 @@ impl DataSpace {
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.dcid()),
+            OneRttHeader::new(spin, tx.applied_dcid()?),
             buf,
             DirectionalKeys {
                 header: hpk,

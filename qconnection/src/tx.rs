@@ -29,7 +29,7 @@ use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    ArcDcidCell, ArcReliableFrameDeque, GuaranteedFrame,
+    ArcDcidCell, ArcReliableFrameDeque, CidRegistry, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };
@@ -376,8 +376,7 @@ where
 }
 
 pub struct Transaction<'a> {
-    scid: Option<ConnectionId>,
-    initial_dcid: Option<ConnectionId>,
+    cid_registry: &'a CidRegistry,
     borrowed_dcid: Result<BorrowedCid<'a, ArcReliableFrameDeque>, Signals>,
     path_validated: bool,
     path_first_load: bool,
@@ -388,8 +387,7 @@ pub struct Transaction<'a> {
 impl<'a> Transaction<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
-        initial_scid: Option<ConnectionId>,
-        initial_dcid: Option<ConnectionId>,
+        cid_registry: &'a CidRegistry,
         dcid_cell: &'a ArcDcidCell,
         path_validated: bool,
         path_first_load: bool,
@@ -406,17 +404,9 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         };
 
-        if let Err(signals) = borrowed_dcid.as_ref() {
-            if initial_dcid.is_none() {
-                // 如果没有提供初始DCID，且借用失败，则无法创建Transaction
-                return Err(*signals);
-            }
-        }
-
         let constraints = Constraints::new(credit_limit, send_quota);
         Ok(Some(Self {
-            scid: initial_scid,
-            initial_dcid,
+            cid_registry,
             borrowed_dcid,
             path_validated,
             path_first_load,
@@ -425,26 +415,20 @@ impl<'a> Transaction<'a> {
         }))
     }
 
-    pub fn has_scid(&self) -> bool {
-        self.scid.is_some()
+    pub fn initial_scid(&self) -> Option<ConnectionId> {
+        self.cid_registry.local.initial_scid()
     }
 
-    pub fn scid(&self) -> ConnectionId {
-        self.scid
-            .expect("SCID should not be empty when loading packets")
+    pub fn initial_dcid(&self) -> ConnectionId {
+        self.cid_registry.remote.initial_dcid()
     }
 
     pub fn path_first_load(&mut self) -> bool {
         self.path_first_load
     }
 
-    pub fn dcid(&self) -> ConnectionId {
-        self.borrowed_dcid
-            .as_deref()
-            .ok()
-            .copied()
-            .or(self.initial_dcid)
-            .expect("DCID should not be empty when loading packets")
+    pub fn applied_dcid(&self) -> Result<ConnectionId, Signals> {
+        self.borrowed_dcid.as_deref().copied().map_err(|e| *e)
     }
 
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
@@ -567,10 +551,10 @@ impl Transaction<'_> {
         #[allow(clippy::complexity)]
         let mut loads: Vec<&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _> = vec![];
 
-        if self.has_scid() {
-            loads.push(load_initial);
-            loads.push(load_handshake);
-        }
+        loads.push(load_initial);
+        // TODO: if 0-RTT is loaded, 1-RTT data should not be loaded
+        loads.push(load_0rtt);
+        loads.push(load_handshake);
 
         if spaces.data().is_one_rtt_keys_ready() {
             match self.borrowed_dcid {
@@ -585,8 +569,6 @@ impl Transaction<'_> {
                 }
                 Err(s) => signals |= s,
             }
-        } else if self.has_scid() {
-            loads.push(load_0rtt);
         }
 
         for load in loads {
@@ -729,7 +711,7 @@ impl Transaction<'_> {
             if self.cc.need_send_ack_eliciting(epoch) == 0 {
                 continue;
             }
-            if epoch != Epoch::Data && !self.has_scid() {
+            if epoch != Epoch::Data && self.initial_scid().is_none() {
                 continue;
             }
             let middle_assembled_packet = match epoch {

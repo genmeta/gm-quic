@@ -108,8 +108,11 @@ impl InitialSpace {
         let need_ack = tx.need_ack(Epoch::Initial);
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Initial);
         let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
-                .initial(self.token.lock().unwrap().clone()),
+            LongHeaderBuilder::with_cid(
+                tx.initial_dcid(),
+                tx.initial_scid().ok_or(Signals::empty())?,
+            )
+            .initial(self.token.lock().unwrap().clone()),
             buf,
             keys.local.clone(),
             &sent_journal,
@@ -162,8 +165,11 @@ impl InitialSpace {
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
-                .initial(self.token.lock().unwrap().clone()),
+            LongHeaderBuilder::with_cid(
+                tx.initial_dcid(),
+                tx.initial_scid().ok_or(Signals::empty())?,
+            )
+            .initial(self.token.lock().unwrap().clone()),
             buf,
             keys.local.clone(),
             &sent_journal,
@@ -306,7 +312,7 @@ pub fn spawn_deliver_and_parse(
                 {
                     let mut parameters = components.parameters.lock_guard()?;
                     if parameters.initial_scid_from_peer().is_none() {
-                        remote_cids.revise_initial_dcid(*packet.scid());
+                        remote_cids.negotiate_dcid_from_peer(*packet.scid());
                         parameters.initial_scid_from_peer_need_equal(*packet.scid())?;
                     }
                 }

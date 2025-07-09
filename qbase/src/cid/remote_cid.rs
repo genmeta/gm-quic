@@ -21,7 +21,10 @@ struct RemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
-    // the cid issued by the peer, the sequence number maybe not continuous
+    // For the client, this is the original dcid.
+    // The sending packets of the initial space must use this dcid.
+    initial_dcid: ConnectionId,
+    // The cid issued by the peer, the sequence number maybe not continuous
     // since the disordered [`NewConnectionIdFrame`]
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
     // The cell of the connection ID, which is ready in use
@@ -58,6 +61,7 @@ where
             .unwrap();
 
         Self {
+            initial_dcid,
             active_cid_limit,
             cid_deque,
             ready_cells: Default::default(),
@@ -70,16 +74,23 @@ where
     /// Revise the initial dcid, which is used when the client received the
     /// response packet from the server, and the initial dcid should be updated
     /// based on the scid in the response packet.
-    fn revise_initial_dcid(&mut self, responsed_dcid: ConnectionId) {
+    fn negotiate_dcid_from_peer(&mut self, peer_scid: ConnectionId) {
         let first_dcid = self.cid_deque.get_mut(0).unwrap();
-        *first_dcid = Some((0, responsed_dcid, ResetToken::default()));
+        *first_dcid = Some((0, peer_scid, ResetToken::default()));
 
         if let Some(apply) = self.ready_cells.get_mut(0) {
-            apply.revise(responsed_dcid);
+            apply.revise(peer_scid);
         }
     }
 
-    fn initial_dcid(&self) -> Option<ConnectionId> {
+    /// Return the initial dcid, which is used when sending packets in the initial space.
+    fn initial_dcid(&self) -> ConnectionId {
+        self.initial_dcid
+    }
+
+    /// Return the negotiated dcid, which is used when sending packets in the 0-RTT or Handshake space.
+    /// For the client, it will be revised to the scid in the response initial packet sent by the server.
+    fn negotiated_dcid(&self) -> Option<ConnectionId> {
         self.cid_deque
             .get(0)
             .and_then(|opt| opt.as_ref().map(|(_, cid, _)| *cid))
@@ -254,12 +265,19 @@ where
     /// Revise the initial dcid, which is used if and only if the client
     /// received the response packet from the server, and the initial dcid
     /// should be updated based on the scid in the response packet.
-    pub fn revise_initial_dcid(&self, initial_dcid: ConnectionId) {
-        self.0.lock().unwrap().revise_initial_dcid(initial_dcid);
+    pub fn negotiate_dcid_from_peer(&self, peer_scid: ConnectionId) {
+        self.0.lock().unwrap().negotiate_dcid_from_peer(peer_scid);
     }
 
-    pub fn initial_dcid(&self) -> Option<ConnectionId> {
+    /// Return the initial dcid, which is used when sending packets in the initial space.
+    pub fn initial_dcid(&self) -> ConnectionId {
         self.0.lock().unwrap().initial_dcid()
+    }
+
+    /// Return the negotiated dcid, which is used when sending packets in the 0-RTT or Handshake space.
+    /// For the client, it will be revised to the scid in the response initial packet sent by the server.
+    pub fn negotiated_dcid(&self) -> Option<ConnectionId> {
+        self.0.lock().unwrap().negotiated_dcid()
     }
 
     /// Apply for a new connection ID, which is used when the Path is created.

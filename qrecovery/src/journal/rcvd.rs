@@ -261,7 +261,7 @@ impl RcvdJournal {
         Ok(AckFrame::new(largest, delay, first_range, ranges, None))
     }
 
-    fn trigger_ack_frame(&self) -> Option<(u64, Instant)> {
+    fn need_ack(&self) -> Option<(u64, Instant)> {
         let now = tokio::time::Instant::now();
         let (_, earliest_not_ack_time) = self.earliest_not_ack_time?;
         let max_ack_delay = self.max_ack_delay.unwrap_or_default();
@@ -357,7 +357,7 @@ impl ArcRcvdJournal {
     }
 
     pub fn need_ack(&self) -> Option<(u64, Instant)> {
-        self.inner.read().unwrap().trigger_ack_frame()
+        self.inner.read().unwrap().need_ack()
     }
 
     pub fn revise_max_ack_delay(&self, max_ack_delay: Duration) {
