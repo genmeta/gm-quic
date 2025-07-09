@@ -434,9 +434,10 @@ impl QuicListeners {
                 Err(error) => {
                     tracing::error!(
                         role = "server",
+                        %bind_uri,
+                        %link, %pathway,
                         odcid = format!("{origin_dcid:x}"),
-                        "Failed to accept connection from {}: {error:?}",
-                        link.dst()
+                        "Failed to accept connection from: {error:?}",
                     );
                 }
             }

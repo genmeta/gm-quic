@@ -8,9 +8,9 @@ use thiserror::Error;
 /// The index error type for [`IndexDeque`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum IndexError {
-    #[error("the index {0} exceed the limit {1}")]
+    #[error("The index {0} exceed the limit {1}")]
     ExceedLimit(u64, u64),
-    #[error("the index {0} is less than the offset {1}")]
+    #[error("The index {0} is less than the offset {1}")]
     TooSmall(u64, u64),
 }
 

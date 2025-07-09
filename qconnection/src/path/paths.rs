@@ -95,11 +95,11 @@ impl ArcPathContexts {
                 path.pathway,
                 path.link,
             ));
-            tracing::warn!(%pathway, %reason, "path removed");
+            tracing::warn!(%pathway, %reason, "Path removed");
             if self.is_empty() {
                 let error = QuicError::with_default_fty(
                     ErrorKind::NoViablePath,
-                    format!("no viable path exist, last path removed because: {reason}"),
+                    format!("No viable path exist, last path removed because: {reason}"),
                 );
                 self.broker.emit(Event::Failed(error));
             }

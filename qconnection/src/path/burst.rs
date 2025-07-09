@@ -9,7 +9,6 @@ use std::{
 
 use qbase::net::tx::Signals;
 use qinterface::QuicIO;
-use tracing::Instrument;
 
 use crate::{
     ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction,
@@ -165,10 +164,7 @@ impl Burst {
         self.send_lock.request_permit().await;
 
         loop {
-            let segment_lens = self
-                .burst(&mut buffers)
-                .instrument(tracing::debug_span!("burst", link = %self.path.link))
-                .await?;
+            let segment_lens = self.burst(&mut buffers).await?;
 
             let segments = segment_lens
                 .into_iter()

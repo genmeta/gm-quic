@@ -20,11 +20,11 @@ pub enum PacketNumber {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum InvalidPacketNumber {
-    #[error("packet number too old")]
+    #[error("Packet number too old")]
     TooOld,
-    #[error("packet number too large")]
+    #[error("Packet number too large")]
     TooLarge,
-    #[error("packet with this number has been received")]
+    #[error("Packet with this number has been received")]
     Duplicate,
 }
 

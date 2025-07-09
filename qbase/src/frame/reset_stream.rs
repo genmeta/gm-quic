@@ -96,7 +96,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-#[error("the stream was reset with app error code: {app_error_code}, final size: {final_size}")]
+#[error("The stream was reset with app error code: {app_error_code}, final size: {final_size}")]
 pub struct ResetStreamError {
     app_error_code: VarInt,
     final_size: VarInt,

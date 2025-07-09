@@ -105,13 +105,13 @@ fn main() {
         .expect("failed to build tokio runtime");
 
     if let Err(error) = rt.block_on(run(options)) {
-        tracing::info!(?error, "server error");
+        tracing::info!(?error);
         std::process::exit(1);
     }
 }
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing::info!("serving {}", options.root.display());
+    tracing::info!("Serving {}", options.root.display());
     let root = Arc::new(options.root);
     if !root.is_dir() {
         return Err(format!("{}: is not a readable directory", root.display()).into());
@@ -141,18 +141,18 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         options.listen.as_slice(),
         None,
     )?;
-    tracing::info!("listen {:?}", listeners.servers());
+    tracing::info!("Listen {:?}", listeners.servers());
 
     // handle incoming connections and requests
     while let Ok((new_conn, _server, _pathway, _link)) = listeners.accept().await {
         let h3_conn =
             match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn)).await {
                 Ok(h3_conn) => {
-                    tracing::info!("accept a new quic connection");
+                    tracing::info!("Accept a new quic connection");
                     h3_conn
                 }
                 Err(error) => {
-                    tracing::error!("failed to establish h3 connection: {}", error);
+                    tracing::error!("Failed to establish h3 connection: {}", error);
                     continue;
                 }
             };
@@ -180,7 +180,7 @@ async fn handle_connection<T>(
                 };
                 tokio::spawn(async move {
                     if let Err(e) = handle_request.await {
-                        tracing::error!("handling request failed: {}", e);
+                        tracing::error!("Handling request failed: {}", e);
                     }
                 });
             }
@@ -206,7 +206,7 @@ where
             match File::open(&to_serve).await {
                 Ok(file) => (StatusCode::OK, Some(file)),
                 Err(e) => {
-                    tracing::error!("failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
+                    tracing::error!("Failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
                     (StatusCode::NOT_FOUND, None)
                 }
             }

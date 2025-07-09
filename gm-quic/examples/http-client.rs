@@ -94,10 +94,10 @@ async fn run(options: Options) -> Result<(), Error> {
     };
 
     let client_builder = if options.skip_verify {
-        tracing::warn!("skip server verify");
+        tracing::warn!("Skip server verify");
         QuicClient::builder().without_verifier()
     } else {
-        tracing::info!("load ca certs");
+        tracing::info!("Soad ca certs");
         let mut roots = rustls::RootCertStore::empty();
         roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
         roots
@@ -150,7 +150,7 @@ async fn process(
 ) -> Result<(), Error> {
     let mut stdin = BufReader::new(io::stdin());
     eprintln!(
-        "Ewter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quit` to quit."
+        "Enter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quit` to quit."
     );
     loop {
         let mut input = String::new();
@@ -204,7 +204,7 @@ async fn download(
         connection.close("Bye bye", 0);
     }
 
-    tracing::info!("saved to file {file_path}");
+    tracing::info!("Saved to file {file_path}");
     Ok(())
 }
 
