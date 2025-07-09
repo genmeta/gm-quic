@@ -633,6 +633,7 @@ gen_builder_method! {
     RawInfoBuilder       => RawInfo;
 }
 
+/// A macro to crate a qlog event struct from a set of fields.
 #[macro_export]
 macro_rules! build {
     ($struct:ty { $($tt:tt)* }) => {{
@@ -645,7 +646,7 @@ macro_rules! build {
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: Map        { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
-        $builder.$field($crate::map!{{ $($tt)* }});
+        $builder.$field($crate::map!{ $($tt)* });
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: $struct:ty { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
@@ -677,29 +678,47 @@ pub mod macro_support {
 }
 
 #[macro_export]
+/// A macro to create a [`HashMap<String, Value>`] from a set of fields.
+/// ``` rust, no_run
+/// map! {
+///     field1: value,
+///     field2,
+///     field3: Map {
+///        subfield1: value,
+///     }
+///     event: loglevel::Error {
+///          message: "An error occurred",
+///     }
+/// }
+/// ```
 macro_rules! map {
-    {{$($tt:tt)*}}=>{ {
+    {$($tt:tt)*}=>{ {
         let mut map = ::std::collections::HashMap::<String, $crate::macro_support::Value>::new();
-        $crate::map!(@field map, $($tt)*);
+        $crate::map_internal!(map, $($tt)*);
         map
     }};
-    (@field $map:expr, $field:ident $(, $($remain:tt)* )?) => {
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! map_internal {
+    ($map:expr, $field:ident $(, $($remain:tt)* )?) => {
         $map.insert(stringify!($field).to_owned(), $field.into());
-        $crate::map!(@field $map $(, $($remain)* )?)
+        $crate::map_internal!($map $(, $($remain)* )?)
     };
-    (@field $map:expr, $field:ident: Map         {$($tt:tt)*} $(, $($remain:tt)* )?) => {
+    ($map:expr, $field:ident: Map         {$($tt:tt)*} $(, $($remain:tt)* )?) => {
         $map.insert(stringify!($field).to_owned(), $crate::map!{ $($tt)* });
-        $crate::map!(@field $map $(, $($remain)* )?)
+        $crate::map_internal!($map $(, $($remain)* )?)
     };
-    (@field $map:expr, $field:ident: $struct:ty  {$($tt:tt)*} $(, $($remain:tt)* )?) => {
+    ($map:expr, $field:ident: $struct:ty  {$($tt:tt)*} $(, $($remain:tt)* )?) => {
         $map.insert(stringify!($field).to_owned(), $crate::build!($struct { $($tt)* }).into());
-        $crate::map!(@field $map $(, $($remain)* )?)
+        $crate::map_internal!($map $(, $($remain)* )?)
     };
-    (@field $map:expr, $field:ident: $value:expr $(, $($remain:tt)* )?) => {
+    ($map:expr, $field:ident: $value:expr $(, $($remain:tt)* )?) => {
         $map.insert(stringify!($field).to_owned(), $value.into());
-        $crate::map!(@field $map $(, $($remain)* )?)
+        $crate::map_internal!($map $(, $($remain)* )?)
     };
-    (@field $map:expr $(,)?) => {};
+    ($map:expr $(,)?) => {};
 }
 
 mod rollback {
