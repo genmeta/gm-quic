@@ -1,8 +1,8 @@
 mod async_deque;
 pub use async_deque::ArcAsyncDeque;
 
-mod bound_deque;
-pub use bound_deque::BoundQueue;
+mod bound_queue;
+pub use bound_queue::BoundQueue;
 
 mod data;
 pub use data::{ContinuousData, WriteData};

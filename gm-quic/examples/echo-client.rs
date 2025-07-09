@@ -47,6 +47,13 @@ struct Options {
         value_enum
     )]
     progress: bool,
+    #[arg(
+        long,
+        default_value = "true",
+        action = clap::ArgAction::Set,
+        help = "Enable ANSI color output in logs"
+    )]
+    ansi: bool,
     #[arg(default_value = "localhost:4433", help = "Host and port to connect to")]
     auth: Authority,
 }
@@ -61,14 +68,16 @@ async fn main() {
         //         .spawn(),
         // )
         .with(
-            tracing_subscriber::fmt::layer().with_filter(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(match options.progress {
-                        true => tracing::level_filters::LevelFilter::OFF.into(),
-                        false => tracing::level_filters::LevelFilter::INFO.into(),
-                    })
-                    .from_env_lossy(),
-            ),
+            tracing_subscriber::fmt::layer()
+                .with_ansi(options.ansi)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(match options.progress {
+                            true => tracing::level_filters::LevelFilter::OFF.into(),
+                            false => tracing::level_filters::LevelFilter::INFO.into(),
+                        })
+                        .from_env_lossy(),
+                ),
         )
         .init();
 
