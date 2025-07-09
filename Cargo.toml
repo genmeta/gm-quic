@@ -70,7 +70,7 @@ h3 = "0.0.8"
 h3-datagram = "0.0.2"
 http = "1"
 indicatif = { version = "0.18", features = ["tokio"] }
-rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 rustls-native-certs = "0.8"
 tracing-subscriber = "0.3"
 
