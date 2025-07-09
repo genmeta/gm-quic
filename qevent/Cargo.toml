@@ -29,5 +29,5 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 
 [features]
-enabled = []
+telemetry = []
 raw_data = []

@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use super::{ExportEvent, Log, Span};
-use crate::{Event, GroupID, QlogFileSeq, VantagePoint, VantagePointType};
+use crate::{Event, GroupID, QlogFileSeq, VantagePoint, VantagePointType, span};
 
 pub struct NoopExporter;
 
@@ -36,7 +36,7 @@ impl IoExpoter {
     where
         O: AsyncWrite + Unpin + Send + 'static,
     {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
         tokio::spawn(async move {
             let task = async {
                 const RS: u8 = 0x1E;
@@ -78,7 +78,7 @@ pub struct NoopLogger;
 impl Log for NoopLogger {
     #[inline]
     fn new_trace(&self, _: VantagePointType, _: GroupID) -> Span {
-        Span::new(Arc::new(NoopExporter), Default::default())
+        span!(Arc::new(NoopExporter))
     }
 }
 
@@ -153,7 +153,8 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
             }
         });
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        #[allow(unused_variables)] // TODO: why cargo doc warns about unused variables?
+        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
         tokio::spawn(async move {
             let mut log_file = file.await;
 
