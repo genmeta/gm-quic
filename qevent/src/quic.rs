@@ -656,7 +656,7 @@ impl<D: DescribeData> From<(&StreamFrame, D)> for QuicFrame {
         QuicFrame::Stream {
             stream_id: frame.stream_id().into(),
             offset: frame.offset(),
-            length: length as u64,
+            length: payload_length as u64,
             fin: frame.is_fin(),
             raw: Some(crate::build!(RawInfo {
                 length: length as u64,
@@ -674,7 +674,7 @@ impl From<&StreamFrame> for QuicFrame {
         QuicFrame::Stream {
             stream_id: frame.stream_id().into(),
             offset: frame.offset(),
-            length: length as u64,
+            length: payload_length as u64,
             fin: frame.is_fin(),
             raw: Some(crate::build!(RawInfo {
                 length: length as u64,
@@ -689,7 +689,7 @@ impl<D: DescribeData> From<(&DatagramFrame, D)> for QuicFrame {
         let payload_length = frame.len().into_inner();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Datagram {
-            length: Some(length as _),
+            length: Some(payload_length as _),
             raw: Some(crate::build!(RawInfo {
                 length,
                 payload_length,
@@ -704,7 +704,7 @@ impl From<&DatagramFrame> for QuicFrame {
         let payload_length = frame.len().into_inner();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Datagram {
-            length: Some(length as _),
+            length: Some(payload_length as _),
             raw: Some(crate::build!(RawInfo {
                 length,
                 payload_length,
