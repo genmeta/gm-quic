@@ -239,8 +239,6 @@ pub fn spawn_deliver_and_parse(
     let deliver_and_parse = async move {
         while let Some((packet, (bind_uri, pathway, link))) = packets.recv().await {
             let parse = async {
-                let _qlog_span = qevent::span!(@current, path=pathway.to_string()).enter();
-
                 // rfc9000 7.2:
                 // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
                 // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
@@ -328,7 +326,10 @@ pub fn spawn_deliver_and_parse(
                 Result::<(), Error>::Ok(())
             };
 
-            if let Err(Error::Quic(error)) = parse.await {
+            if let Err(Error::Quic(error)) =
+                Instrument::instrument(parse, qevent::span!(@current, path=pathway.to_string()))
+                    .await
+            {
                 event_broker.emit(Event::Failed(error));
             };
         }
