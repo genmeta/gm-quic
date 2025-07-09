@@ -264,7 +264,7 @@ impl DataSpace {
         let ack = need_ack
             .or_else(|| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
-                rcvd_journal.trigger_ack_frame()
+                rcvd_journal.need_ack()
             })
             .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
@@ -615,7 +615,7 @@ pub fn spawn_deliver_and_parse(
                         })?;
                     packet.log_received(frames);
 
-                    space.journal.of_rcvd_packets().register_pn(
+                    space.journal.of_rcvd_packets().on_rcvd_pn(
                         packet.pn(),
                         packet_contains.ack_eliciting(),
                         path.cc().get_pto(Epoch::Data),
@@ -697,7 +697,7 @@ pub fn spawn_deliver_and_parse(
                         })?;
                     packet.log_received(frames);
 
-                    space.journal.of_rcvd_packets().register_pn(
+                    space.journal.of_rcvd_packets().on_rcvd_pn(
                         packet.pn(),
                         packet_contains.ack_eliciting(),
                         path.cc().get_pto(Epoch::Data),
