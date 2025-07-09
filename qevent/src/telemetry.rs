@@ -1,4 +1,9 @@
+pub(crate) mod filter;
 pub mod handy;
+
+#[doc(hidden)]
+pub mod macro_support;
+mod macros;
 
 use std::{
     collections::HashMap,
@@ -32,32 +37,6 @@ pub trait ExportEvent: Send + Sync {
     }
 }
 
-pub mod filter {
-    #[inline]
-    #[cfg(feature = "enabled")]
-    pub fn event(scheme: &'static str) -> bool {
-        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_event(scheme))
-    }
-
-    #[inline]
-    #[cfg(not(feature = "enabled"))]
-    pub fn event(_scheme: &'static str) -> bool {
-        false
-    }
-
-    #[inline]
-    #[cfg(all(feature = "enabled", feature = "raw_data"))]
-    pub fn raw_data() -> bool {
-        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_raw_data())
-    }
-
-    #[inline]
-    #[cfg(not(all(feature = "enabled", feature = "raw_data")))]
-    pub fn raw_data() -> bool {
-        false
-    }
-}
-
 #[derive(Clone)]
 pub struct Span {
     exporter: Arc<dyn ExportEvent>,
@@ -67,21 +46,13 @@ pub struct Span {
 impl Debug for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Span")
+            .field("exporter", &"..")
             .field("fields", &self.fields)
-            .field("broker", &"..")
             .finish()
     }
 }
 
 impl Span {
-    #[inline]
-    pub fn new(exporter: Arc<dyn ExportEvent>, fields: HashMap<&'static str, Value>) -> Self {
-        Self {
-            exporter,
-            fields: Arc::new(fields),
-        }
-    }
-
     #[inline]
     pub fn emit(&self, event: Event) {
         self.exporter.emit(event);
@@ -116,7 +87,10 @@ impl PartialEq for Span {
 
 impl Default for Span {
     fn default() -> Self {
-        Self::new(Arc::new(NoopExporter), HashMap::new())
+        Self {
+            exporter: Arc::new(NoopExporter),
+            fields: Arc::new(HashMap::new()),
+        }
     }
 }
 
@@ -199,143 +173,6 @@ impl<F: Future> Future for Instrumented<F> {
     }
 }
 
-#[doc(hidden)]
-pub mod macro_support {
-    use serde::Serialize;
-
-    use super::*;
-    use crate::{BeSpecificEventData, EventBuilder};
-
-    pub fn modify_event_builder_costom_fields(
-        builder: &mut EventBuilder,
-        f: impl FnOnce(&mut HashMap<String, Value>),
-    ) {
-        if builder.custom_fields.is_none() {
-            builder.custom_fields = Some(HashMap::new());
-        }
-        let custom_fields = builder.custom_fields.as_mut().unwrap();
-        f(custom_fields);
-    }
-
-    pub fn current_span_exporter() -> Arc<dyn ExportEvent> {
-        current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.clone())
-    }
-
-    pub fn current_span_fields() -> HashMap<&'static str, Value> {
-        current_span::CURRENT_SPAN.with(|span| span.borrow().fields.as_ref().clone())
-    }
-
-    pub fn try_load_current_span<T: DeserializeOwned>(name: &'static str) -> Option<T> {
-        current_span::CURRENT_SPAN.with(|span| {
-            let span = span.borrow();
-            Some(from_value::<T>(span.fields.get(name)?.clone()))
-        })
-    }
-
-    pub fn build_and_emit_event<D: BeSpecificEventData>(
-        build_data: impl FnOnce() -> D,
-        build_event: impl FnOnce(D) -> Event,
-    ) {
-        if !filter::event(D::scheme()) {
-            return;
-        }
-        let event = build_event(build_data());
-        current_span::CURRENT_SPAN.with(|span| span.borrow().emit(event));
-    }
-
-    pub fn to_value<T: Serialize>(value: T) -> Value {
-        serde_json::to_value(value).unwrap()
-    }
-
-    pub fn from_value<T: DeserializeOwned>(value: Value) -> T {
-        serde_json::from_value(value).unwrap()
-    }
-}
-
-#[macro_export]
-macro_rules! span {
-    () => {{
-        $crate::telemetry::Span::current()
-    }};
-    (@current     $(, $($tt:tt)* )?) => {{
-        let __current_exporter = $crate::telemetry::macro_support::current_span_exporter();
-        $crate::span!(__current_exporter $(, $($tt)* )?)
-    }};
-    ($broker:expr $(, $($tt:tt)* )?) => {{
-        #[allow(unused_mut)]
-        let mut __current_fields = $crate::telemetry::macro_support::current_span_fields();
-        $crate::span!(@field __current_fields $(, $($tt)* )?);
-        $crate::telemetry::Span::new($broker, __current_fields)
-    }};
-    (@field $fields:expr, $name:ident               $(, $($tt:tt)* )?) => {
-        $crate::span!( @field $fields, $name = $name $(, $($tt)* )? );
-    };
-    (@field $fields:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
-        let __value = $crate::telemetry::macro_support::to_value($value);
-        $fields.insert(stringify!($name), __value);
-        $crate::span!( @field $fields $(, $($tt)* )? );
-    };
-    (@field $fields:expr $(,)? ) => {};
-}
-
-#[macro_export]
-macro_rules! event {
-    ($event_type:ty { $($evnet_field:tt)* } $(, $($tt:tt)* )?) => {{
-        $crate::event!($crate::build!($event_type { $($evnet_field)* }) $(, $($tt)* )?);
-    }};
-    ($event_data:expr                       $(, $($tt:tt)* )?) => {{
-        let __build_data = || $event_data;
-        let __build_event = |__event_data| {
-            let mut __event_builder = $crate::Event::builder();
-            // as_millis_f64 is nightly only
-            let __time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64()
-                * 1000.0;
-            __event_builder.time(__time);
-            __event_builder.data(__event_data);
-            $crate::event!(@load_known __event_builder, path: $crate::PathID);
-            $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
-            $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);
-            $crate::event!(@field __event_builder $(, $($tt)* )?);
-
-            __event_builder.build()
-        };
-        $crate::telemetry::macro_support::build_and_emit_event(__build_data, __build_event);
-    }};
-    (@load_known $event_builder:expr, $name:ident: $type:ty) => {
-        if let Some(__value) = $crate::telemetry::macro_support::try_load_current_span::<$type>(stringify!($name)) {
-            $event_builder.$name(__value);
-        }
-    };
-    (@field $event_builder:expr, $name:ident               $(, $($tt:tt)* )?) => {
-        $crate::event!( @field $event_builder, $name = $name $(, $($tt)* )? );
-    };
-    (@field $event_builder:expr, $name:ident = Map           { $($build:tt)* } $(, $($tt:tt)* )?) => {
-        let __value = $crate::telemetry::macro_support::to_value($crate::map!{ $($build)* });
-        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
-            __custom_fields.insert(stringify!($name).to_owned(), __value);
-        });
-        $crate::event!( @field $event_builder $(, $($tt)* )? );
-    };
-    (@field $event_builder:expr, $name:ident = $struct:ident { $(build:tt)* } $(, $($tt:tt)* )?) => {
-        let __value = $crate::telemetry::macro_support::to_value($crate::build!($struct { $(build)* }));
-        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
-            __custom_fields.insert(stringify!($name).to_owned(), __value);
-        });
-        $crate::event!( @field $event_builder $(, $($tt)* )? );
-    };
-    (@field $event_builder:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
-        let __value = $crate::telemetry::macro_support::to_value($value);
-        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
-            __custom_fields.insert(stringify!($name).to_owned(), __value);
-        });
-        $crate::event!( @field $event_builder $(, $($tt)* )? );
-    };
-    (@field $event_builder:expr $(,)? ) => {};
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -344,8 +181,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        GroupID,
+        GroupID, event,
         quic::{ConnectionID, connectivity::ServerListening},
+        span,
     };
 
     #[test]

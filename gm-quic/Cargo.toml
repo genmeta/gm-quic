@@ -33,11 +33,16 @@ tracing = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
 indicatif = { workspace = true }
-qevent = { workspace = true, features = ["enabled"] }
+qevent = { workspace = true, features = ["telemetry"] }
 rcgen = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std", "rt-multi-thread"] }
+
+[features]
+default = ["unreliable"]
+telemetry = ["qevent/telemetry"]
+unreliable = ["qconnection/unreliable"]
 
 # console-subscriber = "0.4"
 

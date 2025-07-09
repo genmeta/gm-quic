@@ -33,7 +33,7 @@ crossterm = { version = "0.29", features = ["events", "event-stream"] }
 http = { workspace = true }
 indicatif = { workspace = true }
 libc = "0.2"
-qevent = { workspace = true, features = ["enabled"] }
+qevent = { workspace = true, features = ["telemetry"] }
 rustls = { workspace = true, features = ["logging", "ring"] }
 rustls-native-certs = { workspace = true }
 rpassword = "7.3"
