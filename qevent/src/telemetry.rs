@@ -312,6 +312,20 @@ macro_rules! event {
     (@field $event_builder:expr, $name:ident               $(, $($tt:tt)* )?) => {
         $crate::event!( @field $event_builder, $name = $name $(, $($tt)* )? );
     };
+    (@field $event_builder:expr, $name:ident = Map           { $($build:tt)* } $(, $($tt:tt)* )?) => {
+        let __value = $crate::telemetry::macro_support::to_value($crate::map!{ $($build)* });
+        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
+            __custom_fields.insert(stringify!($name).to_owned(), __value);
+        });
+        $crate::event!( @field $event_builder $(, $($tt)* )? );
+    };
+    (@field $event_builder:expr, $name:ident = $struct:ident { $(build:tt)* } $(, $($tt:tt)* )?) => {
+        let __value = $crate::telemetry::macro_support::to_value($crate::build!($struct { $(build)* }));
+        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
+            __custom_fields.insert(stringify!($name).to_owned(), __value);
+        });
+        $crate::event!( @field $event_builder $(, $($tt)* )? );
+    };
     (@field $event_builder:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
         let __value = $crate::telemetry::macro_support::to_value($value);
         $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
