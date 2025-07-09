@@ -97,7 +97,11 @@ impl HandshakeSpace {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
-        let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
+        let header = LongHeaderBuilder::with_cid(
+            tx.applied_dcid()?,
+            tx.initial_scid().ok_or(Signals::empty())?,
+        )
+        .handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
         let mut packet = PacketBuffer::new_long(header, buf, keys.local.clone(), &sent_journal)?;
 
@@ -147,7 +151,11 @@ impl HandshakeSpace {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
-        let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
+        let header = LongHeaderBuilder::with_cid(
+            tx.applied_dcid()?,
+            tx.initial_scid().ok_or(Signals::empty())?,
+        )
+        .handshake();
         let mut packet = PacketBuffer::new_long(header, buf, keys.local.clone(), &sent_journal)?;
 
         packet.dump_ping_frame();

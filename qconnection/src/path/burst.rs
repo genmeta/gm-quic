@@ -63,9 +63,8 @@ impl Burst {
         });
 
         let Some(transaction) = Transaction::prepare(
-            self.cid_registry.local.initial_scid(),
+            &self.cid_registry,
             // Not using initial DCID after 1RTT ready
-            self.cid_registry.remote.initial_dcid(),
             &self.dcid_cell,
             self.path.validated.load(Ordering::Acquire),
             !self.launched.swap(true, Ordering::Acquire),
