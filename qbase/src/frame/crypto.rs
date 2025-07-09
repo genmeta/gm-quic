@@ -3,7 +3,7 @@ use std::ops::Range;
 use nom::Parser;
 
 use crate::{
-    util::{DescribeData, WriteData},
+    util::{ContinuousData, WriteData},
     varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
 };
 
@@ -117,7 +117,7 @@ pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
 impl<T, D> super::io::WriteDataFrame<CryptoFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
+    D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &CryptoFrame, data: &D) {
         assert_eq!(frame.length.into_inner(), data.len() as u64);

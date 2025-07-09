@@ -3,7 +3,7 @@ use nom::IResult;
 
 use super::{FrameType, GetFrameType};
 use crate::{
-    util::{DescribeData, WriteData},
+    util::{ContinuousData, WriteData},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
@@ -88,7 +88,7 @@ pub fn datagram_frame_with_flag(flag: u8) -> impl FnOnce(&[u8]) -> IResult<&[u8]
 impl<T, D> super::io::WriteDataFrame<DatagramFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
+    D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
         self.put_varint(&frame.frame_type().into());

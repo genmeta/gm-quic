@@ -12,7 +12,7 @@ mod send {
         frame::CryptoFrame,
         net::tx::{ArcSendWakers, Signals},
         packet::MarshalDataFrame,
-        util::DescribeData,
+        util::ContinuousData,
         varint::{VARINT_MAX, VarInt},
     };
     use tokio::io::AsyncWrite;

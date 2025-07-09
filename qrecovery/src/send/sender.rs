@@ -9,7 +9,7 @@ use qbase::{
     frame::{ResetStreamError, ResetStreamFrame, SendFrame, StreamFrame},
     net::tx::{ArcSendWakers, Signals},
     sid::StreamId,
-    util::DescribeData,
+    util::ContinuousData,
     varint::{VARINT_MAX, VarInt},
 };
 use qevent::{

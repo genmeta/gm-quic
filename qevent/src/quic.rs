@@ -17,7 +17,7 @@ use qbase::{
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
         short::OneRttHeader,
     },
-    util::DescribeData,
+    util::ContinuousData,
     varint::VarInt,
 };
 use serde::{Deserialize, Serialize};
@@ -616,7 +616,7 @@ pub enum QuicFrame {
     },
 }
 
-impl<D: DescribeData> From<(&CryptoFrame, D)> for QuicFrame {
+impl<D: ContinuousData> From<(&CryptoFrame, D)> for QuicFrame {
     fn from((frame, data): (&CryptoFrame, D)) -> Self {
         let payload_length = frame.length();
         let length = frame.encoding_size() as u64 + payload_length;
@@ -649,7 +649,7 @@ impl From<&CryptoFrame> for QuicFrame {
     }
 }
 
-impl<D: DescribeData> From<(&StreamFrame, D)> for QuicFrame {
+impl<D: ContinuousData> From<(&StreamFrame, D)> for QuicFrame {
     fn from((frame, data): (&StreamFrame, D)) -> Self {
         let payload_length = frame.len();
         let length = frame.encoding_size() + payload_length;
@@ -684,7 +684,7 @@ impl From<&StreamFrame> for QuicFrame {
     }
 }
 
-impl<D: DescribeData> From<(&DatagramFrame, D)> for QuicFrame {
+impl<D: ContinuousData> From<(&DatagramFrame, D)> for QuicFrame {
     fn from((frame, data): (&DatagramFrame, D)) -> Self {
         let payload_length = frame.len().into_inner();
         let length = frame.encoding_size() as u64 + payload_length;

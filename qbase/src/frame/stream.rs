@@ -4,7 +4,7 @@ use super::GetFrameType;
 use crate::{
     frame::EncodeSize,
     sid::{StreamId, WriteStreamId, be_streamid},
-    util::{DescribeData, WriteData},
+    util::{ContinuousData, WriteData},
     varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
 };
 
@@ -248,7 +248,7 @@ pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8],
 impl<T, D> super::io::WriteDataFrame<StreamFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
+    D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &StreamFrame, data: &D) {
         let mut stream_type = STREAM_FRAME_TYPE;

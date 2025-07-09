@@ -12,7 +12,7 @@ use super::{
     stream_data_blocked::be_stream_data_blocked_frame,
     streams_blocked::streams_blocked_frame_with_dir, *,
 };
-use crate::util::DescribeData;
+use crate::util::ContinuousData;
 
 /// Return a parser for a complete frame from the raw bytes with the given type,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -144,7 +144,7 @@ pub trait WriteFrame<F>: bytes::BufMut {
 
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly
 /// to write frame with data.
-pub trait WriteDataFrame<F, D: DescribeData>: bytes::BufMut {
+pub trait WriteDataFrame<F, D: ContinuousData>: bytes::BufMut {
     /// Write a frame and its data to the buffer.
     fn put_data_frame(&mut self, frame: &F, data: &D);
 }

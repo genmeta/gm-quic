@@ -7,7 +7,7 @@ use qbase::{
     net::tx::Signals,
     packet::MarshalDataFrame,
     sid::StreamId,
-    util::DescribeData,
+    util::ContinuousData,
     varint::VarInt,
 };
 use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};

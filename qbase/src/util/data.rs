@@ -1,6 +1,6 @@
 use bytes::{BufMut, Bytes};
 
-pub trait DescribeData {
+pub trait ContinuousData {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool;
@@ -8,7 +8,7 @@ pub trait DescribeData {
     fn to_bytes(&self) -> Bytes;
 }
 
-impl DescribeData for (&[u8], &[u8]) {
+impl ContinuousData for (&[u8], &[u8]) {
     #[inline]
     fn len(&self) -> usize {
         self.0.len() + self.1.len()
@@ -25,7 +25,7 @@ impl DescribeData for (&[u8], &[u8]) {
     }
 }
 
-impl DescribeData for [u8] {
+impl ContinuousData for [u8] {
     #[inline]
     fn len(&self) -> usize {
         <[u8]>::len(self)
@@ -42,7 +42,7 @@ impl DescribeData for [u8] {
     }
 }
 
-impl<const N: usize> DescribeData for [u8; N] {
+impl<const N: usize> ContinuousData for [u8; N] {
     #[inline]
     fn len(&self) -> usize {
         N
@@ -59,7 +59,7 @@ impl<const N: usize> DescribeData for [u8; N] {
     }
 }
 
-impl DescribeData for Vec<u8> {
+impl ContinuousData for Vec<u8> {
     #[inline]
     fn len(&self) -> usize {
         self.len()
@@ -76,7 +76,7 @@ impl DescribeData for Vec<u8> {
     }
 }
 
-impl DescribeData for Bytes {
+impl ContinuousData for Bytes {
     #[inline]
     fn len(&self) -> usize {
         self.len()
@@ -93,7 +93,7 @@ impl DescribeData for Bytes {
     }
 }
 
-impl<D: DescribeData + ?Sized> DescribeData for &D {
+impl<D: ContinuousData + ?Sized> ContinuousData for &D {
     #[inline]
     fn len(&self) -> usize {
         D::len(*self)
@@ -110,7 +110,7 @@ impl<D: DescribeData + ?Sized> DescribeData for &D {
     }
 }
 
-pub trait WriteData<D: DescribeData>: BufMut {
+pub trait WriteData<D: ContinuousData>: BufMut {
     fn put_data(&mut self, data: &D);
 }
 
