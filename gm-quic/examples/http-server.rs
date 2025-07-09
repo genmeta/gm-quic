@@ -103,7 +103,7 @@ fn main() {
         .expect("failed to build tokio runtime");
 
     if let Err(error) = rt.block_on(run(options)) {
-        tracing::info!(?error, "server error");
+        tracing::info!(?error);
         std::process::exit(1);
     }
 }
@@ -127,7 +127,7 @@ async fn run(options: Options) -> Result<(), Error> {
         options.listen.as_slice(),
         None,
     )?;
-    tracing::info!("listen  {:?}", listeners.servers());
+    tracing::info!("Listen {:?}", listeners.servers());
 
     loop {
         let (connection, _server, _pathway, _link) = listeners.accept().await?;
@@ -156,7 +156,7 @@ async fn serve_files(connection: Arc<Connection>) -> Result<(), Error> {
         };
 
         if let Err(error) = serve.await {
-            tracing::warn!("failed to serve request: {}", error);
+            tracing::warn!("Failed to serve request: {}", error);
         }
 
         _ = writer.shutdown().await;

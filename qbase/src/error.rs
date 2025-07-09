@@ -107,7 +107,7 @@ impl Display for ErrorKind {
 /// See [Initial QUIC Transport Error Codes Registry Entries](https://www.rfc-editor.org/rfc/rfc9000.html#table-7)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
-#[error("invalid error code {0}")]
+#[error("Invalid error code {0}")]
 pub struct InvalidErrorKind(u64);
 
 impl TryFrom<VarInt> for ErrorKind {
@@ -307,7 +307,7 @@ impl From<Error> for ConnectionCloseFrame {
 
 impl From<AppError> for ConnectionCloseFrame {
     fn from(e: AppError) -> Self {
-        tracing::info!("closed by app layer with error: {:?}", e);
+        tracing::info!("Closed by app layer with error: {:?}", e);
         Self::new_app(e.error_code, e.reason)
     }
 }

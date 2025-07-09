@@ -144,7 +144,7 @@ impl SentPktState {
                 if expire_time > now {
                     true
                 } else {
-                    tracing::debug!("retransmitted packet {pn} is expired without ack");
+                    tracing::debug!("Retransmitted packet {pn} is expired without ack");
                     false
                 }
             }
@@ -202,7 +202,7 @@ impl<T: Clone> SentJournal<T> {
     }
 
     fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ {
-        tracing::debug!("fast retransmit");
+        tracing::debug!("Fast retransmit");
         self.resize();
 
         let now = tokio::time::Instant::now();

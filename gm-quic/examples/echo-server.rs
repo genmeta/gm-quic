@@ -76,7 +76,7 @@ async fn main() {
         .init();
 
     if let Err(error) = run(options).await {
-        tracing::info!(?error, "server error");
+        tracing::info!(?error);
         std::process::exit(1);
     }
 }
@@ -110,7 +110,7 @@ async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
     async fn handle_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
         io::copy(&mut reader, &mut writer).await?;
         writer.shutdown().await?;
-        tracing::debug!("stream copy done");
+        tracing::debug!("Stream copy done");
 
         io::Result::Ok(())
     }

@@ -355,7 +355,7 @@ fn wsarecvmsg_ptr() -> &'static WinSock::LPFN_WSARECVMSG {
         let s = unsafe { WinSock::socket(WinSock::AF_INET as _, WinSock::SOCK_DGRAM as _, 0) };
         if s == WinSock::INVALID_SOCKET {
             tracing::warn!(
-                "failed to create socket for WSARecvMsg function pointer: {}",
+                "Failed to create socket for WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
             return None;
@@ -383,7 +383,7 @@ fn wsarecvmsg_ptr() -> &'static WinSock::LPFN_WSARECVMSG {
 
         if ret == -1 {
             tracing::warn!(
-                "failed to get WSARecvMsg function pointer: {}",
+                "Failed to get WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
         } else if len as usize != mem::size_of::<WinSock::LPFN_WSARECVMSG>() {

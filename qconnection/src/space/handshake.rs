@@ -278,22 +278,6 @@ pub fn spawn_deliver_and_parse(
                     packet_contains,
                 );
 
-                // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
-                // we should stop using the odcid, and drop the subsequent packets with odcid.
-                //
-                // We do not remove the route to odcid, otherwise the server may establish multiple connections.
-                //
-                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                if let SpecificComponents::Server {
-                    odcid_router_entry,
-                    using_odcid,
-                } = &components.specific
-                {
-                    if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                        using_odcid.store(false, SeqCst);
-                    }
-                }
-
                 Result::<(), Error>::Ok(())
             };
 
