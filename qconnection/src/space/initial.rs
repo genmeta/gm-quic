@@ -255,7 +255,7 @@ pub fn spawn_deliver_and_parse(
                         packet.drop_on_conenction_closed();
                         return Ok(());
                     }
-                    Err(CreatePathFailure::InterfaceNotFound(..)) => {
+                    Err(CreatePathFailure::NoInterface(..)) => {
                         packet.drop_on_interface_not_found();
                         return Ok(());
                     }

@@ -21,7 +21,7 @@ use qbase::{
         keys::DirectionalKeys,
         signal::{KeyPhaseBit, SpinBit},
     },
-    util::{DescribeData, WriteData},
+    util::{ContinuousData, WriteData},
 };
 use qcongestion::{ArcCC, Transport};
 use qevent::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
@@ -274,7 +274,7 @@ impl<F> PacketBuffer<'_, '_, F> {
 /// 对IH空间有效
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketBuffer<'b, '_, CryptoFrame>
 where
-    D: DescribeData + Clone,
+    D: ContinuousData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
@@ -329,7 +329,7 @@ where
 
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData + Clone,
+    D: ContinuousData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
@@ -345,7 +345,7 @@ where
 
 impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData + Clone,
+    D: ContinuousData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: StreamFrame, data: D) -> Option<StreamFrame> {
@@ -361,7 +361,7 @@ where
 
 impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData + Clone,
+    D: ContinuousData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: DatagramFrame, data: D) -> Option<DatagramFrame> {

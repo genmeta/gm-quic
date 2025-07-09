@@ -59,7 +59,7 @@ pub struct Path {
 #[derive(Debug, From, Error)]
 pub enum CreatePathFailure {
     #[error("Network interface not found for bind URI: {0}")]
-    InterfaceNotFound(BindUri),
+    NoInterface(BindUri),
     #[error("Connection is closed: {0}")]
     ConnectionClosed(Error),
 }
@@ -90,7 +90,7 @@ impl Components {
             let interface = self
                 .interfaces
                 .get(&bind_uri)
-                .ok_or(CreatePathFailure::InterfaceNotFound(bind_uri))?;
+                .ok_or(CreatePathFailure::NoInterface(bind_uri))?;
             let max_ack_delay = self
                 .parameters
                 .lock_guard()?

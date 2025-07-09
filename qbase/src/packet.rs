@@ -15,7 +15,7 @@ use crate::{
     },
     net::tx::Signals,
     packet::keys::DirectionalKeys,
-    util::{DescribeData, WriteData},
+    util::{ContinuousData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 

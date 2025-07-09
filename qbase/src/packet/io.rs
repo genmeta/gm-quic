@@ -348,7 +348,7 @@ where
 
 impl<F, D> MarshalDataFrame<F, D> for PacketWriter<'_>
 where
-    D: DescribeData,
+    D: ContinuousData,
     Self: WriteData<D> + WriteDataFrame<F, D>,
 {
     fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F> {
