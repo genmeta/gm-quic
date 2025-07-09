@@ -113,8 +113,7 @@ impl SentPktState {
                 nframes
             }
             Self::Retransmitted { nframes, .. } => nframes,
-            Self::Acked { .. } => unreachable!("acked packet should not be lost"),
-            Self::Skipped => 0,
+            _ => 0,
         }
     }
 

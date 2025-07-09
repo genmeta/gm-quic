@@ -48,7 +48,7 @@ impl State {
         }
     }
 
-    fn is_expired(&self, now: Instant) -> bool {
+    fn could_expire(&self, now: Instant) -> bool {
         match self {
             State::Empty => true,
             State::AckConfirmed(ack_eliciting, _, expire_time) => {
@@ -147,7 +147,7 @@ impl RcvdJournal {
         while self
             .queue
             .front()
-            .is_some_and(|(_pn, state)| state.is_expired(now))
+            .is_some_and(|(_pn, state)| state.could_expire(now))
         {
             self.queue.pop_front();
         }
@@ -311,7 +311,7 @@ impl ArcRcvdJournal {
     /// an error.
     ///
     /// Note that although the packet number successful decoded, it does not mean that the packet is
-    /// valid, and the frames in it is valid.
+    /// valid, and the frames in it are valid.
     ///
     /// The registered packet must be valid, successfully decrypted, and the frames in it must be
     /// valid.
@@ -327,7 +327,7 @@ impl ArcRcvdJournal {
     /// The registered packet must be valid, successfully decrypted, and the frames in it must be
     /// valid.
     // 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
-    pub fn register_pn(&self, pn: u64, is_ack_eliciting: bool, pto: Duration) {
+    pub fn on_rcvd_pn(&self, pn: u64, is_ack_eliciting: bool, pto: Duration) {
         self.inner
             .write()
             .unwrap()
@@ -356,7 +356,7 @@ impl ArcRcvdJournal {
         self.inner.write().unwrap().on_rcvd_ack(ack_frame);
     }
 
-    pub fn trigger_ack_frame(&self) -> Option<(u64, Instant)> {
+    pub fn need_ack(&self) -> Option<(u64, Instant)> {
         self.inner.read().unwrap().trigger_ack_frame()
     }
 
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(records.inner.read().unwrap().queue.len(), 0);
 
         let pto = Duration::from_millis(100);
-        records.register_pn(1, true, pto);
+        records.on_rcvd_pn(1, true, pto);
 
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
         assert_eq!(
