@@ -1,6 +1,6 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
-use qbase::frame::PathChallengeFrame;
+use qbase::{frame::PathChallengeFrame, net::tx::Signals};
 use qcongestion::Transport;
 use thiserror::Error;
 use tokio::time::Instant;
@@ -16,8 +16,9 @@ pub enum ValidateFailure {
 }
 
 impl super::Path {
-    pub fn skip_validation(&self) {
+    pub fn validated(&self) {
         self.validated.store(true, Ordering::Release);
+        self.tx_waker.wake_by(Signals::PATH_VALIDATE);
     }
 
     pub async fn validate(&self) -> Result<(), ValidateFailure> {
@@ -28,6 +29,7 @@ impl super::Path {
             self.challenge_sndbuf.write(challenge);
             match tokio::time::timeout(timeout_duration, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {
+                    self.validated();
                     self.anti_amplifier.grant();
                     return Ok(());
                 }

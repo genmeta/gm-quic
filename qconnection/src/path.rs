@@ -97,7 +97,7 @@ impl Components {
                 .get_local(ParameterId::MaxAckDelay)
                 .expect("unreachable: default value will be got if the value unset");
 
-            let do_validate = !self.conn_state.try_entry_attempted(self, link)?;
+            let is_initial_path = self.conn_state.try_entry_attempted(self, link)?;
             qevent::event!(PathAssigned {
                 path_id: pathway.to_string(),
                 path_local: link.src(),
@@ -117,10 +117,6 @@ impl Components {
                 self.quic_handshake.status(),
             ));
 
-            if !is_probed {
-                path.grant_anti_amplification();
-            }
-
             let burst = path.new_burst(self);
             let idle_timeout = path.idle_timeout(self.parameters.clone(), self.paths.clone());
 
@@ -129,11 +125,14 @@ impl Components {
                 let defer_idle_timeout = self.defer_idle_timeout;
                 async move {
                     let validate = async {
-                        if do_validate {
-                            path.validate().await
-                        } else {
-                            path.skip_validation();
+                        if !is_probed {
+                            path.grant_anti_amplification();
+                        }
+                        if is_initial_path {
+                            path.validated();
                             Ok(())
+                        } else {
+                            path.validate().await
                         }
                     };
                     Err(tokio::select! {
@@ -149,7 +148,7 @@ impl Components {
                 Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
                     .instrument_in_current();
 
-            tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
+            tracing::info!(%pathway, %link, is_probed, is_initial_path, "add new path:");
             Ok((path, task))
         };
         self.paths.get_or_try_create_with(pathway, try_create)
