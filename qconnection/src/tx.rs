@@ -557,17 +557,11 @@ impl Transaction<'_> {
         loads.push(load_handshake);
 
         if spaces.data().is_one_rtt_keys_ready() {
-            match self.borrowed_dcid {
-                Ok(_) => {
-                    if self.path_validated {
-                        if spaces.data().is_one_rtt_ready() {
-                            loads.push(load_1rtt_data)
-                        }
-                    } else {
-                        loads.push(load_validate);
-                    }
-                }
-                Err(s) => signals |= s,
+            if self.path_validated {
+                loads.push(load_1rtt_data)
+            } else {
+                loads.push(load_validate);
+                signals |= Signals::PATH_VALIDATE;
             }
         }
 

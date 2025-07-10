@@ -23,6 +23,7 @@ bitflags::bitflags! {
         const KEYS          = 1 << 6; // key(no waker in SendWaker)
         const PING          = 1 << 7; // packet which contains ping frames only
         const ONE_RTT       = 1 << 8; // one rtt data space not ready
+        const PATH_VALIDATE = 1 << 9; // path validated
     }
 }
 
