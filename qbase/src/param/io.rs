@@ -9,7 +9,7 @@ use crate::{
     param::{
         core::{ParameterId, ParameterValue, ParameterValueType, Parameters, ServerParameters},
         error::Error,
-        prefered_address::{PreferredAddress, WirtePreferredAddress, be_preferred_address},
+        preferred_address::{PreferredAddress, WirtePreferredAddress, be_preferred_address},
     },
     role::{IntoRole, RequiredParameters, Role},
     token::{ResetToken, WriteResetToken, be_reset_token},

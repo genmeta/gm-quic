@@ -245,7 +245,6 @@ impl PacketSpace {
 
         let now = Instant::now();
         let loss_delay = loss_delay * (1 << self.consecutive_loss_count);
-
         let lost_sent_time = now - loss_delay - self.max_ack_delay;
         let largest_acked = self.largest_acked_packet.unwrap_or(0);
         let largest_index = self
