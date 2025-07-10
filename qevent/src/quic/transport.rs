@@ -220,7 +220,7 @@ impl ParametersSetBuilder {
     /// helper method to set all server parameters at once
     pub fn server_parameters(&mut self, params: &ServerParameters) -> &mut Self {
         use qbase::{
-            cid::ConnectionId, param::prefered_address::PreferredAddress, token::ResetToken,
+            cid::ConnectionId, param::preferred_address::PreferredAddress, token::ResetToken,
         };
         extract_parameter! {
             OriginalDestinationConnectionId as ConnectionId from params to self.original_destination_connection_id,
@@ -258,8 +258,8 @@ pub struct PreferredAddress {
     stateless_reset_token: StatelessResetToken,
 }
 
-impl From<qbase::param::prefered_address::PreferredAddress> for PreferredAddress {
-    fn from(pa: qbase::param::prefered_address::PreferredAddress) -> Self {
+impl From<qbase::param::preferred_address::PreferredAddress> for PreferredAddress {
+    fn from(pa: qbase::param::preferred_address::PreferredAddress) -> Self {
         crate::build!(Self {
             ip_v4: pa.address_v4().ip().to_string(),
             ip_v6: pa.address_v6().ip().to_string(),

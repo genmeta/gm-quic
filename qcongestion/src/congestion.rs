@@ -58,7 +58,7 @@ impl CongestionController {
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
-            Algorithm::NewReno => Box::new(NewReno::new(path_status.pmtu.clone())),
+            Algorithm::NewReno => Box::new(NewReno::new(path_status.pmtu())),
         };
 
         let now = Instant::now();

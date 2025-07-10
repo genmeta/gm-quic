@@ -16,7 +16,7 @@ pub mod core;
 pub mod error;
 pub mod handy;
 pub mod io;
-pub mod prefered_address;
+pub mod preferred_address;
 
 pub use self::{
     core::{

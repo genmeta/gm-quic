@@ -41,7 +41,7 @@ impl HandshakeStatus {
 pub struct PathStatus {
     handshake: Arc<HandshakeStatus>,
     is_at_anti_amplification_limit: Arc<AtomicBool>,
-    pub(super) pmtu: Arc<AtomicU16>,
+    pmtu: Arc<AtomicU16>,
 }
 
 impl PathStatus {
@@ -85,6 +85,10 @@ impl PathStatus {
     pub fn enter_anti_amplification_limit(&self) {
         self.is_at_anti_amplification_limit
             .store(true, Ordering::Release);
+    }
+
+    pub(super) fn pmtu(&self) -> Arc<AtomicU16> {
+        self.pmtu.clone()
     }
 
     pub(crate) fn mtu(&self) -> usize {

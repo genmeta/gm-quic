@@ -3,7 +3,7 @@ use std::{collections::HashMap, marker::PhantomData, time::Duration};
 use bytes::Bytes;
 use derive_more::{From, TryInto, TryIntoError};
 
-use super::{error::Error, prefered_address::PreferredAddress};
+use super::{error::Error, preferred_address::PreferredAddress};
 use crate::{
     cid::ConnectionId,
     role::*,
