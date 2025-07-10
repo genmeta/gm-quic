@@ -149,6 +149,7 @@ pub(crate) struct PacketSpace {
     pub(crate) rcvd_packets: RcvdRecords,
     // Tracks consecutive packet losses; reset by any ACK to prevent spurious fast retransmit.
     pub(crate) consecutive_loss_count: u16,
+    pub(crate) max_ack_delay: Duration,
 }
 
 pub(crate) struct NewlyAckedPackets {
@@ -164,7 +165,8 @@ impl PacketSpace {
             loss_time: None,
             sent_packets: VecDeque::with_capacity(4),
             rcvd_packets: RcvdRecords::new(epoch, max_ack_delay),
-            consecutive_loss_count: 0,
+            consecutive_loss_count: 1,
+            max_ack_delay,
         }
     }
 
@@ -244,7 +246,7 @@ impl PacketSpace {
         let now = Instant::now();
         let loss_delay = loss_delay * (1 << self.consecutive_loss_count);
 
-        let lost_sent_time = now - loss_delay;
+        let lost_sent_time = now - loss_delay - self.max_ack_delay;
         let largest_acked = self.largest_acked_packet.unwrap_or(0);
         let largest_index = self
             .sent_packets
@@ -294,10 +296,13 @@ impl PacketSpace {
             .into_iter()
             .map(|(_, pkt)| (pkt.packet_number, pkt))
             .unzip();
-        self.consecutive_loss_count = self
-            .consecutive_loss_count
-            .saturating_add(loss_packet.len() as u16)
-            .min(MAX_CONSECUTIVE_LOSS_COUNT);
+        if self.consecutive_loss_count != 0 {
+            self.consecutive_loss_count = self
+                .consecutive_loss_count
+                .saturating_add(1)
+                .min(MAX_CONSECUTIVE_LOSS_COUNT);
+        }
+
         if !loss_packet.is_empty() {
             algorithm.on_packets_lost(&mut loss_packet.into_iter(), persistent_lost);
         }

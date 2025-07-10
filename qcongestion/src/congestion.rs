@@ -69,8 +69,8 @@ impl CongestionController {
             pto_count: 0,
             max_ack_delay,
             packet_spaces: [
-                PacketSpace::with_epoch(Epoch::Initial, max_ack_delay),
-                PacketSpace::with_epoch(Epoch::Handshake, max_ack_delay),
+                PacketSpace::with_epoch(Epoch::Initial, Duration::ZERO),
+                PacketSpace::with_epoch(Epoch::Handshake, Duration::ZERO),
                 PacketSpace::with_epoch(Epoch::Data, max_ack_delay),
             ],
             pacer: Pacer::new(INITIAL_RTT, INIT_CWND, path_status.mtu(), now, None),
