@@ -86,13 +86,23 @@ impl super::Path {
             parameters: &ArcParameters,
             paths: &ArcPathContexts,
         ) -> Option<Duration> {
-            parameters.lock_guard().ok().and_then(|params| {
-                let local_max_idle_timeout = match params.get_local(ParameterId::MaxIdleTimeout)? {
-                    Duration::ZERO => Duration::MAX,
-                    local_max_idle_timeout => local_max_idle_timeout,
-                };
-                Some(local_max_idle_timeout.max(paths.max_pto_duration()? * 3))
-            })
+            // Release ArcParametersGuard before traversing paths to avoid deadlock.
+            // 1. Thread 1: holds the `paths` lock (while creating a path) and waits for ArcParametersGuard.
+            // 2. Thread 2: holds ArcParametersGuard (during `get_local_max_idle_timeout`) and then attempts to acquire the `paths` lock for traversal.
+            parameters
+                .lock_guard()
+                .ok()
+                .and_then(|params| {
+                    let local_max_idle_timeout =
+                        match params.get_local(ParameterId::MaxIdleTimeout)? {
+                            Duration::ZERO => Duration::MAX,
+                            local_max_idle_timeout => local_max_idle_timeout,
+                        };
+                    Some(local_max_idle_timeout)
+                })
+                .and_then(|max_idle_timeout| {
+                    Some(max_idle_timeout.max(paths.max_pto_duration()? * 3))
+                })
         }
 
         async fn get_max_idle_timeout(
