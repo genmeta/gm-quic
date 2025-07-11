@@ -1,7 +1,10 @@
 use std::{
     collections::VecDeque,
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use super::ConnectionId;
@@ -24,6 +27,7 @@ where
     // For the client, this is the original dcid.
     // The sending packets of the initial space must use this dcid.
     initial_dcid: ConnectionId,
+    first_dcid_count: Arc<AtomicU8>,
     // The cid issued by the peer, the sequence number maybe not continuous
     // since the disordered [`NewConnectionIdFrame`]
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
@@ -62,6 +66,7 @@ where
 
         Self {
             initial_dcid,
+            first_dcid_count: Arc::new(AtomicU8::new(0)),
             active_cid_limit,
             cid_deque,
             ready_cells: Default::default(),
@@ -79,6 +84,9 @@ where
         *first_dcid = Some((0, peer_scid, ResetToken::default()));
 
         if let Some(apply) = self.ready_cells.get_mut(0) {
+            apply.revise(peer_scid);
+        }
+        for apply in self.pending_cells.iter() {
             apply.revise(peer_scid);
         }
     }
@@ -156,7 +164,15 @@ where
 
             let next_unused_cid = self.cid_deque.get(self.cursor);
             if let Some(Some((seq, cid, _))) = next_unused_cid {
-                guard.assign(*seq, *cid);
+                let count = if self.cursor == 0 {
+                    // If the cursor is 0, it means that we are assigning the initial dcid.
+                    // We need to assign the initial dcid to the first cell.
+                    self.first_dcid_count.fetch_add(1, Ordering::SeqCst);
+                    self.first_dcid_count.clone()
+                } else {
+                    Arc::new(AtomicU8::new(1))
+                };
+                guard.assign(*seq, count, *cid);
                 // Until an unused CID is allocated, the guard cannot be released early.
                 drop(guard);
 
@@ -167,6 +183,20 @@ where
                 self.cursor += 1;
             } else {
                 break;
+            }
+        }
+        if let Some(Some((seq, cid, _))) = self.cid_deque.get(0) {
+            for apply in self.pending_cells.iter() {
+                let mut guard = apply.0.lock().unwrap();
+                if guard.is_retired {
+                    continue;
+                }
+                // If the cid deque is empty, it means that there is no more connection ID to assign.
+                // So we can assign the initial dcid to the ready cell.
+                if guard.allocated_cids.is_empty() {
+                    self.first_dcid_count.fetch_add(1, Ordering::SeqCst);
+                    guard.assign(*seq, self.first_dcid_count.clone(), *cid);
+                }
             }
         }
     }
@@ -321,7 +351,7 @@ where
     RETIRED: SendFrame<RetireConnectionIdFrame>,
 {
     retired_cids: RETIRED,
-    allocated_cids: VecDeque<(u64, ConnectionId)>,
+    allocated_cids: VecDeque<(u64, Arc<AtomicU8>, ConnectionId)>,
     waker: Option<ArcSendWaker>,
     is_retired: bool,
     is_using: bool,
@@ -331,16 +361,18 @@ impl<RETIRED> CidCell<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
-    fn assign(&mut self, seq: u64, cid: ConnectionId) {
+    fn assign(&mut self, seq: u64, count: Arc<AtomicU8>, cid: ConnectionId) {
         assert!(!self.is_retired);
-        self.allocated_cids.push_front((seq, cid));
+        self.allocated_cids.push_front((seq, count, cid));
         if !self.is_using {
             while self.allocated_cids.len() > 1 {
-                let (seq, _) = self.allocated_cids.pop_back().unwrap();
-                let sequence = VarInt::try_from(seq)
-                    .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
-                self.retired_cids
-                    .send_frame([RetireConnectionIdFrame::new(sequence)]);
+                let (seq, count, _) = self.allocated_cids.pop_back().unwrap();
+                if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    let sequence = VarInt::try_from(seq)
+                        .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+                    self.retired_cids
+                        .send_frame([RetireConnectionIdFrame::new(sequence)]);
+                }
             }
         }
 
@@ -349,10 +381,11 @@ where
         }
     }
 
-    fn revise(&mut self, dcid: ConnectionId) {
+    fn revise(&mut self, peer_scid: ConnectionId) {
         assert!(!self.is_retired);
-        assert!(!self.allocated_cids.is_empty());
-        self.allocated_cids[0].1 = dcid;
+        if let Some((.., dcid)) = self.allocated_cids.back_mut().filter(|(seq, ..)| *seq == 0) {
+            *dcid = peer_scid;
+        }
     }
 
     fn borrow_cid(&mut self, tx_waker: ArcSendWaker) -> Result<Option<ConnectionId>, Signals> {
@@ -364,7 +397,7 @@ where
             self.waker = Some(tx_waker);
             Err(Signals::CONNECTION_ID)
         } else {
-            let cid = self.allocated_cids[0].1;
+            let cid = self.allocated_cids[0].2;
             self.is_using = true;
             Ok(Some(cid))
         }
@@ -374,11 +407,13 @@ where
         assert!(self.is_using);
         self.is_using = false;
         while self.allocated_cids.len() > 1 {
-            let (seq, _) = self.allocated_cids.pop_back().unwrap();
-            let sequence = VarInt::try_from(seq)
-                .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
-            self.retired_cids
-                .send_frame([RetireConnectionIdFrame::new(sequence)]);
+            let (seq, count, _) = self.allocated_cids.pop_back().unwrap();
+            if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+                let sequence = VarInt::try_from(seq)
+                    .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+                self.retired_cids
+                    .send_frame([RetireConnectionIdFrame::new(sequence)]);
+            }
         }
     }
 
@@ -386,11 +421,15 @@ where
         if !self.is_retired {
             self.is_retired = true;
 
-            while let Some((seq, _)) = self.allocated_cids.pop_front() {
-                let sequence = VarInt::try_from(seq)
-                    .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
-                self.retired_cids
-                    .send_frame([RetireConnectionIdFrame::new(sequence)]);
+            while let Some((seq, count, _)) = self.allocated_cids.pop_front() {
+                if count.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    // If the count is 1, it means that this connection ID is not used anymore,
+                    // and we can retire it.
+                    let sequence = VarInt::try_from(seq)
+                        .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+                    self.retired_cids
+                        .send_frame([RetireConnectionIdFrame::new(sequence)]);
+                }
             }
 
             if let Some(waker) = self.waker.take() {
@@ -519,7 +558,10 @@ mod tests {
 
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply1 = remote_cids.apply_dcid();
-        assert!(cid_apply1.borrow_cid(waker.clone()).is_err());
+        assert!(matches!(
+         cid_apply1.borrow_cid(waker.clone()),
+           Ok(Some(cid)) if *cid == initial_dcid
+        ));
 
         let new_dcid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame::new(new_dcid, VarInt::from_u32(1), VarInt::from_u32(0));
@@ -537,8 +579,13 @@ mod tests {
 
         // Additionally, a new request will be made because if the peer-issued CID is
         // insufficient, it will still return Pending.
+        remote_cids.retire_prior_to(1);
         let cid_apply2 = remote_cids.apply_dcid();
         assert!(cid_apply2.borrow_cid(waker.clone()).is_err());
+        assert!(matches!(
+            cid_apply0.borrow_cid(waker.clone()),
+            Ok(Some(cid)) if *cid == initial_dcid
+        ));
     }
 
     #[test]
