@@ -1,11 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     future::poll_fn,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
-
-use derive_more::Deref;
 
 use super::route::Pathway;
 
@@ -41,6 +39,7 @@ impl SendWaker {
 
     const WAITING: SignalsBits = 0;
 
+    #[inline]
     pub fn poll_wait_for(&mut self, cx: &mut Context, signals: Signals) -> Poll<()> {
         if self.state & signals.bits() == 0 {
             self.state = !signals.bits();
@@ -55,6 +54,7 @@ impl SendWaker {
         }
     }
 
+    #[inline]
     fn wake_by(&mut self, signals: Signals) {
         if self.state | signals.bits() != self.state {
             if let Some(waker) = self.waker.as_ref() {
@@ -72,14 +72,17 @@ unsafe impl Sync for SendWaker {}
 pub struct ArcSendWaker(Arc<Mutex<SendWaker>>);
 
 impl ArcSendWaker {
+    #[inline]
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(SendWaker::new())))
     }
 
+    #[inline]
     pub async fn wait_for(&self, signals: Signals) {
         poll_fn(|cx| self.0.lock().unwrap().poll_wait_for(cx, signals)).await
     }
 
+    #[inline]
     pub fn wake_by(&self, signals: Signals) {
         self.0.lock().unwrap().wake_by(signals);
     }
@@ -87,36 +90,85 @@ impl ArcSendWaker {
 
 /// connection level send wakers
 #[derive(Debug, Default)]
-pub struct SendWakers(RwLock<HashMap<Pathway, ArcSendWaker>>);
+pub struct SendWakers {
+    last_woken: Option<Pathway>,
+    paths: BTreeMap<Pathway, ArcSendWaker>,
+}
 
 impl SendWakers {
+    #[inline]
     pub fn new() -> Self {
         Default::default()
     }
 
-    pub fn insert(&self, pathway: Pathway, waker: &ArcSendWaker) {
-        self.0
-            .write()
-            .unwrap()
-            .entry(pathway)
-            .or_insert_with(|| waker.clone());
+    #[inline]
+    pub fn insert(&mut self, pathway: Pathway, waker: &ArcSendWaker) {
+        self.paths.entry(pathway).or_insert_with(|| waker.clone());
     }
 
-    pub fn remove(&self, pathway: &Pathway) {
-        self.0.write().unwrap().remove(pathway);
+    #[inline]
+    pub fn remove(&mut self, pathway: &Pathway) {
+        self.paths.remove(pathway);
     }
 
-    pub fn wake_all_by(&self, signals: Signals) {
-        self.0
-            .read()
-            .unwrap()
-            .values()
-            .for_each(|waker| waker.wake_by(signals));
+    #[inline]
+    pub fn wake_all_by(&mut self, signals: Signals) {
+        fn wake_all_by<'a>(
+            paths: impl IntoIterator<Item = (&'a Pathway, &'a ArcSendWaker)>,
+            signals: Signals,
+        ) -> Option<Pathway> {
+            let mut paths = paths.into_iter().peekable();
+            let first_path = paths.peek().map(|(pathway, _)| pathway).copied().copied();
+
+            paths.for_each(|(_, waker)| {
+                waker.wake_by(signals);
+            });
+
+            first_path
+        }
+
+        use std::ops::Bound::*;
+
+        self.last_woken = match self.last_woken {
+            Some(last_woken) => wake_all_by(
+                self.paths
+                    .range((Excluded(last_woken), Unbounded))
+                    .chain(self.paths.range((Unbounded, Included(last_woken)))),
+                signals,
+            ),
+            None => wake_all_by(self.paths.range(..), signals),
+        }
     }
 }
 
-#[derive(Default, Debug, Clone, Deref)]
-pub struct ArcSendWakers(Arc<SendWakers>);
+#[derive(Default, Debug, Clone)]
+pub struct ArcSendWakers(Arc<Mutex<SendWakers>>);
+
+impl ArcSendWakers {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock_guard(&self) -> MutexGuard<'_, SendWakers> {
+        self.0.lock().unwrap()
+    }
+
+    #[inline]
+    pub fn insert(&self, pathway: Pathway, waker: &ArcSendWaker) {
+        self.lock_guard().insert(pathway, waker);
+    }
+
+    #[inline]
+    pub fn remove(&self, pathway: &Pathway) {
+        self.lock_guard().remove(pathway);
+    }
+
+    #[inline]
+    pub fn wake_all_by(&self, signals: Signals) {
+        self.lock_guard().wake_all_by(signals);
+    }
+}
 
 #[cfg(test)]
 mod tests {
