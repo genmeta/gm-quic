@@ -53,8 +53,10 @@ pub enum DeferIdleTimeoutFailure {
 }
 
 #[derive(Debug, Error, Clone, Copy)]
-#[error("Path has been idle for too long ({} ms) and timed out", self.0.as_millis())]
-pub struct IdleTimedOut(Duration);
+#[error("Path has been idle for too long ({} ms) and timed out", self.elapsed.as_millis())]
+pub struct IdleTimedOut {
+    elapsed: Duration,
+}
 
 impl super::Path {
     pub async fn defer_idle_timeout(
@@ -158,8 +160,11 @@ impl super::Path {
 
                     sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
 
-                    if this.last_active_time().elapsed() > max_idle_timeout {
-                        return Err(IdleTimedOut(max_idle_timeout));
+                    let since_last_active = this.last_active_time().elapsed();
+                    if since_last_active > max_idle_timeout {
+                        return Err(IdleTimedOut {
+                            elapsed: since_last_active,
+                        });
                     }
                 }
             };
@@ -175,8 +180,11 @@ impl super::Path {
 
                     sleep(max_idle_timeout.saturating_sub(this.last_active_time().elapsed())).await;
 
-                    if this.last_active_time().elapsed() > max_idle_timeout {
-                        return Err(IdleTimedOut(max_idle_timeout));
+                    let since_last_active = this.last_active_time().elapsed();
+                    if since_last_active > max_idle_timeout {
+                        return Err(IdleTimedOut {
+                            elapsed: since_last_active,
+                        });
                     }
                 }
             };

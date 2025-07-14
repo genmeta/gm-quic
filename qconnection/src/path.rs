@@ -119,6 +119,7 @@ impl Components {
 
             let burst = path.new_burst(self);
             let idle_timeout = path.idle_timeout(self.parameters.clone(), self.paths.clone());
+            let data_space = self.spaces.data().clone();
 
             let task = {
                 let path = path.clone();
@@ -132,10 +133,12 @@ impl Components {
                             path.validated();
                             Ok(())
                         } else {
+                            data_space.one_rtt_ready().await;
                             path.validate().await
                         }
                     };
                     Err(tokio::select! {
+                        biased;
                         Err(e) = validate => PathDeactivated::from(e),
                         Err(e) = idle_timeout => PathDeactivated::from(e),
                         Err(e) = burst.launch() => PathDeactivated::from(e),
