@@ -31,7 +31,7 @@ use tokio::time::{Duration, Instant};
 use crate::{
     ArcDcidCell, ArcReliableFrameDeque, CidRegistry, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
-    space::{Spaces, data::DataSpace},
+    space::Spaces,
 };
 
 pub struct PacketLogger {
@@ -559,11 +559,13 @@ impl Transaction<'_> {
         }
         loads.push(load_handshake);
 
-        if self.path_validated {
-            loads.push(load_1rtt_data);
-        } else {
-            loads.push(load_validate);
-            signals |= Signals::PATH_VALIDATE;
+        if tls_fin {
+            if self.path_validated {
+                loads.push(load_1rtt_data)
+            } else {
+                loads.push(load_validate);
+                signals |= Signals::PATH_VALIDATE;
+            }
         }
 
         for load in loads {
@@ -635,64 +637,6 @@ impl Transaction<'_> {
         } else {
             Err(signals)
         }
-    }
-
-    pub fn load_one_rtt(
-        &mut self,
-        buf: &mut [u8],
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        data_space: &DataSpace,
-    ) -> Result<usize, Signals> {
-        let buf = self.constraints.constrain(buf);
-        data_space
-            .try_assemble_1rtt_packet(self, spin, path_challenge_frames, path_response_frames, buf)
-            .map(|(packet, ack)| {
-                let final_layout = if packet.probe_new_path() {
-                    packet.complete(buf)
-                } else {
-                    packet.fill_and_complete(buf)
-                };
-                self.constraints
-                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
-                self.cc.on_pkt_sent(
-                    Epoch::Data,
-                    final_layout.pn(),
-                    final_layout.is_ack_eliciting(),
-                    final_layout.sent_bytes(),
-                    final_layout.in_flight(),
-                    ack,
-                );
-                final_layout.sent_bytes()
-            })
-    }
-
-    pub fn load_validation(
-        &mut self,
-        buf: &mut [u8],
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        data_space: &DataSpace,
-    ) -> Result<usize, Signals> {
-        let buf = self.constraints.constrain(buf);
-        data_space
-            .try_assemble_probe_packet(self, spin, path_challenge_frames, path_response_frames, buf)
-            .map(|packet| {
-                let final_layout = packet.fill_and_complete(buf);
-                self.constraints
-                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
-                self.cc.on_pkt_sent(
-                    Epoch::Data,
-                    final_layout.pn(),
-                    final_layout.is_ack_eliciting(),
-                    final_layout.sent_bytes(),
-                    final_layout.in_flight(),
-                    None,
-                );
-                final_layout.sent_bytes()
-            })
     }
 
     pub fn load_one_ping(
