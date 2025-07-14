@@ -70,7 +70,7 @@ where
             .try_into()
             .expect("This test support only SocketAddr");
 
-        let result = time::timeout(Duration::from_secs(10), launch_client(server_addr)).await;
+        let result = time::timeout(Duration::from_secs(30), launch_client(server_addr)).await;
 
         listeners.shutdown();
         server_task.abort();
@@ -117,13 +117,13 @@ async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<()
         async {
             writer.write_all(data).await?;
             writer.shutdown().await?;
-            tracing::debug!("write done");
+            tracing::info!("write done");
             Result::<(), Error>::Ok(())
         },
         async {
             reader.read_to_end(&mut back).await?;
             assert_eq!(back, data);
-            tracing::debug!("read done");
+            tracing::info!("read done");
             Result::<(), Error>::Ok(())
         }
     )

@@ -424,7 +424,7 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn path_first_load(&mut self) -> bool {
-        self.path_first_load
+        std::mem::replace(&mut self.path_first_load, false)
     }
 
     pub fn applied_dcid(&self) -> Result<ConnectionId, Signals> {
@@ -552,17 +552,18 @@ impl Transaction<'_> {
         let mut loads: Vec<&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _> = vec![];
 
         loads.push(load_initial);
-        // TODO: if 0-RTT is loaded, 1-RTT data should not be loaded
-        loads.push(load_0rtt);
+        let tls_fin = spaces.data().is_one_rtt_ready();
+        if !tls_fin {
+            loads.push(load_0rtt);
+            signals |= Signals::ONE_RTT;
+        }
         loads.push(load_handshake);
 
-        if spaces.data().is_one_rtt_keys_ready() {
-            if self.path_validated {
-                loads.push(load_1rtt_data)
-            } else {
-                loads.push(load_validate);
-                signals |= Signals::PATH_VALIDATE;
-            }
+        if self.path_validated {
+            loads.push(load_1rtt_data);
+        } else {
+            loads.push(load_validate);
+            signals |= Signals::PATH_VALIDATE;
         }
 
         for load in loads {

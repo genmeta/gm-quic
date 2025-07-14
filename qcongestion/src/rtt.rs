@@ -105,7 +105,7 @@ impl Rtt {
             .mul_f32(TIME_THRESHOLD)
             .min(MAX_INITIAL_RTT);
         self.rttvar = self.smoothed_rtt / 2;
-        tracing::warn!("back off initial RTT {}", self.smoothed_rtt.as_millis());
+        tracing::warn!("Back off initial RTT {}ms", self.smoothed_rtt.as_millis());
     }
 }
 
