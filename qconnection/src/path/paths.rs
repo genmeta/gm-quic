@@ -1,9 +1,14 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
+};
 
 use dashmap::DashMap;
 use derive_more::Deref;
 use qbase::{
     Epoch,
+    cid::ConnectionId,
     error::{ErrorKind, QuicError},
     net::{route::Pathway, tx::ArcSendWakers},
 };
@@ -15,6 +20,7 @@ use tracing::Instrument as _;
 
 use super::Path;
 use crate::{
+    ArcRemoteCids,
     events::ArcEventBroker,
     path::{CreatePathFailure, PathDeactivated},
     prelude::{EmitEvent, Event},
@@ -44,6 +50,7 @@ pub struct ArcPathContexts {
     paths: Arc<DashMap<Pathway, PathContext>>,
     tx_wakers: ArcSendWakers,
     broker: ArcEventBroker,
+    initial_path: Arc<Mutex<Option<Weak<Path>>>>,
 }
 
 impl ArcPathContexts {
@@ -52,7 +59,32 @@ impl ArcPathContexts {
             paths: Default::default(),
             tx_wakers,
             broker,
+            initial_path: Arc::default(),
         }
+    }
+
+    pub fn assign_handshake_path(
+        &self,
+        path: &Arc<Path>,
+        remote_cids: &ArcRemoteCids,
+        initial_dcid: ConnectionId,
+    ) -> bool {
+        let mut handshake_path = self.initial_path.lock().unwrap();
+        if handshake_path.is_some() {
+            return false;
+        }
+        remote_cids.apply_initial_dcid(initial_dcid, &path.dcid_cell);
+        *handshake_path = Some(Arc::downgrade(path));
+        true
+    }
+
+    pub fn handshake_path(&self) -> Option<Arc<Path>> {
+        self.initial_path
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("unreachable: Handshake packet received before first initial packet processed")
+            .upgrade()
     }
 
     pub fn get_or_try_create_with<T>(
