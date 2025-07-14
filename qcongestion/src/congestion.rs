@@ -205,14 +205,14 @@ impl CongestionController {
             }
         }
 
-        self.trackers[epoch].may_loss(
-            PacketLostTrigger::TimeThreshold,
-            &mut self.packet_spaces[epoch].detect_lost_packets(
-                self.rtt.loss_delay(),
-                PACKET_THRESHOLD,
-                &mut self.algorithm,
-            ),
-        );
+        let mut loss_pns = self.packet_spaces[epoch]
+            .detect_lost_packets(self.rtt.loss_delay(), PACKET_THRESHOLD, &mut self.algorithm)
+            .peekable();
+
+        if loss_pns.peek().is_some() {
+            self.rtt.try_backoff_rtt();
+            self.trackers[epoch].may_loss(PacketLostTrigger::TimeThreshold, &mut loss_pns);
+        }
 
         if self.peer_completed_address_validation() {
             self.pto_count = 0;
@@ -292,14 +292,14 @@ impl CongestionController {
     ///   SetLossDetectionTimer()
     fn on_loss_detection_timeout(&mut self) {
         if let Some((_, epoch)) = self.get_loss_time_and_epoch() {
-            self.trackers[epoch].may_loss(
-                PacketLostTrigger::TimeThreshold,
-                &mut self.packet_spaces[epoch].detect_lost_packets(
-                    self.rtt.loss_delay(),
-                    PACKET_THRESHOLD,
-                    &mut self.algorithm,
-                ),
-            );
+            let mut loss_pns = self.packet_spaces[epoch]
+                .detect_lost_packets(self.rtt.loss_delay(), PACKET_THRESHOLD, &mut self.algorithm)
+                .peekable();
+
+            if loss_pns.peek().is_some() {
+                self.rtt.try_backoff_rtt();
+                self.trackers[epoch].may_loss(PacketLostTrigger::TimeThreshold, &mut loss_pns);
+            }
             self.set_loss_detection_timer();
             return;
         }

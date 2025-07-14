@@ -4,6 +4,7 @@ use qevent::quic::recovery::RecoveryMetricsUpdated;
 use tokio::time::{Duration, Instant};
 
 pub const INITIAL_RTT: Duration = Duration::from_millis(33);
+pub const MAX_INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
 
@@ -94,6 +95,18 @@ impl Rtt {
     fn base_pto(&self, pto_count: u32) -> Duration {
         self.smoothed_rtt + std::cmp::max(4 * self.rttvar, GRANULARITY) * (1 << pto_count)
     }
+
+    fn try_backoff_rtt(&mut self) {
+        if self.first_rtt_sample.is_some() {
+            return;
+        }
+        self.smoothed_rtt = self
+            .smoothed_rtt
+            .mul_f32(TIME_THRESHOLD)
+            .min(MAX_INITIAL_RTT);
+        self.rttvar = self.smoothed_rtt / 2;
+        tracing::warn!("back off initial RTT {}", self.smoothed_rtt.as_millis());
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -126,6 +139,11 @@ impl ArcRtt {
 
     pub fn base_pto(&self, pto_count: u32) -> Duration {
         self.0.lock().unwrap().base_pto(pto_count)
+    }
+
+    /// Backs off initial RTT on loss before first RTT sample
+    pub fn try_backoff_rtt(&self) {
+        self.0.lock().unwrap().try_backoff_rtt();
     }
 }
 
