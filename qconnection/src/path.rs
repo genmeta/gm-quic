@@ -36,7 +36,7 @@ pub use aa::*;
 pub use paths::*;
 pub use util::*;
 
-use crate::Components;
+use crate::{ArcDcidCell, Components};
 pub mod burst;
 pub mod idle;
 
@@ -46,6 +46,7 @@ pub struct Path {
     link: Link,
     pathway: Pathway,
     cc: (ArcCC, AbortHandle),
+    dcid_cell: ArcDcidCell,
     anti_amplifier: AntiAmplifier,
     last_active_time: Mutex<Instant>,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
@@ -91,6 +92,7 @@ impl Components {
                 .interfaces
                 .get(&bind_uri)
                 .ok_or(CreatePathFailure::NoInterface(bind_uri))?;
+            let dcid_cell = self.cid_registry.remote.apply_dcid();
             let max_ack_delay = self
                 .parameters
                 .lock_guard()?
@@ -108,6 +110,7 @@ impl Components {
                 interface,
                 link,
                 pathway,
+                dcid_cell,
                 max_ack_delay,
                 [
                     self.spaces.initial().clone(),
@@ -163,6 +166,7 @@ impl Path {
         interface: Arc<QuicInterface>,
         link: Link,
         pathway: Pathway,
+        dcid_cell: ArcDcidCell,
         max_ack_delay: Duration,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
@@ -184,6 +188,7 @@ impl Path {
             link,
             pathway,
             cc: (cc, handle),
+            dcid_cell,
             validated: AtomicBool::new(false),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
             last_active_time: tokio::time::Instant::now().into(),

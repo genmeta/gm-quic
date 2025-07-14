@@ -7,6 +7,8 @@ pub use local_cid::*;
 mod remote_cid;
 pub use remote_cid::*;
 
+use crate::role::Role;
+
 /// When issuing a CID to the peer, be careful not to duplicate
 /// other local connection IDs, as this will cause routing conflicts.
 pub trait GenUniqueCid {
@@ -29,11 +31,26 @@ pub trait RetireCid {
 pub struct Registry<LOCAL, REMOTE> {
     pub local: LOCAL,
     pub remote: REMOTE,
+    role: Role,
+    origin_dcid: ConnectionId,
 }
 
 impl<LOCAL, REMOTE> Registry<LOCAL, REMOTE> {
     /// Create a new connection ID registry.
-    pub fn new(local: LOCAL, remote: REMOTE) -> Self {
-        Self { local, remote }
+    pub fn new(role: Role, origin_dcid: ConnectionId, local: LOCAL, remote: REMOTE) -> Self {
+        Self {
+            role,
+            origin_dcid,
+            local,
+            remote,
+        }
+    }
+
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    pub fn origin_dcid(&self) -> ConnectionId {
+        self.origin_dcid
     }
 }

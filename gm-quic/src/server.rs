@@ -358,10 +358,10 @@ impl QuicListeners {
             return;
         };
 
-        let (client_scid, origin_dcid) = match &packet {
+        let origin_dcid = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
-                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.scid(), *hdr.dcid()),
-                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.scid(), *hdr.dcid()),
+                DataHeader::Long(LongHeader::Initial(hdr)) => *hdr.dcid(),
+                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => *hdr.dcid(),
                 _ => return,
             },
             _ => return,
@@ -392,7 +392,7 @@ impl QuicListeners {
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
                 .with_defer_idle_timeout(self.defer_idle_timeout)
-                .with_cids(origin_dcid, client_scid)
+                .with_cids(origin_dcid)
                 .with_qlog(self.logger.clone())
                 .run(event_broker),
         );

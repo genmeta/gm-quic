@@ -304,22 +304,6 @@ impl Parameters {
         }
     }
 
-    /// Gets the original destination connection ID of the connection.
-    ///
-    /// This value is chosen by the client and sent to the server, then
-    /// the server will echo it back to the client.
-    ///
-    /// This value is well suited to be used to identify a connection.
-    pub fn get_origin_dcid(&self) -> ConnectionId {
-        match self.requirements {
-            Requirements::Client { origin_dcid, .. } => origin_dcid,
-            Requirements::Server { .. } => self
-                .server
-                .get(ParameterId::OriginalDestinationConnectionId)
-                .expect("this value must be set"),
-        }
-    }
-
     pub fn initial_scid_from_peer(&self) -> Option<ConnectionId> {
         match self.requirements {
             Requirements::Client { initial_scid, .. } => initial_scid,

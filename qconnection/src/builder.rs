@@ -304,7 +304,6 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             role: Role::Client,
             origin_dcid,
             initial_scid,
-            initial_dcid: origin_dcid,
             tx_wakers,
             send_lock: ArcSendLock::unrestricted(),
             reliable_frames,
@@ -321,11 +320,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
 }
 
 impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
-    pub fn with_cids(
-        self,
-        origin_dcid: ConnectionId,
-        client_scid: ConnectionId,
-    ) -> PendingConnection {
+    pub fn with_cids(self, origin_dcid: ConnectionId) -> PendingConnection {
         let initial_keys = initial_keys_with(
             self.tls_config.crypto_provider(),
             &origin_dcid,
@@ -364,9 +359,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             tx_wakers.clone(),
         );
 
-        let mut parameters = Parameters::new_server(server_params);
-        _ = parameters.initial_scid_from_peer_need_equal(client_scid);
-
         PendingConnection {
             interfaces: self.ifaces,
             rcvd_pkt_q,
@@ -374,12 +366,11 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             role: Role::Server,
             origin_dcid,
             initial_scid,
-            initial_dcid: client_scid,
             tx_wakers,
             send_lock: tls_session.send_lock().clone(),
             reliable_frames,
             router_registry,
-            parameters,
+            parameters: Parameters::new_server(server_params),
             token_registry: self.foundation.token_registry,
             tls_session: TlsSession::Server(tls_session),
             initial_keys,
@@ -400,7 +391,6 @@ pub struct PendingConnection {
     role: Role,
     origin_dcid: ConnectionId,
     initial_scid: ConnectionId,
-    initial_dcid: ConnectionId,
     send_lock: ArcSendLock,
     tx_wakers: ArcSendWakers,
     reliable_frames: ArcReliableFrameDeque,
@@ -451,13 +441,12 @@ impl PendingConnection {
 
         let local_cids = ArcLocalCids::new(self.initial_scid, self.router_registry);
         let remote_cids = ArcRemoteCids::new(
-            self.initial_dcid,
             self.parameters
                 .get_local(ParameterId::ActiveConnectionIdLimit)
                 .expect("unreachable: default value will be got if the value unset"),
             self.reliable_frames.clone(),
         );
-        let cid_registry = CidRegistry::new(local_cids, remote_cids);
+        let cid_registry = CidRegistry::new(self.role, self.origin_dcid, local_cids, remote_cids);
 
         let parameters = ArcParameters::from(self.parameters);
 

@@ -10,14 +10,11 @@ use std::{
 use qbase::net::tx::Signals;
 use qinterface::QuicIO;
 
-use crate::{
-    ArcDcidCell, CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction,
-};
+use crate::{CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction};
 
 pub struct Burst {
     path: Arc<super::Path>,
     cid_registry: CidRegistry,
-    dcid_cell: ArcDcidCell,
     launched: AtomicBool,
     spin: bool,
     spaces: Spaces,
@@ -29,7 +26,6 @@ impl super::Path {
         Burst {
             path: self.clone(),
             cid_registry: components.cid_registry.clone(),
-            dcid_cell: components.cid_registry.remote.apply_dcid(),
             launched: AtomicBool::new(false),
             spin: false,
             spaces: components.spaces.clone(),
@@ -64,7 +60,7 @@ impl Burst {
         let Some(transaction) = Transaction::prepare(
             &self.cid_registry,
             // Not using initial DCID after 1RTT ready
-            &self.dcid_cell,
+            &self.path.dcid_cell,
             self.path.validated.load(Ordering::Acquire),
             !self.launched.swap(true, Ordering::Acquire),
             self.path.cc(),

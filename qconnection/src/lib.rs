@@ -512,9 +512,7 @@ impl Connection {
     }
 
     pub fn origin_dcid(&self) -> Result<cid::ConnectionId, Error> {
-        self.try_map_components(|core_conn| {
-            Ok(core_conn.parameters.lock_guard()?.get_origin_dcid())
-        })?
+        self.try_map_components(|core_conn| core_conn.cid_registry.origin_dcid())
     }
 
     pub async fn handshaked(&self) -> bool {

@@ -21,6 +21,7 @@ use qbase::{
         keys::DirectionalKeys,
         signal::{KeyPhaseBit, SpinBit},
     },
+    role::Role,
     util::{ContinuousData, WriteData},
 };
 use qcongestion::{ArcCC, Transport};
@@ -419,8 +420,25 @@ impl<'a> Transaction<'a> {
         self.cid_registry.local.initial_scid()
     }
 
-    pub fn initial_dcid(&self) -> ConnectionId {
-        self.cid_registry.remote.initial_dcid()
+    /// Return the connection ID that used to send the initial and zero rtt packets.
+    ///
+    /// gm-quic implements multi-path handshake feature, the client creates many paths and sends initial packets.
+    ///
+    /// Client will only use origin_dcid to send initial and zero rtt packets.
+    ///
+    /// The client and server must negotiate a handshake path and assign the initial dcid to this path
+    /// to prevent the unique connection ID from being obtained by an invalid path, causing the connection to fail.
+    ///
+    /// The client and server choose the path where they receive the first initial packet as the handshake path.
+    /// The server will only return the initial packet on the handshake path to negotiate the handshake path.
+    ///
+    /// Therefore, for the server, it can only send the initial packet with the connection ID assigned to the path.
+    /// This manifests itself during the handshake as sending the initial packet only on the first path.
+    pub fn initial_dcid(&self) -> Result<ConnectionId, Signals> {
+        match self.cid_registry.role() {
+            Role::Client => Ok(self.cid_registry.origin_dcid()),
+            Role::Server => self.applied_dcid(),
+        }
     }
 
     pub fn path_first_load(&mut self) -> bool {

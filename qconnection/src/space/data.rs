@@ -193,7 +193,7 @@ impl DataSpace {
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_long(
             LongHeaderBuilder::with_cid(
-                tx.applied_dcid()?,
+                tx.initial_dcid()?,
                 tx.initial_scid().ok_or(Signals::empty())?,
             )
             .zero_rtt(),
