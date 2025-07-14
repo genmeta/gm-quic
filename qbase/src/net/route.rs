@@ -14,7 +14,7 @@ use crate::net::{
     addr::{AddrKind, RealAddr},
 };
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SocketEndpointAddr {
     Direct {
         addr: SocketAddr,
@@ -96,7 +96,9 @@ impl From<(SocketAddr, SocketAddr)> for SocketEndpointAddr {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deref, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Deref, From, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub struct BleEndpontAddr([u8; 6]);
 
 impl BleEndpontAddr {
@@ -119,7 +121,9 @@ impl FromStr for BleEndpontAddr {
     }
 }
 
-#[derive(Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub enum EndpointAddr {
     Socket(SocketEndpointAddr),
     Ble(BleEndpontAddr),
@@ -173,7 +177,7 @@ impl From<[u8; 6]> for EndpointAddr {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Pathway<E = EndpointAddr> {
     local: E,
     remote: E,
