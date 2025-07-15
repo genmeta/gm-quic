@@ -16,6 +16,7 @@ use tokio::{
     time,
 };
 use tracing::Instrument;
+use x509_parser::prelude::FromDer;
 
 use crate::{handy::*, *};
 
@@ -447,16 +448,29 @@ fn client_auth() -> Result<(), Error> {
 
             match connection.peer_certs().await?.as_ref() {
                 Some(cert) => {
-                    let cert = rcgen::CertificateParams::from_ca_cert_der(&cert.as_slice().into())
-                        .unwrap();
-                    let client = rcgen::Ia5String::try_from("client").unwrap();
-                    assert!(
-                        (cert.distinguished_name.get(&rcgen::DnType::CommonName)).is_some_and(
-                            |cn| matches!(cn, rcgen::DnValue::Ia5String(cn) if  cn == &client),
-                        ) || cert.subject_alt_names.iter().any(
-                            |name| matches!(name, rcgen::SanType::DnsName(name) if name == &client),
-                        )
-                    );
+                    let (_, cert) = x509_parser::parse_x509_certificate(cert.as_slice()).unwrap();
+
+                    // Check Common Name in the subject
+                    let has_client_cn = cert
+                        .subject()
+                        .iter_common_name()
+                        .any(|cn| cn.as_str().unwrap_or("") == "client");
+
+                    // Check Subject Alternative Names
+                    let has_client_san = cert.extensions()
+                        .iter()
+                        .find(|ext| ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
+                        .and_then(|ext| {
+                            x509_parser::extensions::SubjectAlternativeName::from_der(ext.value).ok()
+                        })
+                        .map(|(_, san)| {
+                            san.general_names.iter().any(|name| {
+                                matches!(name, x509_parser::extensions::GeneralName::DNSName(dns) if *dns == "client")
+                            })
+                        })
+                        .unwrap_or(false);
+
+                    assert!(has_client_cn || has_client_san);
                 }
                 None => {
                     panic!("Client should present a certificate")
