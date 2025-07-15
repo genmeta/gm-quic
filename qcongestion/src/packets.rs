@@ -309,7 +309,6 @@ impl PacketSpace {
 
 #[cfg(test)]
 mod tests {
-
     use std::{
         sync::{Arc, atomic::AtomicU16},
         vec,
