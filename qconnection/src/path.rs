@@ -121,29 +121,36 @@ impl Components {
             ));
 
             let burst = path.new_burst(self);
-            let idle_timeout = path.idle_timeout(self.parameters.clone(), self.paths.clone());
-            let data_space = self.spaces.data().clone();
+            let paths = self.paths.clone();
+            let parameters = self.parameters.clone();
+
+            let validate = {
+                let paths = self.paths.clone();
+                let data_space = self.spaces.data().clone();
+                move |path: Arc<Path>| async move {
+                    if !is_probed {
+                        path.grant_anti_amplification();
+                    }
+                    data_space.tls_fin().await;
+
+                    match paths.handshake_path() {
+                        Some(handshake_path) if Arc::ptr_eq(&handshake_path, &path) => {
+                            path.validated();
+                            Ok(())
+                        }
+                        _ => path.validate().await,
+                    }
+                }
+            };
 
             let task = {
                 let path = path.clone();
                 let defer_idle_timeout = self.defer_idle_timeout;
                 async move {
-                    let validate = async {
-                        if !is_probed {
-                            path.grant_anti_amplification();
-                        }
-                        if is_initial_path {
-                            path.validated();
-                            Ok(())
-                        } else {
-                            data_space.tls_fin().await;
-                            path.validate().await
-                        }
-                    };
                     Err(tokio::select! {
                         biased;
-                        Err(e) = validate => PathDeactivated::from(e),
-                        Err(e) = idle_timeout => PathDeactivated::from(e),
+                        Err(e) = validate(path.clone()) => PathDeactivated::from(e),
+                        Err(e) = path.idle_timeout(parameters, paths) => PathDeactivated::from(e),
                         Err(e) = burst.launch() => PathDeactivated::from(e),
                         Err(e) = path.defer_idle_timeout(defer_idle_timeout) => PathDeactivated::from(e),
                     })
