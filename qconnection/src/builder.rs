@@ -497,7 +497,7 @@ impl PendingConnection {
             specific: self.sepcific,
         };
 
-        spawn_upgrade_1rtt(&components);
+        spawn_tls_handshake(&components);
         spawn_deliver_and_parse(&components);
 
         Connection {
@@ -508,7 +508,7 @@ impl PendingConnection {
     }
 }
 
-fn spawn_upgrade_1rtt(components: &Components) {
+fn spawn_tls_handshake(components: &Components) {
     let parameters = components.parameters.clone();
     let data_space = components.spaces.data().clone();
     let local_cids = components.cid_registry.local.clone();
@@ -580,9 +580,7 @@ fn spawn_upgrade_1rtt(components: &Components) {
         );
 
         // only if data space is initialized in 0rtt
-        if !data_space.is_one_rtt_ready() {
-            data_space.on_one_rtt_ready();
-        }
+        data_space.on_tls_fin();
 
         Result::<_, Error>::Ok(())
     };

@@ -552,10 +552,10 @@ impl Transaction<'_> {
         let mut loads: Vec<&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _> = vec![];
 
         loads.push(load_initial);
-        let tls_fin = spaces.data().is_one_rtt_ready();
+        let tls_fin = spaces.data().is_tls_fin();
         if !tls_fin {
             loads.push(load_0rtt);
-            signals |= Signals::ONE_RTT;
+            signals |= Signals::TLS_FIN;
         }
         loads.push(load_handshake);
 

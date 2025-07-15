@@ -78,7 +78,7 @@ pub struct DataSpace {
     reliable_frames: ArcReliableFrameDeque,
     tx_wakers: ArcSendWakers,
 
-    one_rtt_ready: Future<()>,
+    tls_fin: Future<()>,
 }
 
 impl DataSpace {
@@ -138,7 +138,7 @@ impl DataSpace {
             reliable_frames: reliable_frames.clone(),
             tx_wakers,
 
-            one_rtt_ready: Future::new(),
+            tls_fin: Future::new(),
         }
     }
 
@@ -182,7 +182,7 @@ impl DataSpace {
         buf: &mut [u8],
     ) -> Result<PaddablePacket, Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
-            return Err(Signals::ONE_RTT); // should 1rtt
+            return Err(Signals::TLS_FIN); // should 1rtt
         }
 
         let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
@@ -238,8 +238,8 @@ impl DataSpace {
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
     ) -> Result<(PaddablePacket, Option<u64>), Signals> {
-        if !self.is_one_rtt_ready() {
-            return Err(Signals::ONE_RTT); // not ready for 1RTT
+        if !self.is_tls_fin() {
+            return Err(Signals::TLS_FIN); // not ready for 1RTT
         }
 
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
@@ -386,8 +386,8 @@ impl DataSpace {
             .map_err(|_| unreachable!("packet is not empty"))
     }
 
-    pub fn is_one_rtt_ready(&self) -> bool {
-        self.one_rtt_ready.try_get().is_some()
+    pub fn is_tls_fin(&self) -> bool {
+        self.tls_fin.try_get().is_some()
     }
 
     pub fn is_one_rtt_keys_ready(&self) -> bool {
@@ -398,13 +398,13 @@ impl DataSpace {
         self.zero_rtt_keys.get_encrypt_keys().is_some()
     }
 
-    pub async fn one_rtt_ready(&self) {
-        self.one_rtt_ready.get().await;
+    pub async fn tls_fin(&self) {
+        self.tls_fin.get().await;
     }
 
-    pub(crate) fn on_one_rtt_ready(&self) {
-        assert_eq!(self.one_rtt_ready.set(()), None);
-        self.tx_wakers.wake_all_by(Signals::ONE_RTT);
+    pub(crate) fn on_tls_fin(&self) {
+        assert_eq!(self.tls_fin.set(()), None);
+        self.tx_wakers.wake_all_by(Signals::TLS_FIN);
     }
 
     pub fn one_rtt_keys(&self) -> ArcOneRttKeys {
@@ -565,7 +565,7 @@ pub fn spawn_deliver_and_parse(
         let event_broker = event_broker.clone();
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
-            space.one_rtt_ready().await;
+            space.tls_fin().await;
             while let Some((packet, (bind_uri, pathway, link))) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
@@ -645,7 +645,7 @@ pub fn spawn_deliver_and_parse(
         let event_broker = event_broker.clone();
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
-            space.one_rtt_ready().await;
+            space.tls_fin().await;
             while let Some((packet, (bind_uri, pathway, link))) = one_rtt_packets.recv().await {
                 let parse = async {
                     let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {

@@ -172,7 +172,7 @@ impl Components {
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
-                    _ = data_space.one_rtt_ready() => {},
+                    _ = data_space.tls_fin() => {},
                     _ = terminated => {}
                 }
             }
@@ -191,7 +191,7 @@ impl Components {
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
-                    _ = data_space.one_rtt_ready() => {},
+                    _ = data_space.tls_fin() => {},
                     _ = terminated => {}
                 }
             }

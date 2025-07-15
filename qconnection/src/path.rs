@@ -133,7 +133,7 @@ impl Components {
                             path.validated();
                             Ok(())
                         } else {
-                            data_space.one_rtt_ready().await;
+                            data_space.tls_fin().await;
                             path.validate().await
                         }
                     };

@@ -165,7 +165,7 @@ where
         let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
 
         if zero_rtt && !self.in_zero_rtt.load(Acquire) {
-            return Err(Signals::ONE_RTT); // should load 1rtt
+            return Err(Signals::TLS_FIN); // should load 1rtt
         }
 
         let Ok(mut credit) = flow_ctrl.credit(packet.remaining_mut()) else {
