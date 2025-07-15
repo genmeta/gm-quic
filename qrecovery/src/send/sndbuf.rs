@@ -28,7 +28,7 @@ impl Color {
     }
 }
 
-#[derive(Eq, Clone, Copy)]
+#[derive(PartialEq, PartialOrd, Eq, Clone, Copy)]
 struct State(u64);
 
 impl State {
@@ -72,18 +72,6 @@ impl Display for State {
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{:?}: {:?}]", self.offset(), self.color())
-    }
-}
-
-impl PartialEq for State {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset().eq(&other.offset())
-    }
-}
-
-impl PartialOrd for State {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.offset().partial_cmp(&other.offset())
     }
 }
 
@@ -344,25 +332,39 @@ impl BufMap {
         let (mut drain_start, need_insert_at_start, mut drain_end, mut pre_color) = match pos {
             Ok(idx) => {
                 let s = self.0.get_mut(idx).unwrap();
-                let pre_color = s.color();
                 debug_assert!(
-                    pre_color != Color::Pending,
+                    s.color() != Color::Pending,
                     "Lost Range({:?}) covered Pending parts from {}",
                     range,
                     s.offset()
                 );
+                if s.color() == Color::Recved {
+                    // 如果是Recved，那就不需要在前面插入了，直接往后探索
+                    self.may_lost_from(idx + 1, range.end);
+                    return;
+                }
+
+                let pre_color = s.color();
                 let mut drain_start = idx;
                 if pre_color == Color::Flighting {
                     s.set_color(Color::Lost);
+                    // 只有变化了，才会向前寻找同为Lost，寻求合并
+                    // 如果已经是Lost了，那前面的肯定是无法合并的非Lost状态
                     drain_start = self.same_before(idx, Color::Lost) + 1;
                 } else {
+                    // 如果是lost，那这一段状态不需要改变，继续探索下一段需不需要改变
+                    // 如果下一段还是Lost，那下一段可以删掉，往后合并Lost
                     drain_start += 1;
                 }
+                // 肯定不需要在前面插入了，从drain_start开始往后探索，pre_color是当前状态
                 (drain_start, false, idx + 1, pre_color)
             }
             Err(idx) => {
                 if idx == 0 {
-                    (1, false, 0, Color::Recved)
+                    // 之前的数据都是recved，前面不再需要插入
+                    // 表示从0往后，要尝试变为Lost，就完事儿了
+                    self.may_lost_from(idx, range.end);
+                    return;
                 } else {
                     let s = self.0.get(idx - 1).unwrap();
                     let pre_color = s.color();
@@ -374,7 +376,7 @@ impl BufMap {
                     );
                     if pre_color == Color::Recved {
                         // 另有安排，直接调用，lost_from(idx, range.end);
-                        self.lost_from(idx, range.end);
+                        self.may_lost_from(idx, range.end);
                         return;
                     }
                     (idx, pre_color == Color::Flighting, idx, pre_color)
@@ -384,10 +386,12 @@ impl BufMap {
 
         let mut need_insert_at_end = false;
         loop {
+            // 从drain_end位置的entry开始遍历，看其是否存在，存在看其是否仍在Lost的range区间里
             let entry = self.0.get(drain_end);
             match entry {
                 Some(s) => match s.offset().cmp(&range.end) {
                     Ordering::Less => {
+                        // 以s.offset开头的区间，仍在Lost的range区间里
                         debug_assert!(
                             s.color() != Color::Pending,
                             "Lost Range({:?}) covered Pending parts from {}",
@@ -395,14 +399,18 @@ impl BufMap {
                             s.offset()
                         );
                         if s.color() == Color::Recved {
-                            self.lost_from(drain_end + 1, range.end);
+                            // s是recved，那就s的下一段到range.end都是丢失的，相当于独立的may_lost区间处理
+                            // 接下来只需处理drain_end之前的操作即可
+                            self.may_lost_from(drain_end + 1, range.end);
                             break;
                         } else {
+                            // s是Lost/Flighting，那就将s染成Lost，继续往后探索
                             drain_end += 1;
                             pre_color = s.color();
                         }
                     }
                     Ordering::Equal => {
+                        // s之前的是Lost，从上一个检查后续连续lost状态的有多少个
                         drain_end = self
                             .same_after(drain_end.overflowing_sub(1).0, Color::Lost)
                             .overflowing_add(1)
@@ -410,17 +418,21 @@ impl BufMap {
                         break;
                     }
                     Ordering::Greater => {
+                        // s的offset大于range.end，说明s之后的区间都不在Lost的范围内
+                        // s的前一个是Flighting，它要一分为二，前部分为Lost，后部分为Flighting
                         need_insert_at_end = pre_color == Color::Flighting;
                         break;
                     }
                 },
                 None => {
+                    // 找不到，说明到最后一段了
                     debug_assert!(
                         range.end <= self.1,
                         "Lost Range({:?}) over {}",
                         range,
                         self.1
                     );
+                    // 如果上一段的color是Flighting，它要一分为二，到range.end的部分为Lost，后续部分为Flighting
                     need_insert_at_end = range.end < self.1 && pre_color == Color::Flighting;
                     break;
                 }
@@ -494,7 +506,7 @@ impl BufMap {
     }
 
     // lost的辅助函数，将idx_start位置的变为Lost，然后向后继续判定丢失
-    fn lost_from(&mut self, mut idx_start: usize, end: u64) {
+    fn may_lost_from(&mut self, mut idx_start: usize, end: u64) {
         let mut idx = idx_start;
         let mut pre_color = Color::Recved;
         let mut need_insert_at_end = false;
@@ -511,7 +523,7 @@ impl BufMap {
                         pre_color = s.color();
                         if s.color() == Color::Recved {
                             // 另有安排，直接调用，lost_from(idx, range.end);
-                            self.lost_from(idx + 1, end);
+                            self.may_lost_from(idx + 1, end);
                             break;
                         } else {
                             s.set_color(Color::Lost);
@@ -1018,7 +1030,7 @@ mod tests {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
         assert!(buf_map.pick(|_| Some(200), usize::MAX, u64::MAX).is_ok());
-        assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
+        assert_eq!(buf_map.0, vec![State::encode(0, Color::Flighting)]);
         buf_map.ack_rcvd(&(0..201));
     }
 
@@ -1188,5 +1200,28 @@ mod tests {
     }
 
     #[test]
-    fn feature() {}
+    fn test_bufmap_ack_and_lost_all() {
+        let mut buf_map = BufMap::default();
+        buf_map.extend_to(46);
+        assert!(buf_map.pick(|_| Some(46), usize::MAX, u64::MAX).is_ok());
+        assert_eq!(buf_map.0, vec![State::encode(0, Color::Flighting)]);
+
+        buf_map.ack_rcvd(&(0..2));
+        assert_eq!(
+            buf_map.0,
+            vec![
+                State::encode(0, Color::Recved),
+                State::encode(2, Color::Flighting)
+            ]
+        );
+
+        buf_map.may_loss(&(0..46));
+        assert_eq!(
+            buf_map.0,
+            vec![
+                State::encode(0, Color::Recved),
+                State::encode(2, Color::Lost)
+            ]
+        )
+    }
 }
