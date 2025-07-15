@@ -249,9 +249,6 @@ impl PacketSpace {
             .sent_packets
             .iter_mut()
             .enumerate()
-            // 1. If no ack is received, when the timeout timer is triggered, all packets should be checked to see if they have reached the packet loss time.
-            // 2. If there is an ack, only check whether the packets smaller than the largest ack have reached the packet loss time.
-            .take_while(move |(_, pkt)| largest_acked == 0 || pkt.packet_number <= largest_acked)
             .filter(|(_, pkt)| pkt.state == State::Inflight)
             .map(move |(idx, unacked)| {
                 if unacked.time_sent < lost_sent_time || largest_index >= idx + packet_threshold {
