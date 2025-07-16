@@ -190,6 +190,7 @@ impl ServerTlsSession {
         tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
         client_authers: ClientAuthers,
+        anti_port_scan: bool,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
         params_buf.put_parameters(server_params);
@@ -201,7 +202,10 @@ impl ServerTlsSession {
             read_waker: None,
             client_name: None,
             server_name: None,
-            send_lock: ArcSendLock::new(),
+            send_lock: match anti_port_scan {
+                true => ArcSendLock::new(),
+                false => ArcSendLock::unrestricted(),
+            },
             client_authers,
             client_cert: None,
         };

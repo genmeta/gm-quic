@@ -69,7 +69,7 @@ impl Connection {
         ServerFoundation {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
-            silent_rejection: false,
+            anti_port_scan: false,
             client_authers: ClientAuthers::default(),
         }
     }
@@ -91,7 +91,7 @@ impl ClientFoundation {
 pub struct ServerFoundation {
     token_registry: ArcTokenRegistry,
     server_params: ServerParameters,
-    silent_rejection: bool,
+    anti_port_scan: bool,
     client_authers: ClientAuthers,
 }
 
@@ -101,8 +101,8 @@ impl ServerFoundation {
         self
     }
 
-    pub fn with_silent_rejection(mut self, silent: bool) -> Self {
-        self.silent_rejection = silent;
+    pub fn with_anti_port_scan(mut self, enabled: bool) -> Self {
+        self.anti_port_scan = enabled;
         self
     }
 
@@ -347,6 +347,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             Arc::new(self.tls_config),
             &server_params,
             self.foundation.client_authers,
+            self.foundation.anti_port_scan,
         )
         .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理
 
