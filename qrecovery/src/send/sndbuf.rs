@@ -1224,4 +1224,12 @@ mod tests {
             ]
         )
     }
+
+    #[test]
+    fn test_bufmap_ack_and_lost_all2() {
+        let mut buf_map = BufMap(vec![State::encode(2, Color::Flighting)].into(), 46);
+
+        buf_map.may_loss(&(0..46));
+        assert_eq!(buf_map.0, vec![State::encode(2, Color::Lost)])
+    }
 }
