@@ -91,7 +91,7 @@ impl QuicClient {
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
-            parameters: ClientParameters::default(),
+            parameters: handy::client_parameters(),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,

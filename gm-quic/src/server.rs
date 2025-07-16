@@ -120,7 +120,7 @@ pub struct QuicListeners {
 
     token_provider: Arc<dyn TokenProvider>,
     parameters: ServerParameters,
-    silent_rejection: bool,
+    anti_port_scan: bool,
     client_authers: Vec<Arc<dyn AuthClient>>,
     tls_config: TlsServerConfig,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
@@ -172,8 +172,8 @@ impl QuicListeners {
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
             servers: Arc::default(),
             token_provider: None,
-            parameters: ServerParameters::default(),
-            silent_rejection: false,
+            parameters: handy::server_parameters(),
+            anti_port_scan: false,
             client_authers: vec![],
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
@@ -386,7 +386,7 @@ impl QuicListeners {
         let connection = Arc::new(
             Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
-                .with_silent_rejection(self.silent_rejection)
+                .with_anti_port_scan(self.anti_port_scan)
                 .with_client_authers(client_authers.collect())
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
@@ -453,7 +453,7 @@ pub struct QuicListenersBuilder<T> {
 
     token_provider: Option<Arc<dyn TokenProvider>>,
     parameters: ServerParameters,
-    silent_rejection: bool,
+    anti_port_scan: bool,
     client_authers: Vec<Arc<dyn AuthClient>>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
@@ -554,16 +554,16 @@ impl<T> QuicListenersBuilder<T> {
         self
     }
 
-    /// Enable silent rejection mode for enhanced security.
+    /// Enable anti-port scanning protection.
     ///
-    /// When silent rejection is enabled, the server will silently drop connections
+    /// When anti-port scanning protection is enabled, the server will silently drop connections
     /// that fail validation (e.g., invalid ClientHello, authentication failures)
     /// without sending any response packets.
     ///
     /// This security feature provides the following benefits:
-    /// - Prevents attackers from gaining information about server presence
+    /// - Prevents attackers from detecting server presence through port scanning
     /// - Reduces the attack surface by not revealing server configuration details
-    /// - Protects against network reconnaissance and scanning attacks
+    /// - Protects against network reconnaissance and probing attacks
     /// - Makes the server appear "offline" to unauthorized connection attempts
     ///
     /// **Security Note:** This feature should be used carefully as it may make
@@ -576,8 +576,8 @@ impl<T> QuicListenersBuilder<T> {
     /// Default: disabled
     ///
     /// [`with_client_authers`]: QuicListenersBuilder::with_client_authers
-    pub fn enable_silent_rejection(mut self) -> Self {
-        self.silent_rejection = true;
+    pub fn enable_anti_port_scan(mut self) -> Self {
+        self.anti_port_scan = true;
         self
     }
 
@@ -597,14 +597,14 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// If you call this multiple times, only the last `client_authers` will be used.
     ///
-    /// **Security Enhancement:** When combined with [`enable_silent_rejection`],
+    /// **Security Enhancement:** When combined with [`enable_anti_port_scan`],
     /// failed authentication attempts will be silently dropped without any response,
     /// providing enhanced security against reconnaissance attacks.
     ///
-    /// **TLS Protocol Note:** Due to TLS protocol certificate verification failures
+    /// **TLS Protocol Note:** Certificate verification failures during the TLS handshake
     /// will still send error responses to clients, as the server has already sent
-    /// its `ServerHello` message at that point. Silent rejection only applies to
-    /// earlier validation failures.
+    /// its `ServerHello` message at that point. The stealth behavior only applies to
+    /// earlier validation failures that occur before the TLS handshake begins.
     ///
     /// **Built-in Validation:** The server automatically verifies that the interface
     /// receiving the client connection is configured to listen for the requested
@@ -614,7 +614,7 @@ impl<T> QuicListenersBuilder<T> {
     /// Default: empty (only built-in host and interface validation)
     ///
     /// [`AuthClient`]: qconnection::tls::AuthClient
-    /// [`enable_silent_rejection`]: QuicListenersBuilder::enable_silent_rejection
+    /// [`enable_anti_port_scan`]: QuicListenersBuilder::enable_anti_port_scan
     pub fn with_client_authers(
         mut self,
         client_authers: impl IntoIterator<Item = Arc<dyn AuthClient>>,
@@ -636,7 +636,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             incomings: self.incomings,
             token_provider: self.token_provider,
             parameters: self.parameters,
-            silent_rejection: self.silent_rejection,
+            anti_port_scan: self.anti_port_scan,
             client_authers: self.client_authers,
             tls_config: self
                 .tls_config
@@ -657,7 +657,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             incomings: self.incomings,
             token_provider: self.token_provider,
             parameters: self.parameters,
-            silent_rejection: self.silent_rejection,
+            anti_port_scan: self.anti_port_scan,
             client_authers: self.client_authers,
             tls_config: self
                 .tls_config
@@ -719,7 +719,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
                 .token_provider
                 .unwrap_or_else(|| Arc::new(handy::NoopTokenRegistry)),
             parameters: self.parameters,
-            silent_rejection: self.silent_rejection,
+            anti_port_scan: self.anti_port_scan,
             client_authers: self.client_authers,
             tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,

@@ -1,6 +1,11 @@
 # gm-quic
 
-[![License: Apache-2.0](https://img.shields.io/github/license/genmeta/gm-quic)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License: Apache-2.0注意到QUIC协议内部，还能分出很多层。在传输层，有很多功能比如打开新连接、接收、发送、读取、写入、Accept新连接，它们大都是异步的，在这里称之为各种"算子"，且每层都有自己的算子，有了这些分层之后，就会发现，其实Accept算子和Read算子、Write算子根本不在同一层，很有意思。
+
+![image](https://github.com/genmeta/gm-quic/blob/main/images/arch.png?raw=true)
+
+
+## 概览s://img.shields.io/github/license/genmeta/gm-quic)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/genmeta/gm-quic/rust.yml)](https://github.com/genmeta/gm-quic/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/genmeta/gm-quic/graph/badge.svg)](https://codecov.io/gh/genmeta/gm-quic)
 [![crates.io](https://img.shields.io/crates/v/gm-quic.svg)](https://crates.io/crates/gm-quic)
@@ -9,7 +14,7 @@
 [English](README.md) | 中文
 
 QUIC协议是下一代互联网重要的基础设施，而`gm-quic`则是一个原生异步Rust的QUIC协议实现，一个高效的、可扩展的[RFC 9000][1]实现，同时工程质量优良。
-`qm-quic`gm-quic不仅实现了标准QUIC协议，还额外实现了[RFC 9221 (Unreliable Datagram Extension)][3]、[qlog (QUIC event logging)][2]等扩展，另外还有纯碎基于quic进行密钥交换的[ssh样例][4]。
+`gm-quic`不仅实现了标准QUIC协议，还额外实现了[RFC 9221 (Unreliable Datagram Extension)][3]、[qlog (QUIC event logging)][2]等扩展。
 
 众所周知，QUIC拥有许多优良特性，以及极致的安全性，十分适合在高性能传输、数据隐私安全、物联网领域推广使用:
 
@@ -46,81 +51,114 @@ QUIC协议可谓一个相当复杂的、IO密集型的协议，因此正是适�
 - **gm-quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
 - **qudp**： QUIC的高性能UDP封装，使用GSO、GRO等手段极致优化UDP的性能
 - **qunreliable**: 基于QUIC的不可靠数据报传输的扩展，相比于直接用UDP发送不可靠数据报，该扩展拥有QUIC的传输控制和极致安全性。详情参考[RFC 9221][3]
-- **qevent**: [qlog][2]的实现，支持以json形式记录单个quic连接内部活动，兼容qlog 3，支持[qvis][5]可视化分析。请注意，开启qlog虽有助于分析问题，但相当影响性能
+- **qevent**: [qlog][2]的实现，支持以json形式记录单个quic连接内部活动，兼容qlog 3，支持[qvis][4]可视化分析。请注意，开启qlog虽有助于分析问题，但相当影响性能
 
-![image](https://github.com/genmeta/gm-quic/blob/main/images/qvis.png)
+![image](https://github.com/genmeta/gm-quic/blob/main/images/qvis.png?raw=true)
 
 ## 使用方式
 
 #### 样例演示
 
-运行一个H3服务器:
+本仓库提供了三组样例：
+- `echo-client`和`echo-server`: 位于`gm-quic/examples/`文件夹下，展示了gm-quic的基本使用方法。
+- `http-client`和`http-server`: 位于`gm-quic/examples/`文件夹下，展示了在gm-quic上运行HTTP/0.9协议。
+- `h3-client`和`h3-server`: 位于`h3-shim/examples/`文件夹下，展示了在gm-quic上运行HTTP/3协议。
+
+以H3为例，运行一个H3服务器:
 
 ``` shell
-cargo run --example=h3-server --package=h3-shim -- --dir=./h3-shim
+cargo run --example h3-server --package h3-shim -- --dir ./h3-shim
 ```
 
 发起一个H3请求:
 
 ``` shell
-cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs
+cargo run --example h3-client --package h3-shim -- https://localhost:4433/examples/h3-server.rs
 ```
-
-更多案例请翻阅`h3-shim`以及`gm-quic`文件夹下的`examples`文件夹。
 
 #### API简介
 
 `gm-quic`提供了人性化的接口创建客户端和服务端的连接，同时还支持一些符合现代网络需求的附加功能设置。
 
-QUIC客户端不仅提供了QUIC协议所规定的Parameters选项配置，也有一些额外选项比如复用连接、启用IPv6优先的Happy Eyeballs算法等。更高级地，QUIC客户端可设置自己的证书以供服务端验证，也可设置自己的Token管理器，管理着各服务器颁发的Token，以便未来和这些服务器再次连接时用的上。
+除了传统的ip地址+端口绑定模式，`gm-quic`额外支持绑定到网络接口上，动态地适应实际地址变化，这为gm-quic提供了良好的移动性。
+
+QUIC客户端不仅提供了QUIC协议所规定的Parameters选项配置，可选的0RTT功能，还有一些额外的高级选项，比如QUIC客户端可设置自己的证书以供服务端验证，也可设置自己的Token管理器，管理着各服务器颁发的Token，以便未来和这些服务器再次连接时用的上。
+
+QUIC客户端支持同时尝试连接到多个服务器地址，即使有些路径是不可达的，只要有一条路径能够联通，连接就可以建立。如果对端的实现同样是gm-quic，则还支持多路径传输，与此同时不还损伤和其他实现的兼容性，经过测试的有cloudflare/quiche, quic-go/quic-go, quinn-rs/quinn, tencent/tquic。
+
+以下为简单示例，更多细节请参阅文档。
 
 ```rust
-let quic_client = QuicClient::builder()
-    // 允许复用到服务器的连接，而不是每次都发起新连接
-    .reuse_connection()
-    // 自动在连接空闲时发送数据包保持连接活跃
-    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
-    .prefer_versions([1u32])                      // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
-    // .with_parameter(&client_parameters)        // 不设置即为使用默认参数
-    // .with_streams_concurrency_strategy(factory) // 指定流并发策略
-    // .with_token_sink(token_sink)               // 管理各服务器颁发的Token
-    .with_root_certificates(root_certificates)
-    // .with_webpki_verifier(verifier)            // 更高级地验证服务端证书的办法
-    .without_cert()                               // 一般客户端不必设置证书
-    // 指定客户端怎么绑定接口
-    // 默认的接口为qudp提供的高性能实现
-    // .with_iface_factory(binder)
-    // 令client只使用给定的地址
-    // 默认client每次建立连接时会创建一个新的接口，绑定系统随机分配的地址端口
-    // 即绑定0.0.0.0:0 或 [::]:0
-    // .bind(&local_addrs[..])?
+// 设置根证书存储
+let mut roots = rustls::RootCertStore::empty();
+
+// 加载系统证书
+roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+
+// 加载自定义证书（可与系统证书独立使用）
+// use gm_quic::ToCertificate;
+// roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
+// roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
+
+// 构建QUIC客户端
+let quic_client = gm_quic::QuicClient::builder()
+    .with_root_certificates(roots)
+    .without_cert() // 通常不需要客户端证书验证
+    // .with_parameters(your_parameters) // 自定义传输参数
+    // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口
+    // .enable_0rtt() // 启用0-RTT
+    // .enable_sslkeylog() // 启用SSL密钥日志
+    // .with_qlog(Arc::new(gm_quic::handy::DefaultSeqLogger::new(
+    //     PathBuf::from("/path/to/qlog_dir"),
+    // ))) // 启用qlog，可用qvis工具可视化
     .build();
 
-let quic_client_conn = quic_client
-    .connect("localhost", "127.0.0.1:8443".parse().unwrap())
-    .unwrap();
+// 连接到服务器
+let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
+let connection = quic_client.connect("localhost", server_addresses)?;
+
+// 开始使用QUIC连接！
+// 更多使用示例请参考 gm-quic/examples 和 h3-shim/examples
+
+Ok(())
 ```
 
-QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息。
+QUIC服务端表现为`QuicListeners`，支持SNI（Server Name Indication），在一个进程启动多个Server，分别有自己的证书和密钥，每个服务端又可以绑定到多个地址上，支持多个Server绑定同一个地址。Client必须正确连接到对应的Server的对应接口上，否则连接会被自动拒绝。
+
+QuicListeners支持通过多种方法验证客客户端的身份，包括通过`client_name`传输参数，验证客户端证书的内容等。QuicListeners还支持抗端口扫描功能，只有在初步验证客户端的身份后才会做出响应。
 
 ```rust
-let listeners = QuicServer::builder()
-    // 同client
-    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
-    .with_supported_versions([1u32])
-    .without_client_cert_verifier()  // 一般不验证客户端身份
-    .enable_sni()
-    .add_host("www.example.com", www_cert, www_key)
-    .add_host("chat.example.com", chat_cert, chat_key)
-    .listen(&[
-        "[2001:db8::1]:8443".parse().unwrap(),
-        "127.0.0.1:8443".parse().unwrap(),
-    ][..]);
+// 创建QUIC监听器（每个程序只能有一个实例）
+let quic_listeners = gm_quic::QuicListeners::builder()?
+    // 通常不需要客户端证书验证
+    .without_client_cert_verifier()
+    // .with_parameters(your_parameters)    // 自定义传输参数
+    // .enable_0rtt()                       // 为服务器启用0-RTT
+    // .enable_anti_port_scan()             // 抗端口扫描保护
+    // 开始监听，设置积压队列（类似Unix listen）
+    .listen(8192);
 
-while let Ok(quic_server_conn) = listeners.accept().await? {
-    // 以下为演示
-    tokio::spawn(handle_quic_conn(quic_server_conn));
-}
+// 添加可连接的服务器
+quic_listeners.add_server(
+    "localhost",
+    // 证书和密钥文件的字节数组或路径
+    include_bytes!("/path/to/server.crt"),
+    include_bytes!("/path/to/server.key"),
+    [
+        "iface://v4.eth0:4433", // 绑定到eth0的IPv4地址
+        "iface://v6.eth0:4433", // 绑定到eth0的IPv6地址
+    ],
+    None, // ocsp
+);
+
+// 继续调用 `quic_listeners.add_server()` 来添加更Server
+// 调用 `quic_listeners.remove_server()` 来移除一个Serer
+
+// 接受可信的新连接
+while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
+    // 处理传入的QUIC连接！
+    // 可以参考 gm-quic/examples 和 h3-shim/examples 中的示例
+****}
 ```
 
 关于如何从QUIC Connection中创建单向QUIC流，或者双向QUIC流，抑或是从QUIC Connection监听来自对方的流，都有一套异步的接口，这套接口几乎与[`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport)的接口相同。
@@ -129,9 +167,9 @@ while let Ok(quic_server_conn) = listeners.accept().await? {
 
 ## 性能
 
-github action会定期运行[基准测试][6]，效果如下。go-quic和quiche、tquic、quinn都具备优良性能，在三种基准测试场景下互有千秋。须知传输性能跟传输控制算法也有很大关系，gm-quic的性能在未来一段时间还会持续优化，如果想获得更高性能，gm-quic提供了抽象接口，可使用DPDK或者XDP代替UdpSocket！
+github action会定期运行[基准测试][5]，效果如下。go-quic和quiche、tquic、quinn都具备优良性能，在三种基准测试场景下互有千秋。须知传输性能跟传输控制算法也有很大关系，gm-quic的性能在未来一段时间还会持续优化，如果想获得更高性能，gm-quic提供了抽象接口，可使用DPDK或者XDP代替UdpSocket！
 
-<img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_15KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_30KB.png" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_2048KB.png" width=33% height=33%>
+<img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_15KB.png?raw=true" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_30KB.png?raw=true" width=33% height=33%><img src="https://github.com/genmeta/gm-quic/blob/main/images/benchmark_2048KB.png?raw=true" width=33% height=33%>
 
 
 ## 贡献
@@ -153,6 +191,5 @@ gm-quic支持的Rust版本为`1.75`及以上版本。
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html
 [2]: https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/
 [3]: https://datatracker.ietf.org/doc/html/rfc9221
-[4]: https://github.com/genmeta/gm-quic/blob/main/h3-shim/examples/
-[5]: https://qvis.quictools.info/#/files
-[6]: https://github.com/genmeta/gm-quic/actions
+[4]: https://qvis.quictools.info/#/files
+[5]: https://github.com/genmeta/gm-quic/actions
