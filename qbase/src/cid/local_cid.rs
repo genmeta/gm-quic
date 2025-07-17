@@ -128,8 +128,8 @@ where
     }
 
     fn clear(&mut self) {
-        for (cid, _) in self.cid_deque.iter().flatten() {
-            self.issued_cids.retire_cid(*cid);
+        for (cid, _reset_token) in self.cid_deque.drain_to(self.cid_deque.largest()).flatten() {
+            self.issued_cids.retire_cid(cid);
         }
     }
 }

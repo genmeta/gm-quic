@@ -138,6 +138,7 @@ impl Spaces {
         //         })
         //         .await;
         // }
+        self.initial.close();
         if let Some(space) = self.handshake.close() {
             _ = terminator
                 .try_send(|buf, scid, dcid, ccf| {
@@ -156,6 +157,12 @@ impl Spaces {
                 })
                 .await;
         }
+    }
+
+    pub fn close_all(&self) {
+        self.initial.close();
+        self.handshake.close();
+        self.data.close();
     }
 }
 

@@ -336,13 +336,9 @@ impl Components {
         tokio::spawn(
             {
                 let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
-                let local_cids = self.cid_registry.local.clone();
-                let rcvd_pkt_q = self.rcvd_pkt_q.clone();
                 let event_broker = self.event_broker.clone();
                 async move {
                     tokio::time::sleep(pto_duration).await;
-                    local_cids.clear();
-                    rcvd_pkt_q.close_all();
                     event_broker.emit(Event::Terminated);
                 }
             }
@@ -350,14 +346,22 @@ impl Components {
             .in_current_span(),
         );
 
-        if self.send_lock.is_permitted() {
-            let terminator = Arc::new(Terminator::new(ccf, &self));
-            tokio::spawn(
-                self.spaces
-                    .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
-                    .instrument_in_current()
-                    .in_current_span(),
-            );
+        match self.send_lock.is_permitted() {
+            // If permitted, we can send ccf packets.
+            true => {
+                let terminator = Arc::new(Terminator::new(ccf, &self));
+                tokio::spawn(
+                    self.spaces
+                        .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
+                        .instrument_in_current()
+                        .in_current_span(),
+                );
+            }
+            // No need to send packets, just clear the paths.
+            false => {
+                self.spaces.close_all();
+                self.paths.clear();
+            }
         }
 
         Termination::closing(error, self.cid_registry.local, self.rcvd_pkt_q)
@@ -377,13 +381,9 @@ impl Components {
         tokio::spawn(
             {
                 let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
-                let local_cids = self.cid_registry.local.clone();
-                let rcvd_pkt_q = self.rcvd_pkt_q.clone();
                 let event_broker = self.event_broker.clone();
                 async move {
                     tokio::time::sleep(pto_duration).await;
-                    local_cids.clear();
-                    rcvd_pkt_q.close_all();
                     event_broker.emit(Event::Terminated);
                 }
             }
@@ -391,16 +391,26 @@ impl Components {
             .in_current_span(),
         );
 
-        if self.send_lock.is_permitted() {
-            let terminator = Arc::new(Terminator::new(ccf, &self));
-            tokio::spawn(
-                self.spaces
-                    .drain(terminator, self.rcvd_pkt_q.clone())
-                    .instrument_in_current()
-                    .in_current_span(),
-            );
+        match self.send_lock.is_permitted() {
+            // If permitted, we can send ccf packets.
+            true => {
+                let terminator = Arc::new(Terminator::new(ccf, &self));
+                tokio::spawn(
+                    self.spaces
+                        .drain(terminator, self.rcvd_pkt_q.clone())
+                        .instrument_in_current()
+                        .in_current_span(),
+                );
+            }
+            // No need to send packets, just clear the paths.
+            false => {
+                self.spaces.close_all();
+                self.paths.clear();
+            }
         }
 
+        // No need to receive packets, just close all queues.
+        self.rcvd_pkt_q.close_all();
         Termination::draining(error, self.cid_registry.local)
     }
 }
