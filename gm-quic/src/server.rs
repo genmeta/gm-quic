@@ -1,11 +1,12 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
+    collections::HashMap,
+    fmt::{Debug, Display},
     io,
+    ops::Deref,
     sync::{Arc, RwLock, Weak},
 };
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use qbase::util::BoundQueue;
 use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
@@ -16,11 +17,82 @@ use qinterface::{
 };
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
+    pki_types::CertificateDer,
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
+    sign::SigningKey,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::*;
+
+/// Errors that can occur during server management operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerError {
+    /// The server with the specified name already exists.
+    #[error("Server '{name}' already exists")]
+    ServerAlreadyExists { name: String },
+
+    /// The server with the specified name was not found.
+    #[error("Server '{name}' not found")]
+    ServerNotFound { name: String },
+
+    /// Failed to load the private key for the server.
+    #[error("Failed to load private key for server '{server_name}': {source}")]
+    InvalidPrivateKey {
+        server_name: String,
+        #[source]
+        source: rustls::Error,
+    },
+
+    /// Failed to bind to a network interface.
+    #[error("Failed to bind to interface '{bind_uri}': {source}")]
+    InterfaceBindFailed {
+        bind_uri: BindUri,
+        #[source]
+        source: io::Error,
+    },
+}
+
+impl From<ServerError> for io::Error {
+    fn from(err: ServerError) -> Self {
+        match err {
+            ServerError::ServerAlreadyExists { .. } => {
+                io::Error::new(io::ErrorKind::AlreadyExists, err)
+            }
+            ServerError::ServerNotFound { .. } => io::Error::new(io::ErrorKind::NotFound, err),
+            ServerError::InvalidPrivateKey { .. } => {
+                io::Error::new(io::ErrorKind::InvalidInput, err)
+            }
+            ServerError::InterfaceBindFailed { source, .. } => source,
+        }
+    }
+}
+
+/// Errors that can occur during QuicListeners builder creation.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildServerError {
+    /// A QuicListeners instance is already running globally.
+    #[error("A QuicListeners is already running, please shutdown it first")]
+    AlreadyRunning,
+
+    /// Failed to create TLS configuration with the crypto provider.
+    #[error("Failed to create TLS configuration with crypto provider: {source}")]
+    CryptoProviderConfigError {
+        #[source]
+        source: rustls::Error,
+    },
+}
+
+impl From<BuildServerError> for io::Error {
+    fn from(err: BuildServerError) -> Self {
+        match err {
+            BuildServerError::AlreadyRunning => io::Error::new(io::ErrorKind::AlreadyExists, err),
+            BuildServerError::CryptoProviderConfigError { .. } => {
+                io::Error::new(io::ErrorKind::InvalidInput, err)
+            }
+        }
+    }
+}
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 
@@ -42,42 +114,63 @@ impl ResolvesServerCert for VirtualHosts {
     }
 }
 
-struct Server {
-    bind_uris: DashSet<BindUri>,
-    cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-    private_key: Arc<dyn rustls::sign::SigningKey>,
+#[derive(Debug)]
+pub struct Server {
+    bind_ifaces: DashMap<BindUri, Arc<QuicInterface>>,
+    cert_chain: Vec<CertificateDer<'static>>,
+    private_key: Arc<dyn SigningKey>,
     ocsp: Option<Vec<u8>>,
 }
 
-impl Debug for Server {
+impl Display for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Server")
-            .field(
-                "bind_interfaces",
-                &self
-                    .bind_uris
-                    .iter()
-                    .map(|e| e.key().clone())
-                    .collect::<Vec<_>>(),
-            )
-            .field("cert_chain", &self.cert_chain)
-            .field("private_key", &self.private_key)
-            .finish()
+        let bind_ifaces = self
+            .bind_ifaces
+            .iter()
+            .map(|entry| match entry.value().real_addr() {
+                Ok(real_addr) => format!("{}: {}", entry.key(), real_addr),
+                Err(e) => format!("{}: <unknown address: {e}>", entry.key()),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "[{bind_ifaces}]")
     }
 }
 
-/// An interface that has been bound to servers in the [`QuicListeners`].
-struct BoundInterface {
-    iface: Arc<QuicInterface>,
-    servers: DashSet<String>,
-}
+impl Server {
+    pub fn bind_interfaces(&self) -> HashMap<BindUri, Arc<QuicInterface>> {
+        self.bind_ifaces
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
 
-impl Debug for BoundInterface {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ListenedInterface")
-            .field("interface", &self.iface.bind_uri())
-            .field("servers", &self.servers)
-            .finish()
+    pub fn add_interface(&self, interface: Arc<QuicInterface>) {
+        self.bind_ifaces
+            .entry(interface.bind_uri())
+            .or_insert(interface);
+    }
+
+    pub fn get_interface(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
+        self.bind_ifaces
+            .get(bind_uri)
+            .map(|iface| iface.value().clone())
+    }
+
+    pub fn unbind_interface(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
+        self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
+    }
+
+    pub fn cert_chain(&self) -> &[CertificateDer<'static>] {
+        &self.cert_chain
+    }
+
+    pub fn private_key(&self) -> &Arc<dyn SigningKey> {
+        &self.private_key
+    }
+
+    pub fn ocsp(&self) -> Option<&[u8]> {
+        self.ocsp.as_deref()
     }
 }
 
@@ -112,7 +205,7 @@ type Incomings = BoundQueue<(
 /// - Returns connections that may still be completing their QUIC handshake
 pub struct QuicListeners {
     quic_iface_factory: Arc<dyn ProductQuicIO>,
-    ifaces: Arc<DashMap<BindUri, BoundInterface>>,
+    ifaces: Arc<QuicInterfaces>,
     servers: Arc<DashMap<String, Server>>,
     backlog: Arc<Semaphore>,
     #[allow(clippy::type_complexity)]
@@ -131,7 +224,8 @@ pub struct QuicListeners {
 
 impl QuicListeners {
     /// Start to build a [`QuicListeners`].
-    pub fn builder() -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
+    pub fn builder()
+    -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildServerError> {
         Self::builder_with_tls(TlsServerConfig::builder_with_protocol_versions(&[
             &rustls::version::TLS13,
         ]))
@@ -140,27 +234,24 @@ impl QuicListeners {
     /// Start to build a QuicServer with the given tls crypto provider.
     pub fn builder_with_crypto_provieder(
         provider: Arc<rustls::crypto::CryptoProvider>,
-    ) -> io::Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>> {
+    ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildServerError> {
         Self::builder_with_tls(
             TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                .map_err(|e| BuildServerError::CryptoProviderConfigError { source: e })?,
         )
     }
 
     /// Start to build a [`QuicListeners`] with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls<T>(tls_config: T) -> io::Result<QuicListenersBuilder<T>> {
+    pub fn builder_with_tls<T>(tls_config: T) -> Result<QuicListenersBuilder<T>, BuildServerError> {
         let mut global_incomings = QuicListeners::global()
             .write()
             .expect("QuicListeners global lock");
         if let Some(incomings) = global_incomings.upgrade() {
             if !incomings.is_closed() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "A QuicServer is already running, please shutdown it first.",
-                ));
+                return Err(BuildServerError::AlreadyRunning);
             }
         }
 
@@ -183,22 +274,25 @@ impl QuicListeners {
         })
     }
 
-    /// Add a server with a certificate chain and a private key.
+    /// Add a virtual server with its certificate chain and private key.
     ///
-    /// Returns an error if the server has already been added, the private key is invalid,
-    /// or one of the bind addresses fails to bind.
+    /// Creates a new virtual host identified by its server name (SNI). The server will use the
+    /// certificate chain and private key that matches the SNI in the client's `ClientHello` message.
+    /// If no matching server is found, the connection will be rejected.
     ///
-    /// Call this method multiple times to add multiple servers,
-    /// each with its own certificate chain and private key.  
+    /// A server can be added without binding to any interface initially, but will not accept
+    /// connections until interfaces are added via [`bind_interfaces`]. This allows flexible
+    /// server configuration and hot-swapping of network bindings.
     ///
-    /// The server will use the certificate chain and private key
-    /// that matches the SNI server name in the client's `ClientHello` message.
-    /// If the client does not send a server name,
-    /// or the server name doesn't match any server,
-    /// the connection will be rejected by [`QuicListeners`].
+    /// # Related Methods
     ///
-    /// A server can be added without binding any interface.
-    /// But the server will not be able to accept connections.
+    /// - [`bind_interfaces`] - Add more interfaces to this server
+    /// - [`unbind_interface`] - Remove specific interfaces
+    /// - [`remove_server`] - Remove the entire server
+    ///
+    /// [`bind_interfaces`]: QuicListeners::bind_interfaces
+    /// [`unbind_interface`]: QuicListeners::unbind_interface
+    /// [`remove_server`]: QuicListeners::remove_server
     pub fn add_server(
         &self,
         server_name: impl Into<String>,
@@ -206,16 +300,13 @@ impl QuicListeners {
         private_key: impl ToPrivateKey,
         bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
         ocsp: impl Into<Option<Vec<u8>>>,
-    ) -> io::Result<()> {
+    ) -> Result<(), ServerError> {
         let server_name = server_name.into();
 
         let server_entry = match self.servers.entry(server_name.clone()) {
             dashmap::Entry::Vacant(entry) => entry,
             dashmap::Entry::Occupied(..) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("Server {server_name} already exists"),
-                ));
+                return Err(ServerError::ServerAlreadyExists { name: server_name });
             }
         };
 
@@ -225,43 +316,29 @@ impl QuicListeners {
             .crypto_provider()
             .key_provider
             .load_private_key(private_key.to_private_key())
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Failed to load private key for server {server_name}: {e}"),
-                )
+            .map_err(|e| ServerError::InvalidPrivateKey {
+                server_name: server_name.clone(),
+                source: e,
             })?;
         let ocsp = ocsp.into();
 
-        let bind_uris = bind_uris.into_iter().map(Into::into).try_fold(
-            DashSet::new(),
-            |bind_uris, bind_uri| {
-                let bind_uri = {
-                    if let Some(listened_interface) = self.ifaces.get(&bind_uri) {
-                        let inserted = listened_interface.servers.insert(server_name.clone());
-                        assert!(!inserted);
-                        listened_interface.iface.bind_uri()
-                    } else {
-                        let iface = QuicInterfaces::global()
-                            .insert(bind_uri.clone(), self.quic_iface_factory.clone())?;
-                        let previous = self.ifaces.insert(
-                            bind_uri.clone(),
-                            BoundInterface {
-                                iface,
-                                servers: [server_name.clone()].into_iter().collect(),
-                            },
-                        );
-                        assert!(previous.is_none());
-                        bind_uri
-                    }
-                };
-                bind_uris.insert(bind_uri);
-                io::Result::Ok(bind_uris)
+        let bind_ifaces = bind_uris.into_iter().map(Into::into).try_fold(
+            DashMap::new(),
+            |bind_ifaces, bind_uri| {
+                bind_ifaces.entry(bind_uri.clone()).or_try_insert_with(|| {
+                    self.ifaces
+                        .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone())
+                        .map_err(|e| ServerError::InterfaceBindFailed {
+                            bind_uri,
+                            source: e,
+                        })
+                })?;
+                Ok(bind_ifaces)
             },
         )?;
 
         server_entry.insert(Server {
-            bind_uris,
+            bind_ifaces,
             cert_chain,
             private_key: signed_key,
             ocsp,
@@ -270,25 +347,118 @@ impl QuicListeners {
         Ok(())
     }
 
-    /// Gets all servers of the [`QuicListeners`] and their bound abstract addresses,
-    /// as well as the actual addresses corresponding to the abstract addresses.
+    /// Remove a virtual server and all its associated interfaces.
     ///
-    /// If the Interface corresponding to an abstract address doesn't exist or is damaged,
-    /// the corresponding actual address will be None.
-    pub fn servers(&self) -> HashMap<String, HashSet<BindUri>> {
-        self.servers
-            .iter()
-            .map(|entry| {
-                let addresses = entry
-                    .value()
-                    .bind_uris
-                    .iter()
-                    .map(|addr| addr.key().clone())
-                    .collect();
-                let server_name = entry.key().to_owned();
-                (server_name, addresses)
-            })
-            .collect()
+    /// Completely removes a server from the listeners, including all network interfaces
+    /// it was bound to (if the interface is not used by other servers).
+    /// This is the inverse operation of [`add_server`] and provides a clean
+    /// way to decommission a virtual host.
+    ///
+    /// Returns `true` if the server existed and was removed, `false` if no server with the
+    /// specified name was found. You must remove an existing server before adding a new
+    /// one with the same name.
+    ///
+    /// # Related Methods
+    ///
+    /// - [`add_server`] - Create a server (counterpart operation)
+    /// - [`unbind_interface`] - Remove specific interfaces only
+    ///
+    /// [`add_server`]: QuicListeners::add_server
+    /// [`unbind_interface`]: QuicListeners::unbind_interface
+    pub fn remove_server(&self, server_name: &str) -> bool {
+        self.servers.remove(server_name).is_some()
+    }
+
+    /// Add additional network interfaces to an existing virtual server.
+    ///
+    /// Extends an existing server to listen on additional network interfaces, enabling
+    /// horizontal scaling and multi-homed server configurations. Interfaces that are
+    /// already bound to the server will be silently ignored, allowing for idempotent operations.
+    ///
+    /// The server must have been created with [`add_server`] first. Added interfaces can later
+    /// be removed selectively with [`unbind_interface`], supporting hot-swapping and zero-downtime
+    /// updates.
+    ///
+    /// # Related Methods
+    ///
+    /// - [`add_server`] - Create the server first
+    /// - [`unbind_interface`] - Remove specific interfaces
+    ///
+    /// [`add_server`]: QuicListeners::add_server
+    /// [`unbind_interface`]: QuicListeners::unbind_interface
+    pub fn bind_interfaces(
+        &self,
+        server_name: impl Into<String>,
+        bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
+    ) -> Result<(), ServerError> {
+        let server_name = server_name.into();
+        let server_entry = match self.servers.entry(server_name.clone()) {
+            dashmap::Entry::Occupied(server_entry) => server_entry,
+            dashmap::Entry::Vacant(..) => {
+                return Err(ServerError::ServerNotFound { name: server_name });
+            }
+        };
+
+        for bind_uri in bind_uris.into_iter().map(Into::into) {
+            if let dashmap::Entry::Vacant(iface_entry) =
+                server_entry.get().bind_ifaces.entry(bind_uri.clone())
+            {
+                let factory = self.quic_iface_factory.clone();
+                let interface = self
+                    .ifaces
+                    .get_or_insert(bind_uri.clone(), factory)
+                    .map_err(|e| ServerError::InterfaceBindFailed {
+                        bind_uri,
+                        source: e,
+                    })?;
+                iface_entry.insert(interface);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the server by its name.
+    pub fn get_server<'l>(&'l self, server_name: &str) -> Option<impl Deref<Target = Server> + 'l> {
+        self.servers.get(server_name)
+    }
+
+    /// Remove a specific network interface from one or more servers.
+    ///
+    /// Provides fine-grained control over interface management, allowing selective removal
+    /// of interfaces without affecting the server's core configuration or other interfaces.
+    /// This is the counterpart to [`bind_interfaces`] for flexible network topology management.
+    ///
+    /// The `server_names` parameter controls the scope:
+    /// - `Some(server_names)` - Remove the interface only from specified servers
+    /// - `None` - Remove the interface from ALL servers currently using it
+    ///
+    /// Operations are graceful: non-existent servers or unbound interfaces are silently ignored,
+    /// enabling safe cleanup and idempotent scripts.
+    ///
+    /// # Related Methods
+    ///
+    /// - [`bind_interfaces`] - Add interfaces (counterpart operation)
+    /// - [`remove_server`] - Remove entire server instead
+    ///
+    /// [`bind_interfaces`]: QuicListeners::bind_interfaces
+    /// [`remove_server`]: QuicListeners::remove_server
+    pub fn unbind_interface<'s>(
+        &self,
+        server_names: Option<impl IntoIterator<Item = &'s str>>,
+        bind_uri: BindUri,
+    ) {
+        match server_names {
+            Some(server_names) => server_names
+                .into_iter()
+                .filter_map(|server_name| self.servers.get(server_name))
+                .for_each(|server| {
+                    server.bind_ifaces.remove(&bind_uri);
+                }),
+            None => self.servers.iter().for_each(|entry| {
+                entry.value().bind_ifaces.remove(&bind_uri);
+            }),
+        }
     }
 
     /// Accept an incoming QUIC connection from the queue.
@@ -337,7 +507,7 @@ impl AuthClient for ServerAuther {
     fn verify_client_params(&self, host: &str, _: Option<&str>) -> bool {
         self.servers
             .get(host)
-            .is_some_and(|server| server.bind_uris.contains(&self.iface))
+            .is_some_and(|server| server.bind_ifaces.contains_key(&self.iface))
     }
 
     fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> bool {
@@ -711,7 +881,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
 
         let quic_listeners = Arc::new(QuicListeners {
             quic_iface_factory: self.quic_iface_factory,
-            ifaces: Arc::default(),
+            ifaces: QuicInterfaces::global().clone(),
             servers: self.servers,
             backlog: Arc::new(Semaphore::new(backlog)),
             incomings: self.incomings, // size: any number greater than 0
