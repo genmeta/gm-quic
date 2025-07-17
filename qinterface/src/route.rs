@@ -142,7 +142,6 @@ impl From<SocketAddr> for Signpost {
     }
 }
 
-#[derive(Clone)]
 #[must_use = "When RouterEntry dropped, this will remove the entry from the router table"]
 pub struct RouterEntry {
     signpost: Signpost,

@@ -150,7 +150,7 @@ pub enum SpecificComponents {
     Client {},
     Server {
         using_odcid: Arc<AtomicBool>,
-        odcid_router_entry: RouterEntry,
+        odcid_router_entry: Arc<RouterEntry>,
     },
 }
 

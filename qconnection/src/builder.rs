@@ -377,7 +377,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             initial_keys,
             data_space,
             sepcific: SpecificComponents::Server {
-                odcid_router_entry,
+                odcid_router_entry: Arc::new(odcid_router_entry),
                 using_odcid: Arc::new(AtomicBool::new(true)),
             },
             qlogger: Arc::new(NoopLogger),
