@@ -43,14 +43,6 @@ pub enum ServerError {
         #[source]
         source: rustls::Error,
     },
-
-    /// Failed to bind to a network interface.
-    #[error("Failed to bind to interface '{bind_uri}': {source}")]
-    InterfaceBindFailed {
-        bind_uri: BindUri,
-        #[source]
-        source: io::Error,
-    },
 }
 
 impl From<ServerError> for io::Error {
@@ -63,7 +55,6 @@ impl From<ServerError> for io::Error {
             ServerError::InvalidPrivateKey { .. } => {
                 io::Error::new(io::ErrorKind::InvalidInput, err)
             }
-            ServerError::InterfaceBindFailed { source, .. } => source,
         }
     }
 }
@@ -322,20 +313,17 @@ impl QuicListeners {
             })?;
         let ocsp = ocsp.into();
 
-        let bind_ifaces = bind_uris.into_iter().map(Into::into).try_fold(
-            DashMap::new(),
-            |bind_ifaces, bind_uri| {
-                bind_ifaces.entry(bind_uri.clone()).or_try_insert_with(|| {
-                    self.ifaces
-                        .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone())
-                        .map_err(|e| ServerError::InterfaceBindFailed {
-                            bind_uri,
-                            source: e,
-                        })
-                })?;
-                Ok(bind_ifaces)
-            },
-        )?;
+        let bind_ifaces =
+            bind_uris
+                .into_iter()
+                .map(Into::into)
+                .fold(DashMap::new(), |bind_ifaces, bind_uri| {
+                    bind_ifaces.entry(bind_uri.clone()).or_insert_with(|| {
+                        self.ifaces
+                            .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone())
+                    });
+                    bind_ifaces
+                });
 
         server_entry.insert(Server {
             bind_ifaces,
@@ -404,13 +392,7 @@ impl QuicListeners {
                 server_entry.get().bind_ifaces.entry(bind_uri.clone())
             {
                 let factory = self.quic_iface_factory.clone();
-                let interface = self
-                    .ifaces
-                    .get_or_insert(bind_uri.clone(), factory)
-                    .map_err(|e| ServerError::InterfaceBindFailed {
-                        bind_uri,
-                        source: e,
-                    })?;
+                let interface = self.ifaces.get_or_insert(bind_uri.clone(), factory);
                 iface_entry.insert(interface);
             }
         }
