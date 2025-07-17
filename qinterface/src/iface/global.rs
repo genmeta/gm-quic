@@ -1,7 +1,6 @@
 use std::{
     io,
     net::SocketAddr,
-    ops::Deref,
     sync::{Arc, OnceLock, Weak},
 };
 
@@ -51,8 +50,8 @@ impl QuicInterfaces {
                         return;
                     };
 
-                    // keep if real address is ok, and task is not finished, and new address same as real addr address
-                    if (iface_ctx.real_addr()).is_ok_and(|real_addr| {
+                    // Keep if: real address is ok && task is not finished && new address == real addr
+                    if (iface_ctx.iface.real_addr()).is_ok_and(|real_addr| {
                         !iface_ctx.task.is_finished()
                             && real_addr == RealAddr::Internet(socket_addr)
                     }) {
@@ -74,10 +73,10 @@ impl QuicInterfaces {
                 format!("Interface already exists for {bind_uri}"),
             )),
             dashmap::Entry::Vacant(entry) => {
-                let iface_ctx = InterfaceContext::new(bind_uri, factory)?;
+                let iface_ctx = InterfaceContext::new(bind_uri, factory);
                 let iface = Arc::new(QuicInterface::new(
                     iface_ctx.bind_uri.clone(),
-                    Arc::downgrade(iface_ctx.deref()),
+                    Arc::downgrade(&iface_ctx.iface),
                     self.clone(),
                 ));
 
@@ -104,24 +103,24 @@ impl QuicInterfaces {
         self: &Arc<Self>,
         bind_uri: BindUri,
         factory: Arc<dyn ProductQuicIO>,
-    ) -> io::Result<Arc<QuicInterface>> {
+    ) -> Arc<QuicInterface> {
         let entry = self.interfaces.entry(bind_uri.clone());
 
         if let Entry::Occupied(entry) = &entry {
             if let Some(iface) = entry.get().1.upgrade() {
-                return Ok(iface);
+                return iface;
             }
         }
 
-        let iface_ctx = InterfaceContext::new(bind_uri, factory)?;
+        let iface_ctx = InterfaceContext::new(bind_uri, factory);
         let iface = Arc::new(QuicInterface::new(
             iface_ctx.bind_uri.clone(),
-            Arc::downgrade(iface_ctx.deref()),
+            Arc::downgrade(&iface_ctx.iface),
             self.clone(),
         ));
 
         entry.insert((iface_ctx, Arc::downgrade(&iface)));
-        Ok(iface)
+        iface
     }
 
     pub fn remove(&self, bind_uri: BindUri) {
@@ -134,7 +133,7 @@ impl Drop for QuicInterface {
         self.ifaces
             .interfaces
             .remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
-                Weak::ptr_eq(&Arc::downgrade(iface_ctx.deref()), &self.iface)
+                Weak::ptr_eq(&Arc::downgrade(&iface_ctx.iface), &self.iface)
             });
     }
 }

@@ -379,7 +379,7 @@ impl<T> QuicClientBuilder<T> {
     /// returns an error), only the log will be printed.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> io::Result<Self> {
+    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
         self.bind_interfaces.clear();
 
         for bind_uri in addrs.into_iter().map(Into::into) {
@@ -387,11 +387,11 @@ impl<T> QuicClientBuilder<T> {
                 continue;
             }
             let interface = QuicInterfaces::global()
-                .insert(bind_uri.clone(), self.quic_iface_factory.clone())?;
+                .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone());
             self.bind_interfaces.insert(bind_uri, interface);
         }
 
-        Ok(self)
+        self
     }
 
     /// Enable efficiently reuse connections.
