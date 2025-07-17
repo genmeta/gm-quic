@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, OnceLock, Weak},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, Entry};
 use qbase::net::addr::{BindUri, BindUriSchema, RealAddr};
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
     iface::{InterfaceContext, QuicInterface},
 };
 
+#[derive(Debug)]
 pub struct QuicInterfaces {
     interfaces: DashMap<BindUri, (InterfaceContext, Weak<QuicInterface>)>,
 }
@@ -74,22 +75,53 @@ impl QuicInterfaces {
             )),
             dashmap::Entry::Vacant(entry) => {
                 let iface_ctx = InterfaceContext::new(bind_uri, factory)?;
-                let borrowed_iface = Arc::new(QuicInterface::new(
+                let iface = Arc::new(QuicInterface::new(
                     iface_ctx.bind_uri.clone(),
                     Arc::downgrade(iface_ctx.deref()),
                     self.clone(),
                 ));
 
-                entry.insert((iface_ctx, Arc::downgrade(&borrowed_iface)));
-                Ok(borrowed_iface)
+                entry.insert((iface_ctx, Arc::downgrade(&iface)));
+                Ok(iface)
             }
         }
     }
 
-    pub fn get(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
-        self.interfaces
-            .get(bind_uri)
-            .and_then(|entry| entry.value().1.upgrade())
+    pub fn get(&self, bind_uri: BindUri) -> Option<Arc<QuicInterface>> {
+        match self.interfaces.entry(bind_uri) {
+            Entry::Occupied(entry) => match entry.get().1.upgrade() {
+                Some(iface) => Some(iface),
+                None => {
+                    entry.remove();
+                    None
+                }
+            },
+            Entry::Vacant(..) => None,
+        }
+    }
+
+    pub fn get_or_insert(
+        self: &Arc<Self>,
+        bind_uri: BindUri,
+        factory: Arc<dyn ProductQuicIO>,
+    ) -> io::Result<Arc<QuicInterface>> {
+        let entry = self.interfaces.entry(bind_uri.clone());
+
+        if let Entry::Occupied(entry) = &entry {
+            if let Some(iface) = entry.get().1.upgrade() {
+                return Ok(iface);
+            }
+        }
+
+        let iface_ctx = InterfaceContext::new(bind_uri, factory)?;
+        let iface = Arc::new(QuicInterface::new(
+            iface_ctx.bind_uri.clone(),
+            Arc::downgrade(iface_ctx.deref()),
+            self.clone(),
+        ));
+
+        entry.insert((iface_ctx, Arc::downgrade(&iface)));
+        Ok(iface)
     }
 
     pub fn remove(&self, bind_uri: BindUri) {

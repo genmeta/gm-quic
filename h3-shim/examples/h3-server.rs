@@ -141,7 +141,10 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         options.listen.as_slice(),
         None,
     )?;
-    tracing::info!("Listen {:?}", listeners.servers());
+    tracing::info!(
+        "Listening on {}",
+        &*listeners.get_server(server_name.as_str()).unwrap()
+    );
 
     // handle incoming connections and requests
     while let Ok((new_conn, _server, _pathway, _link)) = listeners.accept().await {

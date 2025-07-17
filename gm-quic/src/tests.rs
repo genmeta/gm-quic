@@ -6,7 +6,6 @@ use std::{
 };
 
 use qevent::telemetry::{Log, handy::*};
-use qinterface::iface::QuicInterfaces;
 use rustls::server::WebPkiClientVerifier;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -59,14 +58,16 @@ where
 
         let (listeners, server_task) = launch_server().await?;
         let server_task = tokio::task::spawn(server_task);
-        let server_addr = QuicInterfaces::global()
-            .get(
-                listeners.servers()["localhost"]
-                    .iter()
-                    .next()
-                    .expect("Server should bind at least one address"),
-            )
-            .expect("Server should bind the address successfully")
+        let localhost = listeners
+            .get_server("localhost")
+            .expect("Server localhost must be registered");
+        let localhost_bind_interface = localhost
+            .bind_interfaces()
+            .into_iter()
+            .next()
+            .map(|(_bind_uri, interface)| interface)
+            .expect("Server should bind at least one address");
+        let server_addr = localhost_bind_interface
             .real_addr()?
             .try_into()
             .expect("This test support only SocketAddr");

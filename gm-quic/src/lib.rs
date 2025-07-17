@@ -10,8 +10,8 @@ pub use qinterface::factory::ProductQuicIO;
 
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
-    client::{QuicClient, QuicClientBuilder},
-    server::{QuicListeners, QuicListenersBuilder},
+    client::{ConnectEndpointError, ConnectServerError, QuicClient, QuicClientBuilder},
+    server::{BuildServerError, QuicListeners, QuicListenersBuilder, ServerError},
 };
 
 mod cert;

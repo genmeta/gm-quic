@@ -101,7 +101,12 @@ async fn run(options: Options) -> io::Result<()> {
         None,
     )?;
 
-    info!("listening on {:?}", listeners.servers());
+    tracing::info!(
+        "Listening on {}",
+        &*listeners
+            .get_server(options.certs.server_name.as_str())
+            .unwrap()
+    );
 
     serve_echo(listeners).await
 }

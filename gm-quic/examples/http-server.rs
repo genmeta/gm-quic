@@ -127,7 +127,12 @@ async fn run(options: Options) -> Result<(), Error> {
         options.listen.as_slice(),
         None,
     )?;
-    tracing::info!("Listen {:?}", listeners.servers());
+    tracing::info!(
+        "Listening on {}",
+        &*listeners
+            .get_server(options.certs.server_name.as_str())
+            .unwrap()
+    );
 
     loop {
         let (connection, _server, _pathway, _link) = listeners.accept().await?;

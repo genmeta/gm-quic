@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     io,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
@@ -81,6 +82,7 @@ impl QuicIO for RwInterface {
     }
 }
 
+#[derive(Debug)]
 pub struct QuicInterface {
     bind_uri: BindUri,
     iface: Weak<RwInterface>,
@@ -168,6 +170,17 @@ pub struct InterfaceContext {
     iface: Arc<RwInterface>,
     /// recv task handle
     task: JoinHandle<()>,
+}
+
+impl Debug for InterfaceContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InterfaceContext")
+            .field("bind_uri", &self.bind_uri)
+            .field("factory", &"..")
+            .field("iface", &"..")
+            .field("task", &"..")
+            .finish()
+    }
 }
 
 impl InterfaceContext {
