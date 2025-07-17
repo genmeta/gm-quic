@@ -1,11 +1,6 @@
 # gm-quic
 
-[![License: Apache-2.0注意到QUIC协议内部，还能分出很多层。在传输层，有很多功能比如打开新连接、接收、发送、读取、写入、Accept新连接，它们大都是异步的，在这里称之为各种"算子"，且每层都有自己的算子，有了这些分层之后，就会发现，其实Accept算子和Read算子、Write算子根本不在同一层，很有意思。
-
-![image](https://github.com/genmeta/gm-quic/blob/main/images/arch.png?raw=true)
-
-
-## 概览s://img.shields.io/github/license/genmeta/gm-quic)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License: Apache-2.0](https://img.shields.io/github/license/genmeta/gm-quic)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/genmeta/gm-quic/rust.yml)](https://github.com/genmeta/gm-quic/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/genmeta/gm-quic/graph/badge.svg)](https://codecov.io/gh/genmeta/gm-quic)
 [![crates.io](https://img.shields.io/crates/v/gm-quic.svg)](https://crates.io/crates/gm-quic)
@@ -80,11 +75,11 @@ cargo run --example h3-client --package h3-shim -- https://localhost:4433/exampl
 
 `gm-quic`提供了人性化的接口创建客户端和服务端的连接，同时还支持一些符合现代网络需求的附加功能设置。
 
-除了传统的ip地址+端口绑定模式，`gm-quic`额外支持绑定到网络接口上，动态地适应实际地址变化，这为gm-quic提供了良好的移动性。
+除了可以绑定到ip地址+端口，`gm-quic`还支持绑定到网络接口上，以动态地适应实际地址变化，这使得gm-quicy拥有了良好的移动性。
 
 QUIC客户端不仅提供了QUIC协议所规定的Parameters选项配置，可选的0RTT功能，还有一些额外的高级选项，比如QUIC客户端可设置自己的证书以供服务端验证，也可设置自己的Token管理器，管理着各服务器颁发的Token，以便未来和这些服务器再次连接时用的上。
 
-QUIC客户端支持同时尝试连接到多个服务器地址，即使有些路径是不可达的，只要有一条路径能够联通，连接就可以建立。如果对端的实现同样是gm-quic，则还支持多路径传输，与此同时不还损伤和其他实现的兼容性，经过测试的有cloudflare/quiche, quic-go/quic-go, quinn-rs/quinn, tencent/tquic。
+QUIC客户端支持多路径握手，即同时尝试连接到服务器的IPv4和IPv6地址，即使某些路径不可达，但只要有一条路径能够联通，连接就可以建立。如果对端的实现同样是gm-quic，则还支持多路径传输。
 
 以下为简单示例，更多细节请参阅文档。
 
@@ -96,21 +91,21 @@ let mut roots = rustls::RootCertStore::empty();
 roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
 
 // 加载自定义证书（可与系统证书独立使用）
-// use gm_quic::ToCertificate;
-// roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
-// roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
+use gm_quic::ToCertificate;
+roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
+roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
 
 // 构建QUIC客户端
 let quic_client = gm_quic::QuicClient::builder()
     .with_root_certificates(roots)
-    .without_cert() // 通常不需要客户端证书验证
-    // .with_parameters(your_parameters) // 自定义传输参数
-    // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口
-    // .enable_0rtt() // 启用0-RTT
-    // .enable_sslkeylog() // 启用SSL密钥日志
+    .without_cert()                                      // 通常不需要客户端证书验证
+    // .with_parameters(your_parameters)                 // 自定义传输参数
+    // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口eth0的IPv4和IPv6地址
+    // .enable_0rtt()                                    // 启用0-RTT
+    // .enable_sslkeylog()                               // 启用SSL密钥日志
     // .with_qlog(Arc::new(gm_quic::handy::DefaultSeqLogger::new(
     //     PathBuf::from("/path/to/qlog_dir"),
-    // ))) // 启用qlog，可用qvis工具可视化
+    // )))                                               // 启用qlog，可用qvis工具可视化
     .build();
 
 // 连接到服务器
@@ -130,13 +125,11 @@ QuicListeners支持通过多种方法验证客客户端的身份，包括通过`
 ```rust
 // 创建QUIC监听器（每个程序只能有一个实例）
 let quic_listeners = gm_quic::QuicListeners::builder()?
-    // 通常不需要客户端证书验证
-    .without_client_cert_verifier()
+    .without_client_cert_verifier()         // 通常不需要客户端证书验证
     // .with_parameters(your_parameters)    // 自定义传输参数
     // .enable_0rtt()                       // 为服务器启用0-RTT
     // .enable_anti_port_scan()             // 抗端口扫描保护
-    // 开始监听，设置积压队列（类似Unix listen）
-    .listen(8192);
+    .listen(8192);                          // 开始监听，设置积压队列（类似Unix listen）
 
 // 添加可连接的服务器
 quic_listeners.add_server(
@@ -145,7 +138,7 @@ quic_listeners.add_server(
     include_bytes!("/path/to/server.crt"),
     include_bytes!("/path/to/server.key"),
     [
-        "iface://v4.eth0:4433", // 绑定到eth0的IPv4地址
+        "192.168.1.106:4433",   // 绑定到此IPv4地址
         "iface://v6.eth0:4433", // 绑定到eth0的IPv6地址
     ],
     None, // ocsp
@@ -158,12 +151,12 @@ quic_listeners.add_server(
 while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
     // 处理传入的QUIC连接！
     // 可以参考 gm-quic/examples 和 h3-shim/examples 中的示例
-****}
+}
 ```
 
 关于如何从QUIC Connection中创建单向QUIC流，或者双向QUIC流，抑或是从QUIC Connection监听来自对方的流，都有一套异步的接口，这套接口几乎与[`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport)的接口相同。
 
-至于如何从QUIC流中读写数据，则为QUIC流实现了标准的**`AsyncRead`**、**`AsyncWrite`**接口，可以很方便地使用。
+至于如何从QUIC流中读写数据，则为QUIC流实现了标准的 **`AsyncRead`** 、 **`AsyncWrite`** 接口，可以很方便地使用。
 
 ## 性能
 
