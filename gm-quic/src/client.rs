@@ -3,6 +3,7 @@ use std::{
     io,
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -45,7 +46,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
     bind_interfaces: Option<DashMap<BindUri, Arc<QuicInterface>>>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
@@ -81,7 +82,7 @@ impl QuicClient {
         QuicClientBuilder {
             bind_interfaces: DashMap::new(),
             prefer_versions: vec![1],
-            defer_idle_timeout: HeartbeatConfig::default(),
+            defer_idle_timeout: Duration::ZERO,
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
             parameters: handy::client_parameters(),
             tls_config,
@@ -288,7 +289,7 @@ pub struct QuicClientBuilder<T> {
     bind_interfaces: DashMap<BindUri, Arc<QuicInterface>>,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
     parameters: ClientParameters,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
@@ -367,8 +368,8 @@ impl<T> QuicClientBuilder<T> {
     /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
     /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
     /// for more information.
-    pub fn defer_idle_timeout(mut self, config: HeartbeatConfig) -> Self {
-        self.defer_idle_timeout = config;
+    pub fn defer_idle_timeout(mut self, duration: Duration) -> Self {
+        self.defer_idle_timeout = duration;
         self
     }
 

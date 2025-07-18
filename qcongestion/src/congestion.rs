@@ -2,8 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use qbase::{
     Epoch,
+    error::Error,
     frame::AckFrame,
     net::tx::{ArcSendWaker, Signals},
+    time::MaxIdleTimer,
 };
 use qevent::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
 use tokio::{
@@ -35,6 +37,7 @@ pub struct CongestionController {
     // Use to pto backoff
     pto_count: u32,
     max_ack_delay: Duration,
+    max_idle_timer: MaxIdleTimer,
     packet_spaces: [PacketSpace; Epoch::count()],
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
@@ -52,6 +55,7 @@ impl CongestionController {
     fn init(
         algorithm: Algorithm,
         max_ack_delay: Duration,
+        max_idle_timer: MaxIdleTimer,
         trackers: [Arc<dyn Feedback>; 3],
         path_status: PathStatus,
         tx_waker: ArcSendWaker,
@@ -68,6 +72,7 @@ impl CongestionController {
             loss_detection_timer: None,
             pto_count: 0,
             max_ack_delay,
+            max_idle_timer,
             packet_spaces: [
                 PacketSpace::with_epoch(Epoch::Initial, Duration::ZERO),
                 PacketSpace::with_epoch(Epoch::Handshake, Duration::ZERO),
@@ -483,6 +488,7 @@ impl ArcCC {
     pub fn new(
         algorithm: Algorithm,
         max_ack_delay: Duration,
+        max_idle_timer: MaxIdleTimer,
         trackers: [Arc<dyn Feedback>; 3],
         path_status: PathStatus,
         tx_waker: ArcSendWaker,
@@ -490,6 +496,7 @@ impl ArcCC {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
             max_ack_delay,
+            max_idle_timer,
             trackers,
             path_status,
             tx_waker,
@@ -510,6 +517,17 @@ impl super::Transport for ArcCC {
                     if guard.loss_detection_timer.is_some_and(|t| t <= now) {
                         guard.on_loss_detection_timeout();
                     }
+                    match guard.max_idle_timer.is_expired(guard.get_pto(Epoch::Data)) {
+                        Err(e) => {
+                            tracing::error!("Failed to check max idle timer: {}", e);
+                            guard.tx_waker.wake_by(Signals::TRANSPORT);
+                        }
+                        Ok(true) => {
+                            tracing::warn!("Max idle timer expired, path will be deactivated");
+                            guard.tx_waker.wake_by(Signals::TRANSPORT);
+                        }
+                        Ok(false) => {}
+                    }
                     if guard.pending_burst && guard.send_quota() >= guard.path_status.mtu() {
                         guard.pending_burst = false;
                         guard.tx_waker.wake_by(Signals::CONGESTION);
@@ -523,6 +541,11 @@ impl super::Transport for ArcCC {
             .in_current_span(),
         )
         .abort_handle()
+    }
+
+    fn is_idle_timeout(&self) -> Result<bool, Error> {
+        let guard = self.0.lock().unwrap();
+        guard.max_idle_timer.is_expired(guard.get_pto(Epoch::Data))
     }
 
     fn send_quota(&self) -> Result<usize, Signals> {
@@ -589,6 +612,9 @@ impl super::Transport for ArcCC {
             return;
         }
         let mut guard = self.0.lock().unwrap();
+        if epoch == Epoch::Data {
+            guard.max_idle_timer.renew_on_received_1rtt();
+        }
         guard.packet_spaces[epoch].rcvd_packets.on_pkt_rcvd(pn);
         guard.on_datagram_rcvd();
     }

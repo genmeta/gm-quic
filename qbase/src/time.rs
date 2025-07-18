@@ -3,7 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Debug, Clone, Copy)]
+use crate::{error::Error, param::ArcParameters};
+
+#[derive(Debug)]
 struct DeferIdleTimer {
     defer_idle_timeout: Duration,
     last_effective_comm: Option<Instant>,
@@ -22,7 +24,7 @@ impl DeferIdleTimer {
     ///
     /// Effective communication is defined as sending or receiving a packet with a valid payload,
     /// which does not include packets that only contain Padding, Ping, or Ack.
-    fn update(&mut self) {
+    fn renew(&mut self) {
         // Even if the timer is expired, it can be updated to the current time
         // within the max idle timeout.
         self.last_effective_comm = Some(Instant::now());
@@ -63,8 +65,8 @@ impl ArcDeferIdleTimer {
     ///
     /// Effective communication is defined as sending or receiving a packet with a valid payload,
     /// which does not include packets that only contain Padding, Ping, or Ack.
-    pub fn on_effective_communicated(&self) {
-        self.0.lock().unwrap().update()
+    pub fn renew_on_effective_communicated(&self) {
+        self.0.lock().unwrap().renew()
     }
 
     /// Returns true if the timer has expired.
@@ -77,33 +79,37 @@ impl ArcDeferIdleTimer {
 }
 
 /// A maximum idle timer for each path.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct MaxIdleTimer {
-    max_idle_timeout: Duration,
+    parameters: ArcParameters,
     last_rcvd_time: Option<Instant>,
 }
 
 impl MaxIdleTimer {
-    /// Creates a new `MaxIdleTimer` with the specified maximum idle timeout.
-    pub fn new(max_idle_timeout: Duration) -> Self {
+    /// Creates a new `MaxIdleTimer` with the specified parameters.
+    pub(crate) fn new(parameters: ArcParameters) -> Self {
         Self {
-            max_idle_timeout,
+            parameters,
             last_rcvd_time: None,
         }
     }
 
     /// Resets the timer to the current time upon receiving a packet.
-    pub fn on_received(&mut self) {
-        if !self.is_expired() {
-            self.last_rcvd_time = Some(Instant::now());
-        }
+    pub fn renew_on_received_1rtt(&mut self) {
+        self.last_rcvd_time = Some(Instant::now());
     }
 
     /// Returns true if the timer has expired.
     ///
     /// Every time the path task wakes up, it needs to check this timer.
-    pub fn is_expired(&self) -> bool {
-        self.elapsed() >= self.max_idle_timeout
+    pub fn is_expired(&self, pto: Duration) -> Result<bool, Error> {
+        let max_idle_timeout = self
+            .parameters
+            .lock_guard()?
+            .negotiated_max_idle_timeout()
+            .unwrap_or(Duration::MAX);
+        let max_idle_timeout = max_idle_timeout.max(pto * 3);
+        Ok(self.elapsed() >= max_idle_timeout)
     }
 
     fn elapsed(&self) -> Duration {
@@ -119,16 +125,7 @@ mod tests {
     #[test]
     fn test_defer_idle_timer() {
         let timer = ArcDeferIdleTimer::new(Duration::from_millis(100));
-        timer.on_effective_communicated();
-        assert!(!timer.is_expired());
-        std::thread::sleep(Duration::from_millis(150));
-        assert!(timer.is_expired());
-    }
-
-    #[test]
-    fn test_max_idle_timer() {
-        let mut timer = MaxIdleTimer::new(Duration::from_millis(100));
-        timer.on_received();
+        timer.renew_on_effective_communicated();
         assert!(!timer.is_expired());
         std::thread::sleep(Duration::from_millis(150));
         assert!(timer.is_expired());

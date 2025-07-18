@@ -33,7 +33,6 @@ pub mod prelude {
     pub use crate::{
         Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
-        path::idle::HeartbeatConfig,
     };
 }
 
@@ -50,7 +49,7 @@ use std::{
 
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
-use path::{ArcPathContexts, idle::HeartbeatConfig};
+use path::ArcPathContexts;
 use qbase::{
     cid,
     error::Error,
@@ -63,6 +62,7 @@ use qbase::{
     param::{ArcParameters, ParameterId},
     role::Role,
     sid::StreamId,
+    time::ArcDeferIdleTimer,
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qevent::{
@@ -133,7 +133,7 @@ pub struct Components {
     interfaces: Arc<QuicInterfaces>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timer: ArcDeferIdleTimer,
     paths: ArcPathContexts,
     send_lock: ArcSendLock,
     tls_handshake: ArcTlsHandshake,

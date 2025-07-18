@@ -7,7 +7,8 @@ use std::{
     },
 };
 
-use qbase::net::tx::Signals;
+use qbase::{net::tx::Signals, time::ArcDeferIdleTimer};
+use qcongestion::Transport;
 use qinterface::QuicIO;
 
 use crate::{CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction};
@@ -19,6 +20,7 @@ pub struct Burst {
     spin: bool,
     spaces: Spaces,
     send_lock: ArcSendLock,
+    defer_idle_timer: ArcDeferIdleTimer,
 }
 
 impl super::Path {
@@ -30,6 +32,7 @@ impl super::Path {
             spin: false,
             spaces: components.spaces.clone(),
             send_lock: components.send_lock.clone(),
+            defer_idle_timer: components.defer_idle_timer.clone(),
         }
     }
 }
@@ -96,7 +99,14 @@ impl Burst {
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
                     )
+                    .map(|pkt_size| {
+                        self.defer_idle_timer.renew_on_effective_communicated();
+                        pkt_size
+                    })
                     .or_else(|signals| {
+                        if self.defer_idle_timer.is_expired() {
+                            return Err(signals);
+                        }
                         transaction
                             .load_one_ping(
                                 &mut buffer[reversed_size..],
@@ -130,6 +140,21 @@ impl Burst {
 
     async fn burst(&self, buffers: &mut Vec<Vec<u8>>) -> io::Result<Vec<usize>> {
         loop {
+            match self.path.cc().is_idle_timeout() {
+                Ok(false) => (),
+                Ok(true) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Path is idle for too long",
+                    ));
+                }
+                Err(e) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!("Failed to check idle timeout: {e}"),
+                    ));
+                }
+            }
             let (buffers, transaction) = match self.prepare(buffers) {
                 Ok(Some((buffers, transaction))) => (buffers, transaction),
                 // When a connection error occurs, we should not try to load the segment again.
