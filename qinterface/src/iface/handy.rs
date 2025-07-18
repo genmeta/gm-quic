@@ -113,7 +113,7 @@ pub mod qudp {
     }
 }
 
-pub mod unsuppoeted {
+pub mod unsupported {
     use std::{
         io,
         task::{Context, Poll},
@@ -127,9 +127,9 @@ pub mod unsuppoeted {
 
     use crate::QuicIO;
 
-    pub struct Unsuppoeted(());
+    pub struct Unsupported(());
 
-    impl Unsuppoeted {
+    impl Unsupported {
         pub fn bind(_: BindUri) -> io::Result<Self> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -138,7 +138,7 @@ pub mod unsuppoeted {
         }
     }
 
-    impl QuicIO for Unsuppoeted {
+    impl QuicIO for Unsupported {
         fn bind_uri(&self) -> BindUri {
             unreachable!()
         }
