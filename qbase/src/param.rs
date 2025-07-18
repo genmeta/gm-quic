@@ -1,8 +1,10 @@
 use std::{
     fmt::Debug,
+    future::Future,
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use crate::{
@@ -10,6 +12,7 @@ use crate::{
     error::{Error, ErrorKind, QuicError},
     frame::FrameType,
     role::Role,
+    time::MaxIdleTimer,
 };
 
 pub mod core;
@@ -375,6 +378,31 @@ impl Parameters {
             }
         }
     }
+
+    /// Returns None if the remote parameters are not ready.
+    pub fn negotiated_max_idle_timeout(&self) -> Option<Duration> {
+        let local_max_idle_timeout = self.get_local(ParameterId::MaxIdleTimeout)?;
+        let remote_max_idle_timeout = self.get_remote(ParameterId::MaxIdleTimeout)?;
+
+        Some(match (local_max_idle_timeout, remote_max_idle_timeout) {
+            // rfc: https://datatracker.ietf.org/doc/html/rfc9000#name-idle-timeout
+            // Each endpoint advertises a max_idle_timeout, but the effective value
+            // at an endpoint is computed as the minimum of the two advertised
+            // values (or the sole advertised value, if only one endpoint advertises
+            // a non-zero value). By announcing a max_idle_timeout, an endpoint
+            // commits to initiating an immediate close (Section 10.2) if
+            // it abandons the connection prior to the effective value.
+            (Duration::ZERO, Duration::ZERO) => Duration::MAX,
+            (Duration::ZERO, d) | (d, Duration::ZERO) => d,
+            // rfc: https://datatracker.ietf.org/doc/html/rfc9000#name-idle-timeout
+            // If a max_idle_timeout is specified by either endpoint in its
+            // transport parameters (Section 18.2), the connection is silently
+            // closed and its state is discarded when it remains idle for longer
+            // than the minimum of the max_idle_timeout value advertised by both
+            // endpoints.
+            (d1, d2) => d1.min(d2),
+        })
+    }
 }
 
 /// Shared transport parameter sets for both endpoints.
@@ -435,6 +463,10 @@ impl ArcParameters {
         .await
     }
 
+    pub fn max_idle_timer(&self) -> MaxIdleTimer {
+        MaxIdleTimer::new(self.clone())
+    }
+
     // /// Sets the retry source connection ID in the server
     // /// transport parameters.
     // ///
@@ -454,6 +486,15 @@ impl ArcParameters {
         if guard.deref_mut().is_ok() {
             *guard = Err(error.clone());
         }
+    }
+}
+
+impl Future for ArcParameters {
+    type Output = Result<(), Error>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut parameters = self.lock_guard()?;
+        parameters.poll_ready(cx).map(|()| Ok(()))
     }
 }
 

@@ -1,6 +1,7 @@
 use std::{
     ops::Deref,
     sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 
 pub use qbase::{
@@ -21,6 +22,7 @@ use qbase::{
     param::{ArcParameters, ParameterId, Parameters},
     role::Role,
     sid::handy::DemandConcurrency,
+    time::ArcDeferIdleTimer,
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::HandshakeStatus;
@@ -38,6 +40,7 @@ use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
 use tracing::Instrument as _;
 
+pub use crate::tls::{AuthClient, ClientAuthers};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     Handshake, RawHandshake, RouterRegistry, SpecificComponents,
@@ -50,10 +53,6 @@ use crate::{
     },
     state::ArcConnState,
     tls::{ArcSendLock, ArcTlsHandshake, ClientTlsSession, ServerTlsSession, TlsSession},
-};
-pub use crate::{
-    path::idle::HeartbeatConfig,
-    tls::{AuthClient, ClientAuthers},
 };
 
 impl Connection {
@@ -119,7 +118,7 @@ pub struct ConnectionFoundation<Foundation, TlsConfig> {
     ifaces: Arc<QuicInterfaces>,
     router: Arc<Router>,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
 }
 
 pub type ClientConnectionFoundation = ConnectionFoundation<ClientFoundation, TlsClientConfig>;
@@ -136,7 +135,7 @@ impl ClientFoundation {
             ifaces: QuicInterfaces::global().clone(),
             router: Router::global().clone(),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
-            defer_idle_timeout: HeartbeatConfig::default(),
+            defer_idle_timeout: Duration::ZERO,
         }
     }
 }
@@ -176,7 +175,7 @@ impl ServerFoundation {
             ifaces: QuicInterfaces::global().clone(),
             router: Router::global().clone(),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
-            defer_idle_timeout: HeartbeatConfig::default(),
+            defer_idle_timeout: Duration::ZERO,
         }
     }
 }
@@ -209,8 +208,8 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 }
 
 impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
-    pub fn with_defer_idle_timeout(mut self, defer: HeartbeatConfig) -> Self {
-        self.defer_idle_timeout = defer;
+    pub fn with_defer_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.defer_idle_timeout = timeout;
         self
     }
 }
@@ -388,7 +387,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 pub struct PendingConnection {
     interfaces: Arc<QuicInterfaces>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
     role: Role,
     origin_dcid: ConnectionId,
     initial_scid: ConnectionId,
@@ -474,7 +473,7 @@ impl PendingConnection {
             interfaces: self.interfaces,
             rcvd_pkt_q: self.rcvd_pkt_q,
             conn_state,
-            defer_idle_timeout: self.defer_idle_timeout,
+            defer_idle_timer: ArcDeferIdleTimer::new(self.defer_idle_timeout),
             paths,
             send_lock: self.send_lock,
             tls_handshake,
