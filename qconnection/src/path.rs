@@ -1,7 +1,7 @@
 use std::{
-    io::{self},
+    io,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU16, Ordering},
     },
 };
@@ -18,15 +18,13 @@ use qbase::{
     },
     packet::PacketContains,
     param::ParameterId,
+    time::{ArcDeferIdleTimer, MaxIdleTimer},
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{QuicIO, iface::QuicInterface};
 use thiserror::Error;
-use tokio::{
-    task::AbortHandle,
-    time::{Duration, Instant},
-};
+use tokio::{task::AbortHandle, time::Duration};
 
 mod aa;
 mod paths;
@@ -38,7 +36,6 @@ pub use util::*;
 
 use crate::{ArcDcidCell, Components};
 pub mod burst;
-pub mod idle;
 
 pub struct Path {
     interface: Arc<QuicInterface>,
@@ -48,7 +45,7 @@ pub struct Path {
     cc: (ArcCC, AbortHandle),
     dcid_cell: ArcDcidCell,
     anti_amplifier: AntiAmplifier,
-    last_active_time: Mutex<Instant>,
+    defer_idle_timer: ArcDeferIdleTimer,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
@@ -69,12 +66,10 @@ pub enum CreatePathFailure {
 pub enum PathDeactivated {
     #[error("Path validation failed: {0}")]
     ValidationFailed(validate::ValidateFailure),
-    #[error("Path became inactive due to idle timeout: {0}")]
-    IdleTimeout(idle::IdleTimedOut),
+    #[error("Path hasn't received any packets since {0:?}")]
+    IdleTimeout(tokio::time::Instant),
     #[error("Failed to send packets on path: {0}")]
     SendError(io::Error),
-    #[error("Failed to defer idle timeout: {0}")]
-    IdleTimeoutDefer(idle::DeferIdleTimeoutFailure),
     #[error("Manually removed by application")]
     ApplicationRemoved,
 }
@@ -112,6 +107,8 @@ impl Components {
                 pathway,
                 dcid_cell,
                 max_ack_delay,
+                self.parameters.max_idle_timer(),
+                self.defer_idle_timer.clone(),
                 [
                     self.spaces.initial().clone(),
                     self.spaces.handshake().clone(),
@@ -121,9 +118,6 @@ impl Components {
             ));
 
             let burst = path.new_burst(self);
-            let paths = self.paths.clone();
-            let parameters = self.parameters.clone();
-
             let validate = {
                 let paths = self.paths.clone();
                 let data_space = self.spaces.data().clone();
@@ -145,14 +139,11 @@ impl Components {
 
             let task = {
                 let path = path.clone();
-                let defer_idle_timeout = self.defer_idle_timeout;
                 async move {
                     Err(tokio::select! {
                         biased;
                         Err(e) = validate(path.clone()) => PathDeactivated::from(e),
-                        Err(e) = path.idle_timeout(parameters, paths) => PathDeactivated::from(e),
                         Err(e) = burst.launch() => PathDeactivated::from(e),
-                        Err(e) = path.defer_idle_timeout(defer_idle_timeout) => PathDeactivated::from(e),
                     })
                 }
             };
@@ -169,12 +160,15 @@ impl Components {
 }
 
 impl Path {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         interface: Arc<QuicInterface>,
         link: Link,
         pathway: Pathway,
         dcid_cell: ArcDcidCell,
         max_ack_delay: Duration,
+        max_idle_timer: MaxIdleTimer,
+        defer_idle_timer: ArcDeferIdleTimer,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
     ) -> Self {
@@ -185,6 +179,7 @@ impl Path {
         let cc = ArcCC::new(
             Algorithm::NewReno,
             max_ack_delay,
+            max_idle_timer,
             feedbacks,
             path_status.clone(),
             tx_waker.clone(),
@@ -198,7 +193,7 @@ impl Path {
             dcid_cell,
             validated: AtomicBool::new(false),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
-            last_active_time: tokio::time::Instant::now().into(),
+            defer_idle_timer,
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
@@ -227,13 +222,11 @@ impl Path {
         if size > 0 {
             self.status.release_anti_amplification_limit();
         }
-        *self.last_active_time.lock().unwrap() = tokio::time::Instant::now();
+        if packet_contains.ack_eliciting() {
+            self.defer_idle_timer.renew_on_effective_communicated();
+        }
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
-    }
-
-    pub fn last_active_time(&self) -> Instant {
-        *self.last_active_time.lock().unwrap()
     }
 
     pub fn grant_anti_amplification(&self) {
