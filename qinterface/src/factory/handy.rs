@@ -9,8 +9,8 @@ pub static DEFAULT_QUIC_IO_FACTORY: fn(BindUri) -> io::Result<qudp::UdpSocketCon
     qudp::UdpSocketController::bind;
 
 #[cfg(not(all(feature = "qudp", any(unix, windows))))]
-pub static DEFAULT_QUIC_IO_FACTORY: fn(BindUri) -> io::Result<unsuppoeted::Unsuppoeted> =
-    unsuppoeted::Unsuppoeted::bind;
+pub static DEFAULT_QUIC_IO_FACTORY: fn(BindUri) -> io::Result<unsupported::Unsupported> =
+    unsupported::Unsupported::bind;
 
 fn _assert_impl_quic_io_factory() {
     fn assert_impl<F: ProductQuicIO + Copy>(_: F) {}
