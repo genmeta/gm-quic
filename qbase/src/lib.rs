@@ -33,6 +33,8 @@ pub mod param;
 pub mod role;
 /// Stream id types and controllers for different roles and different directions.
 pub mod sid;
+/// Max idle timer and defer idle timer.
+pub mod time;
 /// Issuing, storing and verifing tokens operations.
 pub mod token;
 /// Utilities for common data structures.
