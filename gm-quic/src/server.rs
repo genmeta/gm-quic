@@ -4,6 +4,7 @@ use std::{
     io,
     ops::Deref,
     sync::{Arc, RwLock, Weak},
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -208,7 +209,7 @@ pub struct QuicListeners {
     client_authers: Vec<Arc<dyn AuthClient>>,
     tls_config: TlsServerConfig,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
 }
@@ -259,7 +260,7 @@ impl QuicListeners {
             client_authers: vec![],
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            defer_idle_timeout: HeartbeatConfig::default(),
+            defer_idle_timeout: Duration::ZERO,
             logger: None,
             _supported_versions: vec![],
         })
@@ -609,7 +610,7 @@ pub struct QuicListenersBuilder<T> {
     client_authers: Vec<Arc<dyn AuthClient>>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
-    defer_idle_timeout: HeartbeatConfig,
+    defer_idle_timeout: Duration,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     _supported_versions: Vec<u32>,
 }
@@ -657,8 +658,8 @@ impl<T> QuicListenersBuilder<T> {
     /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
     /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
     /// for more information.
-    pub fn defer_idle_timeout(mut self, config: HeartbeatConfig) -> Self {
-        self.defer_idle_timeout = config;
+    pub fn defer_idle_timeout(mut self, duration: Duration) -> Self {
+        self.defer_idle_timeout = duration;
         self
     }
 

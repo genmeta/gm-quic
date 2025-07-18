@@ -1,4 +1,4 @@
-use qbase::{Epoch, frame::AckFrame, net::tx::Signals};
+use qbase::{Epoch, error::Error, frame::AckFrame, net::tx::Signals};
 use qevent::quic::recovery::PacketLostTrigger;
 use tokio::{
     task::AbortHandle,
@@ -23,8 +23,14 @@ pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
     fn launch(&self) -> AbortHandle;
 
+    /// Returns true if this path hasn't received any packets for too long.
+    fn is_idle_timeout(&self) -> Result<bool, Error>;
+
+    /// Returns how many bytes can be sent at the moment.
+    /// If the congestion controller is not ready, returns an signal that should be waited for.
     fn send_quota(&self) -> Result<usize, Signals>;
 
+    /// Gets the retransmission and expiration time for the given epoch.
     fn retransmit_and_expire_time(&self, epoch: Epoch) -> (Duration, Duration);
 
     /// Records the sending of a packet, which may affect congestion control state.
@@ -55,6 +61,7 @@ pub trait Transport {
     /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
 
+    /// Checks if an ack-eliciting packet should be sent for the given epoch.
     fn need_send_ack_eliciting(&self, space: Epoch) -> usize;
 
     /// Updates the congestion control state upon receiving an AckFrame.
@@ -65,8 +72,10 @@ pub trait Transport {
     /// The current PTO duration for the given epoch.
     fn get_pto(&self, epoch: Epoch) -> Duration;
 
+    /// Discards the congestion control state for the specified epoch.
     fn discard_epoch(&self, epoch: Epoch);
 
+    /// Releases the anti-amplification limit for this path.
     fn grant_anti_amplification(&self);
 }
 
