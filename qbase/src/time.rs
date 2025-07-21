@@ -3,7 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{error::Error, param::ArcParameters};
+use thiserror::Error;
+
+use crate::param::ArcParameters;
 
 #[derive(Debug)]
 struct DeferIdleTimer {
@@ -85,6 +87,23 @@ pub struct MaxIdleTimer {
     last_rcvd_time: Option<Instant>,
 }
 
+#[derive(Debug, Error)]
+#[error("Path has been idle for too long({} ms)", self.idle_for.as_millis())]
+pub struct IdleTimedOut {
+    last_rcvd_time: Option<Instant>,
+    idle_for: Duration,
+}
+
+impl IdleTimedOut {
+    pub fn last_rcvd_time(&self) -> Option<Instant> {
+        self.last_rcvd_time
+    }
+
+    pub fn idle_for(&self) -> Duration {
+        self.idle_for
+    }
+}
+
 impl MaxIdleTimer {
     /// Creates a new `MaxIdleTimer` with the specified parameters.
     pub(crate) fn new(parameters: ArcParameters) -> Self {
@@ -99,22 +118,55 @@ impl MaxIdleTimer {
         self.last_rcvd_time = Some(Instant::now());
     }
 
-    /// Returns true if the timer has expired.
+    /// Returns err if the path has been idle for too long.
     ///
     /// Every time the path task wakes up, it needs to check this timer.
-    pub fn is_expired(&self, pto: Duration) -> Result<bool, Error> {
-        let max_idle_timeout = self
-            .parameters
-            .lock_guard()?
-            .negotiated_max_idle_timeout()
-            .unwrap_or(Duration::MAX);
+    pub fn check(&self, pto: Duration) -> Result<(), IdleTimedOut> {
+        let Ok(parameters) = self.parameters.lock_guard() else {
+            return Ok(());
+        };
+
+        let Some(max_idle_timeout) = parameters.negotiated_max_idle_timeout() else {
+            return Ok(());
+        };
+
         let max_idle_timeout = max_idle_timeout.max(pto * 3);
-        Ok(self.elapsed() >= max_idle_timeout)
+
+        let Some(last_rcvd_time) = self.last_rcvd_time else {
+            return Ok(());
+        };
+
+        let since_last_rcvd = last_rcvd_time.elapsed();
+
+        if since_last_rcvd >= max_idle_timeout {
+            return Err(IdleTimedOut {
+                last_rcvd_time: Some(last_rcvd_time),
+                idle_for: since_last_rcvd,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ArcMaxIdleTimer(Arc<Mutex<MaxIdleTimer>>);
+
+impl From<MaxIdleTimer> for ArcMaxIdleTimer {
+    fn from(timer: MaxIdleTimer) -> Self {
+        ArcMaxIdleTimer(Arc::new(Mutex::new(timer)))
+    }
+}
+
+impl ArcMaxIdleTimer {
+    /// Resets the timer to the current time upon receiving a packet.
+    pub fn renew_on_received_1rtt(&self) {
+        self.0.lock().unwrap().renew_on_received_1rtt();
     }
 
-    fn elapsed(&self) -> Duration {
-        self.last_rcvd_time
-            .map_or(Duration::ZERO, |last| last.elapsed())
+    /// Returns err if the path has been idle for too long.
+    pub fn check(&self, pto: Duration) -> Result<(), IdleTimedOut> {
+        self.0.lock().unwrap().check(pto)
     }
 }
 

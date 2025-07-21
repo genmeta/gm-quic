@@ -13,19 +13,14 @@ use qbase::{
     param::{ArcParameters, ClientParameters, ParameterId, ServerParameters, WriteParameters},
     util::Future,
 };
-use qevent::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
 use rustls::{
     ClientConfig, ServerConfig,
     quic::{ClientConnection, KeyChange, ServerConnection},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::Instrument as _;
 
-use crate::{
-    Handshake,
-    events::{ArcEventBroker, EmitEvent, Event},
-};
+use crate::Handshake;
 
 pub enum TlsSession {
     Client(ClientTlsSession),
@@ -331,6 +326,13 @@ pub struct TlsHandshake {
 pub struct ArcTlsHandshake(Arc<Mutex<Result<TlsHandshake, Error>>>);
 
 impl ArcTlsHandshake {
+    pub fn new(session: TlsSession) -> ArcTlsHandshake {
+        Self(Arc::new(Mutex::new(Ok(TlsHandshake {
+            session,
+            info: Future::default(),
+        }))))
+    }
+
     fn state(&self) -> MutexGuard<'_, Result<TlsHandshake, Error>> {
         self.0.lock().unwrap()
     }
@@ -376,6 +378,18 @@ impl ArcTlsHandshake {
         .await
     }
 
+    pub async fn finished(&self) {
+        _ = self.info().await;
+    }
+
+    pub fn is_finished(&self) -> Result<bool, Error> {
+        let tls_handshake = self.state();
+        match tls_handshake.as_ref() {
+            Ok(state) => Ok(!state.session.is_handshaking()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     pub fn server_name(&self) -> Result<Option<String>, Error> {
         let tls_handshake = self.state();
         match tls_handshake.as_ref() {
@@ -395,7 +409,7 @@ impl ArcTlsHandshake {
         &self,
         parameters: &ArcParameters,
         zero_rtt_keys: &ArcZeroRttKeys,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Arc<TlsHandshakeInfo>>, Error> {
         let mut state = self.state();
         let tls_handshake = state.as_mut().map_err(|e| e.clone())?;
 
@@ -419,30 +433,26 @@ impl ArcTlsHandshake {
         }
 
         if !tls_handshake.session.is_handshaking() && tls_handshake.info.try_get().is_none() {
-            tls_handshake
-                .info
-                .set(Arc::new(tls_handshake.session.r#yield()));
+            let info = Arc::new(tls_handshake.session.r#yield());
+            tls_handshake.info.set(info.clone());
+            return Ok(Some(info));
         }
 
-        Ok(())
+        Ok(None)
     }
 
-    pub fn new(
-        session: TlsSession,
+    pub fn launch(
+        self,
         parameters: ArcParameters,
         quic_handshake: Handshake,
         crypto_streams: [CryptoStream; 3],
         (handshake_keys, zero_rtt_keys, one_rtt_keys): (ArcKeys, ArcZeroRttKeys, ArcOneRttKeys),
-        event_broker: ArcEventBroker,
-    ) -> Self {
-        let tls_handshake = Self(Arc::new(Mutex::new(Ok(TlsHandshake {
-            session,
-            info: Future::default(),
-        }))));
-        let this = tls_handshake.clone();
+        on_handshake_conmplete: impl FnOnce(&TlsHandshakeInfo) -> Result<(), Error> + Send + 'static,
+    ) -> impl futures::Future<Output = Result<(), Error>> + Send + 'static {
+        let mut on_handshake_conmplete = Some(on_handshake_conmplete);
 
         let crypto_read_task = |epoch: Epoch| {
-            let tls_handshake = tls_handshake.clone();
+            let tls_handshake = self.clone();
             let mut stream_reader = crypto_streams[epoch].reader();
             async move {
                 let mut buf = [0; 2048];
@@ -463,7 +473,7 @@ impl ArcTlsHandshake {
             let mut buf = Vec::with_capacity(2048);
             let mut cur_epoch = Epoch::Initial;
             loop {
-                let key_change = tls_handshake.read_hs(&mut buf).await?;
+                let key_change = self.read_hs(&mut buf).await?;
                 if !buf.is_empty() {
                     // error: crypto buffer offset overflow
                     (crypto_writers[cur_epoch].write_all(&buf).await).map_err(|e| {
@@ -483,7 +493,9 @@ impl ArcTlsHandshake {
                     }
                     None => {}
                 };
-                tls_handshake.try_process_tls_message(&parameters, &zero_rtt_keys)?;
+                if let Some(info) = self.try_process_tls_message(&parameters, &zero_rtt_keys)? {
+                    (on_handshake_conmplete.take().expect("tls complete twice"))(&info)?;
+                }
             }
         };
 
@@ -493,22 +505,14 @@ impl ArcTlsHandshake {
             result
         };
 
-        tokio::spawn(
-            async move {
-                let result = tokio::try_join!(
-                    initial_read_task,
-                    handshake_read_task,
-                    data_read_task,
-                    crypto_write_task,
-                );
-                if let Err(Error::Quic(quic_error)) = result {
-                    event_broker.emit(Event::Failed(quic_error));
-                }
-            }
-            .instrument_in_current()
-            .in_current_span(),
-        );
-
-        this
+        async move {
+            tokio::try_join!(
+                initial_read_task,
+                handshake_read_task,
+                data_read_task,
+                crypto_write_task,
+            )?;
+            Ok(())
+        }
     }
 }

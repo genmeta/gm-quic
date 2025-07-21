@@ -8,16 +8,21 @@ use std::{
 };
 
 use qbase::{net::tx::Signals, time::ArcDeferIdleTimer};
-use qcongestion::Transport;
 use qinterface::QuicIO;
 
-use crate::{CidRegistry, Components, space::Spaces, tls::ArcSendLock, tx::Transaction};
+use crate::{
+    CidRegistry, Components,
+    space::Spaces,
+    tls::{ArcSendLock, ArcTlsHandshake},
+    tx::Transaction,
+};
 
 pub struct Burst {
     path: Arc<super::Path>,
     cid_registry: CidRegistry,
     launched: AtomicBool,
     spin: bool,
+    tls_handshake: ArcTlsHandshake,
     spaces: Spaces,
     send_lock: ArcSendLock,
     defer_idle_timer: ArcDeferIdleTimer,
@@ -30,6 +35,7 @@ impl super::Path {
             cid_registry: components.cid_registry.clone(),
             launched: AtomicBool::new(false),
             spin: false,
+            tls_handshake: components.tls_handshake.clone(),
             spaces: components.spaces.clone(),
             send_lock: components.send_lock.clone(),
             defer_idle_timer: components.defer_idle_timer.clone(),
@@ -60,10 +66,14 @@ impl Burst {
             &mut buffer[..max_segment_size]
         });
 
+        let Ok(tls_handshake_finished) = self.tls_handshake.is_finished() else {
+            return Ok(None);
+        };
         let Some(transaction) = Transaction::prepare(
             &self.cid_registry,
             // Not using initial DCID after 1RTT ready
             &self.path.dcid_cell,
+            tls_handshake_finished,
             self.path.validated.load(Ordering::Acquire),
             !self.launched.swap(true, Ordering::Acquire),
             self.path.cc(),
@@ -104,9 +114,9 @@ impl Burst {
                         pkt_size
                     })
                     .or_else(|signals| {
-                        if self.defer_idle_timer.is_expired() {
-                            return Err(signals);
-                        }
+                        // if self.defer_idle_timer.is_expired() {
+                        //     return Err(signals);
+                        // }
                         transaction
                             .load_one_ping(
                                 &mut buffer[reversed_size..],
@@ -140,21 +150,6 @@ impl Burst {
 
     async fn burst(&self, buffers: &mut Vec<Vec<u8>>) -> io::Result<Vec<usize>> {
         loop {
-            match self.path.cc().is_idle_timeout() {
-                Ok(false) => (),
-                Ok(true) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Path is idle for too long",
-                    ));
-                }
-                Err(e) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        format!("Failed to check idle timeout: {e}"),
-                    ));
-                }
-            }
             let (buffers, transaction) = match self.prepare(buffers) {
                 Ok(Some((buffers, transaction))) => (buffers, transaction),
                 // When a connection error occurs, we should not try to load the segment again.

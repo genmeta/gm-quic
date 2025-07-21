@@ -379,6 +379,7 @@ where
 pub struct Transaction<'a> {
     cid_registry: &'a CidRegistry,
     borrowed_dcid: Result<BorrowedCid<'a, ArcReliableFrameDeque>, Signals>,
+    tls_handshake_finished: bool,
     path_validated: bool,
     path_first_load: bool,
     cc: &'a ArcCC,
@@ -390,6 +391,7 @@ impl<'a> Transaction<'a> {
     pub fn prepare(
         cid_registry: &'a CidRegistry,
         dcid_cell: &'a ArcDcidCell,
+        tls_handshake_finished: bool,
         path_validated: bool,
         path_first_load: bool,
         cc: &'a ArcCC,
@@ -409,6 +411,7 @@ impl<'a> Transaction<'a> {
         Ok(Some(Self {
             cid_registry,
             borrowed_dcid,
+            tls_handshake_finished,
             path_validated,
             path_first_load,
             cc,
@@ -570,14 +573,13 @@ impl Transaction<'_> {
         let mut loads: Vec<&dyn Fn(&mut Self, &mut [u8], Range<usize>) -> _> = vec![];
 
         loads.push(load_initial);
-        let tls_fin = spaces.data().is_tls_fin();
-        if !tls_fin {
+        if !self.tls_handshake_finished {
             loads.push(load_0rtt);
             signals |= Signals::TLS_FIN;
         }
         loads.push(load_handshake);
 
-        if tls_fin {
+        if self.tls_handshake_finished {
             if self.path_validated {
                 loads.push(load_1rtt_data)
             } else {

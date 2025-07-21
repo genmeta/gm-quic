@@ -23,7 +23,6 @@ pub mod prelude {
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 
-    #[allow(unused_imports)]
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
         pub use qevent::telemetry::handy::*;
@@ -169,12 +168,13 @@ impl Components {
     ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
     {
         let data_space = self.spaces.data().clone();
+        let tls_handshake = self.tls_handshake.clone();
         let terminated = self.conn_state.terminated();
         let parameters = self.parameters.clone();
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
-                    _ = data_space.tls_fin() => {},
+                    _ = tls_handshake.finished() => {},
                     _ = terminated => {}
                 }
             }
@@ -188,12 +188,13 @@ impl Components {
         &self,
     ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
         let data_space = self.spaces.data().clone();
+        let tls_handshake = self.tls_handshake.clone();
         let terminated = self.conn_state.terminated();
         let parameters = self.parameters.clone();
         async move {
             if !data_space.is_zero_rtt_avaliable() {
                 tokio::select! {
-                    _ = data_space.tls_fin() => {},
+                    _ = tls_handshake.finished() => {},
                     _ = terminated => {}
                 }
             }

@@ -18,15 +18,16 @@ use qbase::{
     },
     packet::PacketContains,
     param::ParameterId,
-    time::{ArcDeferIdleTimer, MaxIdleTimer},
+    time::{ArcDeferIdleTimer, ArcMaxIdleTimer, IdleTimedOut, MaxIdleTimer},
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{QuicIO, iface::QuicInterface};
 use thiserror::Error;
-use tokio::{task::AbortHandle, time::Duration};
+use tokio::time::Duration;
 
 mod aa;
+mod drive;
 mod paths;
 mod util;
 mod validate;
@@ -42,10 +43,11 @@ pub struct Path {
     validated: AtomicBool,
     link: Link,
     pathway: Pathway,
-    cc: (ArcCC, AbortHandle),
+    cc: ArcCC,
     dcid_cell: ArcDcidCell,
     anti_amplifier: AntiAmplifier,
     defer_idle_timer: ArcDeferIdleTimer,
+    max_idle_timer: ArcMaxIdleTimer,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
@@ -65,11 +67,11 @@ pub enum CreatePathFailure {
 #[derive(Debug, From, Error)]
 pub enum PathDeactivated {
     #[error("Path validation failed: {0}")]
-    ValidationFailed(validate::ValidateFailure),
-    #[error("Path hasn't received any packets since {0:?}")]
-    IdleTimeout(tokio::time::Instant),
+    ValidationFailed(#[source] validate::ValidateFailure),
+    #[error(transparent)]
+    IdleTimeout(IdleTimedOut),
     #[error("Failed to send packets on path: {0}")]
-    SendError(io::Error),
+    SendError(#[source] io::Error),
     #[error("Manually removed by application")]
     ApplicationRemoved,
 }
@@ -120,12 +122,12 @@ impl Components {
             let burst = path.new_burst(self);
             let validate = {
                 let paths = self.paths.clone();
-                let data_space = self.spaces.data().clone();
+                let tls_handshake = self.tls_handshake.clone();
                 move |path: Arc<Path>| async move {
                     if !is_probed {
                         path.grant_anti_amplification();
                     }
-                    data_space.tls_fin().await;
+                    tls_handshake.finished().await;
 
                     match paths.handshake_path() {
                         Some(handshake_path) if Arc::ptr_eq(&handshake_path, &path) => {
@@ -139,10 +141,12 @@ impl Components {
 
             let task = {
                 let path = path.clone();
+                let tls_handshake = self.tls_handshake.clone();
                 async move {
                     Err(tokio::select! {
                         biased;
                         Err(e) = validate(path.clone()) => PathDeactivated::from(e),
+                        Err(e) = path.drive(tls_handshake) => PathDeactivated::from(e),
                         Err(e) = burst.launch() => PathDeactivated::from(e),
                     })
                 }
@@ -179,21 +183,20 @@ impl Path {
         let cc = ArcCC::new(
             Algorithm::NewReno,
             max_ack_delay,
-            max_idle_timer,
             feedbacks,
             path_status.clone(),
             tx_waker.clone(),
         );
-        let handle = cc.launch();
         Self {
             interface,
             link,
             pathway,
-            cc: (cc, handle),
+            cc,
             dcid_cell,
             validated: AtomicBool::new(false),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
             defer_idle_timer,
+            max_idle_timer: ArcMaxIdleTimer::from(max_idle_timer),
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
@@ -204,7 +207,7 @@ impl Path {
     }
 
     pub fn cc(&self) -> &ArcCC {
-        &self.cc.0
+        &self.cc
     }
 
     pub fn tx_waker(&self) -> &ArcSendWaker {
@@ -224,6 +227,9 @@ impl Path {
         }
         if packet_contains.ack_eliciting() {
             self.defer_idle_timer.renew_on_effective_communicated();
+        }
+        if epoch == Epoch::Data {
+            self.max_idle_timer.renew_on_received_1rtt();
         }
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
@@ -253,7 +259,6 @@ impl Path {
 impl Drop for Path {
     fn drop(&mut self) {
         self.response_rcvbuf.dismiss();
-        self.cc.1.abort();
     }
 }
 

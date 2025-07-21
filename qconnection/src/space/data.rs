@@ -31,7 +31,7 @@ use qbase::{
     param::{ParameterId, ServerParameters, core::Parameters},
     role::Role,
     sid::ControlStreamsConcurrency,
-    util::{BoundQueue, Future},
+    util::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
@@ -76,9 +76,6 @@ pub struct DataSpace {
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
-    tx_wakers: ArcSendWakers,
-
-    tls_fin: Future<()>,
 }
 
 impl DataSpace {
@@ -136,9 +133,6 @@ impl DataSpace {
             ),
             journal: DataJournal::with_capacity(16, None),
             reliable_frames: reliable_frames.clone(),
-            tx_wakers,
-
-            tls_fin: Future::new(),
         }
     }
 
@@ -238,10 +232,6 @@ impl DataSpace {
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
     ) -> Result<(PaddablePacket, Option<u64>), Signals> {
-        if !self.is_tls_fin() {
-            return Err(Signals::TLS_FIN); // not ready for 1RTT
-        }
-
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
@@ -386,25 +376,12 @@ impl DataSpace {
             .map_err(|_| unreachable!("packet is not empty"))
     }
 
-    pub fn is_tls_fin(&self) -> bool {
-        self.tls_fin.try_get().is_some()
-    }
-
     pub fn is_one_rtt_keys_ready(&self) -> bool {
         self.one_rtt_keys.get_local_keys().is_some()
     }
 
     pub fn is_zero_rtt_avaliable(&self) -> bool {
         self.zero_rtt_keys.get_encrypt_keys().is_some()
-    }
-
-    pub async fn tls_fin(&self) {
-        self.tls_fin.get().await;
-    }
-
-    pub(crate) fn on_tls_fin(&self) {
-        assert_eq!(self.tls_fin.set(()), None);
-        self.tx_wakers.wake_all_by(Signals::TLS_FIN);
     }
 
     pub fn one_rtt_keys(&self) -> ArcOneRttKeys {
@@ -559,13 +536,14 @@ pub fn spawn_deliver_and_parse(
     };
 
     let deliver_and_parse_0rtt = {
+        let tls_handshake = components.tls_handshake.clone();
         let components = components.clone();
         let space = space.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
-            space.tls_fin().await;
+            tls_handshake.finished().await;
             while let Some((packet, (bind_uri, pathway, link))) = zeor_rtt_packets.recv().await {
                 let parse = async {
                     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
@@ -639,13 +617,14 @@ pub fn spawn_deliver_and_parse(
     };
 
     let deliver_and_parse_1rtt = {
+        let tls_handshake = components.tls_handshake.clone();
         let components = components.clone();
         let space = space.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         let event_broker = event_broker.clone();
         async move {
             // wait for the 1RTT to be ready, then start receiving packets
-            space.tls_fin().await;
+            tls_handshake.finished().await;
             while let Some((packet, (bind_uri, pathway, link))) = one_rtt_packets.recv().await {
                 let parse = async {
                     let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {
