@@ -28,8 +28,6 @@ struct Options {
     roots: Vec<PathBuf>,
     #[arg(long, help = "Skip verification of server certificate")]
     skip_verify: bool,
-    #[arg(long,action = clap::ArgAction::Set, help = "Reuse connection",default_value = "true")]
-    reuse_connection: bool,
     #[arg(
         long,
         short,
@@ -105,12 +103,6 @@ async fn run(options: Options) -> Result<(), Error> {
         QuicClient::builder().with_root_certificates(roots)
     };
 
-    let client_builder = if options.reuse_connection {
-        client_builder.reuse_connection()
-    } else {
-        client_builder
-    };
-
     let client = client_builder
         .with_qlog(qlogger)
         .without_cert()
@@ -120,34 +112,17 @@ async fn run(options: Options) -> Result<(), Error> {
         .build();
 
     if options.uris.len() == 1 && options.uris[0].path() == "/" {
-        return process(
-            &client,
-            &options.uris[0],
-            options.save,
-            options.reuse_connection,
-        )
-        .await;
+        return process(&client, &options.uris[0], options.save).await;
     } else {
         for uri in options.uris {
-            download(
-                &client,
-                uri,
-                options.save.as_ref(),
-                options.reuse_connection,
-            )
-            .await?;
+            download(&client, uri, options.save.as_ref()).await?;
         }
     }
 
     Ok(())
 }
 
-async fn process(
-    client: &QuicClient,
-    base_uri: &Uri,
-    save: Option<PathBuf>,
-    reuse: bool,
-) -> Result<(), Error> {
+async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> Result<(), Error> {
     let mut stdin = BufReader::new(io::stdin());
     eprintln!(
         "Enter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quit` to quit."
@@ -169,16 +144,11 @@ async fn process(
         uri_parts.scheme = base_uri.scheme().cloned();
         uri_parts.authority = base_uri.authority().cloned();
         uri_parts.path_and_query = Some(format!("/{content}").parse()?);
-        download(client, Uri::from_parts(uri_parts)?, save.as_ref(), reuse).await?;
+        download(client, Uri::from_parts(uri_parts)?, save.as_ref()).await?;
     }
 }
 
-async fn download(
-    client: &QuicClient,
-    uri: Uri,
-    save: Option<&PathBuf>,
-    reuse: bool,
-) -> Result<(), Error> {
+async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Result<(), Error> {
     let (server_name, server_addrs) =
         lookup(uri.authority().ok_or("authority must be present in uri")?).await?;
 
@@ -200,9 +170,7 @@ async fn download(
         None => io::copy(&mut response, &mut io::stdout()).await?,
     };
 
-    if !reuse {
-        connection.close("Bye bye", 0);
-    }
+    connection.close("Bye bye", 0);
 
     tracing::info!("Saved to file {file_path}");
     Ok(())

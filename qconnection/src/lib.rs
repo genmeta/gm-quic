@@ -10,6 +10,7 @@ pub mod tx;
 pub mod prelude {
     pub use qbase::{
         cid::ConnectionId,
+        error::{AppError, Error, ErrorKind, QuicError},
         frame::ConnectionCloseFrame,
         net::{addr::*, route::*},
         param::ParameterId,
