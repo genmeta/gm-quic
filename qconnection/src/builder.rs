@@ -17,8 +17,8 @@ pub use qbase::{
 };
 use qbase::{
     cid::GenUniqueCid,
-    error::Error,
-    net::tx::ArcSendWakers,
+    error::{Error, ErrorKind, QuicError},
+    net::tx::{ArcSendWakers, Signals},
     param::{ArcParameters, ParameterId, Parameters},
     role::Role,
     sid::handy::DemandConcurrency,
@@ -38,21 +38,25 @@ pub use qinterface::route::{Router, Way};
 use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
+use tokio::time;
 use tracing::Instrument as _;
 
 pub use crate::tls::{AuthClient, ClientAuthers};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     Handshake, RawHandshake, RouterRegistry, SpecificComponents,
-    events::ArcEventBroker,
+    events::{ArcEventBroker, Event},
     path::ArcPathContexts,
-    prelude::{EmitEvent, Event},
+    prelude::EmitEvent,
     space::{
         Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace,
         spawn_deliver_and_parse,
     },
     state::ArcConnState,
-    tls::{ArcSendLock, ArcTlsHandshake, ClientTlsSession, ServerTlsSession, TlsSession},
+    tls::{
+        ArcSendLock, ArcTlsHandshake, ClientTlsSession, ServerTlsSession, TlsHandshakeInfo,
+        TlsSession,
+    },
 };
 
 impl Connection {
@@ -209,7 +213,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
 impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
     pub fn with_defer_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.defer_idle_timeout = timeout;
+        self.defer_idle_timeout = Duration::from_secs(20);
         self
     }
 }
@@ -448,37 +452,16 @@ impl PendingConnection {
         );
         let cid_registry = CidRegistry::new(self.role, self.origin_dcid, local_cids, remote_cids);
 
-        let parameters = ArcParameters::from(self.parameters);
-
-        let tls_handshake = ArcTlsHandshake::new(
-            self.tls_session,
-            parameters.clone(),
-            quic_handshake.clone(),
-            [
-                spaces.initial().crypto_stream().clone(),
-                spaces.handshake().crypto_stream().clone(),
-                spaces.data().crypto_stream().clone(),
-            ],
-            (
-                spaces.handshake().keys(),
-                spaces.data().zero_rtt_keys(),
-                spaces.data().one_rtt_keys(),
-            ),
-            event_broker.clone(),
-        );
-
-        let paths = ArcPathContexts::new(self.tx_wakers.clone(), event_broker.clone());
-
         let components = Components {
             interfaces: self.interfaces,
             rcvd_pkt_q: self.rcvd_pkt_q,
             conn_state,
             defer_idle_timer: ArcDeferIdleTimer::new(self.defer_idle_timeout),
-            paths,
+            paths: ArcPathContexts::new(self.tx_wakers.clone(), event_broker.clone()),
             send_lock: self.send_lock,
-            tls_handshake,
+            tls_handshake: ArcTlsHandshake::new(self.tls_session),
             quic_handshake,
-            parameters,
+            parameters: ArcParameters::from(self.parameters),
             token_registry: self.token_registry,
             cid_registry,
             spaces,
@@ -486,7 +469,7 @@ impl PendingConnection {
             specific: self.sepcific,
         };
 
-        spawn_tls_handshake(&components);
+        spawn_tls_handshake(&components, self.tx_wakers.clone());
         spawn_deliver_and_parse(&components);
 
         Connection {
@@ -497,27 +480,77 @@ impl PendingConnection {
     }
 }
 
-fn spawn_tls_handshake(components: &Components) {
-    let parameters = components.parameters.clone();
-    let data_space = components.spaces.data().clone();
-    let local_cids = components.cid_registry.local.clone();
-    let tls_handshake = components.tls_handshake.clone();
-    let role = components.role();
+fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
+    let task = components.tls_handshake.clone().launch(
+        components.parameters.clone(),
+        components.quic_handshake.clone(),
+        [
+            components.spaces.initial().crypto_stream().clone(),
+            components.spaces.handshake().crypto_stream().clone(),
+            components.spaces.data().crypto_stream().clone(),
+        ],
+        (
+            components.spaces.handshake().keys(),
+            components.spaces.data().zero_rtt_keys(),
+            components.spaces.data().one_rtt_keys(),
+        ),
+        on_tls_handshake_done(
+            components.parameters.clone(),
+            components.spaces.data().clone(),
+            components.cid_registry.local.clone(),
+            tx_wakers,
+        ),
+    );
 
+    let event_broker = components.event_broker.clone();
     let task = async move {
-        let zero_rtt_rejected = tls_handshake
-            .info()
-            .await?
+        if let Err(Error::Quic(e)) = task.await {
+            event_broker.emit(Event::Failed(e));
+        }
+    };
+
+    tokio::spawn(task.instrument_in_current().in_current_span());
+
+    let event_broker = components.event_broker.clone();
+    let paths = components.paths.clone();
+    let tls_handshake = components.tls_handshake.clone();
+    let task = async move {
+        {
+            if time::timeout(Duration::from_secs(25), tls_handshake.finished())
+                .await
+                .is_err()
+            {
+                paths.clear();
+                event_broker.emit(Event::Failed(QuicError::with_default_fty(
+                    ErrorKind::NoViablePath,
+                    "TLS handshake timeout after 25 seconds",
+                )));
+            }
+        }
+    };
+
+    tokio::spawn(task.instrument_in_current().in_current_span());
+}
+
+fn on_tls_handshake_done(
+    parameters: ArcParameters,
+    data_space: Arc<DataSpace>,
+    local_cids: ArcLocalCids,
+    tx_wakers: ArcSendWakers,
+) -> impl FnOnce(&TlsHandshakeInfo) -> Result<(), Error> + Send {
+    move |info| {
+        let zero_rtt_rejected = info
             .zero_rtt_accepted()
             .map(|accepted| !accepted)
             .unwrap_or(false);
 
+        let parameters = parameters.lock_guard()?;
+
         if zero_rtt_rejected {
-            debug_assert_eq!(role, Role::Client);
-            tracing::warn!("0-RTT is not accepted by the server.");
+            debug_assert_eq!(parameters.role(), Role::Client);
+            tracing::warn!("0-RTT is not enabled, or not accepted by the server.");
         }
 
-        let parameters = parameters.remote_ready().await?;
         match parameters.role() {
             Role::Client => qevent::event!(ParametersSet {
                 owner: Owner::Remote,
@@ -568,18 +601,8 @@ fn spawn_tls_handshake(components: &Components) {
                 .expect("unreachable: default value will be got if the value unset"),
         );
 
-        // only if data space is initialized in 0rtt
-        data_space.on_tls_fin();
+        tx_wakers.wake_all_by(Signals::TLS_FIN);
 
         Result::<_, Error>::Ok(())
-    };
-
-    let event_broker = components.event_broker.clone();
-    let task = async move {
-        if let Err(Error::Quic(quic_error)) = task.await {
-            event_broker.emit(Event::Failed(quic_error));
-        }
-    };
-
-    tokio::spawn(task.instrument_in_current().in_current_span());
+    }
 }

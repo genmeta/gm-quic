@@ -1,9 +1,6 @@
-use qbase::{Epoch, error::Error, frame::AckFrame, net::tx::Signals};
+use qbase::{Epoch, frame::AckFrame, net::tx::Signals};
 use qevent::quic::recovery::PacketLostTrigger;
-use tokio::{
-    task::AbortHandle,
-    time::{Duration, Instant},
-};
+use tokio::time::{Duration, Instant};
 
 mod algorithm;
 pub use algorithm::Algorithm;
@@ -21,10 +18,7 @@ pub const MSS: usize = 1200;
 /// The [`Transport`] trait defines the interface for congestion control algorithms.
 pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn launch(&self) -> AbortHandle;
-
-    /// Returns true if this path hasn't received any packets for too long.
-    fn is_idle_timeout(&self) -> Result<bool, Error>;
+    fn do_tick(&self);
 
     /// Returns how many bytes can be sent at the moment.
     /// If the congestion controller is not ready, returns an signal that should be waited for.
