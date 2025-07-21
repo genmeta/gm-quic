@@ -104,7 +104,6 @@ async fn run(options: Options) -> Result<(), Error> {
         .without_cert()
         .with_parameters(client_parameters())
         .with_qlog(qlogger)
-        // .reuse_connection()
         .enable_sslkeylog()
         .enable_0rtt()
         .build();

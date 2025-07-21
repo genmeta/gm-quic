@@ -17,7 +17,7 @@ run_client() {
             # do nothing
             ;;
         "multiconnect" )
-            CLIENT_PARAMS="$CLIENT_PARAMS --reuse-connection=false"
+            CLIENT_PARAMS="$CLIENT_PARAMS"
             ;;
         "http3" )
             binary="/h3-client"

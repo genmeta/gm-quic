@@ -42,7 +42,6 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// ## Connection Handling
 ///
 /// Call [`QuicClient::connect`] to establish connections. The client supports:
-/// - **Connection reuse**: Enable with [`QuicClientBuilder::reuse_connection`] to reuse existing connections
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
     bind_interfaces: Option<DashMap<BindUri, Arc<QuicInterface>>>,
@@ -50,7 +49,6 @@ pub struct QuicClient {
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
-    reuse_connection: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     tls_config: TlsClientConfig,
@@ -58,11 +56,6 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    fn reuseable_connections() -> &'static DashMap<String, Arc<Connection>> {
-        static REUSEABLE_CONNECTIONS: OnceLock<DashMap<String, Arc<Connection>>> = OnceLock::new();
-        REUSEABLE_CONNECTIONS.get_or_init(Default::default)
-    }
-
     /// Create a new [`QuicClient`] builder.
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         Self::builder_with_tls(TlsClientConfig::builder_with_protocol_versions(&[
@@ -87,7 +80,6 @@ impl QuicClient {
     pub fn builder_with_tls<T>(tls_config: T) -> QuicClientBuilder<T> {
         QuicClientBuilder {
             bind_interfaces: DashMap::new(),
-            reuse_connection: false,
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
@@ -140,11 +132,35 @@ impl From<ConnectServerError> for io::Error {
 }
 
 impl QuicClient {
-    fn new_connection(
+    /// Returns the connection to the specified server.
+    ///
+    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
+    ///
+    /// `server_addr` is the address of the server, packets will be sent to this address.
+    ///
+    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
+    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
+    /// failed to connect.
+    ///
+    /// ### Select an interface
+    ///
+    /// First, the client will select an interface to communicate with the server.
+    ///
+    /// If the client has already bound a set of addresses, The client will select the interface whose IP family of the
+    /// first address matches the server addr from the bound and not closed interfaces.
+    ///
+    /// ### Connect to server
+    ///
+    /// If the client does not bind any interface, the client will bind the interface on the address/port randomly assigned
+    /// by the system through `quic_iface_factory` *every time* it establishes a connection.
+    ///
+    /// The client will initiate a new connection to the server.
+    pub fn connect(
         &self,
-        server_name: String,
+        server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Arc<Connection>, ConnectServerError> {
+        let server_name = server_name.into();
         let avaliable_ifaces = self.bind_interfaces.as_ref().map(|map| {
             map.iter()
                 .filter_map(|entry| Some((entry.value().clone(), entry.value().real_addr().ok()?)))
@@ -247,23 +263,11 @@ impl QuicClient {
                         Event::Handshaked => {}
                         Event::ProbedNewPath(_, _) => {}
                         Event::PathDeactivated(..) => {}
-                        Event::ApplicationClose => {
-                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
-                                Arc::ptr_eq(&connection, exist)
-                            });
-                        }
+                        Event::ApplicationClose => {}
                         Event::Failed(error) => {
-                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
-                                Arc::ptr_eq(&connection, exist)
-                            });
                             connection.enter_closing(qbase::error::Error::from(error).into())
                         }
-                        Event::Closed(ccf) => {
-                            Self::reuseable_connections().remove_if(&server_name, |_, exist| {
-                                Arc::ptr_eq(&connection, exist)
-                            });
-                            connection.enter_draining(ccf)
-                        }
+                        Event::Closed(ccf) => connection.enter_draining(ccf),
                         Event::StatelessReset => { /* TOOD: stateless reset */ }
                         Event::Terminated => return,
                     }
@@ -277,60 +281,11 @@ impl QuicClient {
 
         Ok(connection)
     }
-
-    /// Returns the connection to the specified server.
-    ///
-    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
-    ///
-    /// `server_addr` is the address of the server, packets will be sent to this address.
-    ///
-    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
-    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
-    /// failed to connect.
-    ///
-    /// ### Select an interface
-    ///
-    /// First, the client will select an interface to communicate with the server.
-    ///
-    /// If the client has already bound a set of addresses, The client will select the interface whose IP family of the
-    /// first address matches the server addr from the bound and not closed interfaces.
-    ///
-    /// If `reuse_address` is not enabled; the client will not select an interface that is in use.
-    ///
-    /// ### Connecte to server
-    ///
-    /// If connection reuse is enabled, the client will give priority to returning the existing connection to the
-    /// `server_name` and `server_addr`.
-    ///
-    /// If the client does not bind any interface, the client will bind the interface on the address/port randomly assigned
-    /// by the system (i.e. xxx) through `quic_iface_factory` *every time* it establishes a connection. When no interface is
-    /// bound, the reuse interface option will have no effect.
-    ///
-    /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will initiates
-    /// a new connection to the server.
-    pub fn connect(
-        &self,
-        server_name: impl Into<String>,
-        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> Result<Arc<Connection>, ConnectServerError> {
-        let server_name = server_name.into();
-        if self.reuse_connection {
-            match Self::reuseable_connections().entry(server_name.clone()) {
-                dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().clone()),
-                dashmap::Entry::Vacant(vacant_entry) => Ok(vacant_entry
-                    .insert(self.new_connection(server_name, server_eps)?)
-                    .clone()),
-            }
-        } else {
-            self.new_connection(server_name, server_eps)
-        }
-    }
 }
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
     bind_interfaces: DashMap<BindUri, Arc<QuicInterface>>,
-    reuse_connection: bool,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
     defer_idle_timeout: HeartbeatConfig,
@@ -391,15 +346,6 @@ impl<T> QuicClientBuilder<T> {
             self.bind_interfaces.insert(bind_uri, interface);
         }
 
-        self
-    }
-
-    /// Enable efficiently reuse connections.
-    ///
-    /// If you enable this option the client will give priority to returning the existing connection to the `server_name`
-    /// and `server_addr`, instead of creating a new connection every time.
-    pub fn reuse_connection(mut self) -> Self {
-        self.reuse_connection = true;
         self
     }
 
@@ -483,7 +429,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -504,7 +449,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -573,7 +517,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         }
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -601,7 +544,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -620,7 +562,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
@@ -639,7 +580,6 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_connection: self.reuse_connection,
             prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
@@ -693,7 +633,6 @@ impl QuicClientBuilder<TlsClientConfig> {
         };
         QuicClient {
             bind_interfaces,
-            reuse_connection: self.reuse_connection,
             _prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
