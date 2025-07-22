@@ -123,6 +123,7 @@ impl Components {
             let validate = {
                 let paths = self.paths.clone();
                 let tls_handshake = self.tls_handshake.clone();
+                let conn_state = self.conn_state.clone();
                 move |path: Arc<Path>| async move {
                     if !is_probed {
                         path.grant_anti_amplification();
@@ -134,7 +135,10 @@ impl Components {
                             path.validated();
                             Ok(())
                         }
-                        _ => path.validate().await,
+                        _ => {
+                            conn_state.handshaked().await;
+                            path.validate().await
+                        }
                     }
                 }
             };

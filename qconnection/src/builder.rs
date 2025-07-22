@@ -213,7 +213,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
 impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
     pub fn with_defer_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.defer_idle_timeout = Duration::from_secs(20);
+        self.defer_idle_timeout = timeout;
         self
     }
 }

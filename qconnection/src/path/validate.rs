@@ -24,7 +24,7 @@ impl super::Path {
     pub async fn validate(&self) -> Result<(), ValidateFailure> {
         let challenge = PathChallengeFrame::random();
         let start = Instant::now();
-        for _ in 0..10 {
+        for _ in 0..30 {
             let timeout_duration = self.cc().get_pto(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
             match tokio::time::timeout(timeout_duration, self.response_rcvbuf.receive()).await {
