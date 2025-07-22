@@ -20,7 +20,7 @@ use qbase::{
     error::{Error, ErrorKind, QuicError},
     net::tx::{ArcSendWakers, Signals},
     param::{ArcParameters, ParameterId, Parameters},
-    role::Role,
+    role::{IntoRole, Role},
     sid::handy::DemandConcurrency,
     time::ArcDeferIdleTimer,
     token::{ArcTokenRegistry, TokenRegistry},
@@ -538,6 +538,39 @@ fn on_tls_handshake_done(
     local_cids: ArcLocalCids,
     tx_wakers: ArcSendWakers,
 ) -> impl FnOnce(&TlsHandshakeInfo) -> Result<(), Error> + Send {
+    fn apply_parameters<Role: IntoRole>(
+        data_space: &DataSpace,
+        local_cids: &ArcLocalCids,
+        zero_rtt_rejected: bool,
+        remote_parameters: Arc<qbase::param::core::Parameters<Role>>,
+    ) -> Result<(), Error> {
+        // accept InitialMaxStreamsBidi, InitialMaxStreamUni,
+        // InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
+        data_space
+            .streams()
+            .revise_params(zero_rtt_rejected, remote_parameters.as_ref());
+        // accept InitialMaxData:
+        data_space.flow_ctrl().sender.revise_max_data(
+            zero_rtt_rejected,
+            remote_parameters
+                .get(ParameterId::InitialMaxData)
+                .expect("unreachable: default value will be got if the value unset"),
+        );
+        // accept ActiveConnectionIdLimit
+        local_cids.set_limit(
+            remote_parameters
+                .get(ParameterId::ActiveConnectionIdLimit)
+                .expect("unreachable: default value will be got if the value unset"),
+        )?;
+        data_space.journal().of_rcvd_packets().revise_max_ack_delay(
+            remote_parameters
+                .get(ParameterId::MaxAckDelay)
+                .expect("unreachable: default value will be got if the value unset"),
+        );
+
+        Ok(())
+    }
+
     move |info| {
         let zero_rtt_rejected = info
             .zero_rtt_accepted()
@@ -552,55 +585,41 @@ fn on_tls_handshake_done(
         }
 
         match parameters.role() {
-            Role::Client => qevent::event!(ParametersSet {
-                owner: Owner::Remote,
-                server_parameters: parameters
+            Role::Client => {
+                let remote_parameters = parameters
                     .server()
-                    .expect("client and server parameters has been ready"),
-            }),
-            Role::Server => qevent::event!(ParametersSet {
-                owner: Owner::Remote,
-                client_parameters: parameters
+                    .expect("client and server parameters has been ready")
+                    .clone();
+                drop(parameters);
+                qevent::event!(ParametersSet {
+                    owner: Owner::Remote,
+                    server_parameters: &remote_parameters,
+                });
+                apply_parameters(
+                    &data_space,
+                    &local_cids,
+                    zero_rtt_rejected,
+                    remote_parameters,
+                )?;
+            }
+            Role::Server => {
+                let remote_parameters = parameters
                     .client()
-                    .expect("client and server parameters has been ready"),
-            }),
+                    .expect("client and server parameters has been ready")
+                    .clone();
+                drop(parameters);
+                qevent::event!(ParametersSet {
+                    owner: Owner::Remote,
+                    client_parameters: &remote_parameters,
+                });
+                apply_parameters(
+                    &data_space,
+                    &local_cids,
+                    zero_rtt_rejected,
+                    remote_parameters,
+                )?;
+            }
         }
-
-        // accept InitialMaxStreamsBidi, InitialMaxStreamUni,
-        // InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
-        match parameters.role() {
-            Role::Client => data_space.streams().revise_params(
-                zero_rtt_rejected,
-                parameters
-                    .server()
-                    .expect("client and server parameters has been ready"),
-            ),
-            Role::Server => data_space.streams().revise_params(
-                zero_rtt_rejected,
-                parameters
-                    .client()
-                    .expect("client and server parameters has been ready"),
-            ),
-        };
-        // accept InitialMaxData:
-        data_space.flow_ctrl().sender.revise_max_data(
-            zero_rtt_rejected,
-            parameters
-                .get_remote(ParameterId::InitialMaxData)
-                .expect("unreachable: default value will be got if the value unset"),
-        );
-        // accept ActiveConnectionIdLimit
-        local_cids.set_limit(
-            parameters
-                .get_remote(ParameterId::ActiveConnectionIdLimit)
-                .expect("unreachable: default value will be got if the value unset"),
-        )?;
-        data_space.journal().of_rcvd_packets().revise_max_ack_delay(
-            parameters
-                .get_remote(ParameterId::MaxAckDelay)
-                .expect("unreachable: default value will be got if the value unset"),
-        );
-
         tx_wakers.wake_all_by(Signals::TLS_FIN);
 
         Result::<_, Error>::Ok(())
