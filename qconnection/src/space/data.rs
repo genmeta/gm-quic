@@ -53,7 +53,7 @@ use crate::{
     ArcReliableFrameDeque, Components, DataJournal, DataStreams, FlowController, GuaranteedFrame,
     SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{CreatePathFailure, Path, SendBuffer},
+    path::{ArcHeartbeat, CreatePathFailure, Path, SendBuffer},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
@@ -374,6 +374,38 @@ impl DataSpace {
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
             .map_err(|_| unreachable!("packet is not empty"))
+    }
+
+    pub fn try_assemble_heartbeat_packet(
+        &self,
+        tx: &mut Transaction<'_>,
+        spin: SpinBit,
+        buf: &mut [u8],
+        heartbeat: &ArcHeartbeat,
+    ) -> Result<PaddablePacket, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
+        let sent_journal = self.journal.of_sent_packets();
+        let mut packet = PacketBuffer::new_short(
+            OneRttHeader::new(spin, tx.applied_dcid()?),
+            buf,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
+            key_phase,
+            &sent_journal,
+        )?;
+
+        let mut signals = Signals::empty();
+        _ = heartbeat
+            .try_load_heartbeat_into(&mut packet)
+            .map_err(|s| signals |= s);
+
+        packet
+            .prepare_with_time(retran_timeout, expire_timeout)
+            .map_err(|_| signals)
     }
 
     pub fn is_one_rtt_keys_ready(&self) -> bool {

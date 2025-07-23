@@ -1,4 +1,4 @@
-use qbase::{Epoch, time::IdleTimedOut};
+use qbase::{Epoch, net::tx::Signals, time::IdleTimedOut};
 use qcongestion::Transport;
 use tokio::time::{self, Duration};
 
@@ -10,7 +10,10 @@ impl super::Path {
         loop {
             interval.tick().await;
             if matches!(tls_handshake.is_finished(), Ok(true)) {
-                self.max_idle_timer.check(self.cc.get_pto(Epoch::Data))?;
+                self.max_idle_timer.run_out(self.cc.get_pto(Epoch::Data))?;
+            }
+            if self.heartbeat.need_trigger() {
+                self.tx_waker.wake_by(Signals::TRANSPORT);
             }
             self.cc.do_tick();
         }

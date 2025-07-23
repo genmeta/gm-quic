@@ -31,8 +31,8 @@ use tokio::time::{Duration, Instant};
 
 use crate::{
     ArcDcidCell, ArcReliableFrameDeque, CidRegistry, GuaranteedFrame,
-    path::{AntiAmplifier, Constraints, SendBuffer},
-    space::Spaces,
+    path::{AntiAmplifier, ArcHeartbeat, Constraints, SendBuffer},
+    space::{Spaces, data::DataSpace},
 };
 
 pub struct PacketLogger {
@@ -657,6 +657,31 @@ impl Transaction<'_> {
         } else {
             Err(signals)
         }
+    }
+
+    pub fn load_heartbeat(
+        &mut self,
+        buf: &mut [u8],
+        data_space: &DataSpace,
+        spin: SpinBit,
+        heartbeat: &ArcHeartbeat,
+    ) -> Result<usize, Signals> {
+        data_space
+            .try_assemble_heartbeat_packet(self, spin, buf, heartbeat)
+            .map(|packet| {
+                let final_layout = packet.fill_and_complete(buf);
+                self.constraints
+                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
+                self.cc.on_pkt_sent(
+                    Epoch::Data,
+                    final_layout.pn(),
+                    final_layout.is_ack_eliciting(),
+                    final_layout.sent_bytes(),
+                    final_layout.in_flight(),
+                    None,
+                );
+                final_layout.sent_bytes()
+            })
     }
 
     pub fn load_one_ping(

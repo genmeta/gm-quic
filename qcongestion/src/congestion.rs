@@ -425,8 +425,8 @@ impl CongestionController {
     }
 
     fn send_ack_eliciting_packet(&mut self, epoch: Epoch, count: usize) {
-        self.tx_waker.wake_by(Signals::PING);
         self.need_send_ack_eliciting_packets[epoch] += count;
+        self.tx_waker.wake_by(Signals::PING);
     }
 
     #[inline]
