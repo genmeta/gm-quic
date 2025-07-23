@@ -130,7 +130,7 @@ impl MaxIdleTimer {
     /// Returns err if the path has been idle for too long.
     ///
     /// Every time the path task wakes up, it needs to check this timer.
-    pub fn check(&self, pto: Duration) -> Result<(), IdleTimedOut> {
+    pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
         let Ok(parameters) = self.parameters.lock_guard() else {
             return Ok(());
         };
@@ -175,7 +175,7 @@ impl ArcMaxIdleTimer {
 
     /// Returns err if the path has been idle for too long.
     pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
-        self.0.lock().unwrap().check(pto)
+        self.0.lock().unwrap().run_out(pto)
     }
 }
 

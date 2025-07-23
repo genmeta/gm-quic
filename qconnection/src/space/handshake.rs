@@ -39,7 +39,7 @@ use super::AckHandshakeSpace;
 use crate::{
     Components, HandshakeJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{CreatePathFailure, Path},
+    path::{Path, error::CreatePathFailure},
     space::pipe,
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},

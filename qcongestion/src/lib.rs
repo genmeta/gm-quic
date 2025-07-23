@@ -1,5 +1,6 @@
 use qbase::{Epoch, frame::AckFrame, net::tx::Signals};
 use qevent::quic::recovery::PacketLostTrigger;
+use thiserror::Error;
 use tokio::time::{Duration, Instant};
 
 mod algorithm;
@@ -15,10 +16,14 @@ pub use status::{HandshakeStatus, PathStatus};
 /// default datagram size in bytes.
 pub const MSS: usize = 1200;
 
+#[derive(Debug, Clone, Copy, Error)]
+#[error("Too many PTOs: {0}")]
+pub struct TooManyPtos(u32);
+
 /// The [`Transport`] trait defines the interface for congestion control algorithms.
 pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn do_tick(&self);
+    fn do_tick(&self) -> Result<(), TooManyPtos>;
 
     /// Returns how many bytes can be sent at the moment.
     /// If the congestion controller is not ready, returns an signal that should be waited for.

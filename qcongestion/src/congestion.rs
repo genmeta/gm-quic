@@ -9,7 +9,7 @@ use qevent::quic::recovery::PacketLostTrigger;
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    Algorithm, Feedback, MSS,
+    Algorithm, Feedback, MSS, TooManyPtos,
     algorithm::{Control, new_reno::NewReno},
     pacing::{self, Pacer},
     packets::{PacketSpace, SentPacket},
@@ -286,7 +286,7 @@ impl CongestionController {
     ///
     ///   pto_count++
     ///   SetLossDetectionTimer()
-    fn on_loss_detection_timeout(&mut self) {
+    fn on_loss_detection_timeout(&mut self) -> u32 {
         if let Some((_, epoch)) = self.get_loss_time_and_epoch() {
             let mut loss_pns = self.packet_spaces[epoch]
                 .detect_lost_packets(self.rtt.loss_delay(), PACKET_THRESHOLD, &mut self.algorithm)
@@ -297,7 +297,7 @@ impl CongestionController {
                 self.trackers[epoch].may_loss(PacketLostTrigger::TimeThreshold, &mut loss_pns);
             }
             self.set_loss_detection_timer();
-            return;
+            return self.pto_count;
         }
 
         if self.no_ack_eliciting_in_flight() {
@@ -320,6 +320,7 @@ impl CongestionController {
 
         self.pto_count += 1;
         self.set_loss_detection_timer();
+        self.pto_count
     }
 
     /// GetLossTimeAndSpace():
@@ -494,11 +495,14 @@ impl ArcCC {
 }
 
 impl super::Transport for ArcCC {
-    fn do_tick(&self) {
+    fn do_tick(&self) -> Result<(), TooManyPtos> {
         let now = Instant::now();
         let mut guard = self.0.lock().unwrap();
         if guard.loss_detection_timer.is_some_and(|t| t <= now) {
-            guard.on_loss_detection_timeout();
+            let pto_count = guard.on_loss_detection_timeout();
+            if pto_count > 6 {
+                return Err(TooManyPtos(pto_count));
+            }
         }
 
         if guard.pending_burst && guard.send_quota() >= guard.path_status.mtu() {
@@ -508,6 +512,8 @@ impl super::Transport for ArcCC {
         if guard.need_ack() {
             guard.tx_waker.wake_by(Signals::TRANSPORT);
         }
+
+        Ok(())
     }
 
     fn send_quota(&self) -> Result<usize, Signals> {

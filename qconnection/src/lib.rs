@@ -86,7 +86,7 @@ use tls::ArcSendLock;
 use tracing::Instrument as _;
 
 use crate::{
-    path::{CreatePathFailure, PathDeactivated},
+    path::error::{CreatePathFailure, PathDeactivated},
     termination::Terminator,
     tls::ArcTlsHandshake,
 };
@@ -266,8 +266,7 @@ impl Components {
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
-        self.paths
-            .remove(pathway, &PathDeactivated::ApplicationRemoved);
+        self.paths.remove(pathway, &PathDeactivated::App);
     }
 
     pub fn peer_certs(&self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send {
