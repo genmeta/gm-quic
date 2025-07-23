@@ -46,8 +46,8 @@ pub struct Path {
     cc: ArcCC,
     dcid_cell: ArcDcidCell,
     anti_amplifier: AntiAmplifier,
-    defer_idle_timer: ArcDeferIdleTimer,
     max_idle_timer: ArcMaxIdleTimer,
+    heartbeat: ArcHeartbeat,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
@@ -199,8 +199,8 @@ impl Path {
             dcid_cell,
             validated: AtomicBool::new(false),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
-            defer_idle_timer,
             max_idle_timer: ArcMaxIdleTimer::from(max_idle_timer),
+            heartbeat: ArcHeartbeat::new(defer_idle_timer, Duration::from_secs(1)),
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
@@ -230,7 +230,7 @@ impl Path {
             self.status.release_anti_amplification_limit();
         }
         if packet_contains.ack_eliciting() {
-            self.defer_idle_timer.renew_on_effective_communicated();
+            self.heartbeat.renew_on_effective_communicated();
         }
         if epoch == Epoch::Data {
             self.max_idle_timer.renew_on_received_1rtt();

@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use qbase::{net::tx::Signals, time::ArcDeferIdleTimer};
+use qbase::net::tx::Signals;
 use qinterface::QuicIO;
 
 use crate::{
@@ -25,7 +25,6 @@ pub struct Burst {
     tls_handshake: ArcTlsHandshake,
     spaces: Spaces,
     send_lock: ArcSendLock,
-    defer_idle_timer: ArcDeferIdleTimer,
 }
 
 impl super::Path {
@@ -38,7 +37,6 @@ impl super::Path {
             tls_handshake: components.tls_handshake.clone(),
             spaces: components.spaces.clone(),
             send_lock: components.send_lock.clone(),
-            defer_idle_timer: components.defer_idle_timer.clone(),
         }
     }
 }
@@ -110,13 +108,10 @@ impl Burst {
                         &self.path.response_sndbuf,
                     )
                     .map(|pkt_size| {
-                        self.defer_idle_timer.renew_on_effective_communicated();
+                        self.path.heartbeat.renew_on_effective_communicated();
                         pkt_size
                     })
                     .or_else(|signals| {
-                        // if self.defer_idle_timer.is_expired() {
-                        //     return Err(signals);
-                        // }
                         transaction
                             .load_one_ping(
                                 &mut buffer[reversed_size..],
@@ -124,6 +119,16 @@ impl Burst {
                                 &self.spaces,
                             )
                             .map_err(|s| s | signals)
+                    })
+                    .or_else(|s| {
+                        transaction
+                            .load_heartbeat(
+                                &mut buffer[reversed_size..],
+                                self.spaces.data(),
+                                self.spin.into(),
+                                &self.path.heartbeat,
+                            )
+                            .map_err(|signals| signals | s)
                     })
                     .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
             })

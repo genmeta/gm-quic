@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
 use gm_quic::{handy::*, *};
@@ -91,6 +91,7 @@ async fn run(options: Options) -> io::Result<()> {
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .with_qlog(qlogger)
+        .defer_idle_timeout(Duration::from_secs(0))
         .enable_0rtt()
         .listen(options.backlog);
     listeners.add_server(

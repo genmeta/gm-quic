@@ -32,6 +32,11 @@ impl DeferIdleTimer {
         self.last_effective_comm = Some(Instant::now());
     }
 
+    fn is_idle_lasted_for(&self, duration: Duration) -> bool {
+        self.last_effective_comm
+            .is_some_and(|last| last.elapsed() >= duration)
+    }
+
     /// Returns true if the timer has expired.
     ///
     /// When sending a heartbeat packet that includes a ping, this method should be called first.
@@ -69,6 +74,10 @@ impl ArcDeferIdleTimer {
     /// which does not include packets that only contain Padding, Ping, or Ack.
     pub fn renew_on_effective_communicated(&self) {
         self.0.lock().unwrap().renew()
+    }
+
+    pub fn is_idle_lasted_for(&self, duration: Duration) -> bool {
+        self.0.lock().unwrap().is_idle_lasted_for(duration)
     }
 
     /// Returns true if the timer has expired.
@@ -165,7 +174,7 @@ impl ArcMaxIdleTimer {
     }
 
     /// Returns err if the path has been idle for too long.
-    pub fn check(&self, pto: Duration) -> Result<(), IdleTimedOut> {
+    pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
         self.0.lock().unwrap().check(pto)
     }
 }
