@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::{Connection, QuicListeners, StreamReader, StreamWriter, handy::server_parameters};
-use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
+use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::{
     fs,
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -110,7 +110,7 @@ fn main() {
 
 async fn run(options: Options) -> Result<(), Error> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };
 

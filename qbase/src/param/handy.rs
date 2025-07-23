@@ -12,12 +12,13 @@ pub fn client_parameters() -> super::ClientParameters {
         (ParameterId::InitialMaxStreamDataBidiLocal, 1u32 << 20),
         (ParameterId::InitialMaxStreamDataBidiRemote, 1u32 << 20),
         (ParameterId::InitialMaxStreamDataUni, 1u32 << 20),
+        (ParameterId::ActiveConnectionIdLimit, 10u32),
     ] {
         params.set(id, value).expect("unreachable");
     }
 
     params
-        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(5))
+        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(20))
         .expect("unreachable");
 
     params
@@ -33,11 +34,12 @@ pub fn server_parameters() -> super::ServerParameters {
         (ParameterId::InitialMaxStreamDataBidiLocal, 1u32 << 20),
         (ParameterId::InitialMaxStreamDataBidiRemote, 1u32 << 20),
         (ParameterId::InitialMaxStreamDataUni, 1u32 << 20),
+        (ParameterId::ActiveConnectionIdLimit, 10u32),
     ] {
         params.set(id, value).expect("unreachable");
     }
     params
-        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(5))
+        .set(ParameterId::MaxIdleTimeout, Duration::from_secs(30))
         .expect("unreachable");
 
     params

@@ -1,18 +1,21 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant};
 
 use clap::Parser;
-use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
+use gm_quic::{
+    QuicClient, ToCertificate,
+    handy::{LegacySeqLogger, NoopLogger, client_parameters},
+};
 use http::{
     Uri,
     uri::{Authority, Parts, Scheme},
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
 use tokio::{
     fs,
     io::{AsyncWrite, AsyncWriteExt},
     task::JoinSet,
 };
+use tracing::Instrument;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Clone)]
@@ -113,7 +116,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };
 
@@ -222,11 +225,15 @@ async fn download_files_with_progress(
     save: Option<PathBuf>,
 ) -> Result<usize, Error> {
     let (server_name, server_addrs) = lookup(&authority).await?;
-    let connection = client.connect(server_name, server_addrs)?;
+    let quic_connection = client.connect(server_name, server_addrs)?;
+    let odcid = quic_connection.origin_dcid()?;
+    let span = tracing::info_span!("requests", odcid = format!("{odcid:x}",), %server_name);
 
     let (mut connection, send_request) =
-        h3::client::new(h3_shim::QuicConnection::new(connection)).await?;
-    tokio::spawn(async move { connection.wait_idle().await });
+        h3::client::new(h3_shim::QuicConnection::new(quic_connection.clone()))
+            .instrument(span.clone())
+            .await?;
+    tokio::spawn(async move { connection.wait_idle().await }.instrument(span.clone()));
 
     let mut requests = JoinSet::new();
     for path in paths {
@@ -246,10 +253,11 @@ async fn download_files_with_progress(
         let request = http::Request::builder().uri(uri).body(())?;
         let mut send_request = send_request.clone();
 
-        requests.spawn(async move {
-            let mut request_stream = send_request.send_request(request).await?;
-            request_stream.finish().await?;
-            async {
+        requests.spawn(
+            async move {
+                let mut request_stream = send_request.send_request(request).await?;
+                request_stream.finish().await?;
+
                 let resp = request_stream.recv_response().await?;
                 if resp.status() != http::StatusCode::OK {
                     return Err(format!("response status: {}", resp.status()).into());
@@ -266,21 +274,23 @@ async fn download_files_with_progress(
 
                 Result::<(), Error>::Ok(())
             }
-            .await
-        });
+            .instrument(span.clone()),
+        );
     }
 
     let mut error = None;
     let mut success_queries = 0;
 
+    tracing::info!(target: "counting", "Waiting for {} requests to finish", requests.len());
     while let Some(res) = requests.join_next().await {
         match res {
             Ok(Ok(())) => {
+                tracing::warn!(target: "counting", "Request success");
                 success_queries += 1;
                 total_pb.inc(1);
             }
             Ok(Err(err)) => {
-                tracing::warn!(target: "counting" ,?err,"request failed");
+                tracing::warn!(target: "counting", ?err, "Request failed");
                 total_pb.dec_length(1);
                 error = Some(err);
             }
@@ -289,6 +299,7 @@ async fn download_files_with_progress(
         }
     }
 
+    tracing::info!(target: "counting", success_queries, "Requests completed");
     if success_queries != 0 {
         Ok(success_queries)
     } else {

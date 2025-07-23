@@ -70,7 +70,19 @@ impl Span {
 
     #[inline]
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
-        serde_json::from_value(self.fields[name].clone()).unwrap()
+        let Some(value) = self.fields.get(name) else {
+            panic!(
+                "Failed to load field `{name}` from span fields: {:?}",
+                self.fields
+            );
+        };
+        match serde_json::from_value(value.clone()) {
+            Ok(value) => value,
+            Err(e) => panic!(
+                "Failed to load field `{name}` from span fields: {:?}, error: {:?}",
+                self.fields, e
+            ),
+        }
     }
 
     #[inline]
