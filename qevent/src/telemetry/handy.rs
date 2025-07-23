@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,7 +10,7 @@ use tokio::{
 };
 
 use super::{ExportEvent, Log, Span};
-use crate::{Event, GroupID, QlogFileSeq, VantagePoint, VantagePointType, span};
+use crate::{Event, GroupID, VantagePoint, VantagePointType, span};
 
 pub struct NoopExporter;
 
@@ -29,47 +28,9 @@ impl ExportEvent for NoopExporter {
     }
 }
 
-pub struct IoExpoter(mpsc::UnboundedSender<Event>);
-
-impl IoExpoter {
-    pub fn new<O>(qlog_file_seq: QlogFileSeq, mut output: O) -> Self
-    where
-        O: AsyncWrite + Unpin + Send + 'static,
-    {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-        tokio::spawn(async move {
-            let task = async {
-                const RS: u8 = 0x1E;
-
-                output.write_u8(RS).await?;
-                let qlog_file_seq = serde_json::to_string(&qlog_file_seq).unwrap();
-                output.write_all(qlog_file_seq.as_bytes()).await?;
-                output.write_u8(b'\n').await?;
-
-                while let Some(event) = rx.recv().await {
-                    let event = serde_json::to_string(&event).unwrap();
-                    output.write_u8(RS).await?;
-                    output.write_all(event.as_bytes()).await?;
-                    output.write_u8(b'\n').await?;
-                }
-
-                io::Result::Ok(())
-            };
-            if let Err(error) = task.await {
-                tracing::error!(
-                    ?error,
-                    ?qlog_file_seq,
-                    "failed to write qlog, subsequent qlogs in this exporter will be ignored."
-                );
-            }
-        });
-        Self(tx)
-    }
-}
-
-impl ExportEvent for IoExpoter {
+impl ExportEvent for mpsc::UnboundedSender<Event> {
     fn emit(&self, event: Event) {
-        _ = self.0.send(event);
+        _ = self.send(event);
     }
 }
 
@@ -119,11 +80,31 @@ impl TelemetryStorage for PathBuf {
     }
 }
 
-pub struct DefaultSeqLogger<S> {
+impl TelemetryStorage for tokio::io::Stdout {
+    #[allow(clippy::manual_async_fn)]
+    fn join(
+        &self,
+        _: &str,
+    ) -> impl Future<Output = impl AsyncWrite + Send + Unpin + 'static> + Send + 'static {
+        async move { tokio::io::stdout() }
+    }
+}
+
+impl TelemetryStorage for tokio::io::Stderr {
+    #[allow(clippy::manual_async_fn)]
+    fn join(
+        &self,
+        _: &str,
+    ) -> impl Future<Output = impl AsyncWrite + Send + Unpin + 'static> + Send + 'static {
+        async move { tokio::io::stderr() }
+    }
+}
+
+pub struct LegacySeqLogger<S> {
     storage: S,
 }
 
-impl<S: Clone> Clone for DefaultSeqLogger<S> {
+impl<S: Clone> Clone for LegacySeqLogger<S> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -131,13 +112,13 @@ impl<S: Clone> Clone for DefaultSeqLogger<S> {
     }
 }
 
-impl<S> DefaultSeqLogger<S> {
+impl<S> LegacySeqLogger<S> {
     pub fn new(storage: S) -> Self {
         Self { storage }
     }
 }
 
-impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
+impl<S: TelemetryStorage> Log for LegacySeqLogger<S> {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
@@ -153,7 +134,6 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
             }
         });
 
-        #[allow(unused_variables)] // TODO: why cargo doc warns about unused variables?
         let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
         tokio::spawn(async move {
             let mut log_file = file.await;
@@ -178,56 +158,79 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
             log_file.shutdown().await
         });
 
-        crate::span!(Arc::new(IoExpoter(tx)), group_id = group_id)
+        crate::span!(Arc::new(tx), group_id = group_id)
+    }
+}
+
+pub struct TracingLogger;
+
+impl Log for TracingLogger {
+    fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
+        use crate::legacy;
+
+        let span = tracing::info_span!("qlog", role = %vantage_point, odcid = %group_id);
+
+        let qlog_file_seq = crate::build!(legacy::QlogFileSeq {
+            title: format!("{group_id}_{vantage_point}.sqlog"),
+            trace: legacy::TraceSeq {
+                vantage_point: VantagePoint {
+                    r#type: vantage_point
+                },
+            }
+        });
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                tracing::debug!(target: "qlog", "{}", serde_json::to_string(&qlog_file_seq).unwrap());
+
+                while let Some(event) = rx.recv().await {
+                    let Ok(event) = legacy::Event::try_from(event) else {
+                        continue;
+                    };
+                    tracing::debug!(target: "qlog", "{}", serde_json::to_string(&event).unwrap());
+                }
+            },
+            span,
+        ));
+
+        crate::span!(Arc::new(tx), group_id = group_id)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::*;
     use crate::{
-        LogFile, TraceSeq, VantagePoint, VantagePointType,
         quic::connectivity::ServerListening,
-        telemetry::{Instrument, Span},
+        telemetry::{Instrument, Log, Span, handy::LegacySeqLogger},
     };
 
     #[tokio::test]
-    async fn io_exporter() {
-        let exporter = IoExpoter::new(
-            crate::build!(QlogFileSeq {
-                log_file: LogFile {
-                    title: "io exporter example",
-                    file_schema: QlogFileSeq::SCHEMA,
-                    serialization_format: "application/qlog+json-seq",
-                },
-                trace_seq: TraceSeq {
-                    title: "io exporter example",
-                    description: "just a example",
-                    vantage_point: VantagePoint {
-                        r#type: VantagePointType::Unknow,
-                    },
-                }
-            }),
-            tokio::io::stdout(),
+    #[cfg(feature = "telemetry")]
+    async fn legacy_seq_exporter() {
+        let exporter = LegacySeqLogger::new(tokio::io::stdout());
+
+        let root_span = exporter.new_trace(
+            crate::VantagePointType::Server,
+            crate::GroupID::from("test_group".to_string()),
         );
 
-        let meaningless_field = 112233u64;
-        crate::span!(Arc::new(exporter), meaningless_field).in_scope(|| {
-            crate::event!(ServerListening {
-                ip_v4: "127.0.0.1".to_owned(),
-                port_v4: 443u16
-            });
+        root_span.in_scope(|| {
+            let any_field = 112233u64;
+            crate::span!(@current, any_field).in_scope(|| {
+                crate::event!(ServerListening {
+                    ip_v4: "127.0.0.1".to_owned(),
+                    port_v4: 443u16
+                });
 
-            tokio::spawn(
-                async move {
-                    assert_eq!(Span::current().load::<String>("path_id"), "new path");
-                    assert_eq!(Span::current().load::<u64>("meaningless_field"), 112233u64);
-                    // do something
-                }
-                .instrument(crate::span!(@current, path_id = String::from("new path"))),
-            );
+                tokio::spawn(
+                    async move {
+                        assert_eq!(Span::current().load::<u64>("any_field"), 112233u64);
+                        // do something
+                    }
+                    .instrument(crate::span!(@current, path_id = String::from("new path"))),
+                );
+            });
         });
 
         tokio::task::yield_now().await;

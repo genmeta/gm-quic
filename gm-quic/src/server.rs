@@ -693,15 +693,19 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// If you call this multiple times, only the last `logger` will be used.
     ///
-    /// We have pre-implemented two Qloggers:
-    /// - [`DefaultSeqLogger`]: Generates a sqlog file for each connection,
-    ///   which will be written to the directory specified when constructing [`DefaultSeqLogger`].
-    ///   This Logger converts qlog to a lower version format that can be parsed by [qvis].
+    /// Pre-implemented loggers:
+    /// - [`LegacySeqLogger`]: Generates qlog files compatible with [qvis] visualization.
+    ///   - `LegacySeqLogger::new(PathBuf::from("/dir"))`: Write to files `{connection_id}_{role}.sqlog` in `dir`
+    ///   - `LegacySeqLogger::new(tokio::io::stdout())`: Stream to stdout
+    ///   - `LegacySeqLogger::new(tokio::io::stderr())`: Stream to stderr
     ///
-    /// - [`NoopLogger`]: Ignores all qlogs, this is the default.
+    ///   Output format: JSON-SEQ ([RFC7464]), one JSON event per line.
+    ///
+    /// - [`NoopLogger`]: Ignores all qlog events (default, recommended for production).
     ///
     /// [qvis]: https://qvis.quictools.info/
-    /// [`DefaultSeqLogger`]: qevent::telemetry::handy::DefaultSeqLogger
+    /// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464
+    /// [`LegacySeqLogger`]: qevent::telemetry::handy::LegacySeqLogger
     pub fn with_qlog(mut self, logger: Arc<dyn Log + Send + Sync>) -> Self {
         self.logger = Some(logger);
         self

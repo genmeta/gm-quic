@@ -9,7 +9,7 @@ use clap::Parser;
 use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
 use http::uri::Authority;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
+use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use rustls::RootCertStore;
 use tokio::{
     fs,
@@ -91,7 +91,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };
 

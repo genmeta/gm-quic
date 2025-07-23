@@ -28,9 +28,27 @@ macro_rules! span {
 #[macro_export]
 #[cfg(not(feature = "telemetry"))]
 macro_rules! span {
-    ($($tt:tt)*) => {
+    () => {{
         $crate::telemetry::Span::current()
+    }};
+    (@current     $(, $($tt:tt)* )?) => {{
+        let __current_exporter = $crate::telemetry::macro_support::current_span_exporter();
+        $crate::span!(__current_exporter $(, $($tt)* )?)
+    }};
+    ($broker:expr $(, $($tt:tt)* )?) => {{
+        #[allow(unused_mut)]
+        let mut __current_fields = $crate::telemetry::macro_support::current_span_fields();
+        $crate::span!(@field __current_fields $(, $($tt)* )?);
+        $crate::telemetry::macro_support::new_span($broker, __current_fields)
+    }};
+    (@field $fields:expr, $name:ident               $(, $($tt:tt)* )?) => {
+        $crate::span!( @field $fields, $name = $name $(, $($tt)* )? );
     };
+    (@field $fields:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
+        _ = $value;
+        $crate::span!( @field $fields $(, $($tt)* )? );
+    };
+    (@field $fields:expr $(,)? ) => {};
 }
 
 #[macro_export]

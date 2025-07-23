@@ -6,7 +6,7 @@ use http::{
     Uri,
     uri::{Authority, Parts},
 };
-use qevent::telemetry::handy::{DefaultSeqLogger, NoopLogger};
+use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::{
     fs,
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -87,7 +87,7 @@ async fn run(options: Options) -> Result<(), Error> {
     }
 
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };
 
