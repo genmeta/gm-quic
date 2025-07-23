@@ -43,7 +43,7 @@ use super::{AckInitialSpace, pipe};
 use crate::{
     Components, InitialJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{CreatePathFailure, Path},
+    path::{Path, error::CreatePathFailure},
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };

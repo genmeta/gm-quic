@@ -6,7 +6,6 @@ use std::{
     },
 };
 
-use derive_more::From;
 use qbase::{
     Epoch,
     error::Error,
@@ -18,20 +17,21 @@ use qbase::{
     },
     packet::PacketContains,
     param::ParameterId,
-    time::{ArcDeferIdleTimer, ArcMaxIdleTimer, IdleTimedOut, MaxIdleTimer},
+    time::{ArcDeferIdleTimer, ArcMaxIdleTimer, MaxIdleTimer},
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{QuicIO, iface::QuicInterface};
-use thiserror::Error;
 use tokio::time::Duration;
 
 mod aa;
 mod drive;
-mod paths;
-mod util;
+pub mod error;
+pub mod paths;
+pub mod util;
 mod validate;
 pub use aa::*;
+pub use error::*;
 pub use paths::*;
 pub use util::*;
 
@@ -54,26 +54,6 @@ pub struct Path {
     tx_waker: ArcSendWaker,
     pmtu: Arc<AtomicU16>,
     status: PathStatus,
-}
-
-#[derive(Debug, From, Error)]
-pub enum CreatePathFailure {
-    #[error("Network interface not found for bind URI: {0}")]
-    NoInterface(BindUri),
-    #[error("Connection is closed: {0}")]
-    ConnectionClosed(Error),
-}
-
-#[derive(Debug, From, Error)]
-pub enum PathDeactivated {
-    #[error("Path validation failed: {0}")]
-    ValidationFailed(#[source] validate::ValidateFailure),
-    #[error(transparent)]
-    IdleTimeout(IdleTimedOut),
-    #[error("Failed to send packets on path: {0}")]
-    SendError(#[source] io::Error),
-    #[error("Manually removed by application")]
-    ApplicationRemoved,
 }
 
 impl Components {
@@ -150,7 +130,7 @@ impl Components {
                     Err(tokio::select! {
                         biased;
                         Err(e) = validate(path.clone()) => PathDeactivated::from(e),
-                        Err(e) = path.drive(tls_handshake) => PathDeactivated::from(e),
+                        Err(e) = path.drive(tls_handshake) => e,
                         Err(e) = burst.launch() => PathDeactivated::from(e),
                     })
                 }

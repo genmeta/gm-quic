@@ -53,7 +53,7 @@ use crate::{
     ArcReliableFrameDeque, Components, DataJournal, DataStreams, FlowController, GuaranteedFrame,
     SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{ArcHeartbeat, CreatePathFailure, Path, SendBuffer},
+    path::{ArcHeartbeat, Path, SendBuffer, error::CreatePathFailure},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},
     termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
