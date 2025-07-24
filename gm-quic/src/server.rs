@@ -206,7 +206,7 @@ pub struct QuicListeners {
     token_provider: Arc<dyn TokenProvider>,
     parameters: ServerParameters,
     anti_port_scan: bool,
-    client_authers: Vec<Arc<dyn AuthClient>>,
+    client_auther: Arc<dyn AuthClient>,
     tls_config: TlsServerConfig,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     defer_idle_timeout: Duration,
@@ -257,7 +257,7 @@ impl QuicListeners {
             token_provider: None,
             parameters: handy::server_parameters(),
             anti_port_scan: false,
-            client_authers: vec![],
+            client_auther: Arc::new(NoopClientAuther),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             defer_idle_timeout: Duration::ZERO,
@@ -487,7 +487,7 @@ struct ServerAuther {
 }
 
 impl AuthClient for ServerAuther {
-    fn verify_client_params(&self, host: &str, _: Option<&str>) -> bool {
+    fn verify_client_name(&self, host: &str, _: Option<&str>) -> bool {
         self.servers
             .get(host)
             .is_some_and(|server| server.bind_ifaces.contains_key(&self.iface))
@@ -525,20 +525,16 @@ impl QuicListeners {
             return;
         }
 
-        let server_auther: Arc<dyn AuthClient> = Arc::new(ServerAuther {
+        let server_auther = ServerAuther {
             iface: bind_uri.clone(),
             servers: self.servers.clone(),
-        });
-
-        let client_authers = [server_auther]
-            .into_iter()
-            .chain(self.client_authers.iter().cloned());
+        };
 
         let connection = Arc::new(
             Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
                 .with_anti_port_scan(self.anti_port_scan)
-                .with_client_authers(client_authers.collect())
+                .with_client_authers(Box::new((server_auther, self.client_auther.clone())))
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
@@ -585,7 +581,7 @@ pub struct QuicListenersBuilder<T> {
     token_provider: Option<Arc<dyn TokenProvider>>,
     parameters: ServerParameters,
     anti_port_scan: bool,
-    client_authers: Vec<Arc<dyn AuthClient>>,
+    client_auther: Arc<dyn AuthClient>,
     tls_config: T,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     defer_idle_timeout: Duration,
@@ -705,12 +701,12 @@ impl<T> QuicListenersBuilder<T> {
     /// debugging connection issues more difficult. Consider using it in production
     /// environments where security is prioritized over observability.
     ///
-    /// **Tip:** For enhanced security, combine this with [`with_client_authers`] to implement
+    /// **Tip:** For enhanced security, combine this with [`with_client_auther`] to implement
     /// custom authentication logic while maintaining stealth behavior for failed connections.
     ///
     /// Default: disabled
     ///
-    /// [`with_client_authers`]: QuicListenersBuilder::with_client_authers
+    /// [`with_client_auther`]: QuicListenersBuilder::with_client_auther
     pub fn enable_anti_port_scan(mut self) -> Self {
         self.anti_port_scan = true;
         self
@@ -750,11 +746,8 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// [`AuthClient`]: qconnection::tls::AuthClient
     /// [`enable_anti_port_scan`]: QuicListenersBuilder::enable_anti_port_scan
-    pub fn with_client_authers(
-        mut self,
-        client_authers: impl IntoIterator<Item = Arc<dyn AuthClient>>,
-    ) -> Self {
-        self.client_authers = client_authers.into_iter().collect();
+    pub fn with_client_auther(mut self, client_auther: impl AuthClient + 'static) -> Self {
+        self.client_auther = Arc::new(client_auther);
         self
     }
 }
@@ -772,7 +765,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             token_provider: self.token_provider,
             parameters: self.parameters,
             anti_port_scan: self.anti_port_scan,
-            client_authers: self.client_authers,
+            client_auther: self.client_auther,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier)
@@ -793,7 +786,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             token_provider: self.token_provider,
             parameters: self.parameters,
             anti_port_scan: self.anti_port_scan,
-            client_authers: self.client_authers,
+            client_auther: self.client_auther,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth))
@@ -855,7 +848,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
                 .unwrap_or_else(|| Arc::new(handy::NoopTokenRegistry)),
             parameters: self.parameters,
             anti_port_scan: self.anti_port_scan,
-            client_authers: self.client_authers,
+            client_auther: self.client_auther,
             tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,
             defer_idle_timeout: self.defer_idle_timeout,

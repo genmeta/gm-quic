@@ -129,15 +129,15 @@ impl Spaces {
         rcvd_pkt_q.close_all();
         // For the client, this may cause the server to establish a new connection state and then quickly end it.
         // (especially when the pto is very small, such as a loopback NIC).
-        // if let Some(space) = self.initial.close() {
-        //     _ = terminator
-        //         .try_send(|buf, scid, dcid, ccf| {
-        //             space
-        //                 .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-        //                 .map(|layout| layout.sent_bytes())
-        //         })
-        //         .await;
-        // }
+        if let Some(space) = self.initial.close() {
+            _ = terminator
+                .try_send(|buf, scid, dcid, ccf| {
+                    space
+                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                        .map(|layout| layout.sent_bytes())
+                })
+                .await;
+        }
         self.initial.close();
         if let Some(space) = self.handshake.close() {
             _ = terminator
