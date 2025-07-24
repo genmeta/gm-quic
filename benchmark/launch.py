@@ -199,6 +199,32 @@ def gm_quic_runner() -> ServerRunner:
     return ServerRunner('gm-quic', launch, 4431)
 
 
+def gm_quic_multi_path_runner() -> ServerRunner:
+    logging.info("Building gm-quic server...")
+
+    # git_clone("genmeta", "gm-quic", "main")
+
+    # 编译
+    subprocess.run(
+        ["cargo", "build", "--release", "--package",
+            "h3-shim", "--example", "h3-server"],
+        cwd=gm_quic_dir,
+        check=True
+    )
+
+    launch = [
+        os.path.join(gm_quic_dir,
+                     "target", "release", "examples", "h3-server"),
+        "-c", ecc_certs.server_cert,
+        "-k", ecc_certs.server_key,
+        "-b", "4096",  # 设置backlog
+        "-l", "[::1]:4435",
+        "-l", "127.0.0.1:4435"
+    ]
+
+    return ServerRunner('gm-quic(multi-path)', launch, 4435)
+
+
 def tquic_runner() -> ServerRunner:
     logging.info("Building tquic server...")
 
@@ -315,7 +341,7 @@ class H3Client:
             subprocess.run(
                 launch_client,
                 cwd=gm_quic_dir,
-                env={**os.environ, "RUST_LOG": "debug"},
+                env={**os.environ, "RUST_LOG": "counting"},
                 stdout=client_log,
                 text=True,
                 timeout=15
@@ -478,6 +504,7 @@ if __name__ == "__main__":
         'tquic': tquic_runner,
         'quinn': quinn_runner,
         'cf-quiche': cf_quiche_runner,
+        'gm-quic(multi-path)': gm_quic_multi_path_runner,
     }
 
     # Diaplay runners
