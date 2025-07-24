@@ -17,7 +17,7 @@ pub use qbase::{
 };
 use qbase::{
     cid::GenUniqueCid,
-    error::{Error, ErrorKind, QuicError},
+    error::Error,
     net::tx::{ArcSendWakers, Signals},
     param::{ArcParameters, ParameterId, Parameters},
     role::{IntoRole, Role},
@@ -38,7 +38,7 @@ pub use qinterface::route::{Router, Way};
 use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
-use tokio::{sync::mpsc, time};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 pub use crate::tls::{AuthClient, ClientAuthers};
@@ -511,26 +511,6 @@ fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
     let task = async move {
         if let Err(Error::Quic(e)) = task.await {
             event_broker.emit(Event::Failed(e));
-        }
-    };
-
-    tokio::spawn(task.instrument_in_current().in_current_span());
-
-    let event_broker = components.event_broker.clone();
-    let paths = components.paths.clone();
-    let tls_handshake = components.tls_handshake.clone();
-    let task = async move {
-        {
-            if time::timeout(Duration::from_secs(25), tls_handshake.finished())
-                .await
-                .is_err()
-            {
-                paths.clear();
-                event_broker.emit(Event::Failed(QuicError::with_default_fty(
-                    ErrorKind::NoViablePath,
-                    "TLS handshake timeout after 25 seconds",
-                )));
-            }
         }
     };
 
