@@ -41,7 +41,7 @@ pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfi
 use tokio::{sync::mpsc, time};
 use tracing::Instrument as _;
 
-pub use crate::tls::{AuthClient, ClientAuthers};
+pub use crate::tls::{AuthClient, NoopClientAuther};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     ConnectionState, Handshake, RawHandshake, RouterRegistry, SpecificComponents,
@@ -72,7 +72,7 @@ impl Connection {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
             anti_port_scan: false,
-            client_authers: ClientAuthers::default(),
+            client_authers: Box::new(NoopClientAuther),
         }
     }
 }
@@ -94,7 +94,7 @@ pub struct ServerFoundation {
     token_registry: ArcTokenRegistry,
     server_params: ServerParameters,
     anti_port_scan: bool,
-    client_authers: ClientAuthers,
+    client_authers: Box<dyn AuthClient>,
 }
 
 impl ServerFoundation {
@@ -108,7 +108,7 @@ impl ServerFoundation {
         self
     }
 
-    pub fn with_client_authers(mut self, authers: ClientAuthers) -> Self {
+    pub fn with_client_authers(mut self, authers: Box<dyn AuthClient>) -> Self {
         self.client_authers = authers;
         self
     }
