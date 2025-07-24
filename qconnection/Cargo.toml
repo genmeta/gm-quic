@@ -25,6 +25,7 @@ qrecovery = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 qinterface = { workspace = true }
 

@@ -97,7 +97,7 @@ impl ArcPathContexts {
             dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().path.clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
                 let (path, task) = try_create()?;
-                self.tx_wakers.insert(pathway, path.tx_waker());
+                self.tx_wakers.insert(pathway, &path.tx_waker);
                 let paths = self.clone();
                 let task = tokio::spawn(
                     async move {
