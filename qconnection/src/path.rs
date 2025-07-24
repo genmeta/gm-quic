@@ -33,6 +33,8 @@ mod validate;
 pub use aa::*;
 pub use error::*;
 pub use paths::*;
+use tokio_util::task::AbortOnDropHandle;
+use tracing::Instrument as _;
 pub use util::*;
 
 use crate::{ArcDcidCell, Components};
@@ -99,12 +101,12 @@ impl Components {
                 self.quic_handshake.status(),
             ));
 
-            let burst = path.new_burst(self);
             let validate = {
+                let path = path.clone();
                 let paths = self.paths.clone();
                 let tls_handshake = self.tls_handshake.clone();
                 let conn_state = self.conn_state.clone();
-                move |path: Arc<Path>| async move {
+                async move {
                     if !is_probed {
                         path.grant_anti_amplification();
                     }
@@ -123,22 +125,29 @@ impl Components {
                 }
             };
 
-            let task = {
+            let drive = {
                 let path = path.clone();
                 let tls_handshake = self.tls_handshake.clone();
-                async move {
-                    Err(tokio::select! {
-                        biased;
-                        Err(e) = validate(path.clone()) => PathDeactivated::from(e),
-                        Err(e) = path.drive(tls_handshake) => e,
-                        Err(e) = burst.launch() => PathDeactivated::from(e),
-                    })
-                }
+                async move { path.drive(tls_handshake).await }
+            };
+
+            let burst = {
+                let burst = path.new_burst(self);
+                async move { burst.launch().await }
+            };
+
+            let task = async move {
+                Err(tokio::select! {
+                    biased;
+                    Ok(Err(e)) = AbortOnDropHandle::new(tokio::spawn(validate.instrument_in_current().in_current_span())) => PathDeactivated::from(e),
+                    Ok(Err(e)) = AbortOnDropHandle::new(tokio::spawn(drive.instrument_in_current().in_current_span())) => e,
+                    Ok(Err(e)) = AbortOnDropHandle::new(tokio::spawn(burst.instrument_in_current().in_current_span())) => PathDeactivated::from(e),
+                })
             };
 
             let task =
                 Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
-                    .instrument_in_current();
+                    .in_current_span();
 
             tracing::info!(%pathway, %link, is_probed, is_initial_path, "Add new path");
 
@@ -193,10 +202,6 @@ impl Path {
 
     pub fn cc(&self) -> &ArcCC {
         &self.cc
-    }
-
-    pub fn tx_waker(&self) -> &ArcSendWaker {
-        &self.tx_waker
     }
 
     pub fn on_packet_rcvd(
