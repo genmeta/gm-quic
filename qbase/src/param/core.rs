@@ -53,6 +53,12 @@ impl From<u32> for ParameterValue {
     }
 }
 
+impl From<String> for ParameterValue {
+    fn from(value: String) -> Self {
+        ParameterValue::Bytes(Bytes::from(Vec::from(value)))
+    }
+}
+
 impl TryFrom<ParameterValue> for Duration {
     type Error = TryIntoError<ParameterValue>;
 

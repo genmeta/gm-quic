@@ -440,39 +440,41 @@ fn client_without_verify() -> Result<(), Error> {
     test_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
+fn auth_client_cert(cert: &[u8]) -> bool {
+    let (_, cert) = x509_parser::parse_x509_certificate(cert).unwrap();
+
+    // Check Common Name in the subject
+    let has_client_cn = cert
+        .subject()
+        .iter_common_name()
+        .any(|cn| cn.as_str().unwrap_or("") == "client");
+
+    // Check Subject Alternative Names
+    let has_client_san = cert.extensions()
+        .iter()
+        .find(|ext| ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
+        .and_then(|ext| {
+            x509_parser::extensions::SubjectAlternativeName::from_der(ext.value).ok()
+        })
+        .map(|(_, san)| {
+            san.general_names.iter().any(|name| {
+                matches!(name, x509_parser::extensions::GeneralName::DNSName(dns) if *dns == "client")
+            })
+        })
+        .unwrap_or(false);
+
+    has_client_cn || has_client_san
+}
+
 #[test]
-fn client_auth() -> Result<(), Error> {
+fn auth_client_cert_after_connected() -> Result<(), Error> {
     pub async fn auth_client(listeners: Arc<QuicListeners>) -> io::Result<()> {
         loop {
             let (connection, server, _pathway, _link) = listeners.accept().await?;
             assert_eq!(server, "localhost");
 
             match connection.peer_certs().await?.as_ref() {
-                Some(cert) => {
-                    let (_, cert) = x509_parser::parse_x509_certificate(cert.as_slice()).unwrap();
-
-                    // Check Common Name in the subject
-                    let has_client_cn = cert
-                        .subject()
-                        .iter_common_name()
-                        .any(|cn| cn.as_str().unwrap_or("") == "client");
-
-                    // Check Subject Alternative Names
-                    let has_client_san = cert.extensions()
-                        .iter()
-                        .find(|ext| ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
-                        .and_then(|ext| {
-                            x509_parser::extensions::SubjectAlternativeName::from_der(ext.value).ok()
-                        })
-                        .map(|(_, san)| {
-                            san.general_names.iter().any(|name| {
-                                matches!(name, x509_parser::extensions::GeneralName::DNSName(dns) if *dns == "client")
-                            })
-                        })
-                        .unwrap_or(false);
-
-                    assert!(has_client_cn || has_client_san);
-                }
+                Some(cert) => assert!(auth_client_cert(cert)),
                 None => {
                     panic!("Client should present a certificate")
                 }
@@ -523,6 +525,173 @@ fn client_auth() -> Result<(), Error> {
         };
         let connection = client.connect("localhost", [server_addr])?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
+
+        Ok(())
+    })
+}
+
+struct ClientNameAuther;
+
+impl AuthClient for ClientNameAuther {
+    fn verify_client_name(&self, _: &str, client_name: Option<&str>) -> bool {
+        matches!(client_name, Some("client"))
+    }
+
+    fn verify_client_certs(&self, _: &str, _: Option<&str>, client_cert: &[u8]) -> bool {
+        auth_client_cert(client_cert)
+    }
+}
+
+#[test]
+fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
+    let launch_server = || async {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(CA_CERT.to_certificate());
+        let listeners = QuicListeners::builder()?
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(Arc::new(roots))
+                    .build()
+                    .unwrap(),
+            )
+            .with_client_auther(ClientNameAuther)
+            .with_parameters(server_parameters())
+            .with_qlog(qlogger())
+            .listen(128);
+        listeners.add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )?;
+        Ok((listeners.clone(), serve_echo(listeners)))
+    };
+    test_serially(launch_server, |server_addr| async move {
+        let client = {
+            let mut parameters = client_parameters();
+            _ = parameters.set(ParameterId::ClientName, "client".to_string());
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", [server_addr])?;
+        send_and_verify_echo(&connection, TEST_DATA).await?;
+
+        Ok(())
+    })
+}
+
+#[test]
+fn refuse_client_connection() -> std::result::Result<(), Error> {
+    let launch_server = || async {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(CA_CERT.to_certificate());
+        let listeners = QuicListeners::builder()?
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(Arc::new(roots))
+                    .build()
+                    .unwrap(),
+            )
+            .with_client_auther(ClientNameAuther)
+            .with_parameters(server_parameters())
+            .with_qlog(qlogger())
+            .listen(128);
+        listeners.add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )?;
+        Ok((listeners.clone(), serve_echo(listeners)))
+    };
+    test_serially(launch_server, |server_addr| async move {
+        let client = {
+            let parameters = client_parameters();
+            // no CLIENT_NAME
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", [server_addr])?;
+
+        let error = connection
+            .open_bi_stream()
+            .await
+            .expect_err("Client should be refused");
+        assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
+    let launch_server = || async {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(CA_CERT.to_certificate());
+        let listeners = QuicListeners::builder()?
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(Arc::new(roots))
+                    .build()
+                    .unwrap(),
+            )
+            .with_client_auther(ClientNameAuther)
+            .enable_anti_port_scan() // Enable anti-port-scan
+            .with_parameters(server_parameters())
+            .with_qlog(qlogger())
+            .listen(128);
+        listeners.add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )?;
+        Ok((listeners.clone(), serve_echo(listeners)))
+    };
+    test_serially(launch_server, |server_addr| async move {
+        let client = {
+            let parameters = client_parameters();
+            // no CLIENT_NAME
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", [server_addr])?;
+
+        assert!(
+            time::timeout(Duration::from_secs(3), connection.handshaked())
+                .await
+                .is_err()
+        );
 
         Ok(())
     })

@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-pub use client_auth::{ArcSendLock, AuthClient, ClientAuthers};
+pub use client_auth::{ArcSendLock, AuthClient, NoopClientAuther};
 use futures::{future::poll_fn, never::Never};
 use qbase::{
     Epoch,
@@ -176,7 +176,7 @@ pub struct ServerTlsSession {
     client_name: Option<String>,
     server_name: Option<String>,
     send_lock: ArcSendLock,
-    client_authers: ClientAuthers,
+    client_auther: Box<dyn AuthClient>,
     client_cert: Option<Vec<u8>>,
 }
 
@@ -184,7 +184,7 @@ impl ServerTlsSession {
     pub fn init(
         tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
-        client_authers: ClientAuthers,
+        client_authers: Box<dyn AuthClient>,
         anti_port_scan: bool,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
@@ -201,7 +201,7 @@ impl ServerTlsSession {
                 true => ArcSendLock::new(),
                 false => ArcSendLock::unrestricted(),
             },
-            client_authers,
+            client_auther: client_authers,
             client_cert: None,
         };
         Ok(tls_session)
@@ -228,19 +228,21 @@ impl ServerTlsSession {
             QuicError::with_default_fty(ErrorKind::ConnectionRefused, "Missing SNI in client hello")
         })?;
 
-        if !(self.client_authers.iter())
-            .all(|auther| auther.verify_client_params(host, self.client_name.as_deref()))
+        if !self
+            .client_auther
+            .verify_client_name(host, self.client_name.as_deref())
         {
             tracing::warn!(
                 host,
                 ?self.client_name,
-                "Client SNI or client name verification failed, refusing connection."
+                "Client parameters verification failed, refusing connection."
             );
             return Err(Error::Quic(QuicError::with_default_fty(
                 ErrorKind::ConnectionRefused,
                 "",
             )));
         }
+
         self.send_lock.grant_permit();
         parameters.lock_guard()?.recv_remote_params(client_params)?;
 
@@ -267,8 +269,9 @@ impl ServerTlsSession {
             .as_deref()
             .expect("Server name must be known at this point");
 
-        if !(self.client_authers.iter())
-            .all(|auther| auther.verify_client_certs(host, self.client_name.as_deref(), cert))
+        if !self
+            .client_auther
+            .verify_client_certs(host, self.client_name.as_deref(), cert)
         {
             tracing::warn!(
                 ?host,

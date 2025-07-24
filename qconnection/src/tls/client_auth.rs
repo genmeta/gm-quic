@@ -1,14 +1,13 @@
 use std::{
+    ops::Deref,
     sync::Arc,
     task::{Context, Poll},
 };
 
 use qbase::util::Future;
 
-pub type ClientAuthers = Vec<Arc<dyn AuthClient>>;
-
 pub trait AuthClient: Send + Sync {
-    fn verify_client_params(&self, host: &str, client_name: Option<&str>) -> bool;
+    fn verify_client_name(&self, host: &str, client_name: Option<&str>) -> bool;
 
     fn verify_client_certs(
         &self,
@@ -16,6 +15,85 @@ pub trait AuthClient: Send + Sync {
         client_name: Option<&str>,
         clinet_certs: &[u8],
     ) -> bool;
+}
+
+pub struct NoopClientAuther;
+
+impl AuthClient for NoopClientAuther {
+    fn verify_client_name(&self, _: &str, _: Option<&str>) -> bool {
+        true
+    }
+
+    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> bool {
+        true
+    }
+}
+
+impl<A: AuthClient + ?Sized> AuthClient for Box<A> {
+    fn verify_client_name(&self, host: &str, client_name: Option<&str>) -> bool {
+        self.deref().verify_client_name(host, client_name)
+    }
+
+    fn verify_client_certs(
+        &self,
+        host: &str,
+        client_name: Option<&str>,
+        clinet_certs: &[u8],
+    ) -> bool {
+        self.deref()
+            .verify_client_certs(host, client_name, clinet_certs)
+    }
+}
+
+impl<A: AuthClient + ?Sized> AuthClient for Arc<A> {
+    fn verify_client_name(&self, host: &str, client_name: Option<&str>) -> bool {
+        self.deref().verify_client_name(host, client_name)
+    }
+
+    fn verify_client_certs(
+        &self,
+        host: &str,
+        client_name: Option<&str>,
+        clinet_certs: &[u8],
+    ) -> bool {
+        self.deref()
+            .verify_client_certs(host, client_name, clinet_certs)
+    }
+}
+
+macro_rules! impl_auth_client_for_tuple {
+    ($head:ident $($tail:ident)*) => {
+        impl_auth_client_for_tuple!(@impl $head $($tail)*);
+        impl_auth_client_for_tuple!($($tail)*);
+    };
+    (@impl $($t:ident)*) => {
+        impl<$($t,)*> AuthClient for ($($t,)*)
+        where
+            $($t: AuthClient,)*
+        {
+            fn verify_client_name(&self, host: &str, client_name: Option<&str>) -> bool {
+                #[allow(non_snake_case)]
+                let ($($t,)*) = self;
+                $($t.verify_client_name(host, client_name) &&)* true
+            }
+
+            fn verify_client_certs(
+                &self,
+                host: &str,
+                client_name: Option<&str>,
+                clinet_certs: &[u8],
+            ) -> bool {
+                #[allow(non_snake_case)]
+                let ($($t,)*) = self;
+                $($t.verify_client_certs(host, client_name, clinet_certs) &&)* true
+            }
+        }
+    };
+    () => {}
+}
+
+impl_auth_client_for_tuple! {
+    Z Y X W V U T S R Q P O N M L K J I H G F E D C B A
 }
 
 /// A gate that controls server transmission permissions during parameter verification.
