@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 use derive_builder::Builder;
 use derive_more::From;
 use qbase::{
-    frame::{ConnectionCloseFrame, QuicCloseFrame},
+    error::{AppError, Error, ErrorKind, QuicError},
+    frame::{AppCloseFrame, ConnectionCloseFrame, QuicCloseFrame},
     net::addr::RealAddr,
 };
 
@@ -158,13 +159,36 @@ pub struct ConnectionClosed {
 impl ConnectionClosedBuilder {
     pub fn ccf(&mut self, ccf: &ConnectionCloseFrame) -> &mut Self {
         match &ccf {
-            ConnectionCloseFrame::App(frame) => self
-                .application_code(frame)
-                .reason(frame.reason().to_owned()),
-            ConnectionCloseFrame::Quic(frame) => self
-                .connection_code(frame)
-                .reason(frame.reason().to_owned()),
+            ConnectionCloseFrame::Quic(frame) => self.quic_close_frame(frame),
+            ConnectionCloseFrame::App(frame) => self.app_close_frame(frame),
         }
+    }
+
+    fn quic_close_frame(&mut self, frame: &QuicCloseFrame) -> &mut ConnectionClosedBuilder {
+        self.connection_code(frame.error_kind())
+            .reason(frame.reason().to_owned())
+    }
+
+    fn app_close_frame(&mut self, frame: &AppCloseFrame) -> &mut ConnectionClosedBuilder {
+        self.application_code(frame.error_code() as u32)
+            .reason(frame.reason().to_owned())
+    }
+
+    pub fn quic_error(&mut self, error: &QuicError) -> &mut Self {
+        self.connection_code(error.kind())
+            .reason(error.reason().to_owned())
+    }
+
+    pub fn app_error(&mut self, error: &AppError) -> &mut Self {
+        self.application_code(error.error_code() as u32)
+            .reason(error.reason().to_owned())
+    }
+
+    pub fn error(&mut self, error: &Error) {
+        match error {
+            Error::Quic(quic_error) => self.quic_error(quic_error),
+            Error::App(app_error) => self.app_error(app_error),
+        };
     }
 }
 
@@ -186,10 +210,9 @@ impl From<ConnectionCode> for super::ConnectionCloseErrorCode {
     }
 }
 
-impl From<&QuicCloseFrame> for ConnectionCode {
-    fn from(value: &QuicCloseFrame) -> Self {
-        use qbase::error::ErrorKind;
-        match value.error_kind() {
+impl From<ErrorKind> for ConnectionCode {
+    fn from(kind: ErrorKind) -> Self {
+        match kind {
             ErrorKind::None => TransportError::NoError.into(),
             ErrorKind::Internal => TransportError::InternalError.into(),
             ErrorKind::ConnectionRefused => TransportError::ConnectionRefused.into(),

@@ -7,9 +7,9 @@ use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
 use qbase::{
     frame::{
-        AckFrame, AppCloseFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize,
-        Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
-        ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        AckFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize, Frame,
+        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
+        StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
     net::addr::RealAddr,
     packet::header::{
@@ -860,9 +860,11 @@ impl From<&ConnectionCloseFrame> for QuicFrame {
                 ConnectionCloseFrame::Quic(..) => ConnectionCloseErrorSpace::Transport,
             }),
             error_code: match &frame {
-                ConnectionCloseFrame::App(frame) => Some(ApplicationCode::from(frame).into()),
+                ConnectionCloseFrame::App(frame) => {
+                    Some(ApplicationCode::from(frame.error_code() as u32).into())
+                }
                 ConnectionCloseFrame::Quic(frame) => {
-                    Some(connectivity::ConnectionCode::from(frame).into())
+                    Some(connectivity::ConnectionCode::from(frame.error_kind()).into())
                 }
             },
             reason: match &frame {
@@ -996,12 +998,6 @@ impl From<ApplicationCode> for ConnectionCloseErrorCode {
             }
             ApplicationCode::Value(value) => ConnectionCloseErrorCode::Value(value as _),
         }
-    }
-}
-
-impl From<&AppCloseFrame> for ApplicationCode {
-    fn from(frame: &AppCloseFrame) -> Self {
-        ApplicationCode::Value(frame.error_code() as _)
     }
 }
 

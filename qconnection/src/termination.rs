@@ -142,9 +142,13 @@ impl Termination {
     }
 
     // Close packets queues, dont send and receive any more packets.
-    pub fn enter_draining(&mut self) {
-        if let State::Closing(rcvd_pkt_q) = mem::replace(&mut self.state, State::Draining) {
-            rcvd_pkt_q.close_all();
+    pub fn enter_draining(&mut self) -> bool {
+        match mem::replace(&mut self.state, State::Draining) {
+            State::Closing(rcvd_pkt_q) => {
+                rcvd_pkt_q.close_all();
+                true
+            }
+            _ => false,
         }
     }
 }

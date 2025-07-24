@@ -218,6 +218,11 @@ impl QuicError {
     pub fn frame_type(&self) -> ErrorFrameType {
         self.frame_type
     }
+
+    /// Return the reason of this error.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
 }
 
 impl From<FrameType> for ErrorFrameType {
@@ -257,6 +262,11 @@ impl AppError {
     /// The error code is an application error code.
     pub fn error_code(&self) -> u64 {
         self.error_code.into_inner()
+    }
+
+    /// Return the reason of this error.
+    pub fn reason(&self) -> &str {
+        &self.reason
     }
 }
 

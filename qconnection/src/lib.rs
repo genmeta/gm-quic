@@ -29,10 +29,7 @@ pub mod prelude {
         pub use qinterface::{factory::handy::*, iface::handy::*};
     }
 
-    pub use crate::{
-        Connection, StreamReader, StreamWriter,
-        events::{EmitEvent, Event},
-    };
+    pub use crate::{Connection, StreamReader, StreamWriter};
 }
 
 pub mod builder;
@@ -51,7 +48,7 @@ use events::{ArcEventBroker, EmitEvent, Event};
 use path::ArcPathContexts;
 use qbase::{
     cid,
-    error::Error,
+    error::{AppError, Error, QuicError},
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::{
@@ -323,13 +320,12 @@ impl Components {
 }
 
 impl Components {
-    pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
+    pub fn enter_closing(self, error: Error) -> Termination {
         qevent::event!(ConnectionClosed {
             owner: Owner::Local,
-            ccf: &ccf // TODO: trigger
+            error: &error, // TODO: trigger
         });
 
-        let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
         self.tls_handshake.on_conn_error(&error);
         self.parameters.on_conn_error(&error);
@@ -350,7 +346,7 @@ impl Components {
         match self.send_lock.is_permitted() {
             // If permitted, we can send ccf packets.
             true => {
-                let terminator = Arc::new(Terminator::new(ccf, &self));
+                let terminator = Arc::new(Terminator::new(error.clone().into(), &self));
                 tokio::spawn(
                     self.spaces
                         .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
@@ -416,42 +412,49 @@ impl Components {
     }
 }
 
-type ConnectionState = RwLock<Result<Components, Termination>>;
-
-pub struct Connection {
-    state: ConnectionState,
+struct ConnectionState {
+    state: RwLock<Result<Components, Termination>>,
     qlog_span: qevent::telemetry::Span,
     tracing_span: tracing::Span,
 }
 
-impl Connection {
-    pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
+pub struct Connection(Arc<ConnectionState>);
+
+impl ConnectionState {
+    pub fn enter_closing(&self, error: QuicError) -> bool {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         let mut conn = self.state.write().unwrap();
+        let state_changed = conn.is_ok();
         if let Ok(components) = conn.as_mut() {
-            *conn = Err(components.clone().enter_closing(ccf));
+            *conn = Err(components.clone().enter_closing(error.into()));
         }
+        state_changed
     }
 
-    pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
-        let mut conn = self.state.write().unwrap();
-        match conn.as_mut() {
-            Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(ccf)),
-            Err(termination) => termination.enter_draining(),
-        }
-    }
-
-    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) {
+    pub fn application_close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> bool {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
 
         let error_code = code.try_into().expect("application error code overflow");
-        let ccf = ConnectionCloseFrame::new_app(error_code, reason);
 
         let mut conn = self.state.write().unwrap();
+        let state_changed = conn.is_ok();
         if let Ok(components) = conn.as_mut() {
             components.event_broker.emit(Event::ApplicationClose);
-            *conn = Err(components.clone().enter_closing(ccf));
+            let error = AppError::new(error_code, reason);
+            *conn = Err(components.clone().enter_closing(error.into()));
+        }
+        state_changed
+    }
+
+    pub fn enter_draining(&self, ccf: ConnectionCloseFrame) -> bool {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        let mut conn = self.state.write().unwrap();
+        match conn.as_mut() {
+            Ok(core_conn) => {
+                *conn = Err(core_conn.clone().enter_draining(ccf));
+                true
+            }
+            Err(termination) => termination.enter_draining(),
         }
     }
 
@@ -464,28 +467,38 @@ impl Connection {
             .map(op)
             .map_err(|termination| termination.error())
     }
+}
+
+impl Connection {
+    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> bool {
+        self.0.application_close(reason, code)
+    }
 
     pub async fn open_bi_stream(
         &self,
     ) -> Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error> {
-        self.try_map_components(|core_conn| core_conn.open_bi_stream())?
+        self.0
+            .try_map_components(|core_conn| core_conn.open_bi_stream())?
             .await
     }
 
     pub async fn open_uni_stream(&self) -> Result<Option<(StreamId, StreamWriter)>, Error> {
-        self.try_map_components(|core_conn| core_conn.open_uni_stream())?
+        self.0
+            .try_map_components(|core_conn| core_conn.open_uni_stream())?
             .await
     }
 
     pub async fn accept_bi_stream(
         &self,
     ) -> Result<(StreamId, (StreamReader, StreamWriter)), Error> {
-        self.try_map_components(|core_conn| core_conn.accept_bi_stream())?
+        self.0
+            .try_map_components(|core_conn| core_conn.accept_bi_stream())?
             .await
     }
 
     pub async fn accept_uni_stream(&self) -> Result<(StreamId, StreamReader), Error> {
-        self.try_map_components(|core_conn| core_conn.accept_uni_stream())?
+        self.0
+            .try_map_components(|core_conn| core_conn.accept_uni_stream())?
             .await
     }
 
@@ -493,7 +506,8 @@ impl Connection {
     #[deprecated]
     #[allow(deprecated)]
     pub fn unreliable_reader(&self) -> Result<io::Result<DatagramReader>, Error> {
-        self.try_map_components(|core_conn| core_conn.unreliable_reader())
+        self.0
+            .try_map_components(|core_conn| core_conn.unreliable_reader())
     }
 
     #[cfg(feature = "unreliable")]
@@ -501,6 +515,7 @@ impl Connection {
     #[allow(deprecated)]
     pub async fn unreliable_writer(&self) -> Result<io::Result<DatagramWriter>, Error> {
         Ok(self
+            .0
             .try_map_components(|core_conn| core_conn.unreliable_writer())?
             .await)
     }
@@ -511,64 +526,80 @@ impl Connection {
         link: Link,
         pathway: Pathway,
     ) -> Result<(), CreatePathFailure> {
-        self.try_map_components(|core_conn| core_conn.add_path(bind_uri, link, pathway))
+        self.0
+            .try_map_components(|core_conn| core_conn.add_path(bind_uri, link, pathway))
             .unwrap_or_else(|cc| Err(CreatePathFailure::ConnectionClosed(cc)))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> Result<(), Error> {
-        self.try_map_components(|core_conn| core_conn.del_path(pathway))
+        self.0
+            .try_map_components(|core_conn| core_conn.del_path(pathway))
     }
 
     pub fn is_active(&self) -> bool {
-        self.try_map_components(|_| true).unwrap_or_default()
+        self.0.try_map_components(|_| true).unwrap_or_default()
     }
 
     pub fn origin_dcid(&self) -> Result<cid::ConnectionId, Error> {
-        self.try_map_components(|core_conn| core_conn.cid_registry.origin_dcid())
+        self.0
+            .try_map_components(|core_conn| core_conn.cid_registry.origin_dcid())
     }
 
     pub async fn handshaked(&self) -> bool {
-        if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.handshaked()) {
+        if let Ok(f) = self
+            .0
+            .try_map_components(|core_conn| core_conn.conn_state.handshaked())
+        {
             return f.await;
         }
         false
     }
 
     pub async fn terminated(&self) {
-        if let Ok(f) = self.try_map_components(|core_conn| core_conn.conn_state.terminated()) {
+        if let Ok(f) = self
+            .0
+            .try_map_components(|core_conn| core_conn.conn_state.terminated())
+        {
             f.await
         }
     }
 
     pub async fn peer_certs(&self) -> Result<Option<Vec<u8>>, Error> {
-        self.try_map_components(|core_conn| core_conn.peer_certs())?
+        self.0
+            .try_map_components(|core_conn| core_conn.peer_certs())?
             .await
     }
 
     pub async fn server_name(&self) -> Result<String, Error> {
-        self.try_map_components(|core_conn| core_conn.server_name())?
+        self.0
+            .try_map_components(|core_conn| core_conn.server_name())?
             .await
     }
 
     // 0xffee: String
     pub async fn client_name(&self) -> Result<Option<String>, Error> {
-        self.try_map_components(|core_conn| core_conn.client_name())?
+        self.0
+            .try_map_components(|core_conn| core_conn.client_name())?
             .await
     }
 
     pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {
-        self.try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
+        self.0
+            .try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
     }
 
     pub fn add_peer_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {
-        self.try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
+        self.0
+            .try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         if let Ok(origin_dcid) = self.origin_dcid() {
-            tracing::warn!("Connection {origin_dcid:x} is still active when dropped",);
+            if self.close("", 0) {
+                tracing::warn!("Connection {origin_dcid:x} is still active when dropped, close it");
+            }
         }
     }
 }

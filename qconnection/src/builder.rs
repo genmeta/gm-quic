@@ -38,16 +38,15 @@ pub use qinterface::route::{Router, Way};
 use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
-use tokio::time;
+use tokio::{sync::mpsc, time};
 use tracing::Instrument as _;
 
 pub use crate::tls::{AuthClient, ClientAuthers};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    Handshake, RawHandshake, RouterRegistry, SpecificComponents,
-    events::{ArcEventBroker, Event},
+    ConnectionState, Handshake, RawHandshake, RouterRegistry, SpecificComponents,
+    events::{ArcEventBroker, EmitEvent, Event},
     path::ArcPathContexts,
-    prelude::EmitEvent,
     space::{
         Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace,
         spawn_deliver_and_parse,
@@ -414,7 +413,9 @@ impl PendingConnection {
         self
     }
 
-    pub fn run(self, event_broker: impl EmitEvent + 'static) -> Connection {
+    pub fn run(self) -> Connection {
+        let (event_broker, events) = mpsc::unbounded_channel();
+
         let group_id = GroupID::from(self.origin_dcid);
         let qlog_span = self.qlogger.new_trace(self.role.into(), group_id.clone());
         let tracing_span = tracing::info_span!("connection", role = %self.role, odcid = %group_id);
@@ -472,11 +473,15 @@ impl PendingConnection {
         spawn_tls_handshake(&components, self.tx_wakers.clone());
         spawn_deliver_and_parse(&components);
 
-        Connection {
+        let connection_state = Arc::new(ConnectionState {
             state: Ok(components).into(),
             qlog_span,
             tracing_span,
-        }
+        });
+
+        spawn_drive_connection(events, connection_state.clone());
+
+        Connection(connection_state)
     }
 }
 
@@ -624,4 +629,23 @@ fn on_tls_handshake_done(
 
         Result::<_, Error>::Ok(())
     }
+}
+
+fn spawn_drive_connection(mut events: mpsc::UnboundedReceiver<Event>, state: Arc<ConnectionState>) {
+    tokio::spawn(
+        async move {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Event::Handshaked => {}
+                    Event::Failed(quic_error) => _ = state.enter_closing(quic_error),
+                    Event::ApplicationClose => {}
+                    Event::Closed(ccf) => _ = state.enter_draining(ccf),
+                    Event::StatelessReset => {}
+                    Event::Terminated => {}
+                }
+            }
+        }
+        .instrument_in_current()
+        .in_current_span(),
+    );
 }

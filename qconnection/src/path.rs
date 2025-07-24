@@ -21,7 +21,7 @@ use qbase::{
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
-use qinterface::{QuicIO, iface::QuicInterface};
+use qinterface::iface::QuicInterface;
 use tokio::time::Duration;
 
 mod aa;
@@ -140,7 +140,8 @@ impl Components {
                 Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
                     .instrument_in_current();
 
-            tracing::info!(%pathway, %link, is_probed, is_initial_path, "add new path:");
+            tracing::info!(%pathway, %link, is_probed, is_initial_path, "Add new path");
+
             Ok((path, task))
         };
         self.paths.get_or_try_create_with(pathway, try_create)
@@ -235,8 +236,7 @@ impl Path {
             self.status.enter_anti_amplification_limit();
         }
         let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
-        let iface: &dyn QuicIO = self.interface.as_ref();
-        iface.sendmmsg(bufs, hdr).await
+        self.interface.sendmmsg(bufs, hdr).await
     }
 }
 

@@ -178,12 +178,12 @@ macro_rules! mapping {
 mapping! {
     QlogConnectionState::Base(BaseConnectionStates::Attempted) => 1,
     QlogConnectionState::Base(BaseConnectionStates::HandshakeStarted) => 2, // miss
-    QlogConnectionState::Base(BaseConnectionStates::HandshakeComplete) => 3, // miss
-    QlogConnectionState::Granular(GranularConnectionStates::PeerValidated) => 5, // miss
-    QlogConnectionState::Granular(GranularConnectionStates::EarlyWrite) => 6, // miss
-    QlogConnectionState::Granular(GranularConnectionStates::HandshakeConfirmed) => 7,
-    QlogConnectionState::Granular(GranularConnectionStates::Closing) => 8,
-    QlogConnectionState::Granular(GranularConnectionStates::Draining) => 9,
-    // QlogConnectionState::Granular(GranularConnectionStates::Closed) => 10,
-    QlogConnectionState::Base(BaseConnectionStates::Closed) => 10,
+    QlogConnectionState::Granular(GranularConnectionStates::PeerValidated) => 3, // miss
+    QlogConnectionState::Granular(GranularConnectionStates::EarlyWrite) => 4, // miss
+    QlogConnectionState::Base(BaseConnectionStates::HandshakeComplete) => 5, // miss
+    QlogConnectionState::Granular(GranularConnectionStates::HandshakeConfirmed) => 6,
+    QlogConnectionState::Granular(GranularConnectionStates::Closing) => 7,
+    QlogConnectionState::Granular(GranularConnectionStates::Draining) => 8,
+    // QlogConnectionState::Granular(GranularConnectionStates::Closed) => 9,
+    QlogConnectionState::Base(BaseConnectionStates::Closed) => 9,
 }

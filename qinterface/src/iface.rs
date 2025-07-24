@@ -130,6 +130,14 @@ pub struct QuicInterface {
     ifaces: Arc<QuicInterfaces>,
 }
 
+impl Deref for QuicInterface {
+    type Target = dyn QuicIO;
+
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
 impl QuicInterface {
     fn new(bind_uri: BindUri, iface: Weak<RwInterface>, ifaces: Arc<QuicInterfaces>) -> Self {
         Self {

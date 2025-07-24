@@ -22,7 +22,7 @@ use rustls::{
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
     sign::SigningKey,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::*;
 
@@ -534,8 +534,6 @@ impl QuicListeners {
             .into_iter()
             .chain(self.client_authers.iter().cloned());
 
-        let (event_broker, mut events) = mpsc::unbounded_channel();
-
         let connection = Arc::new(
             Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
@@ -547,7 +545,7 @@ impl QuicListeners {
                 .with_defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
                 .with_qlog(self.logger.clone())
-                .run(event_broker),
+                .run(),
         );
 
         let incomings = self.incomings.clone();
@@ -556,26 +554,6 @@ impl QuicListeners {
             Router::global()
                 .deliver(packet, (bind_uri.clone(), pathway, link))
                 .await;
-
-            tokio::spawn({
-                let connection = connection.clone();
-                async move {
-                    while let Some(event) = events.recv().await {
-                        match event {
-                            Event::Handshaked => {}
-                            Event::ProbedNewPath(..) => {}
-                            Event::PathDeactivated(..) => {}
-                            Event::ApplicationClose => {}
-                            Event::Failed(error) => {
-                                connection.enter_closing(qbase::error::Error::from(error).into())
-                            }
-                            Event::Closed(ccf) => connection.enter_draining(ccf),
-                            Event::StatelessReset => { /* TOOD: stateless reset */ }
-                            Event::Terminated => break,
-                        }
-                    }
-                }
-            });
 
             match connection.server_name().await {
                 Ok(server_name) => {

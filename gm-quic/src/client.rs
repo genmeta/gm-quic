@@ -22,7 +22,6 @@ use rustls::{
     client::{ResolvesClientCert, WantsClientCert},
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 use crate::*;
 
@@ -242,8 +241,6 @@ impl QuicClient {
             });
         }
 
-        let (event_broker, mut events) = mpsc::unbounded_channel();
-
         let connection = Arc::new(
             Connection::new_client(server_name.clone(), self.token_sink.clone())
                 .with_parameters(self.parameters.clone())
@@ -253,28 +250,8 @@ impl QuicClient {
                 .with_defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(ConnectionId::random_gen(8))
                 .with_qlog(self.logger.clone())
-                .run(event_broker),
+                .run(),
         );
-
-        tokio::spawn({
-            let connection = connection.clone();
-            async move {
-                while let Some(event) = events.recv().await {
-                    match event {
-                        Event::Handshaked => {}
-                        Event::ProbedNewPath(_, _) => {}
-                        Event::PathDeactivated(..) => {}
-                        Event::ApplicationClose => {}
-                        Event::Failed(error) => {
-                            connection.enter_closing(qbase::error::Error::from(error).into())
-                        }
-                        Event::Closed(ccf) => connection.enter_draining(ccf),
-                        Event::StatelessReset => { /* TOOD: stateless reset */ }
-                        Event::Terminated => return,
-                    }
-                }
-            }
-        });
 
         for (iface, link, pathway) in paths {
             _ = connection.add_path(iface.bind_uri(), link, pathway);

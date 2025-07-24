@@ -14,16 +14,14 @@ use qbase::{
 };
 use qcongestion::Transport;
 use qevent::telemetry::Instrument;
-use qinterface::QuicIO;
 use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 
 use super::Path;
 use crate::{
     ArcRemoteCids,
-    events::ArcEventBroker,
+    events::{ArcEventBroker, EmitEvent, Event},
     path::{CreatePathFailure, PathDeactivated},
-    prelude::{EmitEvent, Event},
 };
 
 #[derive(Deref)]
@@ -120,14 +118,9 @@ impl ArcPathContexts {
     }
 
     pub fn remove(&self, pathway: &Pathway, reason: &PathDeactivated) {
-        if let Some((_, path)) = self.paths.remove(pathway) {
+        if self.paths.remove(pathway).is_some() {
             self.tx_wakers.remove(pathway);
-            self.broker.emit(Event::PathDeactivated(
-                path.interface.bind_uri(),
-                path.pathway,
-                path.link,
-            ));
-            tracing::warn!(%pathway, %reason, "Path removed");
+            tracing::warn!(%pathway, %reason, "Path deactivated");
             if self.is_empty() {
                 let error = QuicError::with_default_fty(
                     ErrorKind::NoViablePath,

@@ -1,13 +1,6 @@
 use std::sync::Arc;
 
-use qbase::{
-    error::QuicError,
-    frame::ConnectionCloseFrame,
-    net::{
-        addr::BindUri,
-        route::{Link, Pathway},
-    },
-};
+use qbase::{self, error::QuicError, frame::ConnectionCloseFrame};
 use qevent::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
 use tokio::sync::mpsc;
 
@@ -18,10 +11,6 @@ use crate::state::ArcConnState;
 pub enum Event {
     // The connection is handshaked
     Handshaked,
-    // Received a packet from a new path and successfully decrypted the packet
-    ProbedNewPath(Pathway, Link),
-    // Path become deactivated, or removed by application
-    PathDeactivated(BindUri, Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
     Failed(QuicError),
     // The connection is closed by application, just a notification
@@ -79,7 +68,6 @@ impl EmitEvent for ArcEventBroker {
                 self.conn_state.update(terminated_state.into());
             }
             Event::StatelessReset => todo!("unsupported"),
-            _ => { /* path create/inactive: no need */ }
         };
         tracing::info!(status = ?event, "connection");
         self.raw_broker.emit(event);
