@@ -381,8 +381,8 @@ impl ArcTlsHandshake {
         .await
     }
 
-    pub async fn finished(&self) {
-        _ = self.info().await;
+    pub async fn finished(&self) -> bool {
+        self.info().await.is_ok()
     }
 
     pub fn is_finished(&self) -> Result<bool, Error> {
