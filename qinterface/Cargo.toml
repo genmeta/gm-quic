@@ -21,6 +21,7 @@ qevent = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true, features = ["rt"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
