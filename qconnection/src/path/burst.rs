@@ -157,9 +157,8 @@ impl Burst {
         loop {
             let (buffers, transaction) = match self.prepare(buffers) {
                 Ok(Some((buffers, transaction))) => (buffers, transaction),
-                // When a connection error occurs, we should not try to load the segment again.
-                // We should also not end the send task, otherwise the path will be removed.
-                Ok(None) => return std::future::pending().await,
+                // When a connection error occurs, we can end the burst with Ok() to indicate no more segments will be loaded.
+                Ok(None) => return Ok(vec![]),
                 Err(signals) => {
                     self.path.tx_waker.wait_for(signals).await;
                     continue; // try load again
@@ -186,6 +185,10 @@ impl Burst {
 
         loop {
             let segment_lens = self.burst(&mut buffers).await?;
+            // Connection closed, no more segments will be loaded.
+            if segment_lens.is_empty() {
+                return Ok(());
+            }
 
             let segments = segment_lens
                 .into_iter()
