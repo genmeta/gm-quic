@@ -6,6 +6,7 @@ pub mod queue;
 pub mod route;
 
 use std::{
+    future::Future,
     io,
     task::{Context, Poll},
 };
@@ -38,7 +39,8 @@ pub trait QuicIO: Send + Sync {
     /// Get the actual address that this interface is bound to.
     ///
     /// For example, if this interface is bound to an [`BindUri`],
-    /// this function should return the actual IP address and port address of this interface.
+    /// this function should return the actual IP address and port
+    /// address of this interface.
     ///
     /// Just like [`UdpSocket::local_addr`] may return an error,
     /// sometimes an interface cannot get its own actual address,
@@ -75,64 +77,92 @@ pub trait QuicIO: Send + Sync {
         pkts: &mut [BytesMut],
         hdrs: &mut [PacketHeader],
     ) -> Poll<io::Result<usize>>;
+
+    /// Asynchronously destroy the QuicIO.
+    ///
+    /// When it returns [`Poll::Ready`],
+    /// it means that the resource has been completely destroyed,
+    /// and the same [`BindUri`] can be successfully bound again.
+    ///
+    /// Even if this method is not called,
+    /// the implementation should ensure that [`QuicIO`] does not
+    /// leak any resources when it is dropped.
+    fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>>;
 }
 
-impl dyn QuicIO {
-    pub async fn sendmmsg(
+pub trait QuicIoExt: QuicIO {
+    #[inline]
+    fn sendmmsg(
         &self,
         mut bufs: &[io::IoSlice<'_>],
         hdr: PacketHeader,
-    ) -> io::Result<()> {
-        while !bufs.is_empty() {
-            let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, hdr)).await?;
-            bufs = &bufs[sent..];
+    ) -> impl Future<Output = io::Result<()>> + Send {
+        async move {
+            while !bufs.is_empty() {
+                let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, hdr)).await?;
+                bufs = &bufs[sent..];
+            }
+            Ok(())
         }
-        Ok(())
     }
 
-    pub async fn recvmmsg<'b>(
+    fn recvmmsg<'b>(
         &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
-    ) -> io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b> {
-        let rcvd = std::future::poll_fn(|cx| {
-            let max_segments = self.max_segments()?;
-            let max_segment_size = self.max_segment_size()?;
-            bufs.resize_with(max_segments, || {
-                Bytes::from_owner(vec![0u8; max_segment_size]).into()
-            });
-            hdrs.resize_with(max_segments, PacketHeader::empty);
-            self.poll_recv(cx, bufs, hdrs)
-        })
-        .await?;
+    ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b>>
+    + Send {
+        async move {
+            let rcvd = std::future::poll_fn(|cx| {
+                let max_segments = self.max_segments()?;
+                let max_segment_size = self.max_segment_size()?;
+                bufs.resize_with(max_segments, || {
+                    Bytes::from_owner(vec![0u8; max_segment_size]).into()
+                });
+                hdrs.resize_with(max_segments, PacketHeader::empty);
+                self.poll_recv(cx, bufs, hdrs)
+            })
+            .await?;
 
-        Ok(bufs
-            .drain(..rcvd)
-            .zip(hdrs.drain(..rcvd))
-            .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
+            Ok(bufs
+                .drain(..rcvd)
+                .zip(hdrs.drain(..rcvd))
+                .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
+        }
     }
 
-    pub async fn recvmpkt<'b>(
+    #[inline]
+    fn close(&self) -> impl std::future::Future<Output = io::Result<()>> + Send {
+        async { core::future::poll_fn(|cx| self.poll_close(cx)).await }
+    }
+
+    fn recvmpkt<'b>(
         &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
-    ) -> io::Result<impl Iterator<Item = (route::Packet, route::Way)> + Send + 'b> {
-        use qbase::packet::{self, Packet, PacketReader};
-        fn is_initial_packet(pkt: &Packet) -> bool {
-            matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
-        }
+    ) -> impl Future<
+        Output = io::Result<impl Iterator<Item = (route::Packet, route::Way)> + Send + 'b>,
+    > + Send {
+        async {
+            use qbase::packet::{self, Packet, PacketReader};
+            fn is_initial_packet(pkt: &Packet) -> bool {
+                matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
+            }
 
-        let bind_uri = self.bind_uri();
-        Ok(self
-            .recvmmsg(bufs, hdrs)
-            .await?
-            .flat_map(move |(buf, hdr)| {
-                let size = buf.len();
-                let bind_uri = bind_uri.clone();
-                PacketReader::new(buf, 8)
-                    .flatten()
-                    .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
-                    .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
-            }))
+            let bind_uri = self.bind_uri();
+            Ok(self
+                .recvmmsg(bufs, hdrs)
+                .await?
+                .flat_map(move |(buf, hdr)| {
+                    let size = buf.len();
+                    let bind_uri = bind_uri.clone();
+                    PacketReader::new(buf, 8)
+                        .flatten()
+                        .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
+                        .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
+                }))
+        }
     }
 }
+
+impl<IO: QuicIO + ?Sized> QuicIoExt for IO {}

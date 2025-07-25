@@ -21,7 +21,7 @@ use qbase::{
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
-use qinterface::iface::QuicInterface;
+use qinterface::{QuicIoExt, iface::QuicInterface};
 use tokio::time::Duration;
 
 mod aa;

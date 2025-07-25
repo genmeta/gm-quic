@@ -1,22 +1,23 @@
 use std::{
     fmt::Debug,
     io,
+    net::SocketAddr,
     ops::Deref,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
 };
 
 use qbase::net::{
-    addr::{BindUri, RealAddr},
-    route::PacketHeader,
+    addr::{BindUri, BindUriSchema, RealAddr},
+    route::{Link, PacketHeader},
 };
-use tokio_util::task::AbortOnDropHandle;
 
-use crate::{QuicIO, factory::ProductQuicIO, route::Router};
+use crate::{QuicIO, QuicIoExt};
 
 pub mod global;
 pub mod monitor;
 // handy（qudp）是可选的
+mod context;
 pub mod handy;
 
 pub use global::QuicInterfaces;
@@ -24,6 +25,41 @@ pub use global::QuicInterfaces;
 struct RwInterface {
     bind_uri: BindUri,
     quic_io: RwLock<io::Result<Box<dyn QuicIO>>>,
+}
+
+impl RwInterface {
+    pub async fn is_alive(&self) -> Option<bool> {
+        if self.bind_uri.scheme() == BindUriSchema::Ble {
+            return None; // BLE interfaces are not supported
+        }
+
+        let RealAddr::Internet(real_addr) = self.real_addr().ok()? else {
+            tracing::error!(
+                "Bad QuicIO implement: QuicIO with bind URI {} has BLE real addr",
+                self.bind_uri
+            );
+            return None;
+        };
+
+        let socket_addr = SocketAddr::try_from(&self.bind_uri).ok()?;
+
+        if !(real_addr.ip() == socket_addr.ip()
+            && (socket_addr.port() == 0 || real_addr.port() == socket_addr.port()))
+        {
+            tracing::warn!(bind_uri=%self.bind_uri, "Interface's real_addr should be from {socket_addr}, but got {real_addr}");
+            return Some(false); // Address is changed
+        }
+
+        let link = Link::new(socket_addr, socket_addr);
+        let packets = [io::IoSlice::new(&[0; 1])];
+        let header = PacketHeader::new(link.into(), link.into(), 64, None, packets[0].len() as u16);
+        if let Err(e) = self.sendmmsg(&packets, header).await {
+            tracing::warn!(bind_uri=%self.bind_uri, "Failed to sendmmsg: {e}, interface is not alive");
+            return Some(false); // Send failed, interface is not alive
+        }
+
+        Some(true)
+    }
 }
 
 struct RwInterfaceGuard<'a>(RwLockReadGuard<'a, io::Result<Box<dyn QuicIO>>>);
@@ -121,6 +157,11 @@ impl QuicIO for RwInterface {
     ) -> Poll<io::Result<usize>> {
         self.borrow()?.poll_recv(cx, pkts, hdrs)
     }
+
+    #[inline]
+    fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.borrow()?.poll_close(cx)
+    }
 }
 
 #[derive(Debug)]
@@ -199,95 +240,9 @@ impl QuicIO for QuicInterface {
     ) -> Poll<io::Result<usize>> {
         self.borrow(|iface| iface.poll_recv(cx, pkts, hdrs))?
     }
-}
 
-struct InterfaceContext {
-    bind_uri: BindUri,
-    /// factory to rebind the interface
-    ///
-    /// factory may be changed when manually rebind
-    factory: Arc<dyn ProductQuicIO>,
-    /// the actual interface being used
-    ///
-    /// the actual interface may be changed when rebind
-    iface: Arc<RwInterface>,
-    /// recv task handle
-    task: AbortOnDropHandle<()>,
-}
-
-impl Debug for InterfaceContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InterfaceContext")
-            .field("bind_uri", &self.bind_uri)
-            .field("factory", &"..")
-            .field("iface", &"..")
-            .field("task", &"..")
-            .finish()
-    }
-}
-
-impl InterfaceContext {
-    pub fn new(bind_uri: BindUri, factory: Arc<dyn ProductQuicIO>) -> Self {
-        let iface = Arc::new(RwInterface::new(
-            bind_uri.clone(),
-            factory.bind(bind_uri.clone()),
-        ));
-
-        let task = AbortOnDropHandle::new(tokio::spawn({
-            let iface = Arc::downgrade(&iface);
-            let (mut bufs, mut hdrs) = (vec![], vec![]);
-            async move {
-                loop {
-                    let pkts = {
-                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
-                            return;
-                        };
-                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
-                            return;
-                        };
-                        pkts
-                    };
-                    for (pkt, way) in pkts {
-                        Router::global().deliver(pkt, way).await;
-                    }
-                }
-            }
-        }));
-
-        InterfaceContext {
-            bind_uri,
-            factory,
-            iface,
-            task,
-        }
-    }
-
-    pub fn rebind(&mut self, bind_uri: BindUri) -> io::Result<()> {
-        self.iface
-            .update_with(|| self.factory.bind(bind_uri.clone()));
-
-        // Abort the current task by aborting it, then spawn the new one
-        self.task = AbortOnDropHandle::new(tokio::spawn({
-            let iface = Arc::downgrade(&self.iface);
-            let (mut bufs, mut hdrs) = (vec![], vec![]);
-            async move {
-                loop {
-                    let pkts = {
-                        let Some(iface) = iface.upgrade().map(|io| io as Arc<dyn QuicIO>) else {
-                            return;
-                        };
-                        let Ok(pkts) = iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await else {
-                            return;
-                        };
-                        pkts
-                    };
-                    for (pkt, way) in pkts {
-                        Router::global().deliver(pkt, way).await;
-                    }
-                }
-            }
-        }));
-
-        Ok(())
+    #[inline]
+    fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.borrow(|iface| iface.poll_close(cx))?
     }
 }
