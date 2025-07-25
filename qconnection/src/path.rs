@@ -110,7 +110,9 @@ impl Components {
                     if !is_probed {
                         path.grant_anti_amplification();
                     }
-                    tls_handshake.finished().await;
+                    if !tls_handshake.finished().await {
+                        return Ok(());
+                    }
 
                     match paths.handshake_path() {
                         Some(handshake_path) if Arc::ptr_eq(&handshake_path, &path) => {
@@ -118,7 +120,9 @@ impl Components {
                             Ok(())
                         }
                         _ => {
-                            conn_state.handshaked().await;
+                            if !conn_state.handshaked().await {
+                                return Ok(());
+                            }
                             path.validate().await
                         }
                     }

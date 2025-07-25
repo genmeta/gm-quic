@@ -14,7 +14,7 @@ use qbase::{
 };
 use qcongestion::Transport;
 use qevent::telemetry::Instrument;
-use tokio::task::AbortHandle;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument as _;
 
 use super::Path;
@@ -28,19 +28,7 @@ use crate::{
 pub struct PathContext {
     #[deref]
     path: Arc<Path>,
-    task: AbortHandle,
-}
-
-impl Drop for PathContext {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl PathContext {
-    pub fn new(path: Arc<Path>, task: AbortHandle) -> Self {
-        Self { path, task }
-    }
+    _task: AbortOnDropHandle<()>,
 }
 
 #[derive(Clone)]
@@ -99,16 +87,17 @@ impl ArcPathContexts {
                 let (path, task) = try_create()?;
                 self.tx_wakers.insert(pathway, &path.tx_waker);
                 let paths = self.clone();
-                let task = tokio::spawn(
+                let task = AbortOnDropHandle::new(tokio::spawn(
                     async move {
                         let reason = task.await.unwrap_err();
                         paths.remove(&pathway, &reason);
                     }
                     .instrument_in_current()
                     .in_current_span(),
-                )
-                .abort_handle();
-                Ok(vacant_entry.insert(PathContext { path, task }).clone())
+                ));
+                Ok(vacant_entry
+                    .insert(PathContext { path, _task: task })
+                    .clone())
             }
         }
     }

@@ -14,6 +14,7 @@ use tokio::{
     task::JoinSet,
     time,
 };
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use x509_parser::prelude::FromDer;
 
@@ -57,7 +58,7 @@ where
         let _lock = LOCK.get_or_init(Default::default).lock().await;
 
         let (listeners, server_task) = launch_server().await?;
-        let server_task = tokio::task::spawn(server_task);
+        let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
         let localhost = listeners
             .get_server("localhost")
             .expect("Server localhost must be registered");
@@ -75,7 +76,7 @@ where
         let result = time::timeout(Duration::from_secs(30), launch_client(server_addr)).await;
 
         listeners.shutdown();
-        server_task.abort();
+        _server_task.abort();
 
         result?.expect("test timeout");
         Ok(())

@@ -10,7 +10,7 @@ use qbase::net::{
     addr::{BindUri, RealAddr},
     route::PacketHeader,
 };
-use tokio::task::JoinHandle;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{QuicIO, factory::ProductQuicIO, route::Router};
 
@@ -212,7 +212,7 @@ struct InterfaceContext {
     /// the actual interface may be changed when rebind
     iface: Arc<RwInterface>,
     /// recv task handle
-    task: JoinHandle<()>,
+    task: AbortOnDropHandle<()>,
 }
 
 impl Debug for InterfaceContext {
@@ -233,7 +233,7 @@ impl InterfaceContext {
             factory.bind(bind_uri.clone()),
         ));
 
-        let task = tokio::spawn({
+        let task = AbortOnDropHandle::new(tokio::spawn({
             let iface = Arc::downgrade(&iface);
             let (mut bufs, mut hdrs) = (vec![], vec![]);
             async move {
@@ -252,7 +252,7 @@ impl InterfaceContext {
                     }
                 }
             }
-        });
+        }));
 
         InterfaceContext {
             bind_uri,
@@ -266,10 +266,8 @@ impl InterfaceContext {
         self.iface
             .update_with(|| self.factory.bind(bind_uri.clone()));
 
-        // abort the current task
-        self.task.abort();
-        // then spawn the new one
-        self.task = tokio::spawn({
+        // Abort the current task by aborting it, then spawn the new one
+        self.task = AbortOnDropHandle::new(tokio::spawn({
             let iface = Arc::downgrade(&self.iface);
             let (mut bufs, mut hdrs) = (vec![], vec![]);
             async move {
@@ -288,15 +286,8 @@ impl InterfaceContext {
                     }
                 }
             }
-        });
+        }));
 
         Ok(())
-    }
-}
-
-impl Drop for InterfaceContext {
-    fn drop(&mut self) {
-        // When the context is dropped, we abort the task that is managing this interface.
-        self.task.abort();
     }
 }
