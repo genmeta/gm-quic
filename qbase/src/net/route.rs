@@ -269,6 +269,12 @@ impl<A, E: From<A>> From<Link<A>> for Pathway<E> {
     }
 }
 
+impl From<Link<SocketAddr>> for Link<RealAddr> {
+    fn from(Link { src, dst }: Link<SocketAddr>) -> Self {
+        Link::new(RealAddr::from(src), RealAddr::from(dst))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PacketHeader {
     pathway: Pathway,

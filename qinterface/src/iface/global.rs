@@ -1,19 +1,17 @@
 use std::{
     io,
-    net::SocketAddr,
     sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::{DashMap, Entry};
-use qbase::net::addr::{BindUri, BindUriSchema, RealAddr};
+use qbase::net::addr::BindUri;
 
 use crate::{
-    QuicIO,
     factory::ProductQuicIO,
-    iface::{InterfaceContext, QuicInterface},
+    iface::{QuicInterface, context::InterfaceContext, monitor::InterfacesMonitor},
 };
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct QuicInterfaces {
     interfaces: DashMap<BindUri, (InterfaceContext, Weak<QuicInterface>)>,
 }
@@ -25,41 +23,7 @@ impl QuicInterfaces {
     }
 
     pub fn new() -> Arc<Self> {
-        let this = Arc::new(Self {
-            interfaces: DashMap::new(),
-        });
-
-        tokio::spawn(Self::rebind_on_network_changed(Arc::downgrade(&this)));
-
-        this
-    }
-
-    async fn rebind_on_network_changed(this: Weak<Self>) {
-        let monitor = super::monitor::InterfacesMonitor::global();
-        let mut changed_rx = monitor.subscribe();
-        while changed_rx.changed().await.is_ok() {
-            let Some(this) = this.upgrade() else {
-                return;
-            };
-            this.interfaces
-                .iter_mut()
-                .filter(|entry| entry.key().scheme() == BindUriSchema::Iface)
-                .for_each(|mut entry| {
-                    let (bind_uri, (iface_ctx, ..)) = entry.pair_mut();
-                    let Ok(socket_addr) = SocketAddr::try_from(bind_uri) else {
-                        return;
-                    };
-
-                    // Keep if: real address is ok && task is not finished && new address == real addr
-                    if (iface_ctx.iface.real_addr()).is_ok_and(|real_addr| {
-                        !iface_ctx.task.is_finished()
-                            && real_addr == RealAddr::Internet(socket_addr)
-                    }) {
-                        return;
-                    }
-                    _ = iface_ctx.rebind(bind_uri.clone());
-                });
-        }
+        Arc::new(Self::default())
     }
 
     pub fn insert(
@@ -73,10 +37,11 @@ impl QuicInterfaces {
                 format!("Interface already exists for {bind_uri}"),
             )),
             dashmap::Entry::Vacant(entry) => {
-                let iface_ctx = InterfaceContext::new(bind_uri, factory);
+                let interfaces = InterfacesMonitor::global().subscribe();
+                let iface_ctx = InterfaceContext::new(bind_uri.clone(), factory, interfaces);
                 let iface = Arc::new(QuicInterface::new(
-                    iface_ctx.bind_uri.clone(),
-                    Arc::downgrade(&iface_ctx.iface),
+                    bind_uri.clone(),
+                    Arc::downgrade(iface_ctx.iface()),
                     self.clone(),
                 ));
 
@@ -112,10 +77,11 @@ impl QuicInterfaces {
             }
         }
 
-        let iface_ctx = InterfaceContext::new(bind_uri, factory);
+        let interfaces = InterfacesMonitor::global().subscribe();
+        let iface_ctx = InterfaceContext::new(bind_uri.clone(), factory, interfaces);
         let iface = Arc::new(QuicInterface::new(
-            iface_ctx.bind_uri.clone(),
-            Arc::downgrade(&iface_ctx.iface),
+            bind_uri.clone(),
+            Arc::downgrade(iface_ctx.iface()),
             self.clone(),
         ));
 
@@ -133,7 +99,118 @@ impl Drop for QuicInterface {
         self.ifaces
             .interfaces
             .remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
-                Weak::ptr_eq(&Arc::downgrade(&iface_ctx.iface), &self.iface)
+                Weak::ptr_eq(&Arc::downgrade(iface_ctx.iface()), &self.iface)
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        ops::DerefMut,
+        pin::Pin,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll, ready},
+    };
+
+    use bytes::BytesMut;
+    use qbase::net::{addr::RealAddr, route::PacketHeader};
+    use tokio::task::JoinHandle;
+
+    use super::*;
+    use crate::QuicIO;
+
+    struct TestQuicIO {
+        bind_uri: BindUri,
+        some_task: Mutex<JoinHandle<()>>,
+    }
+
+    static BIND_TIMES: AtomicUsize = AtomicUsize::new(0);
+    static SOME_RESOURCES: OnceLock<Arc<()>> = OnceLock::new();
+
+    impl TestQuicIO {
+        fn bind(bind_uri: BindUri) -> io::Result<Self> {
+            let global_state = SOME_RESOURCES.get_or_init(Arc::default);
+            if Arc::strong_count(global_state) > 1 {
+                panic!("Last TestQuicIO instance must release resources before binding again");
+            }
+
+            let state = global_state.clone();
+            let task = tokio::spawn(async move {
+                // Simulate some async work
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                drop(state);
+            });
+
+            BIND_TIMES.fetch_add(1, Ordering::SeqCst);
+
+            Ok(Self {
+                bind_uri,
+                some_task: Mutex::new(task),
+            })
+        }
+    }
+
+    impl QuicIO for TestQuicIO {
+        fn bind_uri(&self) -> BindUri {
+            self.bind_uri.clone()
+        }
+
+        fn real_addr(&self) -> io::Result<RealAddr> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn max_segments(&self) -> io::Result<usize> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn poll_send(
+            &self,
+            _: &mut Context,
+            _: &[io::IoSlice],
+            _: PacketHeader,
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
+        }
+
+        fn poll_recv(
+            &self,
+            _: &mut Context,
+            _: &mut [BytesMut],
+            _: &mut [PacketHeader],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
+        }
+
+        fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
+            ready!(Pin::new(&mut self.some_task.lock().unwrap().deref_mut()).poll(cx)).unwrap();
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn async_close() {
+        let _quic_interface = QuicInterfaces::global()
+            .insert(BindUri::from("127.0.0.1:0"), Arc::new(TestQuicIO::bind))
+            .unwrap();
+        InterfacesMonitor::global().on_interface_changed();
+
+        InterfacesMonitor::global()
+            .subscribe()
+            .changed()
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(BIND_TIMES.load(Ordering::SeqCst), 2);
     }
 }
