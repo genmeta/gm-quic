@@ -110,6 +110,10 @@ pub mod qudp {
 
             Poll::Ready(Ok(rcvd))
         }
+
+        fn poll_close(&self, _cx: &mut Context) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 
@@ -170,6 +174,10 @@ pub mod unsupported {
             _: &mut [BytesMut],
             _: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
+            unreachable!()
+        }
+
+        fn poll_close(&self, _: &mut Context) -> Poll<io::Result<()>> {
             unreachable!()
         }
     }

@@ -6,6 +6,7 @@ use std::{
 
 use netdev::Interface;
 use tokio::sync::watch;
+use tokio_util::task::AbortOnDropHandle;
 
 struct Devices(RwLock<HashMap<String, Interface>>);
 
@@ -32,7 +33,7 @@ pub struct InterfacesMonitor {
     devices: Arc<Devices>,
     updated_tx: watch::Sender<()>,
     updated_rx: watch::Receiver<()>,
-    task: tokio::task::JoinHandle<()>,
+    _task: AbortOnDropHandle<()>,
 }
 
 impl InterfacesMonitor {
@@ -46,7 +47,7 @@ impl InterfacesMonitor {
 
         let (updated_tx, updated_rx) = watch::channel(());
 
-        let task = tokio::spawn({
+        let task = AbortOnDropHandle::new(tokio::spawn({
             let devices = devices.clone();
             let timer_tx = updated_tx.clone();
             // let event_tx = updated_tx.clone();
@@ -74,13 +75,13 @@ impl InterfacesMonitor {
                 //     }
                 // });
             }
-        });
+        }));
 
         Self {
             devices,
             updated_tx,
             updated_rx,
-            task,
+            _task: task,
         }
     }
 
@@ -101,11 +102,5 @@ impl InterfacesMonitor {
 impl Default for InterfacesMonitor {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Drop for InterfacesMonitor {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
