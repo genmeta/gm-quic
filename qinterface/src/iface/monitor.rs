@@ -5,7 +5,7 @@ use std::{
 };
 
 use netdev::Interface;
-use tokio::sync::watch;
+use tokio::{sync::watch, time::MissedTickBehavior};
 use tokio_util::task::AbortOnDropHandle;
 
 struct Devices(RwLock<HashMap<String, Interface>>);
@@ -54,6 +54,7 @@ impl InterfacesMonitor {
             async move {
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     loop {
                         interval.tick().await;
                         devices.update();

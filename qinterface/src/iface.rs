@@ -1,16 +1,18 @@
 use std::{
     fmt::Debug,
     io,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::Deref,
     sync::{Arc, RwLock, RwLockReadGuard, Weak},
     task::{Context, Poll},
 };
 
 use qbase::net::{
-    addr::{BindUri, BindUriSchema, RealAddr},
+    addr::{BindUri, BindUriSchema, RealAddr, TryIntoSocketAddrError},
     route::{Link, PacketHeader},
 };
+use thiserror::Error;
+use tokio::net::UdpSocket;
 
 use crate::{QuicIO, QuicIoExt};
 
@@ -27,38 +29,84 @@ struct RwInterface {
     quic_io: RwLock<io::Result<Box<dyn QuicIO>>>,
 }
 
+#[derive(Debug, Error)]
+enum InterfaceFailure {
+    #[error("BLE protocol is not supported for alive check")]
+    BleProtocol,
+    #[error("Invalid QuicIO implementation")]
+    InvalidImplementation,
+    #[error("Interface is broken: {0}")]
+    InterfaceBroken(io::Error),
+    #[error("Failed to parse bind URI address")]
+    AddressParsingFailed(#[from] TryIntoSocketAddrError),
+    #[error("Real address does not match bind URI")]
+    AddressMismatch,
+    #[error("Failed to bind test socket: {0}")]
+    TestSocketBindFailed(io::Error),
+    #[error("Failed to send test packet: {0}")]
+    SendTestFailed(io::Error),
+}
+
+impl From<io::Error> for InterfaceFailure {
+    fn from(error: io::Error) -> Self {
+        Self::TestSocketBindFailed(error)
+    }
+}
+
+impl InterfaceFailure {
+    fn is_recoverable(&self) -> bool {
+        matches!(
+            self,
+            Self::InterfaceBroken(..) | Self::AddressMismatch | Self::SendTestFailed(..)
+        )
+    }
+}
+
 impl RwInterface {
-    pub async fn is_alive(&self) -> Option<bool> {
+    pub async fn is_alive(&self) -> Result<(), InterfaceFailure> {
         if self.bind_uri.scheme() == BindUriSchema::Ble {
-            return None; // BLE interfaces are not supported
+            return Err(InterfaceFailure::BleProtocol);
         }
 
-        let RealAddr::Internet(real_addr) = self.real_addr().ok()? else {
-            tracing::error!(
-                "Bad QuicIO implement: QuicIO with bind URI {} has BLE real addr",
-                self.bind_uri
-            );
-            return None;
+        let real_addr = match self
+            .real_addr()
+            .map_err(InterfaceFailure::InterfaceBroken)?
+        {
+            RealAddr::Internet(addr) => addr,
+            _ => return Err(InterfaceFailure::InvalidImplementation),
         };
 
-        let socket_addr = SocketAddr::try_from(&self.bind_uri).ok()?;
+        let socket_addr = SocketAddr::try_from(&self.bind_uri)?;
 
+        // Check if addresses match
         if !(real_addr.ip() == socket_addr.ip()
             && (socket_addr.port() == 0 || real_addr.port() == socket_addr.port()))
         {
-            tracing::warn!(bind_uri=%self.bind_uri, "Interface's real_addr should be from {socket_addr}, but got {real_addr}");
-            return Some(false); // Address is changed
+            return Err(InterfaceFailure::AddressMismatch);
         }
 
-        let link = Link::new(socket_addr, socket_addr);
+        // Test connectivity with a local socket
+        let localhost = match real_addr.ip() {
+            IpAddr::V4(..) => Ipv4Addr::LOCALHOST.into(),
+            IpAddr::V6(..) => Ipv6Addr::LOCALHOST.into(),
+        };
+        let socket = UdpSocket::bind(SocketAddr::new(localhost, 0))
+            .await
+            .map_err(InterfaceFailure::TestSocketBindFailed)?;
+        let dst_addr = socket
+            .local_addr()
+            .map_err(InterfaceFailure::TestSocketBindFailed)?;
+
+        // Send test packet
+        let link = Link::new(real_addr, dst_addr);
         let packets = [io::IoSlice::new(&[0; 1])];
         let header = PacketHeader::new(link.into(), link.into(), 64, None, packets[0].len() as u16);
-        if let Err(e) = self.sendmmsg(&packets, header).await {
-            tracing::warn!(bind_uri=%self.bind_uri, "Failed to sendmmsg: {e}, interface is not alive");
-            return Some(false); // Send failed, interface is not alive
-        }
 
-        Some(true)
+        self.sendmmsg(&packets, header)
+            .await
+            .map_err(InterfaceFailure::SendTestFailed)?;
+
+        Ok(())
     }
 }
 
@@ -99,7 +147,7 @@ impl RwInterface {
 
     fn new(bind_uri: BindUri, bind_result: io::Result<Box<dyn QuicIO>>) -> Self {
         if let Err(error) = &bind_result {
-            tracing::warn!("Failed to bind interface {bind_uri}: {error}",);
+            tracing::warn!(%bind_uri,"Failed to bind interface: {error}",);
         }
         Self {
             bind_uri,
@@ -112,7 +160,7 @@ impl RwInterface {
         *quic_io_guard = Err(io::ErrorKind::NotConnected.into()); // Drop the old quic_io
         *quic_io_guard = try_bind();
         if let Err(error) = quic_io_guard.as_ref() {
-            tracing::warn!("Failed to update interface {}: {error}", self.bind_uri);
+            tracing::warn!(bind_uri=%self.bind_uri,"Failed to update interface: {error}");
         }
     }
 }
@@ -189,14 +237,14 @@ impl QuicInterface {
     }
 
     fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
-        let unavailable = || {
+        let iface = self.iface.upgrade().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotConnected,
                 format!("Interface {} is not available", self.bind_uri),
             )
-        };
-        let muteable_iface = self.iface.upgrade().ok_or_else(unavailable)?;
-        return Ok(f(muteable_iface.borrow()?.as_ref()));
+        })?;
+        let guard = iface.borrow()?;
+        Ok(f(guard.as_ref()))
     }
 }
 

@@ -42,21 +42,27 @@ impl InterfaceContext {
         let task = AbortOnDropHandle::new(tokio::spawn({
             let rw_iface = iface.clone();
             let mut receive_task =
-                ReceiveTask::Running(tokio::spawn(receive_and_deliver(rw_iface.clone())));
+                ReceiveTask::Running(Box::pin(receive_and_deliver(rw_iface.clone())));
             async move {
                 loop {
                     tokio::select! {
                         Ok(()) = interfaces.changed() => {
                             // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
-                            if matches!(receive_task, ReceiveTask::Stopped) || matches!(rw_iface.is_alive().await, Some(false)){
+                            if matches!(receive_task, ReceiveTask::Stopped)
+                                || rw_iface.is_alive().await.is_err_and(|e| {
+                                    tracing::warn!(%bind_uri, "Interface may not alive: {e}");
+                                    e.is_recoverable()
+                                })
+                            {
                                 tracing::info!(%bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
                                 rw_iface.update_with(|| factory.bind(bind_uri.clone()));
-                                receive_task = ReceiveTask::Running(tokio::spawn(receive_and_deliver(rw_iface.clone())));
+                                receive_task =
+                                    ReceiveTask::Running(Box::pin(receive_and_deliver(rw_iface.clone())));
                             }
                         }
                         result = &mut receive_task => {
-                            if let Ok(Err(io_error)) = result {
+                            if let Err(io_error) = result {
                                 tracing::error!(%bind_uri, "Receive task failed with errror: {io_error:?}");
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
