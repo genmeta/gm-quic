@@ -2,8 +2,6 @@ use std::{
     io::{self, IoSlice},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     os::fd::{AsFd, AsRawFd},
-    thread::sleep,
-    time::Duration,
 };
 
 use nix::{
@@ -47,27 +45,8 @@ impl Io for UdpSocketController {
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6Ttl, &DEFAULT_TTL)?;
             }
         }
-        for _ in 0..100 {
-            match socket.bind(&addr.into()) {
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::AddrNotAvailable => {
-                    // 开机启动时，可能ipv6 地址还没有分配好，稍后再试
-                    sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    tracing::error!("   Cause by: failing to bind socket address {e}");
-                    return Err(e);
-                }
-            }
-        }
 
-        // 循环结束后仍然是 AddrNotAvailable 错误
-        let err = io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            format!("Failed to bind to address {addr} after multi attempts"),
-        );
-        tracing::error!("   Cause by: failing to bind socket address after retries {err}");
-        Err(err)
+        socket.bind(&addr.into())
     }
 
     #[cfg(any(

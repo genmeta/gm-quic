@@ -109,7 +109,7 @@ let quic_client = gm_quic::QuicClient::builder()
     // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // Bind to specific network interfaces
     // .enable_0rtt()                                    // Enable 0-RTT
     // .enable_sslkeylog()                               // Enable SSL key logging
-    // .with_qlog(Arc::new(gm_quic::handy::DefaultSeqLogger::new(
+    // .with_qlog(Arc::new(gm_quic::handy::LegacySeqLogger::new(
     //     PathBuf::from("/path/to/qlog_dir"),
     // )))                                               // Enable qlog for visualization with qvis tool
     .build();
