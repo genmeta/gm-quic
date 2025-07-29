@@ -103,7 +103,7 @@ let quic_client = gm_quic::QuicClient::builder()
     // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口eth0的IPv4和IPv6地址
     // .enable_0rtt()                                    // 启用0-RTT
     // .enable_sslkeylog()                               // 启用SSL密钥日志
-    // .with_qlog(Arc::new(gm_quic::handy::DefaultSeqLogger::new(
+    // .with_qlog(Arc::new(gm_quic::handy::LegacySeqLogger::new(
     //     PathBuf::from("/path/to/qlog_dir"),
     // )))                                               // 启用qlog，可用qvis工具可视化
     .build();

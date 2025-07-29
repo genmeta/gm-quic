@@ -534,7 +534,7 @@ impl QuicListeners {
             Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
                 .with_anti_port_scan(self.anti_port_scan)
-                .with_client_authers(Box::new((server_auther, self.client_auther.clone())))
+                .with_client_auther(Box::new((server_auther, self.client_auther.clone())))
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
@@ -726,7 +726,7 @@ impl<T> QuicListenersBuilder<T> {
     /// All provided authers must approve the connection for it to be accepted.
     /// If any auther rejects the connection, it will be dropped.
     ///
-    /// If you call this multiple times, only the last `client_authers` will be used.
+    /// If you call this multiple times, only the last `client_auther` will be used.
     ///
     /// **Security Enhancement:** When combined with [`enable_anti_port_scan`],
     /// failed authentication attempts will be silently dropped without any response,

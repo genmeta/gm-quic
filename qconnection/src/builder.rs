@@ -72,7 +72,7 @@ impl Connection {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
             anti_port_scan: false,
-            client_authers: Box::new(NoopClientAuther),
+            client_auther: Box::new(NoopClientAuther),
         }
     }
 }
@@ -94,7 +94,7 @@ pub struct ServerFoundation {
     token_registry: ArcTokenRegistry,
     server_params: ServerParameters,
     anti_port_scan: bool,
-    client_authers: Box<dyn AuthClient>,
+    client_auther: Box<dyn AuthClient>,
 }
 
 impl ServerFoundation {
@@ -108,8 +108,8 @@ impl ServerFoundation {
         self
     }
 
-    pub fn with_client_authers(mut self, authers: Box<dyn AuthClient>) -> Self {
-        self.client_authers = authers;
+    pub fn with_client_auther(mut self, authers: Box<dyn AuthClient>) -> Self {
+        self.client_auther = authers;
         self
     }
 }
@@ -348,7 +348,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
         let tls_session = ServerTlsSession::init(
             Arc::new(self.tls_config),
             &server_params,
-            self.foundation.client_authers,
+            self.foundation.client_auther,
             self.foundation.anti_port_scan,
         )
         .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理

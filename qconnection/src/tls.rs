@@ -184,7 +184,7 @@ impl ServerTlsSession {
     pub fn init(
         tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
-        client_authers: Box<dyn AuthClient>,
+        client_auther: Box<dyn AuthClient>,
         anti_port_scan: bool,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
@@ -201,7 +201,7 @@ impl ServerTlsSession {
                 true => ArcSendLock::new(),
                 false => ArcSendLock::unrestricted(),
             },
-            client_auther: client_authers,
+            client_auther,
             client_cert: None,
         };
         Ok(tls_session)
@@ -235,7 +235,7 @@ impl ServerTlsSession {
             tracing::warn!(
                 host,
                 ?self.client_name,
-                "Client parameters verification failed, refusing connection."
+                "Client name verification failed, refusing connection."
             );
             return Err(Error::Quic(QuicError::with_default_fty(
                 ErrorKind::ConnectionRefused,
