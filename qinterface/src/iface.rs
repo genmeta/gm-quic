@@ -87,8 +87,10 @@ impl RwInterface {
 
         // Test connectivity with a local socket
         let localhost = match real_addr.ip() {
-            IpAddr::V4(..) => Ipv4Addr::LOCALHOST.into(),
-            IpAddr::V6(..) => Ipv6Addr::LOCALHOST.into(),
+            IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.into(),
+            IpAddr::V4(ip) => ip.into(),
+            IpAddr::V6(ip) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.into(),
+            IpAddr::V6(ip) => ip.into(),
         };
         let socket = UdpSocket::bind(SocketAddr::new(localhost, 0))
             .await
