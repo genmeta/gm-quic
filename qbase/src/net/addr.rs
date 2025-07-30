@@ -268,6 +268,15 @@ impl TryFrom<&BindUri> for SocketAddr {
                     .expect("Already checked BindUriSchema is iface");
                 let interface = netdev::get_interfaces()
                     .into_iter()
+                    .map(|mut iface| {
+                        // compatibility with windows interface names
+                        iface.name = iface
+                            .name
+                            .trim_start_matches('{')
+                            .trim_end_matches('}')
+                            .to_string();
+                        iface
+                    })
                     .find(|iface| iface.name == interface)
                     .ok_or(TryIntoSocketAddrError::InterfaceNotFound)?;
                 let ip_addr = match ip_family {
@@ -532,6 +541,9 @@ mod tests {
         let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?temporary=false").unwrap();
         assert!(!bind_uri.is_templorary());
         let bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        assert!(!bind_uri.is_templorary());
+        let bind_uri =
+            BindUri::from_str("iface://v4.C5563ED1-2BC9-42C5-8177-59F2F0AF37C8:8080").unwrap();
         assert!(!bind_uri.is_templorary());
 
         let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
