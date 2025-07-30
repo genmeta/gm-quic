@@ -29,8 +29,6 @@ pub enum ParseBindUriError {
     MissingIpFamily,
     #[error("Missing port for iface scheme BindUri")]
     MissingPort,
-    #[error("Too many parts for iface scheme BindUri")]
-    TooManyParts,
     #[error("Invalid IP address family for iface scheme")]
     InvalidIpFamily,
     #[error("Invalid IP address for inet scheme BindUri: {0}")]
@@ -43,9 +41,6 @@ fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, String, u16), ParseBindUri
         .host()
         .split_once('.')
         .ok_or(ParseBindUriError::MissingIpFamily)?;
-    if interface.contains('.') {
-        return Err(ParseBindUriError::TooManyParts);
-    }
     let port = authority.port_u16().ok_or(ParseBindUriError::MissingPort)?;
     let ip_family: Family = ip_family
         .parse()
@@ -447,14 +442,6 @@ mod tests {
         assert!(matches!(
             BindUri::from_str("iface://v4.wlan0"),
             Err(ParseBindUriError::MissingPort)
-        ));
-    }
-
-    #[test]
-    fn too_many_parts() {
-        assert!(matches!(
-            BindUri::from_str("iface://v4.wlan0.extra:8080"),
-            Err(ParseBindUriError::TooManyParts)
         ));
     }
 
