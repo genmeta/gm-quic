@@ -24,6 +24,15 @@ impl Devices {
     fn update(&self) {
         *self.0.write().unwrap() = netdev::get_interfaces()
             .into_iter()
+            .map(|mut iface| {
+                // compatibility with windows interface names
+                iface.name = iface
+                    .name
+                    .trim_start_matches('{')
+                    .trim_end_matches('}')
+                    .to_string();
+                iface
+            })
             .map(|iface| (iface.name.clone(), iface))
             .collect();
     }
