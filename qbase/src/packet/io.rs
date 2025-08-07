@@ -1,3 +1,5 @@
+use std::{marker::PhantomData, mem};
+
 use bytes::BytesMut;
 use nom::{Parser, multi::length_data};
 
@@ -7,7 +9,15 @@ use super::{
     r#type::{Type, io::be_packet_type},
     *,
 };
-use crate::{packet::keys::DirectionalKeys, varint::be_varint};
+use crate::{
+    frame::{
+        EncodeSize,
+        io::{WriteDataFrame, WriteFrame},
+    },
+    net::tx::Signals,
+    util::ContinuousData,
+    varint::be_varint,
+};
 
 /// Parse the payload of a packet.
 ///
@@ -87,8 +97,9 @@ pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Err
                 tracing::error!("   Cause by: parsing 1-RTT packet");
                 return Err(Error::UnderSampling(remain.len()));
             }
-            let bytes = datagram.clone();
-            let offset = bytes.len() - remain.len();
+            let remain_len = remain.len();
+            let bytes = mem::replace(datagram, BytesMut::new());
+            let offset = bytes.len() - remain_len;
             datagram.clear();
             Ok(Packet::Data(DataPacket {
                 header: DataHeader::Short(header),
@@ -99,17 +110,404 @@ pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Err
     }
 }
 
+pub trait ProductHeader<H> {
+    fn new_header(&self) -> Result<H, Signals>;
+}
+
+pub trait PacketSpace<H> {
+    type PacketAssembler<'b>: AssemblePacket
+    where
+        Self: 'b;
+
+    fn new_packet<'b>(
+        &'b self,
+        header: H,
+        buffer: &'b mut [u8],
+    ) -> Result<Self::PacketAssembler<'b>, Signals>;
+}
+
+pub trait Package<Into: ?Sized> {
+    type Output;
+
+    fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals>;
+}
+
+impl<Into: BufMut + ?Sized, P: Package<Into> + ?Sized> Package<Into> for &mut P {
+    type Output = P::Output;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals> {
+        P::dump(self, into)
+    }
+}
+
+impl<Into: BufMut + ?Sized, P: Package<Into> + ?Sized> Package<Into> for Box<P> {
+    type Output = P::Output;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals> {
+        P::dump(self, into)
+    }
+}
+
+impl<Into: BufMut + ?Sized, P: Package<Into>> Package<Into> for Option<P> {
+    type Output = P::Output;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals> {
+        self.take()
+            .map_or_else(|| Err(Signals::empty()), |mut package| package.dump(into))
+    }
+}
+
+impl<Into: BufMut + ?Sized, P: Package<Into>> Package<Into> for [P] {
+    type Output = Vec<P::Output>;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals> {
+        let origin = into.remaining_mut();
+        let mut outputs = Vec::with_capacity(self.len());
+        let mut signals = Signals::empty();
+        for package in self {
+            match package.dump(into) {
+                Err(s) => signals |= s,
+                Ok(output) => outputs.push(output),
+            }
+        }
+
+        (origin != into.remaining_mut())
+            .then_some(outputs)
+            .ok_or(signals)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Frame<F>(F);
+
+impl<Into, F> Package<Into> for Frame<F>
+where
+    F: EncodeSize + Clone,
+    Into: BufMut + MarshalFrame<F> + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<(), Signals> {
+        if self.0.encoding_size() > into.remaining_mut() {
+            return Err(Signals::CONGESTION);
+        }
+        into.dump_frame(self.0.clone());
+        Ok(())
+    }
+}
+
+pub fn frame<F>(frame: F) -> Frame<F>
+where
+    F: EncodeSize + Clone,
+{
+    Frame(frame)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PathFrame<F>(F);
+
+impl<Into, F> Package<Into> for PathFrame<F>
+where
+    F: EncodeSize + Clone,
+    Into: BufMut + MarshalPathFrame<F> + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<(), Signals> {
+        if self.0.encoding_size() > into.remaining_mut() {
+            return Err(Signals::CONGESTION);
+        }
+        into.dump_path_frame(self.0.clone());
+        Ok(())
+    }
+}
+
+pub fn path_frame<F>(frame: F) -> PathFrame<F>
+where
+    F: EncodeSize + Clone,
+{
+    PathFrame(frame)
+}
+
+pub struct DataFrame<F, D>(F, D);
+
+impl<Into, F, D> Package<Into> for DataFrame<F, D>
+where
+    F: EncodeSize + Clone,
+    D: Clone,
+    Into: BufMut + MarshalDataFrame<F, D> + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<(), Signals> {
+        if self.0.encoding_size() > into.remaining_mut() {
+            return Err(Signals::CONGESTION);
+        }
+        into.dump_frame_with_data(self.0.clone(), self.1.clone());
+        Ok(())
+    }
+}
+
+pub fn data_frame<F, D>(frame: F, data: D) -> DataFrame<F, D>
+where
+    F: EncodeSize + Clone,
+    D: Clone,
+{
+    DataFrame(frame, data)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FnPackage<F>(F);
+
+impl<Into, F, Output> Package<Into> for FnPackage<F>
+where
+    Into: ?Sized,
+    F: for<'a> FnMut(&'a mut Into) -> Result<Output, Signals>,
+{
+    type Output = Output;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Output, Signals> {
+        (self.0)(into)
+    }
+}
+
+pub struct Empty<O>(PhantomData<O>);
+
+impl<Into: ?Sized, O> Package<Into> for Empty<O> {
+    type Output = O;
+
+    #[inline]
+    fn dump(&mut self, _into: &mut Into) -> Result<O, Signals> {
+        Err(Signals::empty())
+    }
+}
+
+#[inline]
+pub fn empty<O>() -> Empty<O> {
+    Empty(PhantomData)
+}
+
+#[inline]
+pub fn fn_package<Into, F, Output>(f: F) -> FnPackage<F>
+where
+    Into: ?Sized,
+    F: for<'a> FnMut(&'a mut Into) -> Result<Output, Signals>,
+{
+    FnPackage(f)
+}
+
+pub struct PadTo20;
+
+impl<'b, P> Package<P> for PadTo20
+where
+    P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut P) -> Result<(), Signals> {
+        let packet = into.as_ref();
+        match packet.payload_len() + packet.tag_len() {
+            _ if packet.is_empty() => Err(Signals::empty()),
+            len if len < 20 => {
+                into.put_bytes(0, 20 - len);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[inline]
+pub fn pad_to_20() -> PadTo20 {
+    PadTo20
+}
+
+pub struct PadToFull;
+
+impl<'b, P> Package<P> for PadToFull
+where
+    P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut P) -> Result<(), Signals> {
+        let packet = into.as_ref();
+        match packet.payload_len() + packet.tag_len() {
+            _ if packet.is_empty() => Err(Signals::empty()),
+            len if len < packet.buffer().len() => {
+                into.put_bytes(0, packet.remaining_mut());
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[inline]
+pub fn pad_to_full() -> PadToFull {
+    PadToFull
+}
+
+pub struct PadProbe;
+
+impl<'b, P> Package<P> for PadProbe
+where
+    P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut P) -> Result<(), Signals> {
+        if into.as_ref().is_probe_new_path() {
+            return pad_to_full().dump(into);
+        }
+        Err(Signals::empty())
+    }
+}
+
+#[inline]
+pub fn pad_probe() -> PadProbe {
+    PadProbe
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Repeat<P>(P);
+
+impl<Into: ?Sized + BufMut, P: Package<Into>> Package<Into> for Repeat<P> {
+    type Output = Vec<P::Output>;
+
+    #[inline]
+    fn dump(&mut self, into: &mut Into) -> Result<Vec<P::Output>, Signals> {
+        let origin = into.remaining_mut();
+        let mut outputs = Vec::new();
+        let signals = loop {
+            match self.0.dump(into) {
+                Err(s) => break s,
+                Ok(output) => outputs.push(output),
+            }
+        };
+
+        (origin != into.remaining_mut())
+            .then_some(outputs)
+            .ok_or(signals)
+    }
+}
+
+pub fn repeat<P>(package: P) -> Repeat<P> {
+    Repeat(package)
+}
+
+macro_rules! impl_package_for_tuple {
+    () => {};
+    ($head:ident $($tail:ident)*) => {
+        impl_package_for_tuple!(@imp $head $($tail)*);
+        impl_package_for_tuple!(           $($tail)*);
+
+    };
+    (@imp $($t:ident)*) => {
+        impl<Into: BufMut + ?Sized, $($t: Package<Into>),*> Package<Into> for ($($t,)*) {
+            type Output = ($(Option<$t::Output>,)*);
+
+            #[inline]
+            fn dump(&mut self, into: &mut Into) -> Result<Self::Output, Signals> {
+                let origin = into.remaining_mut();
+                let mut signals = Signals::empty();
+
+                #[allow(non_snake_case)]
+                let ($($t,)*) = self;
+
+                $(
+                #[allow(non_snake_case)]
+                let $t = match $t.dump(into) {
+                    Ok(output) => Some(output),
+                    Err(s) => {
+                        signals |= s;
+                        None
+                    }
+                };
+                )*
+
+
+                (origin != into.remaining_mut())
+                    .then_some(($($t,)*))
+                    .ok_or(signals)
+            }
+        }
+    }
+}
+
+impl_package_for_tuple! {
+    Z Y X W V U T S R Q P O N M L K J I H G F E D C B A
+}
+
+pub enum Keys {
+    LongHeaderPacket {
+        keys: DirectionalKeys,
+    },
+    ShortHeaderPacket {
+        keys: DirectionalKeys,
+        key_phase: KeyPhaseBit,
+    },
+}
+
+impl Debug for Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LongHeaderPacket { .. } => f
+                .debug_struct("LongHeaderPacket")
+                .field("keys", &"...")
+                .finish(),
+            Self::ShortHeaderPacket { key_phase, .. } => f
+                .debug_struct("ShortHeaderPacket")
+                .field("keys", &"...")
+                .field("key_phase", key_phase)
+                .finish(),
+        }
+    }
+}
+
+impl Keys {
+    fn hpk(&self) -> &dyn rustls::quic::HeaderProtectionKey {
+        match self {
+            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
+                keys.header.as_ref()
+            }
+        }
+    }
+
+    fn pk(&self) -> &dyn rustls::quic::PacketKey {
+        match self {
+            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
+                keys.packet.as_ref()
+            }
+        }
+    }
+
+    fn key_phase(&self) -> Option<KeyPhaseBit> {
+        match self {
+            Self::LongHeaderPacket { .. } => None,
+            Self::ShortHeaderPacket { key_phase, .. } => Some(*key_phase),
+        }
+    }
+}
+
 #[derive(Debug, CopyGetters)]
 pub struct PacketLayout {
     hdr_len: usize,
     len_encoding: usize,
-    pn: (u64, PacketNumber),
 
     cursor: usize,
     end: usize,
-
-    // keys, can also be used to indicates whether the packet is long header or short header
-    keys: Keys,
 
     // Packets containing only frames with [`Spec::N`] are not ack-eliciting;
     // otherwise, they are ack-eliciting.
@@ -131,29 +529,8 @@ pub struct PacketLayout {
 }
 
 impl PacketLayout {
-    pub fn writer(mut self, buffer: &mut [u8]) -> PacketWriter<'_> {
-        self.end = buffer.len() - self.keys.pk().tag_len();
-        assert!(self.end >= self.cursor);
-        PacketWriter {
-            layout: self,
-            buffer,
-        }
-    }
-
     pub fn payload_len(&self) -> usize {
         self.cursor - self.hdr_len - self.len_encoding
-    }
-
-    pub fn tag_len(&self) -> usize {
-        self.keys.pk().tag_len()
-    }
-
-    pub fn packet_len(&self) -> usize {
-        self.cursor + self.tag_len()
-    }
-
-    pub fn is_short_header(&self) -> bool {
-        self.keys.key_phase().is_some()
     }
 
     pub fn add_frame(&mut self, frame: &impl FrameFeture) {
@@ -163,10 +540,9 @@ impl PacketLayout {
     }
 }
 
-#[derive(Deref, DerefMut)]
 pub struct PacketWriter<'b> {
-    #[deref]
-    #[deref_mut]
+    keys: Keys,
+    pn: (u64, PacketNumber),
     layout: PacketLayout,
     buffer: &'b mut [u8],
 }
@@ -194,24 +570,20 @@ impl<'b> PacketWriter<'b> {
         payload_buf.put_packet_number(encoded_pn);
 
         let cursor = hdr_len + len_encoding + encoded_pn.size();
-        let keys = Keys::LongHeaderPacket { keys };
-        let end = buffer.len() - keys.pk().tag_len();
-        let layout = PacketLayout {
-            hdr_len,
-            len_encoding,
+        Ok(Self {
             pn,
-            cursor,
-            end,
-            keys,
-            ack_eliciting: false,
-            in_flight: false,
-            probe_new_path: false,
-        };
-        Ok(Self { buffer, layout })
-    }
-
-    pub fn buffer(&self) -> &[u8] {
-        &self.buffer[..self.layout.packet_len()]
+            layout: PacketLayout {
+                hdr_len,
+                len_encoding,
+                cursor,
+                end: buffer.len() - keys.packet.tag_len(),
+                ack_eliciting: false,
+                in_flight: false,
+                probe_new_path: false,
+            },
+            keys: Keys::LongHeaderPacket { keys },
+            buffer,
+        })
     }
 
     pub fn new_short(
@@ -230,95 +602,136 @@ impl<'b> PacketWriter<'b> {
         let encoded_pn = pn.1;
         hdr_buf.put_header(header);
         payload_buf.put_packet_number(encoded_pn);
-        let cursor = hdr_len + encoded_pn.size();
-        let keys = Keys::ShortHeaderPacket { keys, key_phase };
-        let end = buffer.len() - keys.pk().tag_len();
-        let packet = PacketLayout {
-            hdr_len,
-            len_encoding: 0,
-            pn,
-            cursor,
-            end,
-            keys,
-            ack_eliciting: false,
-            in_flight: false,
-            probe_new_path: false,
-        };
         Ok(Self {
+            pn,
+            layout: PacketLayout {
+                hdr_len,
+                len_encoding: 0,
+                cursor: hdr_len + encoded_pn.size(),
+                end: buffer.len() - keys.packet.tag_len(),
+                ack_eliciting: false,
+                in_flight: false,
+                probe_new_path: false,
+            },
+            keys: Keys::ShortHeaderPacket { keys, key_phase },
             buffer,
-            layout: packet,
         })
     }
 
-    pub fn interrupt(self) -> (PacketLayout, &'b mut [u8]) {
-        (self.layout, self.buffer)
+    #[inline]
+    pub fn pn(&self) -> u64 {
+        self.pn.0
     }
 
-    pub fn pad(&mut self, cnt: usize) {
-        self.put_bytes(0, cnt);
+    #[inline]
+    pub fn buffer(&self) -> &[u8] {
+        self.buffer
+    }
+
+    #[inline]
+    pub fn is_short_header(&self) -> bool {
+        self.keys.key_phase().is_some()
     }
 
     #[inline]
     pub fn is_ack_eliciting(&self) -> bool {
-        self.ack_eliciting
+        self.layout.ack_eliciting
     }
 
     #[inline]
     pub fn in_flight(&self) -> bool {
-        self.in_flight
+        self.layout.in_flight
     }
 
+    #[inline]
+    pub fn is_probe_new_path(&self) -> bool {
+        self.layout.probe_new_path
+    }
+
+    #[inline]
+    pub fn payload_len(&self) -> usize {
+        self.layout.payload_len()
+    }
+
+    #[inline]
+    pub fn tag_len(&self) -> usize {
+        self.keys.pk().tag_len()
+    }
+
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
+        self.payload_len() == self.pn.1.size()
     }
 
-    pub fn encrypt_and_protect(self) -> FinalPacketLayout {
-        let (packet, buffer) = (self.layout, self.buffer);
-        let payload_len = packet.payload_len();
-        let tag_len = packet.keys.pk().tag_len();
+    #[inline]
+    pub fn packet_len(&self) -> usize {
+        self.layout.cursor + self.keys.pk().tag_len()
+    }
+}
 
-        let (actual_pn, encoded_pn) = packet.pn;
-        let pn_len = encoded_pn.size();
-        let pkt_size = packet.cursor + tag_len;
+unsafe impl BufMut for PacketWriter<'_> {
+    #[inline]
+    fn remaining_mut(&self) -> usize {
+        self.layout.end - self.layout.cursor
+    }
 
-        assert!(
-            payload_len + tag_len >= 20,
-            "The payload needs at least 20 bytes to have enough samples to remove the packet header protection."
-        );
-
-        if packet.is_short_header() {
-            let key_phase = packet.keys.key_phase().unwrap();
-            encode_short_first_byte(&mut buffer[0], pn_len, key_phase);
-
-            let pk = packet.keys.pk();
-            let payload_offset = packet.hdr_len;
-            let body_offset = payload_offset + pn_len;
-            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
-
-            let hpk = packet.keys.hpk();
-            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
-        } else {
-            let packet_len = payload_len + tag_len;
-            let len_buffer_range = packet.hdr_len..packet.hdr_len + packet.len_encoding;
-            let mut len_buf = &mut buffer[len_buffer_range];
-            len_buf.encode_varint(&VarInt::try_from(packet_len).unwrap(), EncodeBytes::Two);
-
-            encode_long_first_byte(&mut buffer[0], pn_len);
-
-            let pk = packet.keys.pk();
-            let payload_offset = packet.hdr_len + packet.len_encoding;
-            let body_offset = payload_offset + pn_len;
-            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
-
-            let hpk = packet.keys.hpk();
-            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
+    #[inline]
+    unsafe fn advance_mut(&mut self, cnt: usize) {
+        if self.remaining_mut() < cnt {
+            panic!(
+                "advance out of bounds: the len is {} but advancing by {}",
+                cnt,
+                self.remaining_mut()
+            );
         }
-        FinalPacketLayout {
-            pn: actual_pn,
-            sent_bytes: pkt_size,
-            is_ack_eliciting: packet.ack_eliciting,
-            in_flight: packet.in_flight,
-        }
+
+        self.layout.cursor += cnt;
+    }
+
+    #[inline]
+    fn chunk_mut(&mut self) -> &mut UninitSlice {
+        let range = self.layout.cursor..self.layout.end;
+        UninitSlice::new(&mut self.buffer[range])
+    }
+}
+
+impl<F> MarshalFrame<F> for PacketWriter<'_>
+where
+    F: FrameFeture,
+    Self: WriteFrame<F>,
+{
+    #[inline]
+    fn dump_frame(&mut self, frame: F) -> Option<F> {
+        self.layout.add_frame(&frame);
+        self.put_frame(&frame);
+        Some(frame)
+    }
+}
+
+impl<F> MarshalPathFrame<F> for PacketWriter<'_>
+where
+    F: FrameFeture,
+    Self: WriteFrame<F>,
+{
+    #[inline]
+    fn dump_path_frame(&mut self, frame: F) -> Option<F> {
+        self.layout.add_frame(&frame);
+        self.put_frame(&frame);
+        Some(frame)
+    }
+}
+
+impl<F, D> MarshalDataFrame<F, D> for PacketWriter<'_>
+where
+    D: ContinuousData,
+    F: FrameFeture,
+    Self: WriteDataFrame<F, D>,
+{
+    #[inline]
+    fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F> {
+        self.layout.add_frame(&frame);
+        self.put_data_frame(&frame, &data);
+        Some(frame)
     }
 }
 
@@ -334,51 +747,75 @@ pub struct FinalPacketLayout {
     in_flight: bool,
 }
 
-impl<F> MarshalFrame<F> for PacketWriter<'_>
-where
-    F: FrameFeture,
-    Self: WriteFrame<F>,
-{
-    fn dump_frame(&mut self, frame: F) -> Option<F> {
-        self.add_frame(&frame);
-        self.put_frame(&frame);
-        Some(frame)
+pub trait AssemblePacket: BufMut {
+    #[inline]
+    fn assemble_packet<O>(
+        &mut self,
+        package: &mut dyn Package<Self, Output = O>,
+    ) -> Result<O, Signals> {
+        package.dump(self)
     }
+
+    fn encrypt_and_protect_packet(self) -> FinalPacketLayout;
 }
 
-impl<F, D> MarshalDataFrame<F, D> for PacketWriter<'_>
-where
-    D: ContinuousData,
-    Self: WriteData<D> + WriteDataFrame<F, D>,
-{
-    fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F> {
-        self.ack_eliciting = true;
-        self.in_flight = true;
-        self.put_data_frame(&frame, &data);
-        Some(frame)
-    }
-}
+impl AssemblePacket for PacketWriter<'_> {
+    fn encrypt_and_protect_packet(self) -> FinalPacketLayout {
+        use crate::{
+            packet::encrypt::*,
+            varint::{EncodeBytes, VarInt, WriteVarInt},
+        };
 
-unsafe impl BufMut for PacketWriter<'_> {
-    fn remaining_mut(&self) -> usize {
-        self.end - self.cursor
-    }
+        let Self {
+            keys,
+            pn: (actual_pn, encoded_pn),
+            layout,
+            buffer,
+        } = self;
 
-    unsafe fn advance_mut(&mut self, cnt: usize) {
-        if self.remaining_mut() < cnt {
-            panic!(
-                "advance out of bounds: the len is {} but advancing by {}",
-                cnt,
-                self.remaining_mut()
-            );
+        let payload_len = layout.payload_len();
+        let tag_len = keys.pk().tag_len();
+
+        let pn_len = encoded_pn.size();
+        let pkt_size = layout.cursor + tag_len;
+
+        assert!(
+            payload_len + tag_len >= 20,
+            "The payload and tag needs at least 20 bytes to have enough samples for the packet header protection."
+        );
+
+        if let Some(key_phase) = keys.key_phase() {
+            encode_short_first_byte(&mut buffer[0], pn_len, key_phase);
+
+            let pk = keys.pk();
+            let payload_offset = layout.hdr_len;
+            let body_offset = payload_offset + pn_len;
+            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
+
+            let hpk = keys.hpk();
+            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
+        } else {
+            let packet_len = payload_len + tag_len;
+            let len_buffer_range = layout.hdr_len..layout.hdr_len + layout.len_encoding;
+            let mut len_buf = &mut buffer[len_buffer_range];
+            len_buf.encode_varint(&VarInt::try_from(packet_len).unwrap(), EncodeBytes::Two);
+
+            encode_long_first_byte(&mut buffer[0], pn_len);
+
+            let pk = keys.pk();
+            let payload_offset = layout.hdr_len + layout.len_encoding;
+            let body_offset = payload_offset + pn_len;
+            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
+
+            let hpk = keys.hpk();
+            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         }
-
-        self.cursor += cnt;
-    }
-
-    fn chunk_mut(&mut self) -> &mut UninitSlice {
-        let range = self.cursor..self.end;
-        UninitSlice::new(&mut self.buffer[range])
+        FinalPacketLayout {
+            pn: actual_pn,
+            sent_bytes: pkt_size,
+            is_ack_eliciting: layout.ack_eliciting,
+            in_flight: layout.in_flight,
+        }
     }
 }
 
@@ -387,7 +824,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::frame::CryptoFrame;
+    use crate::{frame::CryptoFrame, varint::VarInt};
 
     struct TransparentKeys;
 
@@ -466,11 +903,10 @@ mod tests {
         let mut writer = PacketWriter::new_long(&header, &mut buffer, pn, keys).unwrap();
         let frame = CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(12));
         writer.dump_frame_with_data(frame, "client_hello".as_bytes());
-
         assert!(writer.is_ack_eliciting());
         assert!(writer.in_flight());
 
-        let final_packet_layout = writer.encrypt_and_protect();
+        let final_packet_layout = writer.encrypt_and_protect_packet();
         assert!(final_packet_layout.is_ack_eliciting());
         assert!(final_packet_layout.in_flight());
         assert_eq!(final_packet_layout.sent_bytes(), 69);

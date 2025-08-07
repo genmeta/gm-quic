@@ -8,7 +8,7 @@ use bytes::BufMut;
 use qbase::{
     frame::{EncodeSize, FrameFeture, SendFrame},
     net::tx::{ArcSendWakers, Signals},
-    packet::MarshalFrame,
+    packet::{MarshalFrame, io::Package},
 };
 
 /// A deque for data space to send reliable frames.
@@ -28,13 +28,19 @@ use qbase::{
 ///
 /// [`DataStreams`]: crate::streams::DataStreams
 /// [`try_load_frames_into`]: ArcReliableFrameDeque::try_load_frames_into
-#[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameDeque<F>
-where
-    F: EncodeSize + FrameFeture,
-{
+#[derive(Debug, Default)]
+pub struct ArcReliableFrameDeque<F> {
     frames: Arc<Mutex<VecDeque<F>>>,
     tx_wakers: ArcSendWakers,
+}
+
+impl<F> Clone for ArcReliableFrameDeque<F> {
+    fn clone(&self) -> Self {
+        Self {
+            frames: self.frames.clone(),
+            tx_wakers: self.tx_wakers.clone(),
+        }
+    }
 }
 
 impl<F> ArcReliableFrameDeque<F>
@@ -56,7 +62,7 @@ where
     /// Try to load the frame in deque and encode it into the `packet`.
     pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: BufMut + MarshalFrame<F>,
+        P: BufMut + MarshalFrame<F> + ?Sized,
     {
         let mut deque = self.frames_guard();
         if deque.is_empty() {
@@ -71,6 +77,18 @@ where
             packet.dump_frame(deque.pop_front().unwrap());
         }
         Ok(())
+    }
+}
+
+impl<F, P> Package<P> for ArcReliableFrameDeque<F>
+where
+    F: EncodeSize + FrameFeture,
+    P: BufMut + MarshalFrame<F> + ?Sized,
+{
+    type Output = ();
+
+    fn dump(&mut self, packet: &mut P) -> Result<Self::Output, Signals> {
+        self.try_load_frames_into(packet)
     }
 }
 

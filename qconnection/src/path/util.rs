@@ -8,15 +8,13 @@ use std::{
 use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
-    frame::{EncodeSize, PingFrame, io::WriteFrame},
+    frame::{EncodeSize, PingFrame},
     net::tx::{ArcSendWaker, Signals},
-    packet::MarshalPathFrame,
+    packet::{MarshalFrame, MarshalPathFrame, io::Package},
     time::ArcDeferIdleTimer,
     util::ArcAsyncDeque,
 };
 use tokio::time::Instant;
-
-use crate::tx::PacketBuffer;
 
 #[derive(Debug)]
 struct Heartbeat {
@@ -59,15 +57,15 @@ impl Heartbeat {
         false
     }
 
-    fn try_load_heartbeat_into<F>(
-        &mut self,
-        packet: &mut PacketBuffer<'_, '_, F>,
-    ) -> Result<(), Signals> {
+    fn try_load_heartbeat_into<P>(&mut self, packet: &mut P) -> Result<(), Signals>
+    where
+        P: BufMut + MarshalFrame<PingFrame> + ?Sized,
+    {
         if self.triggered_heartbeat {
             if packet.remaining_mut() < PingFrame.encoding_size() {
                 Err(Signals::CONGESTION)
             } else {
-                packet.dump_ping_frame();
+                packet.dump_frame(PingFrame);
                 self.last_heartbeat = Some(Instant::now());
                 self.triggered_heartbeat = false;
                 Ok(())
@@ -98,15 +96,26 @@ impl ArcHeartbeat {
         self.0.lock().unwrap().need_trigger()
     }
 
-    pub fn try_load_heartbeat_into<F>(
-        &self,
-        packet: &mut PacketBuffer<'_, '_, F>,
-    ) -> Result<(), Signals> {
+    pub fn try_load_heartbeat_into<P>(&self, packet: &mut P) -> Result<(), Signals>
+    where
+        P: BufMut + MarshalFrame<PingFrame> + ?Sized,
+    {
         self.0.lock().unwrap().try_load_heartbeat_into(packet)
     }
 
     pub fn renew_on_effective_communicated(&self) {
         self.0.lock().unwrap().on_effective_communicated();
+    }
+}
+
+impl<P> Package<P> for &ArcHeartbeat
+where
+    P: BufMut + MarshalFrame<PingFrame> + ?Sized,
+{
+    type Output = ();
+
+    fn dump(&mut self, into: &mut P) -> Result<(), Signals> {
+        self.try_load_heartbeat_into(into)
     }
 }
 
@@ -139,12 +148,11 @@ impl<T> SendBuffer<T> {
 impl<F> SendBuffer<F>
 where
     F: EncodeSize,
-    for<'a> &'a mut [u8]: WriteFrame<F>,
 {
     /// Try load the frame to be sent into the `packet`.
     pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: BufMut + MarshalPathFrame<F>,
+        P: BufMut + MarshalPathFrame<F> + ?Sized,
     {
         let mut guard = self.item.lock().unwrap();
         match guard.as_ref() {
@@ -158,6 +166,19 @@ where
             }
             None => Err(Signals::TRANSPORT),
         }
+    }
+}
+
+impl<F, P> Package<P> for &SendBuffer<F>
+where
+    F: EncodeSize,
+    P: BufMut + MarshalPathFrame<F> + ?Sized,
+{
+    type Output = ();
+
+    #[inline]
+    fn dump(&mut self, into: &mut P) -> Result<Self::Output, Signals> {
+        self.try_load_frames_into(into)
     }
 }
 
