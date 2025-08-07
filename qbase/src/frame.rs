@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use bytes::{Buf, BufMut, Bytes};
-use derive_more::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut, From};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
@@ -386,13 +386,13 @@ pub enum ReliableFrame {
     /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
     /// STREAM control frame, see [`StreamCtlFrame`].
-    Stream(StreamCtlFrame),
+    StreamCtl(StreamCtlFrame),
 }
 
 /// Sum type of all the frames.
 ///
 /// The data frames' body are stored in the second field.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, From, Eq, PartialEq)]
 pub enum Frame {
     /// PADDING frame, see [`PaddingFrame`].
     Padding(PaddingFrame),
@@ -445,7 +445,32 @@ impl From<ReliableFrame> for Frame {
             ReliableFrame::HandshakeDone(handshake_done_frame) => {
                 Frame::HandshakeDone(handshake_done_frame)
             }
-            ReliableFrame::Stream(stream_frame) => Frame::StreamCtl(stream_frame),
+            ReliableFrame::StreamCtl(stream_frame) => Frame::StreamCtl(stream_frame),
+        }
+    }
+}
+
+impl TryFrom<Frame> for ReliableFrame {
+    type Error = Frame;
+
+    fn try_from(frame: Frame) -> Result<Self, Self::Error> {
+        match frame {
+            Frame::NewToken(new_token_frame) => Ok(ReliableFrame::NewToken(new_token_frame)),
+            Frame::MaxData(max_data_frame) => Ok(ReliableFrame::MaxData(max_data_frame)),
+            Frame::DataBlocked(data_blocked_frame) => {
+                Ok(ReliableFrame::DataBlocked(data_blocked_frame))
+            }
+            Frame::NewConnectionId(new_connection_id_frame) => {
+                Ok(ReliableFrame::NewConnectionId(new_connection_id_frame))
+            }
+            Frame::RetireConnectionId(retire_connection_id_frame) => Ok(
+                ReliableFrame::RetireConnectionId(retire_connection_id_frame),
+            ),
+            Frame::HandshakeDone(handshake_done_frame) => {
+                Ok(ReliableFrame::HandshakeDone(handshake_done_frame))
+            }
+            Frame::StreamCtl(stream_frame) => Ok(ReliableFrame::StreamCtl(stream_frame)),
+            frame => Err(frame),
         }
     }
 }
@@ -531,7 +556,7 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
             ReliableFrame::NewConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::RetireConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::HandshakeDone(frame) => self.put_frame(frame),
-            ReliableFrame::Stream(frame) => self.put_frame(frame),
+            ReliableFrame::StreamCtl(frame) => self.put_frame(frame),
         }
     }
 }

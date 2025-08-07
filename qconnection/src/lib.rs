@@ -71,9 +71,11 @@ use qinterface::{
     route::{self, RouterEntry},
 };
 use qrecovery::{
+    crypto::CryptoStream,
     journal, recv, reliable, send,
     streams::{self, Ext},
 };
+use qunreliable::DatagramFlow;
 #[cfg(feature = "unreliable")]
 use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
@@ -138,6 +140,11 @@ pub struct Components {
     token_registry: ArcTokenRegistry,
     cid_registry: CidRegistry,
     spaces: Spaces,
+    crypto_streams: [CryptoStream; 3],
+    reliable_frames: ArcReliableFrameDeque,
+    data_streams: DataStreams,
+    flow_ctrl: FlowController,
+    datagram_flow: DatagramFlow,
     event_broker: ArcEventBroker,
     specific: SpecificComponents,
 }
@@ -164,18 +171,19 @@ impl Components {
         &self,
     ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
     {
-        let data_space = self.spaces.data().clone();
+        let is_zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
         let tls_handshake = self.tls_handshake.clone();
         let terminated = self.conn_state.terminated();
+        let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
         async move {
-            if !data_space.is_zero_rtt_avaliable() {
+            if !is_zero_rtt_avaliable {
                 tokio::select! {
                     _ = tls_handshake.finished() => {},
                     _ = terminated => {}
                 }
             }
-            data_space.streams().open_bi(&parameters).await
+            data_streams.open_bi(&parameters).await
         }
         .instrument_in_current()
         .in_current_span()
@@ -184,18 +192,19 @@ impl Components {
     pub fn open_uni_stream(
         &self,
     ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
-        let data_space = self.spaces.data().clone();
+        let is_zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
         let tls_handshake = self.tls_handshake.clone();
         let terminated = self.conn_state.terminated();
+        let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
         async move {
-            if !data_space.is_zero_rtt_avaliable() {
+            if !is_zero_rtt_avaliable {
                 tokio::select! {
                     _ = tls_handshake.finished() => {},
                     _ = terminated => {}
                 }
             }
-            data_space.streams().open_uni(&parameters).await
+            data_streams.open_uni(&parameters).await
         }
         .instrument_in_current()
         .in_current_span()
@@ -205,9 +214,9 @@ impl Components {
     pub fn accept_bi_stream(
         &self,
     ) -> impl Future<Output = Result<(StreamId, (StreamReader, StreamWriter)), Error>> + Send {
-        let streams = self.spaces.data().streams().clone();
+        let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
-        async move { streams.accept_bi(&parameters).await }
+        async move { data_streams.accept_bi(&parameters).await }
             .instrument_in_current()
             .in_current_span()
     }
@@ -215,8 +224,8 @@ impl Components {
     pub fn accept_uni_stream(
         &self,
     ) -> impl Future<Output = Result<(StreamId, StreamReader), Error>> + Send {
-        let streams = self.spaces.data().streams().clone();
-        async move { streams.accept_uni().await }
+        let data_streams = self.data_streams.clone();
+        async move { data_streams.accept_uni().await }
             .instrument_in_current()
             .in_current_span()
     }
@@ -224,21 +233,21 @@ impl Components {
     #[cfg(feature = "unreliable")]
     #[deprecated]
     pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
-        self.spaces.data().datagrams().reader()
+        self.datagram_flow.reader()
     }
 
     #[cfg(feature = "unreliable")]
     #[deprecated]
     pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<DatagramWriter>> + Send {
         let params = self.parameters.clone();
-        let datagrams = self.spaces.data().datagrams().clone();
+        let datagram_flow = self.datagram_flow.clone();
         async move {
             let max_datagram_frame_size = params
                 .remote_ready()
                 .await?
                 .get_remote(ParameterId::MaxDatagramFrameSize)
                 .expect("unreachable: default value will be got if the value unset");
-            datagrams.writer(max_datagram_frame_size)
+            datagram_flow.writer(max_datagram_frame_size)
         }
         .instrument_in_current()
         .in_current_span()
@@ -326,7 +335,8 @@ impl Components {
             error: &error, // TODO: trigger
         });
 
-        self.spaces.data().on_conn_error(&error);
+        self.data_streams.on_conn_error(&error);
+        self.datagram_flow.on_conn_error(&error);
         self.tls_handshake.on_conn_error(&error);
         self.parameters.on_conn_error(&error);
 
@@ -356,7 +366,7 @@ impl Components {
             }
             // No need to send packets, just clear the paths.
             false => {
-                self.spaces.close_all();
+                // TODO: check the remote of close spaces
                 self.paths.clear();
             }
         }
@@ -371,7 +381,8 @@ impl Components {
         });
 
         let error = ccf.clone().into();
-        self.spaces.data().on_conn_error(&error);
+        self.data_streams.on_conn_error(&error);
+        self.datagram_flow.on_conn_error(&error);
         self.tls_handshake.on_conn_error(&error);
         self.parameters.on_conn_error(&error);
 
@@ -401,7 +412,6 @@ impl Components {
             }
             // No need to send packets, just clear the paths.
             false => {
-                self.spaces.close_all();
                 self.paths.clear();
             }
         }

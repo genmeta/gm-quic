@@ -9,9 +9,10 @@ mod send {
 
     use bytes::BufMut;
     use qbase::{
+        Epoch,
         frame::CryptoFrame,
         net::tx::{ArcSendWakers, Signals},
-        packet::MarshalDataFrame,
+        packet::{MarshalDataFrame, io::Package},
         util::ContinuousData,
         varint::{VARINT_MAX, VarInt},
     };
@@ -33,7 +34,7 @@ mod send {
         /// 一旦这种函数成功使用，try_read_data就可以淘汰了
         fn try_load_data<P>(&mut self, packet: &mut P) -> Result<(), Signals>
         where
-            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])> + ?Sized,
         {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
@@ -142,7 +143,7 @@ mod send {
         /// Try to load the crypto data  into the `packet`.
         pub fn try_load_data_into<P>(&self, packet: &mut P, force: bool) -> Result<(), Signals>
         where
-            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])> + ?Sized,
         {
             use std::ops::ControlFlow::*;
             let mut inner = self.0.lock().unwrap();
@@ -162,6 +163,13 @@ mod send {
             result
         }
 
+        pub fn package(self, epoch: Epoch) -> CryptoStreamPackage {
+            CryptoStreamPackage {
+                first_load: epoch == Epoch::Initial,
+                outgoing: self,
+            }
+        }
+
         /// Called when the crypto frame sent is acknowledged by peer.
         ///
         /// Acknowledgment of data may free up a segment in the [`SendBuf`], thus waking up the
@@ -173,6 +181,29 @@ mod send {
         /// Called when the crypto frame sent may loss.
         pub fn may_loss_data(&self, crypto_frame: &CryptoFrame) {
             self.0.lock().unwrap().may_loss_data(crypto_frame)
+        }
+    }
+
+    pub struct CryptoStreamPackage {
+        first_load: bool,
+        outgoing: CryptoStreamOutgoing,
+    }
+
+    impl<P> Package<P> for CryptoStreamPackage
+    where
+        P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])> + ?Sized,
+    {
+        type Output = ();
+
+        fn dump(&mut self, packet: &mut P) -> Result<Self::Output, Signals> {
+            let force = self.first_load;
+            match self.outgoing.try_load_data_into(packet, force) {
+                Ok(()) => {
+                    self.first_load = false;
+                    Ok(())
+                }
+                Err(signals) => Err(signals),
+            }
         }
     }
 

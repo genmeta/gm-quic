@@ -1,40 +1,26 @@
 use std::sync::{Arc, atomic::Ordering::SeqCst};
 
-use bytes::BufMut;
 use qbase::{
-    Epoch,
-    cid::ConnectionId,
+    Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{
-        ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
-        ReceiveFrame, SendFrame,
-    },
+    frame::{ConnectionCloseFrame, Frame, FrameReader, ReceiveFrame, SendFrame},
     net::{
         addr::BindUri,
         route::{Link, Pathway},
-        tx::{ArcSendWakers, Signals},
+        tx::Signals,
     },
     packet::{
-        self, FinalPacketLayout, MarshalFrame, PacketContains, PacketWriter,
-        header::{
-            GetDcid, GetType, OneRttHeader,
-            long::{ZeroRttHeader, io::LongHeaderBuilder},
-        },
-        keys::{
-            ArcOneRttKeys, ArcOneRttPacketKeys, ArcZeroRttKeys, DirectionalKeys,
-            HeaderProtectionKeys,
-        },
-        number::PacketNumber,
-        signal::SpinBit,
+        self, PacketContains,
+        header::{GetDcid, GetType, OneRttHeader, long::ZeroRttHeader},
+        io::PacketSpace,
+        keys::{ArcOneRttKeys, ArcZeroRttKeys, DirectionalKeys},
         r#type::Type,
     },
-    param::{ParameterId, ServerParameters, core::Parameters},
-    role::Role,
-    sid::ControlStreamsConcurrency,
     util::BoundQueue,
 };
-use qcongestion::{Feedback, Transport};
+use qcongestion::{ArcCC, Feedback, Transport};
 use qevent::{
+    packet::PacketWriter as QEventPacketWriter,
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -43,20 +29,18 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::packet::{CipherPacket, PlainPacket};
-use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
-#[cfg(feature = "unreliable")]
-use qunreliable::DatagramFlow;
+use qrecovery::crypto::CryptoStream;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use crate::{
-    ArcReliableFrameDeque, Components, DataJournal, DataStreams, FlowController, GuaranteedFrame,
+    ArcReliableFrameDeque, Components, DataJournal, DataStreams, GuaranteedFrame,
     SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{ArcHeartbeat, Path, SendBuffer, error::CreatePathFailure},
-    space::{AckDataSpace, FlowControlledDataStreams, pipe},
+    path::{self, Path, error::CreatePathFailure},
+    space::{AckDataSpace, FlowControlledDataStreams, assemble_closing_packet, pipe},
     termination::Terminator,
-    tx::{PacketBuffer, PaddablePacket, Transaction},
+    tx::PacketWriter,
 };
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
@@ -70,69 +54,21 @@ pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindUri, Pathway, Link));
 pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
     one_rtt_keys: ArcOneRttKeys,
-    crypto_stream: CryptoStream,
-    flow_ctrl: FlowController,
-    streams: DataStreams,
-    datagrams: DatagramFlow,
     journal: DataJournal,
-    reliable_frames: ArcReliableFrameDeque,
+}
+
+impl AsRef<DataJournal> for DataSpace {
+    fn as_ref(&self) -> &DataJournal {
+        &self.journal
+    }
 }
 
 impl DataSpace {
-    pub fn new<LR>(
-        role: Role,
-        local_params: &Parameters<LR>,
-        remembered_params: Option<&ServerParameters>,
-        streams_ctrl: Box<dyn ControlStreamsConcurrency>,
-        reliable_frames: ArcReliableFrameDeque,
-        tx_wakers: ArcSendWakers,
-    ) -> Self {
-        let default_parameters = ServerParameters::default();
-        let remote_params = match remembered_params {
-            Some(remembered_params) => {
-                debug_assert_eq!(
-                    role,
-                    Role::Client,
-                    "server should never create 0rtt data space"
-                );
-                remembered_params
-            }
-            None => &default_parameters,
-        };
-
+    pub fn new(zero_rtt_keys: ArcZeroRttKeys) -> Self {
         Self {
-            zero_rtt_keys: ArcZeroRttKeys::new_pending(role),
+            zero_rtt_keys,
             one_rtt_keys: ArcOneRttKeys::new_pending(),
-            // max_ack_delay: NOT_RESUME
-            crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
-            flow_ctrl: FlowController::new(
-                remote_params
-                    .get(ParameterId::InitialMaxData)
-                    .expect("unreachable: default value will be got if the value unset"),
-                local_params
-                    .get(ParameterId::InitialMaxData)
-                    .expect("unreachable: default value will be got if the value unset"),
-                reliable_frames.clone(),
-                tx_wakers.clone(),
-            ),
-            streams: DataStreams::new(
-                role,
-                local_params,
-                false,
-                remote_params,
-                streams_ctrl,
-                reliable_frames.clone(),
-                tx_wakers.clone(),
-            ),
-            #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(
-                local_params
-                    .get(ParameterId::MaxDatagramFrameSize)
-                    .expect("unreachable: default value will be got if the value unset"),
-                tx_wakers.clone(),
-            ),
             journal: DataJournal::with_capacity(16, None),
-            reliable_frames: reliable_frames.clone(),
         }
     }
 
@@ -169,12 +105,12 @@ impl DataSpace {
         }
     }
 
-    pub fn try_assemble_0rtt_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        buf: &mut [u8],
-    ) -> Result<PaddablePacket, Signals> {
+    pub fn new_0rtt_packet<'b, 's>(
+        &'s self,
+        header: ZeroRttHeader,
+        cc: &ArcCC,
+        buffer: &'b mut [u8],
+    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
             return Err(Signals::TLS_FIN); // should 1rtt
         }
@@ -183,229 +119,38 @@ impl DataSpace {
             return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
         };
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(
-                tx.initial_dcid()?,
-                tx.initial_scid().ok_or(Signals::empty())?,
-            )
-            .zero_rtt(),
-            buf,
+        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
+        PacketWriter::new_long(
+            header,
+            buffer,
             keys,
-            &sent_journal,
-        )?;
-
-        let mut signals = Signals::empty();
-
-        _ = path_challenge_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        // try to load reliable frames into this 0RTT packet to send
-        _ = self
-            .reliable_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        // try to load stream frames into this 0RTT packet to send
-        // If the stream has entered 1rtt, no data will be loaded
-        self.streams
-            .try_load_data_into(&mut packet, &self.flow_ctrl.sender, true)
-            .map_err(|s| signals |= s)
-            .unwrap_or_default();
-        #[cfg(feature = "unreliable")]
-        let _ = self
-            .datagrams
-            .try_load_data_into(&mut packet)
-            .map_err(|s| signals |= s);
-
-        // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
-        packet
-            .prepare_with_time(retran_timeout, expire_timeout)
-            .map_err(|_| signals)
+            self.journal.as_ref(),
+            retran_timeout,
+            expire_timeout,
+        )
     }
 
-    pub fn try_assemble_1rtt_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        buf: &mut [u8],
-    ) -> Result<(PaddablePacket, Option<u64>), Signals> {
+    pub fn new_1rtt_packet<'b, 's>(
+        &'s self,
+        header: OneRttHeader,
+        cc: &ArcCC,
+        buffer: &'b mut [u8],
+    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
-        let sent_journal = self.journal.of_sent_packets();
-        // (1) may_loss被调用时cc已经被锁定，may_loss会尝试锁定sent_journal
-        // (2) PacketMemory会持有sent_journal的guard，而need_ack会尝试锁定cc
-        // 在PacketMemory存在时尝试锁定cc，可能会和 (1) 冲突:
-        //   (1)持有cc，要锁定sent_journal；(2)持有sent_journal要锁定cc
-        // 在多线程的情况下，可能会发生死锁。所以提前调用need_ack，避免交叉导致死锁
-        let need_ack = tx.need_ack(Epoch::Data);
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
-        let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.applied_dcid()?),
-            buf,
+        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
+        PacketWriter::new_short(
+            header,
+            buffer,
             DirectionalKeys {
                 header: hpk,
                 packet: pk,
             },
             key_phase,
-            &sent_journal,
-        )?;
-
-        let mut signals = Signals::empty();
-
-        let ack = need_ack
-            .or_else(|| {
-                let rcvd_journal = self.journal.of_rcvd_packets();
-                rcvd_journal.need_ack()
-            })
-            .ok_or(Signals::TRANSPORT)
-            .and_then(|(largest, rcvd_time)| {
-                let rcvd_journal = self.journal.of_rcvd_packets();
-                let ack_frame = rcvd_journal.gen_ack_frame_util(
-                    packet.pn(),
-                    largest,
-                    rcvd_time,
-                    packet.remaining_mut(),
-                )?;
-                packet.dump_ack_frame(ack_frame);
-                Ok(largest)
-            })
-            .map_err(|s| signals |= s)
-            .ok();
-
-        _ = path_challenge_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        _ = path_response_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        _ = self
-            .crypto_stream
-            .outgoing()
-            .try_load_data_into(&mut packet, false)
-            .map_err(|s| signals |= s);
-        // try to load reliable frames into this 1RTT packet to send
-        _ = self
-            .reliable_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        // try to load stream frames into this 1RTT packet to send
-        self.streams
-            .try_load_data_into(&mut packet, &self.flow_ctrl.sender, false)
-            .map_err(|s| signals |= s)
-            .unwrap_or_default();
-
-        #[cfg(feature = "unreliable")]
-        let _ = self
-            .datagrams
-            .try_load_data_into(&mut packet)
-            .map_err(|s| signals |= s);
-
-        Ok((
-            packet
-                .prepare_with_time(retran_timeout, expire_timeout)
-                .map_err(|_| signals)?,
-            ack,
-        ))
-    }
-
-    pub fn try_assemble_probe_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        buf: &mut [u8],
-    ) -> Result<PaddablePacket, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.applied_dcid()?),
-            buf,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
-            &sent_journal,
-        )?;
-
-        let mut signals = Signals::empty();
-        _ = path_challenge_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        _ = path_response_frames
-            .try_load_frames_into(&mut packet)
-            .map_err(|s| signals |= s);
-        // 其实还应该加上NCIDF，但是从ReliableFrameDeque分拣太复杂了
-
-        packet
-            .prepare_with_time(retran_timeout, expire_timeout)
-            .map_err(|_| signals)
-    }
-
-    pub fn try_assemble_ping_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        spin: SpinBit,
-        buf: &mut [u8],
-    ) -> Result<PaddablePacket, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.applied_dcid()?),
-            buf,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
-            &sent_journal,
-        )?;
-
-        packet.dump_ping_frame();
-
-        packet
-            .prepare_with_time(retran_timeout, expire_timeout)
-            .map_err(|_| unreachable!("packet is not empty"))
-    }
-
-    pub fn try_assemble_heartbeat_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        spin: SpinBit,
-        buf: &mut [u8],
-        heartbeat: &ArcHeartbeat,
-    ) -> Result<PaddablePacket, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketBuffer::new_short(
-            OneRttHeader::new(spin, tx.applied_dcid()?),
-            buf,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
-            &sent_journal,
-        )?;
-
-        let mut signals = Signals::empty();
-        _ = heartbeat
-            .try_load_heartbeat_into(&mut packet)
-            .map_err(|s| signals |= s);
-
-        packet
-            .prepare_with_time(retran_timeout, expire_timeout)
-            .map_err(|_| signals)
+            self.journal.as_ref(),
+            retran_timeout,
+            expire_timeout,
+        )
     }
 
     pub fn is_one_rtt_keys_ready(&self) -> bool {
@@ -424,31 +169,84 @@ impl DataSpace {
         self.zero_rtt_keys.clone()
     }
 
-    pub fn on_conn_error(&self, error: &Error) {
-        self.streams.on_conn_error(error);
-        #[cfg(feature = "unreliable")]
-        self.datagrams.on_conn_error(error);
-    }
-
-    pub fn crypto_stream(&self) -> &CryptoStream {
-        &self.crypto_stream
-    }
-
-    pub fn streams(&self) -> &DataStreams {
-        &self.streams
-    }
-
-    pub fn flow_ctrl(&self) -> &FlowController {
-        &self.flow_ctrl
-    }
-
     pub(crate) fn journal(&self) -> &DataJournal {
         &self.journal
     }
 
-    #[cfg(feature = "unreliable")]
-    pub fn datagrams(&self) -> &DatagramFlow {
-        &self.datagrams
+    pub fn tracker(
+        &self,
+        crypto_stream: CryptoStream,
+        streams: DataStreams,
+        reliable_frames: ArcReliableFrameDeque,
+    ) -> DataTracker {
+        DataTracker {
+            journal: self.journal.clone(),
+            crypto_stream,
+            streams,
+            reliable_frames,
+        }
+    }
+}
+
+impl GetEpoch for DataSpace {
+    fn epoch(&self) -> Epoch {
+        Epoch::Data
+    }
+}
+
+impl path::PacketSpace<ZeroRttHeader> for DataSpace {
+    type JournalFrame = GuaranteedFrame;
+
+    fn new_packet<'b, 's>(
+        &'s self,
+        header: ZeroRttHeader,
+        cc: &ArcCC,
+        buffer: &'b mut [u8],
+    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
+        if self.one_rtt_keys.get_local_keys().is_some() {
+            return Err(Signals::TLS_FIN); // should 1rtt
+        }
+
+        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
+            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
+        };
+
+        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
+        PacketWriter::new_long(
+            header,
+            buffer,
+            keys,
+            self.journal.as_ref(),
+            retran_timeout,
+            expire_timeout,
+        )
+    }
+}
+
+impl path::PacketSpace<OneRttHeader> for DataSpace {
+    type JournalFrame = GuaranteedFrame;
+
+    fn new_packet<'b, 's>(
+        &'s self,
+        header: OneRttHeader,
+        cc: &ArcCC,
+        buffer: &'b mut [u8],
+    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
+        PacketWriter::new_short(
+            header,
+            buffer,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
+            key_phase,
+            self.journal.as_ref(),
+            retran_timeout,
+            expire_timeout,
+        )
     }
 }
 
@@ -474,8 +272,10 @@ pub fn spawn_deliver_and_parse(
     #[cfg(feature = "unreliable")]
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
 
-    let flow_controlled_data_streams =
-        FlowControlledDataStreams::new(space.streams.clone(), space.flow_ctrl.clone());
+    let flow_controlled_data_streams = FlowControlledDataStreams::new(
+        components.data_streams.clone(),
+        components.flow_ctrl.clone(),
+    );
 
     // Assemble the pipelines of frame processing
     pipe(
@@ -490,12 +290,12 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_max_data_frames,
-        space.flow_ctrl.sender.clone(),
+        components.flow_ctrl.sender.clone(),
         event_broker.clone(),
     );
     pipe(
         rcvd_data_blocked_frames,
-        space.flow_ctrl.recver.clone(),
+        components.flow_ctrl.recver.clone(),
         event_broker.clone(),
     );
     pipe(
@@ -507,7 +307,7 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_crypto_frames,
-        space.crypto_stream.incoming(),
+        components.crypto_streams[space.epoch()].incoming(),
         event_broker.clone(),
     );
     pipe(
@@ -523,12 +323,16 @@ pub fn spawn_deliver_and_parse(
     #[cfg(feature = "unreliable")]
     pipe(
         rcvd_datagram_frames,
-        space.datagrams.clone(),
+        components.datagram_flow.clone(),
         event_broker.clone(),
     );
     pipe(
         rcvd_ack_frames,
-        AckDataSpace::new(&space.journal, &space.streams, &space.crypto_stream),
+        AckDataSpace::new(
+            &space.journal,
+            &components.data_streams,
+            &components.crypto_streams[space.epoch()],
+        ),
         event_broker.clone(),
     );
     pipe(
@@ -757,7 +561,14 @@ pub fn spawn_deliver_and_parse(
     });
 }
 
-impl Feedback for DataSpace {
+pub struct DataTracker {
+    journal: DataJournal,
+    crypto_stream: CryptoStream,
+    streams: DataStreams,
+    reliable_frames: ArcReliableFrameDeque,
+}
+
+impl Feedback for DataTracker {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let crypto_outgoing = self.crypto_stream.outgoing();
@@ -793,33 +604,60 @@ impl Feedback for DataSpace {
     }
 }
 
-#[derive(Clone)]
-pub struct ClosingDataSpace {
-    keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
-    ccf_packet_pn: (u64, PacketNumber),
-    rcvd_journal: ArcRcvdJournal,
-}
+impl PacketSpace<ZeroRttHeader> for DataSpace {
+    type PacketAssembler<'a> = QEventPacketWriter<'a>;
 
-impl DataSpace {
-    pub fn close(&self) -> Option<ClosingDataSpace> {
-        let keys = self.one_rtt_keys.invalid()?;
-        let sent_journal = self.journal.of_sent_packets();
-        let new_packet_guard = sent_journal.new_packet();
-        let ccf_packet_pn = new_packet_guard.pn();
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        Some(ClosingDataSpace {
-            rcvd_journal,
-            ccf_packet_pn,
-            keys,
-        })
+    /// NOTE: this should only be used for assembling packets in closing state.
+    fn new_packet<'a>(
+        &'a self,
+        header: ZeroRttHeader,
+        buffer: &'a mut [u8],
+    ) -> Result<Self::PacketAssembler<'a>, Signals> {
+        if self.one_rtt_keys.get_local_keys().is_some() {
+            return Err(Signals::TLS_FIN); // should 1rtt
+        }
+
+        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
+            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
+        };
+
+        let pn = self.journal.of_sent_packets().new_packet().pn();
+        QEventPacketWriter::new_long(&header, buffer, pn, keys)
     }
 }
 
-impl ClosingDataSpace {
+impl PacketSpace<OneRttHeader> for DataSpace {
+    type PacketAssembler<'a> = QEventPacketWriter<'a>;
+
+    /// NOTE: this should only be used for assembling packets in closing state.
+    fn new_packet<'a>(
+        &'a self,
+        header: OneRttHeader,
+        buffer: &'a mut [u8],
+    ) -> Result<Self::PacketAssembler<'a>, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        // peek next pn without consuming it
+        let pn = self.journal.of_sent_packets().new_packet().pn();
+        QEventPacketWriter::new_short(
+            &header,
+            buffer,
+            pn,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
+            key_phase,
+        )
+    }
+}
+
+impl DataSpace {
     pub fn recv_packet(&self, packet: CipherOneRttPacket) -> Option<ConnectionCloseFrame> {
+        let (hpk, pk) = self.one_rtt_keys.remote_keys()?;
         let packet = packet
-            .decrypt_short_packet(self.keys.0.remote.as_ref(), &self.keys.1, |pn| {
-                self.rcvd_journal.decode_pn(pn)
+            .decrypt_short_packet(hpk.as_ref(), &pk, |pn| {
+                self.journal.of_rcvd_packets().decode_pn(pn)
             })
             .and_then(Result::ok)?;
 
@@ -835,39 +673,11 @@ impl ClosingDataSpace {
         packet.log_received(frames);
         ccf
     }
-
-    pub fn try_assemble_ccf_packet(
-        &self,
-        dcid: ConnectionId,
-        ccf: &ConnectionCloseFrame,
-        buf: &mut [u8],
-    ) -> Option<FinalPacketLayout> {
-        let (hpk, pk) = &self.keys;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        let header = OneRttHeader::new(Default::default(), dcid);
-        let pn = self.ccf_packet_pn;
-        // 装填ccf时ccf不在乎Limiter
-        let mut packet_writer = PacketWriter::new_short(
-            &header,
-            buf,
-            pn,
-            DirectionalKeys {
-                header: hpk.local.clone(),
-                packet: pk,
-            },
-            key_phase,
-        )
-        .ok()?;
-
-        packet_writer.dump_frame(ccf.clone());
-
-        Some(packet_writer.encrypt_and_protect())
-    }
 }
 
 pub fn spawn_deliver_and_parse_closing(
     packets: BoundQueue<ReceivedOneRttFrom>,
-    space: ClosingDataSpace,
+    space: Arc<DataSpace>,
     terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
@@ -880,10 +690,13 @@ pub fn spawn_deliver_and_parse_closing(
                 }
                 if terminator.should_send() {
                     _ = terminator
-                        .try_send_with(pathway, |buf, _scid, dcid, ccf| {
-                            space
-                                .try_assemble_ccf_packet(dcid?, ccf, buf)
-                                .map(|layout| layout.sent_bytes())
+                        .try_send_on(pathway, |buffer, ccf| {
+                            assemble_closing_packet::<OneRttHeader, _>(
+                                space.as_ref(),
+                                terminator.as_ref(),
+                                buffer,
+                                ccf,
+                            )
                         })
                         .await;
                 }

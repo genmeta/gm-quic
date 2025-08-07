@@ -25,20 +25,22 @@ use qinterface::{QuicIoExt, iface::QuicInterface};
 use tokio::time::Duration;
 
 mod aa;
+mod burst;
 mod drive;
 pub mod error;
 pub mod paths;
 pub mod util;
 mod validate;
 pub use aa::*;
+pub use burst::PacketSpace;
 pub use error::*;
 pub use paths::*;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument as _;
 pub use util::*;
 
-use crate::{ArcDcidCell, Components};
-pub mod burst;
+use crate::{ArcDcidCell, Components, path::burst::BurstError};
+// pub mod burst;
 
 pub struct Path {
     interface: Arc<QuicInterface>,
@@ -94,9 +96,21 @@ impl Components {
                 self.parameters.max_idle_timer(),
                 self.defer_idle_timer.clone(),
                 [
-                    self.spaces.initial().clone(),
-                    self.spaces.handshake().clone(),
-                    self.spaces.data().clone(),
+                    Arc::new(
+                        self.spaces
+                            .initial()
+                            .tracker(self.crypto_streams[Epoch::Initial].clone()),
+                    ),
+                    Arc::new(
+                        self.spaces
+                            .handshake()
+                            .tracker(self.crypto_streams[Epoch::Handshake].clone()),
+                    ),
+                    Arc::new(self.spaces.data().tracker(
+                        self.crypto_streams[Epoch::Data].clone(),
+                        self.data_streams.clone(),
+                        self.reliable_frames.clone(),
+                    )),
                 ],
                 self.quic_handshake.status(),
             ));
@@ -136,8 +150,19 @@ impl Components {
             };
 
             let burst = {
+                let path = path.clone();
+                let mut packages = self.packages();
                 let burst = path.new_burst(self);
-                async move { burst.launch().await }
+                async move {
+                    loop {
+                        let mut buffers = vec![];
+                        match burst.burst(&mut packages, &mut buffers).await {
+                            Ok(segments) => path.send_packets(&segments).await?,
+                            Err(BurstError::Signals(s)) => path.tx_waker.wait_for(s).await,
+                            Err(BurstError::PathDeactived) => return io::Result::Ok(()),
+                        }
+                    }
+                }
             };
 
             let task = async move {
