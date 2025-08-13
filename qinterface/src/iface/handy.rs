@@ -68,7 +68,13 @@ pub mod qudp {
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
             debug_assert_eq!(hdr.ecn(), None);
-            debug_assert_eq!(hdr.link().src(), self.real_addr()?);
+            // TODO: (qinterface/qconnection) Better adaptability to interface rebinding
+            // debug_assert_eq!(
+            //     hdr.link().src(),
+            //     self.real_addr()?,
+            //     "Interface changed? bind_uri={}",
+            //     self.bind_uri
+            // );
             let hdr = qudp::DatagramHeader::new(
                 hdr.link().src().try_into().expect("Must be SocketAddr"),
                 hdr.link().dst().try_into().expect("Must be SocketAddr"),

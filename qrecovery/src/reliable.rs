@@ -4,11 +4,10 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use bytes::BufMut;
 use qbase::{
     frame::{EncodeSize, FrameFeture, SendFrame},
     net::tx::{ArcSendWakers, Signals},
-    packet::MarshalFrame,
+    packet::Package,
 };
 
 /// A deque for data space to send reliable frames.
@@ -28,19 +27,22 @@ use qbase::{
 ///
 /// [`DataStreams`]: crate::streams::DataStreams
 /// [`try_load_frames_into`]: ArcReliableFrameDeque::try_load_frames_into
-#[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameDeque<F>
-where
-    F: EncodeSize + FrameFeture,
-{
+#[derive(Debug, Default)]
+pub struct ArcReliableFrameDeque<F> {
     frames: Arc<Mutex<VecDeque<F>>>,
     tx_wakers: ArcSendWakers,
 }
 
-impl<F> ArcReliableFrameDeque<F>
-where
-    F: EncodeSize + FrameFeture,
-{
+impl<F> Clone for ArcReliableFrameDeque<F> {
+    fn clone(&self) -> Self {
+        Self {
+            frames: self.frames.clone(),
+            tx_wakers: self.tx_wakers.clone(),
+        }
+    }
+}
+
+impl<F> ArcReliableFrameDeque<F> {
     /// Create a new empty deque with at least the specified capacity.
     pub fn with_capacity_and_wakers(capacity: usize, tx_wakers: ArcSendWakers) -> Self {
         Self {
@@ -54,23 +56,28 @@ where
     }
 
     /// Try to load the frame in deque and encode it into the `packet`.
-    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
+    pub fn try_load_frames_into<P: ?Sized>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: BufMut + MarshalFrame<F>,
+        for<'a> &'a F: Package<P>,
     {
         let mut deque = self.frames_guard();
         if deque.is_empty() {
             return Err(Signals::TRANSPORT);
         }
-        while let Some(frame) = deque.front() {
-            if frame.max_encoding_size() > packet.remaining_mut()
-                && frame.encoding_size() > packet.remaining_mut()
-            {
-                return Err(Signals::CONGESTION);
-            }
-            packet.dump_frame(deque.pop_front().unwrap());
+        while let Some(mut frame) = deque.front() {
+            frame.dump(packet)?;
+            deque.pop_front();
         }
         Ok(())
+    }
+}
+
+impl<F, P: ?Sized> Package<P> for ArcReliableFrameDeque<F>
+where
+    for<'a> &'a F: Package<P>,
+{
+    fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
+        self.try_load_frames_into(packet)
     }
 }
 

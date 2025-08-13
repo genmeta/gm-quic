@@ -142,6 +142,45 @@ pub trait WriteFrame<F>: bytes::BufMut {
     fn put_frame(&mut self, frame: &F);
 }
 
+impl<B: BufMut, D: ContinuousData> WriteFrame<Frame<D>> for B
+where
+    D: ContinuousData,
+    B: BufMut + ?Sized,
+    for<'b> &'b mut B: crate::util::WriteData<D>,
+{
+    fn put_frame(&mut self, frame: &Frame<D>) {
+        let mut buf = self;
+        match frame {
+            Frame::Padding(f) => <&mut B as WriteFrame<PaddingFrame>>::put_frame(&mut buf, f),
+            Frame::Ping(f) => <&mut B as WriteFrame<PingFrame>>::put_frame(&mut buf, f),
+            Frame::Ack(f) => <&mut B as WriteFrame<AckFrame>>::put_frame(&mut buf, f),
+            Frame::Close(f) => <&mut B as WriteFrame<ConnectionCloseFrame>>::put_frame(&mut buf, f),
+            Frame::NewToken(f) => <&mut B as WriteFrame<NewTokenFrame>>::put_frame(&mut buf, f),
+            Frame::MaxData(f) => <&mut B as WriteFrame<MaxDataFrame>>::put_frame(&mut buf, f),
+            Frame::DataBlocked(f) => {
+                <&mut B as WriteFrame<DataBlockedFrame>>::put_frame(&mut buf, f)
+            }
+            Frame::NewConnectionId(f) => {
+                <&mut B as WriteFrame<NewConnectionIdFrame>>::put_frame(&mut buf, f)
+            }
+            Frame::RetireConnectionId(f) => {
+                <&mut B as WriteFrame<RetireConnectionIdFrame>>::put_frame(&mut buf, f)
+            }
+            Frame::HandshakeDone(f) => {
+                <&mut B as WriteFrame<HandshakeDoneFrame>>::put_frame(&mut buf, f)
+            }
+            Frame::Challenge(f) => {
+                <&mut B as WriteFrame<PathChallengeFrame>>::put_frame(&mut buf, f)
+            }
+            Frame::Response(f) => <&mut B as WriteFrame<PathResponseFrame>>::put_frame(&mut buf, f),
+            Frame::StreamCtl(f) => <&mut B as WriteFrame<StreamCtlFrame>>::put_frame(&mut buf, f),
+            Frame::Stream(f, d) => buf.put_data_frame(f, d),
+            Frame::Crypto(f, d) => buf.put_data_frame(f, d),
+            Frame::Datagram(f, d) => buf.put_data_frame(f, d),
+        }
+    }
+}
+
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly
 /// to write frame with data.
 pub trait WriteDataFrame<F, D: ContinuousData>: bytes::BufMut {

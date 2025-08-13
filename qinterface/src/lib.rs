@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use qbase::net::{
     addr::{BindUri, RealAddr},
     route::PacketHeader,
@@ -116,9 +116,7 @@ pub trait QuicIoExt: QuicIO {
             let rcvd = std::future::poll_fn(|cx| {
                 let max_segments = self.max_segments()?;
                 let max_segment_size = self.max_segment_size()?;
-                bufs.resize_with(max_segments, || {
-                    Bytes::from_owner(vec![0u8; max_segment_size]).into()
-                });
+                bufs.resize_with(max_segments, || BytesMut::zeroed(max_segment_size));
                 hdrs.resize_with(max_segments, PacketHeader::empty);
                 self.poll_recv(cx, bufs, hdrs)
             })

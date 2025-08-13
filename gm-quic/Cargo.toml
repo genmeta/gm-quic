@@ -40,12 +40,12 @@ tokio = { workspace = true, features = ["fs", "io-std", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
 x509-parser = { workspace = true }
 
+# console-subscriber = "0.4"
+
 [features]
 default = ["unreliable"]
 telemetry = ["qevent/telemetry"]
 unreliable = ["qconnection/unreliable"]
-
-# console-subscriber = "0.4"
 
 [dev-dependencies.tracing-subscriber]
 workspace = true

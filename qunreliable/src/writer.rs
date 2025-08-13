@@ -10,7 +10,7 @@ use qbase::{
     error::Error,
     frame::{DatagramFrame, EncodeSize},
     net::tx::{ArcSendWakers, Signals},
-    packet::MarshalDataFrame,
+    packet::Package,
     varint::VarInt,
 };
 
@@ -123,7 +123,8 @@ impl DatagramOutgoing {
     /// In this case, the packet will be filled.
     pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: BufMut + MarshalDataFrame<DatagramFrame, Bytes>,
+        P: BufMut + ?Sized,
+        (DatagramFrame, Bytes): Package<P>,
     {
         let mut guard = self.0.lock().unwrap();
         let Ok(writer) = guard.as_mut() else {
@@ -147,12 +148,12 @@ impl DatagramOutgoing {
         match max_encoding_size {
             // Encode length
             n if n >= frame_with_len.encoding_size() => {
-                packet.dump_frame_with_data(frame_with_len, data);
+                (frame_with_len, data).dump(packet).unwrap();
             }
             // Do not encode length, may need padding
             n => {
                 packet.put_bytes(0, n - frame_without_len.encoding_size());
-                packet.dump_frame_with_data(frame_without_len, data);
+                (frame_without_len, data).dump(packet).unwrap();
             }
         }
         Ok(())

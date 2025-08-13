@@ -50,6 +50,10 @@ pub enum Epoch {
     Data = 2,
 }
 
+pub trait GetEpoch {
+    fn epoch(&self) -> Epoch;
+}
+
 impl Epoch {
     pub const EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
     /// An iterator for the epoch of each spaces.

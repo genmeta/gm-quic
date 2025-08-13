@@ -2,21 +2,14 @@ use std::fmt::Debug;
 
 use bytes::{BufMut, BytesMut, buf::UninitSlice};
 use derive_more::{Deref, DerefMut};
-use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
 use getset::CopyGetters;
 use header::{LongHeader, io::WriteHeader};
 
 use crate::{
     cid::ConnectionId,
-    frame::{
-        ContainSpec, FrameFeture, FrameType, Spec,
-        io::{WriteDataFrame, WriteFrame},
-    },
-    net::tx::Signals,
+    frame::{ContainSpec, FrameFeture, FrameType, Spec},
     packet::keys::DirectionalKeys,
-    util::{ContinuousData, WriteData},
-    varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 
 /// QUIC packet parse error definitions.
@@ -39,15 +32,18 @@ pub use r#type::{
 pub mod header;
 #[doc(hidden)]
 pub use header::{
-    EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader, LongHeaderBuilder,
-    OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader, long,
+    EncodeHeader, GetDcid, GetScid, GetType, HandshakeHeader, Header, InitialHeader,
+    LongHeaderBuilder, OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader, long,
 };
 
 /// The io module provides the functions to parse the QUIC packet.
 ///
 /// The writing of the QUIC packet is not provided here, they are written in place.
 pub mod io;
-pub use io::{FinalPacketLayout, PacketLayout, PacketWriter};
+pub use io::{
+    AssemblePacket, Package, PacketProperties, PacketSpace, PacketWriter, ProductHeader,
+    RecordFrame,
+};
 
 /// Encoding and decoding of packet number
 pub mod number;
@@ -168,78 +164,11 @@ impl Iterator for PacketReader {
 
         match io::be_packet(&mut self.raw_bytes, self.dcid_len) {
             Ok(packet) => Some(Ok(packet)),
-            Err(e) => {
-                tracing::debug!(error = ?e, "Dropped unparsed packet");
+            Err(error) => {
+                tracing::debug!(?error, "Dropped unparsed packet");
                 self.raw_bytes.clear(); // no longer parsing
-                Some(Err(e))
+                Some(Err(error))
             }
-        }
-    }
-}
-
-/// During the formation of a packet, various frames are arranged into the packet.
-pub trait MarshalFrame<F> {
-    fn dump_frame(&mut self, frame: F) -> Option<F>;
-}
-
-pub trait MarshalDataFrame<F, D> {
-    fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F>;
-}
-
-/// Mainly customized for PathChallengeFrame and PathResponseFrame.
-/// These frames are sent in the data space but do not need to be
-/// reliably guaranteed in the data space.
-pub trait MarshalPathFrame<F> {
-    fn dump_path_frame(&mut self, frame: F);
-}
-
-enum Keys {
-    LongHeaderPacket {
-        keys: DirectionalKeys,
-    },
-    ShortHeaderPacket {
-        keys: DirectionalKeys,
-        key_phase: KeyPhaseBit,
-    },
-}
-
-impl Debug for Keys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LongHeaderPacket { .. } => f
-                .debug_struct("LongHeaderPacket")
-                .field("keys", &"...")
-                .finish(),
-            Self::ShortHeaderPacket { key_phase, .. } => f
-                .debug_struct("ShortHeaderPacket")
-                .field("keys", &"...")
-                .field("key_phase", key_phase)
-                .finish(),
-        }
-    }
-}
-
-impl Keys {
-    fn hpk(&self) -> &dyn rustls::quic::HeaderProtectionKey {
-        match self {
-            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
-                keys.header.as_ref()
-            }
-        }
-    }
-
-    fn pk(&self) -> &dyn rustls::quic::PacketKey {
-        match self {
-            Self::LongHeaderPacket { keys } | Self::ShortHeaderPacket { keys, .. } => {
-                keys.packet.as_ref()
-            }
-        }
-    }
-
-    fn key_phase(&self) -> Option<KeyPhaseBit> {
-        match self {
-            Self::LongHeaderPacket { .. } => None,
-            Self::ShortHeaderPacket { key_phase, .. } => Some(*key_phase),
         }
     }
 }

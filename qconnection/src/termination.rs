@@ -7,7 +7,19 @@ use std::{
     time::Duration,
 };
 
-use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame, net::route::Pathway};
+use qbase::{
+    cid::ConnectionId,
+    error::Error,
+    frame::ConnectionCloseFrame,
+    net::{route::Pathway, tx::Signals},
+    packet::{
+        header::{
+            long::{HandshakeHeader, InitialHeader, io::LongHeaderBuilder},
+            short::OneRttHeader,
+        },
+        io::ProductHeader,
+    },
+};
 use qinterface::queue::RcvdPacketQueue;
 use tokio::time::Instant;
 
@@ -28,6 +40,35 @@ pub struct Terminator {
 impl Drop for Terminator {
     fn drop(&mut self) {
         self.paths.clear();
+    }
+}
+
+impl ProductHeader<InitialHeader> for Terminator {
+    fn new_header(&self) -> Result<InitialHeader, Signals> {
+        let (Some(dcid), Some(scid)) = (self.dcid, self.scid) else {
+            return Err(Signals::empty());
+        };
+        // TODO: initial token
+        Ok(LongHeaderBuilder::with_cid(dcid, scid).initial(vec![]))
+    }
+}
+
+impl ProductHeader<HandshakeHeader> for Terminator {
+    fn new_header(&self) -> Result<HandshakeHeader, Signals> {
+        let (Some(dcid), Some(scid)) = (self.dcid, self.scid) else {
+            return Err(Signals::empty());
+        };
+        Ok(LongHeaderBuilder::with_cid(dcid, scid).handshake())
+    }
+}
+
+impl ProductHeader<OneRttHeader> for Terminator {
+    fn new_header(&self) -> Result<OneRttHeader, Signals> {
+        let Some(dcid) = self.dcid else {
+            return Err(Signals::empty());
+        };
+        // TODO: spin bit
+        Ok(OneRttHeader::new(false.into(), dcid))
     }
 }
 
@@ -60,16 +101,11 @@ impl Terminator {
 
     pub async fn try_send<W>(&self, mut write: W)
     where
-        W: FnMut(
-            &mut [u8],
-            Option<ConnectionId>,
-            Option<ConnectionId>,
-            &ConnectionCloseFrame,
-        ) -> Option<usize>,
+        W: FnMut(&mut [u8], &ConnectionCloseFrame) -> Option<usize>,
     {
         for path in self.paths.iter() {
             let mut datagram = vec![0; path.mtu() as _];
-            match write(&mut datagram, self.scid, self.dcid, &self.ccf) {
+            match write(&mut datagram, &self.ccf) {
                 Some(written) if written > 0 => {
                     _ = path
                         .send_packets(&[io::IoSlice::new(&datagram[..written])])
@@ -80,21 +116,16 @@ impl Terminator {
         }
     }
 
-    pub async fn try_send_with<W>(&self, pathway: Pathway, write: W)
+    pub async fn try_send_on<W>(&self, pathway: Pathway, write: W)
     where
-        W: FnOnce(
-            &mut [u8],
-            Option<ConnectionId>,
-            Option<ConnectionId>,
-            &ConnectionCloseFrame,
-        ) -> Option<usize>,
+        W: FnOnce(&mut [u8], &ConnectionCloseFrame) -> Option<usize>,
     {
         let Some(path) = self.paths.get(&pathway) else {
             return;
         };
 
         let mut datagram = vec![0; path.mtu() as _];
-        match write(&mut datagram, self.scid, self.dcid, &self.ccf) {
+        match write(&mut datagram, &self.ccf) {
             Some(written) if written > 0 => {
                 _ = path
                     .send_packets(&[io::IoSlice::new(&datagram[..written])])

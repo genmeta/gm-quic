@@ -437,6 +437,7 @@ impl ArcTlsHandshake {
 
         if !tls_handshake.session.is_handshaking() && tls_handshake.info.try_get().is_none() {
             let info = Arc::new(tls_handshake.session.r#yield());
+            tracing::debug!("TLS handshake finished");
             tls_handshake.info.set(info.clone());
             return Ok(Some(info));
         }

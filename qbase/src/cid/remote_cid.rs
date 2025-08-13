@@ -16,6 +16,7 @@ use crate::{
 
 /// RemoteCids is used to manage the connection IDs issued by the peer,
 /// and to send [`RetireConnectionIdFrame`] to the peer.
+// TODO: support 0RTT?
 #[derive(Debug)]
 struct RemoteCids<RETIRED>
 where

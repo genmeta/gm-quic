@@ -8,6 +8,7 @@ use qbase::{
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
     net::tx::{ArcSendWakers, Signals},
+    packet::Package,
 };
 pub use writer::*;
 
@@ -38,7 +39,8 @@ impl DatagramFlow {
 
     pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: bytes::BufMut + qbase::packet::MarshalDataFrame<DatagramFrame, Bytes>,
+        P: bytes::BufMut + ?Sized,
+        (DatagramFrame, Bytes): Package<P>,
     {
         self.outgoing.try_load_data_into(packet)
     }

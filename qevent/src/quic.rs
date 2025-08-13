@@ -8,8 +8,8 @@ use derive_more::{From, Into, LowerHex};
 use qbase::{
     frame::{
         AckFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize, Frame,
-        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
-        StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, PingFrame,
+        ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
     net::addr::RealAddr,
     packet::header::{
@@ -616,8 +616,17 @@ pub enum QuicFrame {
     },
 }
 
-impl<D: ContinuousData> From<(&CryptoFrame, D)> for QuicFrame {
-    fn from((frame, data): (&CryptoFrame, D)) -> Self {
+impl From<&PingFrame> for QuicFrame {
+    fn from(frame: &PingFrame) -> Self {
+        QuicFrame::Ping {
+            length: Some(frame.encoding_size() as u32),
+            payload_length: Some(0),
+        }
+    }
+}
+
+impl<D: ContinuousData> From<(&CryptoFrame, &D)> for QuicFrame {
+    fn from((frame, data): (&CryptoFrame, &D)) -> Self {
         let payload_length = frame.length();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Crypto {
@@ -649,8 +658,8 @@ impl From<&CryptoFrame> for QuicFrame {
     }
 }
 
-impl<D: ContinuousData> From<(&StreamFrame, D)> for QuicFrame {
-    fn from((frame, data): (&StreamFrame, D)) -> Self {
+impl<D: ContinuousData> From<(&StreamFrame, &D)> for QuicFrame {
+    fn from((frame, data): (&StreamFrame, &D)) -> Self {
         let payload_length = frame.len();
         let length = frame.encoding_size() + payload_length;
         QuicFrame::Stream {
@@ -684,8 +693,8 @@ impl From<&StreamFrame> for QuicFrame {
     }
 }
 
-impl<D: ContinuousData> From<(&DatagramFrame, D)> for QuicFrame {
-    fn from((frame, data): (&DatagramFrame, D)) -> Self {
+impl<D: ContinuousData> From<(&DatagramFrame, &D)> for QuicFrame {
+    fn from((frame, data): (&DatagramFrame, &D)) -> Self {
         let payload_length = frame.len().into_inner();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Datagram {
@@ -782,7 +791,7 @@ impl From<&ReliableFrame> for QuicFrame {
                 }
             }
             ReliableFrame::HandshakeDone(_handshake_done_frame) => QuicFrame::HandshakeDone {},
-            ReliableFrame::Stream(stream_ctl_frame) => QuicFrame::from(stream_ctl_frame),
+            ReliableFrame::StreamCtl(stream_ctl_frame) => QuicFrame::from(stream_ctl_frame),
         }
     }
 }
@@ -883,8 +892,8 @@ impl From<&ConnectionCloseFrame> for QuicFrame {
     }
 }
 
-impl From<&Frame> for QuicFrame {
-    fn from(frame: &Frame) -> Self {
+impl<D: ContinuousData> From<&Frame<D>> for QuicFrame {
+    fn from(frame: &Frame<D>) -> Self {
         match frame {
             Frame::Padding(..) => QuicFrame::Padding {
                 length: Some(1),

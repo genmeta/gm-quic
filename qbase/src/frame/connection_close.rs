@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use derive_more::From;
 use nom::bytes::complete::take;
 
 use super::FrameType;
@@ -33,8 +34,22 @@ impl AppCloseFrame {
     ///
     /// See [section-10.2.3-3](https://datatracker.ietf.org/doc/html/rfc9000#section-10.2.3-3)
     /// of [QUIC](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
-    pub fn conceal(&mut self) {
-        self.reason = Cow::Borrowed("");
+    pub fn conceal(&self) -> QuicCloseFrame {
+        QuicCloseFrame {
+            error_kind: ErrorKind::Application,
+            frame_type: ErrorFrameType::V1(FrameType::Padding),
+            reason: Cow::Borrowed(""),
+        }
+    }
+}
+
+impl From<AppCloseFrame> for QuicCloseFrame {
+    fn from(_: AppCloseFrame) -> Self {
+        QuicCloseFrame {
+            error_kind: ErrorKind::Application,
+            frame_type: ErrorFrameType::V1(FrameType::Padding),
+            reason: Cow::Borrowed(""),
+        }
     }
 }
 
@@ -76,7 +91,7 @@ impl QuicCloseFrame {
 ///
 /// See [connection close frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-connection-close-frames)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, From, PartialEq, Eq)]
 pub enum ConnectionCloseFrame {
     App(AppCloseFrame),
     Quic(QuicCloseFrame),
