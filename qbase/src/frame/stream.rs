@@ -72,6 +72,7 @@ impl super::EncodeSize for StreamFrame {
 }
 
 /// Efficient strategies for encoding stream frames
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodingStrategy {
     carry_length: bool,
     padding: usize,
