@@ -8,7 +8,9 @@ pub trait ContinuousData {
     fn to_bytes(&self) -> Bytes;
 }
 
-impl ContinuousData for (&[u8], &[u8]) {
+pub type DataPair<'a> = (&'a [u8], &'a [u8]);
+
+impl ContinuousData for DataPair<'_> {
     #[inline]
     fn len(&self) -> usize {
         self.0.len() + self.1.len()
@@ -93,6 +95,25 @@ impl ContinuousData for Bytes {
     }
 }
 
+pub type NonData = ();
+
+impl ContinuousData for NonData {
+    #[inline]
+    fn len(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        Bytes::new()
+    }
+}
+
 impl<D: ContinuousData + ?Sized> ContinuousData for &D {
     #[inline]
     fn len(&self) -> usize {
@@ -114,9 +135,9 @@ pub trait WriteData<D: ContinuousData>: BufMut {
     fn put_data(&mut self, data: &D);
 }
 
-impl<T: BufMut> WriteData<(&[u8], &[u8])> for T {
+impl<T: BufMut> WriteData<DataPair<'_>> for T {
     #[inline]
-    fn put_data(&mut self, data: &(&[u8], &[u8])) {
+    fn put_data(&mut self, data: &DataPair<'_>) {
         self.put_slice(data.0);
         self.put_slice(data.1);
     }
@@ -141,4 +162,9 @@ impl<T: BufMut> WriteData<Bytes> for T {
     fn put_data(&mut self, data: &Bytes) {
         self.put_slice(data);
     }
+}
+
+impl<T: BufMut> WriteData<NonData> for T {
+    #[inline]
+    fn put_data(&mut self, &(): &()) {}
 }

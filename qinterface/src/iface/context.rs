@@ -63,7 +63,7 @@ impl InterfaceContext {
                         }
                         result = &mut receive_task => {
                             if let Err(io_error) = result {
-                                tracing::error!(%bind_uri, "Receive task failed with errror: {io_error:?}");
+                                tracing::error!(%bind_uri, "Receive task failed with error: {io_error:?}");
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
                             receive_task = ReceiveTask::Stopped;

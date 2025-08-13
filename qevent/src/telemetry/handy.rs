@@ -5,7 +5,7 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncWrite, AsyncWriteExt},
+    io::{self, AsyncWrite, AsyncWriteExt},
     sync::mpsc,
 };
 
@@ -136,7 +136,7 @@ impl<S: TelemetryStorage> Log for LegacySeqLogger<S> {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
         tokio::spawn(async move {
-            let mut log_file = file.await;
+            let mut log_file = io::BufWriter::new(file.await);
 
             const RS: u8 = 0x1E;
 
@@ -150,6 +150,7 @@ impl<S: TelemetryStorage> Log for LegacySeqLogger<S> {
                     continue;
                 };
                 let event = serde_json::to_string(&event).unwrap();
+                // log_file.write_vectored();
                 log_file.write_u8(RS).await?;
                 log_file.write_all(event.as_bytes()).await?;
                 log_file.write_u8(b'\n').await?;

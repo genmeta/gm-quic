@@ -344,7 +344,7 @@ class H3Client:
                 env={**os.environ, "RUST_LOG": "counting"},
                 stdout=client_log,
                 text=True,
-                timeout=15
+                # timeout=15
             )
         except subprocess.TimeoutExpired:
             server.kill()

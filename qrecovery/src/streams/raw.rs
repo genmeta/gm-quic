@@ -1,5 +1,8 @@
 use std::{
-    sync::atomic::{AtomicBool, Ordering::*},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::*},
+    },
     task::{Context, Poll, ready},
 };
 
@@ -12,7 +15,7 @@ use qbase::{
         STREAM_FRAME_MAX_ENCODING_SIZE, SendFrame, StreamCtlFrame, StreamFrame,
     },
     net::tx::{ArcSendWakers, Signals},
-    packet::MarshalDataFrame,
+    packet::Package,
     param::{ArcParameters, ParameterId, core::Parameters},
     role::Role,
     sid::{
@@ -107,10 +110,7 @@ use crate::{
 /// [`ArcRemoteStreamIds::recv_streams_blocked_frame`]: qbase::sid::ArcRemoteStreamIds::recv_streams_blocked_frame
 ///
 #[derive(Debug)]
-pub struct DataStreams<TX>
-where
-    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
-{
+pub struct DataStreams<TX> {
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
     ctrl_frames: TX,
 
@@ -122,7 +122,7 @@ where
     input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
-    in_zero_rtt: AtomicBool,
+    tls_fin: AtomicBool,
     tx_wakers: ArcSendWakers,
 
     initial_max_stream_data_bidi_local: u64,
@@ -151,7 +151,8 @@ where
         zero_rtt: bool,
     ) -> Result<(), Signals>
     where
-        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + ?Sized,
+        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
         FTX: SendFrame<DataBlockedFrame>,
     {
         // todo: use core::range instead in rust 2024
@@ -164,7 +165,7 @@ where
         let mut guard = self.output.streams();
         let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
 
-        if zero_rtt && !self.in_zero_rtt.load(Acquire) {
+        if zero_rtt && self.tls_fin.load(Acquire) {
             return Err(Signals::TLS_FIN); // should load 1rtt
         }
 
@@ -178,7 +179,8 @@ where
             flow_limit: usize,
         ) -> Result<(StreamId, usize, usize), Signals>
         where
-            P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+            P: BufMut + ?Sized,
+            for<'a> (StreamFrame, DataPair<'a>): Package<P>,
         {
             let mut signals = Signals::TRANSPORT;
             for (sid, (outgoing, _ios), tokens) in streams {
@@ -249,6 +251,22 @@ where
         Ok(())
     }
 
+    #[inline]
+    pub fn package(
+        self: &Arc<Self>,
+        flow_ctrl: ArcSendControler<TX>,
+        zero_rtt: bool,
+    ) -> StreamFramePackages<TX>
+    where
+        TX: SendFrame<DataBlockedFrame>,
+    {
+        StreamFramePackages {
+            data_stream: self.clone(),
+            flow_ctrl,
+            zero_rtt,
+        }
+    }
+
     /// Try to load data from streams into the packet.
     ///
     /// # Fairness
@@ -290,7 +308,8 @@ where
         zero_rtt: bool,
     ) -> Result<(), Signals>
     where
-        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + ?Sized,
+        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
         FTX: SendFrame<DataBlockedFrame>,
     {
         use core::ops::ControlFlow::*;
@@ -562,6 +581,27 @@ where
     }
 }
 
+pub struct StreamFramePackages<TX> {
+    data_stream: Arc<DataStreams<TX>>,
+    flow_ctrl: ArcSendControler<TX>,
+    zero_rtt: bool,
+}
+
+type DataPair<'a> = (&'a [u8], &'a [u8]);
+
+impl<TX, P> Package<P> for StreamFramePackages<TX>
+where
+    TX: SendFrame<StreamCtlFrame> + SendFrame<DataBlockedFrame> + Clone + Send + 'static,
+    P: BufMut + ?Sized,
+    for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+{
+    #[inline]
+    fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
+        self.data_stream
+            .try_load_data_into_once(packet, &self.flow_ctrl, self.zero_rtt)
+    }
+}
+
 impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
@@ -569,7 +609,6 @@ where
     pub(super) fn new<LR, RR>(
         role: Role,
         local_params: &Parameters<LR>,
-        zero_rtt: bool,
         remote_params: &Parameters<RR>,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
@@ -600,7 +639,7 @@ where
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
-            in_zero_rtt: AtomicBool::new(zero_rtt),
+            tls_fin: AtomicBool::new(false),
             tx_wakers,
             initial_max_stream_data_bidi_local: local_params
                 .get::<u64>(ParameterId::InitialMaxStreamDataBidiLocal)
@@ -617,7 +656,7 @@ where
     pub fn revise_params<Role>(&self, zero_rtt_rejected: bool, remote_params: &Parameters<Role>) {
         if let Ok(output) = self.output.guard() {
             // enter 1rtt state, old state must be 0rtt
-            self.in_zero_rtt.store(false, Release);
+            self.tls_fin.store(true, Release);
 
             let opened_bidi = self.stream_ids.local.opened_streams(Dir::Bi);
             let opened_uni = self.stream_ids.local.opened_streams(Dir::Uni);

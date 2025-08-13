@@ -43,7 +43,7 @@ mod listener;
 pub mod raw;
 
 #[derive(Debug, Clone)]
-pub struct Ext<T: Clone>(T);
+pub struct Ext<T>(T);
 
 impl<TX, F> SendFrame<F> for Ext<TX>
 where
@@ -85,7 +85,6 @@ where
     pub fn new<LR, RR>(
         role: Role,
         local_params: &Parameters<LR>,
-        zero_rtt: bool,
         remote_params: &Parameters<RR>,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
@@ -94,7 +93,6 @@ where
         Self(Arc::new(raw::DataStreams::new(
             role,
             local_params,
-            zero_rtt,
             remote_params,
             ctrl,
             ctrl_frames,

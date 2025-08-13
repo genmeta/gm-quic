@@ -8,8 +8,13 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{
-        AckFrame, CryptoFrame, GetFrameType, ReceiveFrame, ReliableFrame, StreamCtlFrame,
-        StreamFrame,
+        AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeture, GetFrameType, ReceiveFrame,
+        ReliableFrame, StreamCtlFrame, StreamFrame,
+    },
+    packet::{
+        AssemblePacket, Package, PacketSpace, PacketWriter, ProductHeader,
+        header::short::OneRttHeader,
+        io::{Packages, PadTo20},
     },
 };
 use qevent::{quic::transport::PacketsAcked, telemetry::Instrument};
@@ -58,111 +63,102 @@ impl Spaces {
     pub fn data(&self) -> &Arc<data::DataSpace> {
         &self.data
     }
+}
 
+fn assemble_closing_packet<'s, 'b: 's, H, S>(
+    space: &'s S,
+    product_header: &impl ProductHeader<H>,
+    buffer: &'b mut [u8],
+    ccf: &ConnectionCloseFrame,
+) -> Option<usize>
+where
+    S: PacketSpace<H>,
+    S::PacketAssembler<'s>: AsRef<PacketWriter<'b>>,
+    for<'f> &'f ConnectionCloseFrame: Package<S::PacketAssembler<'s>>,
+{
+    let header = product_header.new_header().ok()?;
+    let mut packet = S::new_packet(space, header, buffer).ok()?;
+    if !ccf.belongs_to(packet.as_ref().packet_type()) {
+        let ccf = ConnectionCloseFrame::from(match ccf {
+            ConnectionCloseFrame::App(app_close_frame) => app_close_frame.conceal(),
+            ConnectionCloseFrame::Quic(..) => unreachable!(),
+        });
+        packet
+            .assemble_packet(&mut Packages((&ccf, PadTo20)))
+            .ok()?;
+    } else {
+        packet.assemble_packet(&mut Packages((ccf, PadTo20))).ok()?;
+    }
+    Some(packet.encrypt_and_protect_packet().0)
+}
+
+impl Spaces {
     pub async fn close(
         self,
         terminator: Arc<Terminator>,
         rcvd_pkt_q: Arc<RcvdPacketQueue>,
         event_broker: ArcEventBroker,
     ) {
-        match self.initial.close() {
-            None => rcvd_pkt_q.initial().close(),
-            Some(space) => {
-                _ = terminator
-                    .try_send(|buf, scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                            .map(|layout| layout.sent_bytes())
-                    })
-                    .await;
-                initial::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.initial().clone(),
-                    space,
-                    terminator.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
+        _ = terminator
+            .try_send(|buf, ccf| {
+                assemble_closing_packet(self.initial().as_ref(), terminator.as_ref(), buf, ccf)
+            })
+            .await;
+        initial::spawn_deliver_and_parse_closing(
+            rcvd_pkt_q.initial().clone(),
+            self.initial.clone(),
+            terminator.clone(),
+            event_broker.clone(),
+        );
 
         rcvd_pkt_q.zero_rtt().close();
 
-        match self.handshake.close() {
-            None => rcvd_pkt_q.handshake().close(),
-            Some(space) => {
-                _ = terminator
-                    .try_send(|buf, scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                            .map(|layout| layout.sent_bytes())
-                    })
-                    .await;
-                handshake::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.handshake().clone(),
-                    space,
-                    terminator.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
+        _ = terminator
+            .try_send(|buf, ccf| {
+                assemble_closing_packet(self.handshake().as_ref(), terminator.as_ref(), buf, ccf)
+            })
+            .await;
+        handshake::spawn_deliver_and_parse_closing(
+            rcvd_pkt_q.handshake().clone(),
+            self.handshake.clone(),
+            terminator.clone(),
+            event_broker.clone(),
+        );
 
-        match self.data.close() {
-            None => rcvd_pkt_q.one_rtt().close(),
-            Some(space) => {
-                _ = terminator
-                    .try_send(|buf, _scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(dcid?, ccf, buf)
-                            .map(|layout| layout.sent_bytes())
-                    })
-                    .await;
-                data::spawn_deliver_and_parse_closing(
-                    rcvd_pkt_q.one_rtt().clone(),
-                    space,
-                    terminator.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
+        _ = terminator
+            .try_send(|buf, ccf| {
+                let space = self.data().as_ref();
+                assemble_closing_packet::<OneRttHeader, _>(space, terminator.as_ref(), buf, ccf)
+            })
+            .await;
+        data::spawn_deliver_and_parse_closing(
+            rcvd_pkt_q.one_rtt().clone(),
+            self.data.clone(),
+            terminator.clone(),
+            event_broker.clone(),
+        );
     }
 
     pub async fn drain(self, terminator: Arc<Terminator>, rcvd_pkt_q: Arc<RcvdPacketQueue>) {
         rcvd_pkt_q.close_all();
         // For the client, this may cause the server to establish a new connection state and then quickly end it.
         // (especially when the pto is very small, such as a loopback NIC).
-        if let Some(space) = self.initial.close() {
-            _ = terminator
-                .try_send(|buf, scid, dcid, ccf| {
-                    space
-                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                        .map(|layout| layout.sent_bytes())
-                })
-                .await;
-        }
-        self.initial.close();
-        if let Some(space) = self.handshake.close() {
-            _ = terminator
-                .try_send(|buf, scid, dcid, ccf| {
-                    space
-                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                        .map(|layout| layout.sent_bytes())
-                })
-                .await;
-        }
-        if let Some(space) = self.data.close() {
-            _ = terminator
-                .try_send(|buf, _scid, dcid, ccf| {
-                    space
-                        .try_assemble_ccf_packet(dcid?, ccf, buf)
-                        .map(|layout| layout.sent_bytes())
-                })
-                .await;
-        }
-    }
-
-    pub fn close_all(&self) {
-        self.initial.close();
-        self.handshake.close();
-        self.data.close();
+        _ = terminator
+            .try_send(|buf, ccf| {
+                assemble_closing_packet(self.initial().as_ref(), terminator.as_ref(), buf, ccf)
+            })
+            .await;
+        _ = terminator
+            .try_send(|buf, ccf| {
+                assemble_closing_packet(self.handshake().as_ref(), terminator.as_ref(), buf, ccf)
+            })
+            .await;
+        _ = terminator
+            .try_send(|buf, ccf| {
+                let space = self.data().as_ref();
+                assemble_closing_packet::<OneRttHeader, _>(space, terminator.as_ref(), buf, ccf)
+            })
+            .await;
     }
 }
 
@@ -348,7 +344,7 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
                     GuaranteedFrame::Crypto(crypto_frame) => {
                         self.crypto_stream_outgoing.on_data_acked(&crypto_frame)
                     }
-                    GuaranteedFrame::Reliable(ReliableFrame::Stream(
+                    GuaranteedFrame::Reliable(ReliableFrame::StreamCtl(
                         StreamCtlFrame::ResetStream(reset_frame),
                     )) => self.data_streams.on_reset_acked(reset_frame),
                     _ => { /* nothing to do */ }

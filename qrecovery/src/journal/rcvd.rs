@@ -3,10 +3,11 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use bytes::BufMut;
 use qbase::{
     frame::AckFrame,
     net::tx::Signals,
-    packet::{InvalidPacketNumber, PacketNumber},
+    packet::{InvalidPacketNumber, Package, PacketNumber, PacketWriter},
     util::{IndexDeque, IndexError},
     varint::{VARINT_MAX, VarInt},
 };
@@ -362,6 +363,41 @@ impl ArcRcvdJournal {
 
     pub fn revise_max_ack_delay(&self, max_ack_delay: Duration) {
         self.inner.write().unwrap().max_ack_delay = Some(max_ack_delay);
+    }
+
+    pub fn ack_package<'r>(&'r self, need_ack: Option<(u64, Instant)>) -> AckPackege<'r> {
+        AckPackege {
+            journal: self,
+            need_ack,
+        }
+    }
+}
+
+pub struct AckPackege<'r> {
+    journal: &'r ArcRcvdJournal,
+    need_ack: Option<(u64, Instant)>,
+}
+
+impl<'r, Target> Package<Target> for AckPackege<'r>
+where
+    Target: AsRef<PacketWriter<'r>> + ?Sized,
+    AckFrame: Package<Target>,
+{
+    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+        self.need_ack
+            .or_else(|| self.journal.need_ack())
+            .ok_or(Signals::TRANSPORT)
+            .and_then(|(largest_ack, rcvd_time)| {
+                self.journal.gen_ack_frame_util(
+                    target.as_ref().packet_number(),
+                    largest_ack,
+                    rcvd_time,
+                    target.as_ref().remaining_mut(),
+                )
+            })?
+            .dump(target)
+            .unwrap();
+        Ok(())
     }
 }
 

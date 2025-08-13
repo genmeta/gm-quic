@@ -1,5 +1,4 @@
 use std::{
-    ops::Deref,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -19,11 +18,12 @@ use qbase::{
     cid::GenUniqueCid,
     error::Error,
     net::tx::{ArcSendWakers, Signals},
+    packet::keys::ArcZeroRttKeys,
     param::{ArcParameters, ParameterId, Parameters},
     role::{IntoRole, Role},
     sid::handy::DemandConcurrency,
     time::ArcDeferIdleTimer,
-    token::{ArcTokenRegistry, TokenRegistry},
+    token::ArcTokenRegistry,
 };
 use qcongestion::HandshakeStatus;
 use qevent::{
@@ -36,6 +36,8 @@ use qevent::{
 };
 pub use qinterface::route::{Router, Way};
 use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
+use qrecovery::crypto::CryptoStream;
+use qunreliable::DatagramFlow;
 use rustls::crypto::CryptoProvider;
 pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig};
 use tokio::sync::mpsc;
@@ -44,7 +46,8 @@ use tracing::Instrument as _;
 pub use crate::tls::{AuthClient, NoopClientAuther};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    ConnectionState, Handshake, RawHandshake, RouterRegistry, SpecificComponents,
+    ConnectionState, DataJournal, DataStreams, FlowController, Handshake, RawHandshake,
+    RouterRegistry, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     path::ArcPathContexts,
     space::{
@@ -266,37 +269,18 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
         )
         .expect("Failed to initialize TLS handshake");
 
+        let zero_rtt_keys = ArcZeroRttKeys::new_pending(Role::Client);
+
         // if zero rtt enabled && loadede remembered parameters && zero rtt keys is available
-        let (data_space, parameters) = match tls_session.load_zero_rtt() {
-            Some((remembered_parameters, zero_rtt_keys)) => {
-                let data_space = DataSpace::new(
-                    Role::Client,
-                    &clinet_params,
-                    Some(&remembered_parameters),
-                    self.streams_ctrl,
-                    reliable_frames.clone(),
-                    tx_wakers.clone(),
-                );
+        let parameters = match tls_session.load_zero_rtt() {
+            Some((remembered_parameters, avaliable_zero_rtt_keys)) => {
                 qevent::event!(ParametersRestored {
                     client_parameters: &remembered_parameters,
                 });
-                data_space.zero_rtt_keys().set_keys(zero_rtt_keys);
-                let parameters =
-                    Parameters::new_client(clinet_params, Some(remembered_parameters), origin_dcid);
-                (data_space, parameters)
+                zero_rtt_keys.set_keys(avaliable_zero_rtt_keys);
+                Parameters::new_client(clinet_params, Some(remembered_parameters), origin_dcid)
             }
-            None => {
-                let data_space = DataSpace::new(
-                    Role::Client,
-                    &clinet_params,
-                    None,
-                    self.streams_ctrl,
-                    reliable_frames.clone(),
-                    tx_wakers.clone(),
-                );
-                let parameters = Parameters::new_client(clinet_params, None, origin_dcid);
-                (data_space, parameters)
-            }
+            None => Parameters::new_client(clinet_params, None, origin_dcid),
         };
 
         PendingConnection {
@@ -314,8 +298,9 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             token_registry: self.foundation.token_registry,
             tls_session: TlsSession::Client(tls_session),
             initial_keys,
-            data_space,
-            sepcific: SpecificComponents::Client {},
+            zero_rtt_keys,
+            streams_ctrl: self.streams_ctrl,
+            specific: SpecificComponents::Client {},
             qlogger: Arc::new(NoopLogger),
         }
     }
@@ -353,15 +338,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
         )
         .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理
 
-        let data_space = DataSpace::new(
-            Role::Server,
-            &server_params,
-            None,
-            self.streams_ctrl,
-            reliable_frames.clone(),
-            tx_wakers.clone(),
-        );
-
         PendingConnection {
             interfaces: self.ifaces,
             rcvd_pkt_q,
@@ -377,8 +353,9 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             token_registry: self.foundation.token_registry,
             tls_session: TlsSession::Server(tls_session),
             initial_keys,
-            data_space,
-            sepcific: SpecificComponents::Server {
+            zero_rtt_keys: ArcZeroRttKeys::new_pending(Role::Server),
+            streams_ctrl: self.streams_ctrl,
+            specific: SpecificComponents::Server {
                 odcid_router_entry: Arc::new(odcid_router_entry),
                 using_odcid: Arc::new(AtomicBool::new(true)),
             },
@@ -402,9 +379,45 @@ pub struct PendingConnection {
     token_registry: ArcTokenRegistry,
     tls_session: TlsSession,
     initial_keys: rustls::quic::Keys,
-    data_space: DataSpace,
-    sepcific: SpecificComponents,
+    zero_rtt_keys: ArcZeroRttKeys,
+    streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+    specific: SpecificComponents,
     qlogger: Arc<dyn Log>,
+}
+
+fn init_stream_and_datagram<LR: IntoRole, RR: IntoRole>(
+    local_params: &qbase::param::core::Parameters<LR>,
+    remote_params: &qbase::param::core::Parameters<RR>,
+    reliable_frames: ArcReliableFrameDeque,
+    streams_ctrl: Box<dyn ControlStreamsConcurrency>,
+    tx_wakers: ArcSendWakers,
+) -> (DataStreams, FlowController, DatagramFlow) {
+    assert_ne!(LR::into_role(), RR::into_role());
+    let flow_ctrl = FlowController::new(
+        remote_params
+            .get(ParameterId::InitialMaxData)
+            .expect("unreachable: default value will be got if the value unset"),
+        local_params
+            .get(ParameterId::InitialMaxData)
+            .expect("unreachable: default value will be got if the value unset"),
+        reliable_frames.clone(),
+        tx_wakers.clone(),
+    );
+    let data_streams = DataStreams::new(
+        LR::into_role(),
+        local_params,
+        remote_params,
+        streams_ctrl,
+        reliable_frames.clone(),
+        tx_wakers.clone(),
+    );
+    let datagram_flow = DatagramFlow::new(
+        local_params
+            .get(ParameterId::MaxDatagramFrameSize)
+            .expect("unreachable: default value will be got if the value unset"),
+        tx_wakers.clone(),
+    );
+    (data_streams, flow_ctrl, datagram_flow)
 }
 
 impl PendingConnection {
@@ -424,20 +437,6 @@ impl PendingConnection {
         let conn_state = ArcConnState::new();
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
 
-        let initial_token = match self.token_registry.deref() {
-            TokenRegistry::Client((server_name, token_sink)) => token_sink.fetch_token(server_name),
-            TokenRegistry::Server(..) => vec![],
-        };
-        let spaces = Spaces::new(
-            InitialSpace::new(
-                self.initial_keys.into(),
-                initial_token,
-                self.tx_wakers.clone(),
-            ),
-            HandshakeSpace::new(self.tx_wakers.clone()),
-            self.data_space,
-        );
-
         let quic_handshake = Handshake::new(
             RawHandshake::new(self.role, self.reliable_frames.clone()),
             Arc::new(HandshakeStatus::new(self.role == Role::Server)),
@@ -453,6 +452,38 @@ impl PendingConnection {
         );
         let cid_registry = CidRegistry::new(self.role, self.origin_dcid, local_cids, remote_cids);
 
+        let spaces = Spaces::new(
+            InitialSpace::new(self.initial_keys.into()),
+            HandshakeSpace::new(),
+            DataSpace::new(self.zero_rtt_keys),
+        );
+
+        let crypto_streams = [
+            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
+            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
+            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
+        ];
+
+        let (data_streams, flow_ctrl, datagram_flow) = match self.role {
+            Role::Client => init_stream_and_datagram(
+                self.parameters.client().unwrap(),
+                self.parameters
+                    .remembered()
+                    .map(|p| p.as_ref())
+                    .unwrap_or(&ServerParameters::default()),
+                self.reliable_frames.clone(),
+                self.streams_ctrl,
+                self.tx_wakers.clone(),
+            ),
+            Role::Server => init_stream_and_datagram(
+                self.parameters.server().unwrap(),
+                &ClientParameters::default(),
+                self.reliable_frames.clone(),
+                self.streams_ctrl,
+                self.tx_wakers.clone(),
+            ),
+        };
+
         let components = Components {
             interfaces: self.interfaces,
             rcvd_pkt_q: self.rcvd_pkt_q,
@@ -466,8 +497,13 @@ impl PendingConnection {
             token_registry: self.token_registry,
             cid_registry,
             spaces,
+            crypto_streams,
+            reliable_frames: self.reliable_frames,
+            data_streams,
+            flow_ctrl,
+            datagram_flow,
             event_broker,
-            specific: self.sepcific,
+            specific: self.specific,
         };
 
         spawn_tls_handshake(&components, self.tx_wakers.clone());
@@ -489,19 +525,17 @@ fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
     let task = components.tls_handshake.clone().launch(
         components.parameters.clone(),
         components.quic_handshake.clone(),
-        [
-            components.spaces.initial().crypto_stream().clone(),
-            components.spaces.handshake().crypto_stream().clone(),
-            components.spaces.data().crypto_stream().clone(),
-        ],
+        components.crypto_streams.clone(),
         (
             components.spaces.handshake().keys(),
             components.spaces.data().zero_rtt_keys(),
             components.spaces.data().one_rtt_keys(),
         ),
-        on_tls_handshake_done(
+        tls_fin_handler(
             components.parameters.clone(),
-            components.spaces.data().clone(),
+            components.data_streams.clone(),
+            components.flow_ctrl.clone(),
+            components.spaces.data().journal().clone(),
             components.cid_registry.local.clone(),
             tx_wakers,
         ),
@@ -517,25 +551,28 @@ fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
     tokio::spawn(task.instrument_in_current().in_current_span());
 }
 
-fn on_tls_handshake_done(
+fn tls_fin_handler(
     parameters: ArcParameters,
-    data_space: Arc<DataSpace>,
+    data_streams: DataStreams,
+    flow_ctrl: FlowController,
+    data_journal: DataJournal,
     local_cids: ArcLocalCids,
     tx_wakers: ArcSendWakers,
 ) -> impl FnOnce(&TlsHandshakeInfo) -> Result<(), Error> + Send {
     fn apply_parameters<Role: IntoRole>(
-        data_space: &DataSpace,
+        data_streams: &DataStreams,
+        flow_ctrl: &FlowController,
+        // datagram_flow
+        data_journal: &DataJournal,
         local_cids: &ArcLocalCids,
         zero_rtt_rejected: bool,
         remote_parameters: Arc<qbase::param::core::Parameters<Role>>,
     ) -> Result<(), Error> {
         // accept InitialMaxStreamsBidi, InitialMaxStreamUni,
         // InitialMaxStreamDataBidiLocal, InitialMaxStreamDataBidiRemote, InitialMaxStreamDataUni,
-        data_space
-            .streams()
-            .revise_params(zero_rtt_rejected, remote_parameters.as_ref());
+        data_streams.revise_params(zero_rtt_rejected, remote_parameters.as_ref());
         // accept InitialMaxData:
-        data_space.flow_ctrl().sender.revise_max_data(
+        flow_ctrl.sender.revise_max_data(
             zero_rtt_rejected,
             remote_parameters
                 .get(ParameterId::InitialMaxData)
@@ -547,7 +584,7 @@ fn on_tls_handshake_done(
                 .get(ParameterId::ActiveConnectionIdLimit)
                 .expect("unreachable: default value will be got if the value unset"),
         )?;
-        data_space.journal().of_rcvd_packets().revise_max_ack_delay(
+        data_journal.of_rcvd_packets().revise_max_ack_delay(
             remote_parameters
                 .get(ParameterId::MaxAckDelay)
                 .expect("unreachable: default value will be got if the value unset"),
@@ -581,7 +618,9 @@ fn on_tls_handshake_done(
                     server_parameters: &remote_parameters,
                 });
                 apply_parameters(
-                    &data_space,
+                    &data_streams,
+                    &flow_ctrl,
+                    &data_journal,
                     &local_cids,
                     zero_rtt_rejected,
                     remote_parameters,
@@ -598,7 +637,9 @@ fn on_tls_handshake_done(
                     client_parameters: &remote_parameters,
                 });
                 apply_parameters(
-                    &data_space,
+                    &data_streams,
+                    &flow_ctrl,
+                    &data_journal,
                     &local_cids,
                     zero_rtt_rejected,
                     remote_parameters,

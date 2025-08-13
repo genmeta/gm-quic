@@ -1,29 +1,25 @@
 use std::{
     ops::Deref,
-    sync::{Arc, Mutex, atomic::Ordering::SeqCst},
+    sync::{Arc, atomic::Ordering::SeqCst},
 };
 
-use bytes::BufMut;
 use qbase::{
-    Epoch,
-    cid::ConnectionId,
+    Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::tx::{ArcSendWakers, Signals},
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame, FrameReader},
+    net::tx::Signals,
     packet::{
-        FinalPacketLayout, MarshalFrame, PacketContains, PacketWriter,
-        header::{
-            GetDcid, GetScid, GetType,
-            long::{InitialHeader, io::LongHeaderBuilder},
-        },
+        PacketContains,
+        header::{GetDcid, GetScid, GetType, long::InitialHeader},
+        io::PacketSpace,
         keys::{ArcKeys, Keys},
-        number::PacketNumber,
     },
     token::TokenRegistry,
     util::BoundQueue,
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
+    packet::PacketWriter as QEventPacketWriter,
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -35,17 +31,17 @@ use qinterface::{
     packet::{CipherPacket, PlainPacket},
     route::Way,
 };
-use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
+use qrecovery::crypto::CryptoStream;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckInitialSpace, pipe};
 use crate::{
     Components, InitialJournal, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{Path, error::CreatePathFailure},
+    path::{self, Path, error::CreatePathFailure},
+    space::{AckInitialSpace, assemble_closing_packet, pipe},
     termination::Terminator,
-    tx::{PacketBuffer, PaddablePacket, Transaction},
+    tx::PacketWriter,
 };
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
@@ -54,31 +50,27 @@ pub type ReceivedFrom = (CipherInitialPacket, Way);
 
 pub struct InitialSpace {
     keys: ArcKeys,
-    crypto_stream: CryptoStream,
-    token: Mutex<Vec<u8>>,
     journal: InitialJournal,
+}
+
+impl AsRef<InitialJournal> for InitialSpace {
+    fn as_ref(&self) -> &InitialJournal {
+        &self.journal
+    }
 }
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: Keys, token: Vec<u8>, tx_wakers: ArcSendWakers) -> Self {
+    pub fn new(keys: Keys) -> Self {
         let journal = InitialJournal::with_capacity(16, None);
-        let crypto_stream = CryptoStream::new(4096, 4096, tx_wakers);
-
         Self {
-            token: Mutex::new(token),
             keys: ArcKeys::with_keys(keys),
             journal,
-            crypto_stream,
         }
     }
 
     pub fn keys(&self) -> ArcKeys {
         self.keys.clone()
-    }
-
-    pub fn crypto_stream(&self) -> &CryptoStream {
-        &self.crypto_stream
     }
 
     pub async fn decrypt_packet(
@@ -98,87 +90,39 @@ impl InitialSpace {
         }
     }
 
-    pub fn try_assemble_initial_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        buf: &mut [u8],
-    ) -> Result<(PaddablePacket, Option<u64>), Signals> {
-        let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let sent_journal = self.journal.of_sent_packets();
-        let need_ack = tx.need_ack(Epoch::Initial);
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Initial);
-        let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(
-                tx.initial_dcid()?,
-                tx.initial_scid().ok_or(Signals::empty())?,
-            )
-            .initial(self.token.lock().unwrap().clone()),
-            buf,
-            keys.local.clone(),
-            &sent_journal,
-        )?;
-
-        let mut signals = Signals::empty();
-
-        let ack = need_ack
-            .or_else(|| {
-                let rcvd_journal = self.journal.of_rcvd_packets();
-                rcvd_journal.need_ack()
-            })
-            .ok_or(Signals::TRANSPORT)
-            .and_then(|(largest, rcvd_time)| {
-                let rcvd_journal = self.journal.of_rcvd_packets();
-                let ack_frame = rcvd_journal.gen_ack_frame_util(
-                    packet.pn(),
-                    largest,
-                    rcvd_time,
-                    packet.remaining_mut(),
-                )?;
-                packet.dump_ack_frame(ack_frame);
-                Ok(largest)
-            })
-            .map_err(|s| signals |= s)
-            .ok();
-
-        // support for multi path handshake
-        _ = self
-            .crypto_stream
-            .outgoing()
-            .try_load_data_into(&mut packet, tx.path_first_load())
-            .map_err(|s| signals |= s);
-
-        Ok((
-            packet
-                .prepare_with_time(retran_timeout, expire_timeout)
-                .map_err(|_| signals)?,
-            ack,
-        ))
+    pub fn tracker(&self, crypto_stream: CryptoStream) -> InitialTracker {
+        InitialTracker {
+            journal: self.journal.clone(),
+            crypto_stream,
+        }
     }
+}
 
-    pub fn try_assemble_ping_packet(
-        &self,
-        tx: &mut Transaction<'_>,
-        buf: &mut [u8],
-    ) -> Result<PaddablePacket, Signals> {
+impl GetEpoch for InitialSpace {
+    fn epoch(&self) -> Epoch {
+        Epoch::Initial
+    }
+}
+
+impl path::PacketSpace<InitialHeader> for InitialSpace {
+    type JournalFrame = CryptoFrame;
+
+    fn new_packet<'b, 's>(
+        &'s self,
+        header: InitialHeader,
+        cc: &qcongestion::ArcCC,
+        buffer: &'b mut [u8],
+    ) -> Result<PacketWriter<'b, 's, CryptoFrame>, Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketBuffer::new_long(
-            LongHeaderBuilder::with_cid(
-                tx.initial_dcid()?,
-                tx.initial_scid().ok_or(Signals::empty())?,
-            )
-            .initial(self.token.lock().unwrap().clone()),
-            buf,
-            keys.local.clone(),
-            &sent_journal,
-        )?;
-
-        packet.dump_ping_frame();
-
-        packet
-            .prepare_with_time(retran_timeout, expire_timeout)
-            .map_err(|_| unreachable!("packet is not empty"))
+        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Handshake);
+        PacketWriter::new_long(
+            header,
+            buffer,
+            keys.local,
+            self.journal.as_ref(),
+            retran_timeout,
+            expire_timeout,
+        )
     }
 }
 
@@ -193,12 +137,12 @@ pub fn spawn_deliver_and_parse(
 
     pipe(
         rcvd_crypto_frames,
-        space.crypto_stream.incoming(),
+        components.crypto_streams[space.epoch()].incoming(),
         event_broker.clone(),
     );
     pipe(
         rcvd_ack_frames,
-        AckInitialSpace::new(&space.journal, &space.crypto_stream),
+        AckInitialSpace::new(&space.journal, &components.crypto_streams[space.epoch()]),
         event_broker.clone(),
     );
 
@@ -348,7 +292,12 @@ pub fn spawn_deliver_and_parse(
     );
 }
 
-impl Feedback for InitialSpace {
+pub struct InitialTracker {
+    journal: InitialJournal,
+    crypto_stream: CryptoStream,
+}
+
+impl Feedback for InitialTracker {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let outgoing = self.crypto_stream.outgoing();
@@ -371,35 +320,31 @@ impl Feedback for InitialSpace {
     }
 }
 
-#[derive(Clone)]
-pub struct ClosingInitialSpace {
-    rcvd_journal: ArcRcvdJournal,
-    ccf_packet_pn: (u64, PacketNumber),
-    keys: Keys,
-}
+impl PacketSpace<InitialHeader> for InitialSpace {
+    type PacketAssembler<'a> = QEventPacketWriter<'a>;
 
-impl InitialSpace {
-    pub fn close(&self) -> Option<ClosingInitialSpace> {
-        let keys = self.keys.invalid()?;
-        let sent_journal = self.journal.of_sent_packets();
-        let new_packet_guard = sent_journal.new_packet();
-        let ccf_packet_pn = new_packet_guard.pn();
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        Some(ClosingInitialSpace {
-            rcvd_journal,
-            ccf_packet_pn,
-            keys,
-        })
+    /// NOTE: this should only be used for assembling packets in closing state.
+    fn new_packet<'a>(
+        &'a self,
+        header: InitialHeader,
+        buffer: &'a mut [u8],
+    ) -> Result<Self::PacketAssembler<'a>, Signals> {
+        let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
+        // peek next pn without consuming it
+        let pn = self.journal.of_sent_packets().new_packet().pn();
+        QEventPacketWriter::new_long(&header, buffer, pn, keys.local)
     }
 }
 
-impl ClosingInitialSpace {
+impl InitialSpace {
     pub fn recv_packet(&self, packet: CipherInitialPacket) -> Option<ConnectionCloseFrame> {
+        // TOOD: improve Keys
+        let remote_keys = self.keys.get_local_keys()?.remote;
         let packet = packet
             .decrypt_long_packet(
-                self.keys.remote.header.as_ref(),
-                self.keys.remote.packet.as_ref(),
-                |pn| self.rcvd_journal.decode_pn(pn),
+                remote_keys.header.as_ref(),
+                remote_keys.packet.as_ref(),
+                |pn| self.journal.of_rcvd_packets().decode_pn(pn),
             )
             .and_then(Result::ok)?;
 
@@ -415,36 +360,11 @@ impl ClosingInitialSpace {
         packet.log_received(frames);
         ccf
     }
-
-    pub fn try_assemble_ccf_packet(
-        &self,
-        scid: ConnectionId,
-        dcid: ConnectionId,
-        ccf: &ConnectionCloseFrame,
-        buf: &mut [u8],
-    ) -> Option<FinalPacketLayout> {
-        let header = LongHeaderBuilder::with_cid(dcid, scid).initial(vec![]);
-        let pn = self.ccf_packet_pn;
-        let mut packet_writer =
-            PacketWriter::new_long(&header, buf, pn, self.keys.local.clone()).ok()?;
-
-        let ccf = match ccf.clone() {
-            ConnectionCloseFrame::App(mut app_close_frame) => {
-                app_close_frame.conceal();
-                ConnectionCloseFrame::App(app_close_frame)
-            }
-            ccf @ ConnectionCloseFrame::Quic(_) => ccf,
-        };
-
-        packet_writer.dump_frame(ccf);
-
-        Some(packet_writer.encrypt_and_protect())
-    }
 }
 
 pub fn spawn_deliver_and_parse_closing(
     packets: BoundQueue<ReceivedFrom>,
-    space: ClosingInitialSpace,
+    space: Arc<InitialSpace>,
     terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
@@ -457,10 +377,13 @@ pub fn spawn_deliver_and_parse_closing(
                 }
                 if terminator.should_send() {
                     _ = terminator
-                        .try_send_with(pathway, |buf, scid, dcid, ccf| {
-                            space
-                                .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                                .map(|layout| layout.sent_bytes())
+                        .try_send_on(pathway, |buffer, ccf| {
+                            assemble_closing_packet(
+                                space.as_ref(),
+                                terminator.as_ref(),
+                                buffer,
+                                ccf,
+                            )
                         })
                         .await;
                 }

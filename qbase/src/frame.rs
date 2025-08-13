@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use bytes::{Buf, BufMut, Bytes};
-use derive_more::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut, From, TryInto};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
@@ -61,7 +61,7 @@ pub use streams_blocked::StreamsBlockedFrame;
 
 /// Define the basic behaviors for all kinds of frames
 #[enum_dispatch]
-pub trait GetFrameType: Debug {
+pub trait GetFrameType {
     /// Return the type of frame
     fn frame_type(&self) -> FrameType;
 }
@@ -386,14 +386,14 @@ pub enum ReliableFrame {
     /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
     /// STREAM control frame, see [`StreamCtlFrame`].
-    Stream(StreamCtlFrame),
+    StreamCtl(StreamCtlFrame),
 }
 
 /// Sum type of all the frames.
 ///
 /// The data frames' body are stored in the second field.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Frame {
+#[derive(Debug, Clone, From, TryInto, Eq, PartialEq)]
+pub enum Frame<D = Bytes> {
     /// PADDING frame, see [`PaddingFrame`].
     Padding(PaddingFrame),
     /// PING frame, see [`PingFrame`].
@@ -421,14 +421,14 @@ pub enum Frame {
     /// Stream control frame, see [`StreamCtlFrame`].
     StreamCtl(StreamCtlFrame),
     /// STREAM frame and its data, see [`StreamFrame`].
-    Stream(StreamFrame, Bytes),
+    Stream(StreamFrame, D),
     /// CRYPTO frame and its data, see [`CryptoFrame`].
-    Crypto(CryptoFrame, Bytes),
+    Crypto(CryptoFrame, D),
     /// DATAGRAM frame and its data, see [`DatagramFrame`].
-    Datagram(DatagramFrame, Bytes),
+    Datagram(DatagramFrame, D),
 }
 
-impl From<ReliableFrame> for Frame {
+impl<D> From<ReliableFrame> for Frame<D> {
     fn from(frame: ReliableFrame) -> Self {
         match frame {
             ReliableFrame::NewToken(new_token_frame) => Frame::NewToken(new_token_frame),
@@ -445,7 +445,112 @@ impl From<ReliableFrame> for Frame {
             ReliableFrame::HandshakeDone(handshake_done_frame) => {
                 Frame::HandshakeDone(handshake_done_frame)
             }
-            ReliableFrame::Stream(stream_frame) => Frame::StreamCtl(stream_frame),
+            ReliableFrame::StreamCtl(stream_frame) => Frame::StreamCtl(stream_frame),
+        }
+    }
+}
+
+impl<D> TryFrom<Frame<D>> for ReliableFrame {
+    type Error = Frame<D>;
+
+    fn try_from(frame: Frame<D>) -> Result<Self, Self::Error> {
+        match frame {
+            Frame::NewToken(new_token_frame) => Ok(ReliableFrame::NewToken(new_token_frame)),
+            Frame::MaxData(max_data_frame) => Ok(ReliableFrame::MaxData(max_data_frame)),
+            Frame::DataBlocked(data_blocked_frame) => {
+                Ok(ReliableFrame::DataBlocked(data_blocked_frame))
+            }
+            Frame::NewConnectionId(new_connection_id_frame) => {
+                Ok(ReliableFrame::NewConnectionId(new_connection_id_frame))
+            }
+            Frame::RetireConnectionId(retire_connection_id_frame) => Ok(
+                ReliableFrame::RetireConnectionId(retire_connection_id_frame),
+            ),
+            Frame::HandshakeDone(handshake_done_frame) => {
+                Ok(ReliableFrame::HandshakeDone(handshake_done_frame))
+            }
+            Frame::StreamCtl(stream_frame) => Ok(ReliableFrame::StreamCtl(stream_frame)),
+            frame => Err(frame),
+        }
+    }
+}
+
+impl<D> GetFrameType for Frame<D> {
+    #[doc = " Return the type of frame"]
+    #[inline]
+    fn frame_type(&self) -> FrameType {
+        match self {
+            Frame::Padding(f) => f.frame_type(),
+            Frame::Ping(f) => f.frame_type(),
+            Frame::Ack(f) => f.frame_type(),
+            Frame::Close(f) => f.frame_type(),
+            Frame::NewToken(f) => f.frame_type(),
+            Frame::MaxData(f) => f.frame_type(),
+            Frame::DataBlocked(f) => f.frame_type(),
+            Frame::NewConnectionId(f) => f.frame_type(),
+            Frame::RetireConnectionId(f) => f.frame_type(),
+            Frame::HandshakeDone(f) => f.frame_type(),
+            Frame::Challenge(f) => f.frame_type(),
+            Frame::Response(f) => f.frame_type(),
+            Frame::StreamCtl(f) => f.frame_type(),
+            Frame::Stream(f, _) => f.frame_type(),
+            Frame::Crypto(f, _) => f.frame_type(),
+            Frame::Datagram(f, _) => f.frame_type(),
+        }
+    }
+}
+
+impl<D> EncodeSize for Frame<D> {
+    #[doc = " Return the max number of bytes needed to encode this value"]
+    #[doc = ""]
+    #[doc = " Calculate the maximum size by summing up the maximum length of each field."]
+    #[doc = " If a field type has a maximum length, use it, otherwise use the actual length"]
+    #[doc = " of the data in that field."]
+    #[doc = ""]
+    #[doc = " When packaging data, by pre-estimating this value to effectively avoid spending"]
+    #[doc = " extra resources to calculate the actual encoded size."]
+    #[inline]
+    fn max_encoding_size(&self) -> usize {
+        match self {
+            Frame::Padding(f) => f.max_encoding_size(),
+            Frame::Ping(f) => f.max_encoding_size(),
+            Frame::Ack(f) => f.max_encoding_size(),
+            Frame::Close(f) => f.max_encoding_size(),
+            Frame::NewToken(f) => f.max_encoding_size(),
+            Frame::MaxData(f) => f.max_encoding_size(),
+            Frame::DataBlocked(f) => f.max_encoding_size(),
+            Frame::NewConnectionId(f) => f.max_encoding_size(),
+            Frame::RetireConnectionId(f) => f.max_encoding_size(),
+            Frame::HandshakeDone(f) => f.max_encoding_size(),
+            Frame::Challenge(f) => f.max_encoding_size(),
+            Frame::Response(f) => f.max_encoding_size(),
+            Frame::StreamCtl(f) => f.max_encoding_size(),
+            Frame::Stream(f, _) => f.max_encoding_size(),
+            Frame::Crypto(f, _) => f.max_encoding_size(),
+            Frame::Datagram(f, _) => f.max_encoding_size(),
+        }
+    }
+
+    #[doc = " Return the exact number of bytes needed to encode this value"]
+    #[inline]
+    fn encoding_size(&self) -> usize {
+        match self {
+            Frame::Padding(f) => f.encoding_size(),
+            Frame::Ping(f) => f.encoding_size(),
+            Frame::Ack(f) => f.encoding_size(),
+            Frame::Close(f) => f.encoding_size(),
+            Frame::NewToken(f) => f.encoding_size(),
+            Frame::MaxData(f) => f.encoding_size(),
+            Frame::DataBlocked(f) => f.encoding_size(),
+            Frame::NewConnectionId(f) => f.encoding_size(),
+            Frame::RetireConnectionId(f) => f.encoding_size(),
+            Frame::HandshakeDone(f) => f.encoding_size(),
+            Frame::Challenge(f) => f.encoding_size(),
+            Frame::Response(f) => f.encoding_size(),
+            Frame::StreamCtl(f) => f.encoding_size(),
+            Frame::Stream(f, _) => f.encoding_size(),
+            Frame::Crypto(f, _) => f.encoding_size(),
+            Frame::Datagram(f, _) => f.encoding_size(),
         }
     }
 }
@@ -531,7 +636,7 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
             ReliableFrame::NewConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::RetireConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::HandshakeDone(frame) => self.put_frame(frame),
-            ReliableFrame::Stream(frame) => self.put_frame(frame),
+            ReliableFrame::StreamCtl(frame) => self.put_frame(frame),
         }
     }
 }

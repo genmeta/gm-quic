@@ -477,6 +477,13 @@ impl ArcOneRttKeys {
         }
     }
 
+    pub fn remote_keys(&self) -> Option<(Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys)> {
+        match &mut *self.lock_guard() {
+            OneRttKeysState::Ready { hpk, pk, .. } => Some((hpk.remote.clone(), pk.clone())),
+            _ => None,
+        }
+    }
+
     /// Asynchronously obtain the remote keys for removing header protection and packet decryption.
     ///
     /// Rreturn [`GetRemoteKeys`], which implemented the Future trait.

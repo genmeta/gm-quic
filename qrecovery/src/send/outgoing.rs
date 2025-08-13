@@ -5,9 +5,9 @@ use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamError, StreamFrame},
     net::tx::Signals,
-    packet::MarshalDataFrame,
+    packet::Package,
     sid::StreamId,
-    util::ContinuousData,
+    util::{ContinuousData, DataPair},
     varint::VarInt,
 };
 use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
@@ -36,7 +36,8 @@ impl<TX: Clone> Outgoing<TX> {
         tokens: usize,
     ) -> Result<(usize, bool), Signals>
     where
-        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + ?Sized,
+        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
     {
         let origin_len = packet.remaining_mut();
         let mut write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
@@ -46,7 +47,7 @@ impl<TX: Clone> Outgoing<TX> {
             let strategy = frame.encoding_strategy(origin_len);
             frame.set_len_flag(strategy.carry_length());
             packet.put_bytes(0, strategy.padding());
-            packet.dump_frame_with_data(frame, data);
+            (frame, data).dump(packet).unwrap();
 
             (data.len(), is_fresh)
         };
