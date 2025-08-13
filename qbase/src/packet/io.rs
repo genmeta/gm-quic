@@ -304,8 +304,8 @@ macro_rules! frame_packages {
         {
             #[inline]
             fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
-                if !(target.remaining_mut() > self.max_encoding_size()
-                    || target.remaining_mut() > self.encoding_size())
+                if !(target.remaining_mut() >= self.max_encoding_size()
+                    || target.remaining_mut() >= self.encoding_size())
                 {
                     return Err(Signals::CONGESTION);
                 }
@@ -331,8 +331,8 @@ macro_rules! frame_packages {
             #[inline]
             fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
                 let (frame, data) = self;
-                if !(target.remaining_mut() > frame.max_encoding_size()
-                    || target.remaining_mut() > frame.encoding_size())
+                if !(target.remaining_mut() >= frame.max_encoding_size()
+                    || target.remaining_mut() >= frame.encoding_size())
                 {
                     return Err(Signals::CONGESTION);
                 }

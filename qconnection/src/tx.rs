@@ -1,7 +1,7 @@
 use bytes::BufMut;
 use derive_more::Deref;
 use qbase::{
-    frame::{CryptoFrame, Frame, FrameFeture, ReliableFrame, Spec},
+    frame::{CryptoFrame, Frame, ReliableFrame},
     net::tx::Signals,
     packet::{
         AssemblePacket, PacketProperties, PacketWriter as BasePacketWriter, RecordFrame,
@@ -137,7 +137,6 @@ impl<D: ContinuousData + Clone> RecordFrame<D> for PacketWriter<'_, '_, Guarante
         } else if let Ok(frame) = ReliableFrame::try_from(frame.clone()) {
             self.clerk.record_frame(GuaranteedFrame::Reliable(frame));
         } else {
-            assert!(frame.specs() & Spec::NonAckEliciting as u8 != 0);
             self.clerk.record_trivial();
         }
 
