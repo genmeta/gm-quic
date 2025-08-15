@@ -24,6 +24,7 @@ use qbase::{
     token::TokenRegistry,
 };
 use qcongestion::{ArcCC, Transport};
+use qinterface::QuicIO;
 use qrecovery::journal::{AckPackege, ArcRcvdJournal, Journal};
 
 use crate::{

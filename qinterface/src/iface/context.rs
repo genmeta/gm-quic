@@ -4,18 +4,17 @@ use std::{
     io,
     ops::DerefMut,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Weak},
     task::{Context, Poll},
 };
 
-use qbase::net::addr::BindUri;
 use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{QuicIoExt, factory::ProductQuicIO, iface::RwInterface, route::Router};
+use crate::{QuicIO, QuicIoExt, iface::RwInterface, route::Router};
 
 pub struct InterfaceContext {
-    iface: Arc<RwInterface>,
+    iface: Weak<RwInterface>,
     _task: AbortOnDropHandle<()>,
 }
 
@@ -29,16 +28,9 @@ impl Debug for InterfaceContext {
 }
 
 impl InterfaceContext {
-    pub fn new(
-        bind_uri: BindUri,
-        factory: Arc<dyn ProductQuicIO>,
-        mut interfaces: watch::Receiver<()>,
-    ) -> Self {
-        let iface = Arc::new(RwInterface::new(
-            bind_uri.clone(),
-            factory.bind(bind_uri.clone()),
-        ));
-
+    pub fn new(rw_iface: Arc<RwInterface>, mut interfaces: watch::Receiver<()>) -> Self {
+        let bind_uri = rw_iface.bind_uri();
+        let iface = Arc::downgrade(&rw_iface);
         let task = AbortOnDropHandle::new(tokio::spawn({
             let rw_iface = iface.clone();
             let mut receive_task =
@@ -47,6 +39,7 @@ impl InterfaceContext {
                 loop {
                     tokio::select! {
                         Ok(()) = interfaces.changed() => {
+                            let Some(rw_iface) = rw_iface.upgrade() else { break };
                             // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
                             if matches!(receive_task, ReceiveTask::Stopped)
                                 || rw_iface.is_alive().await.is_err_and(|e| {
@@ -56,14 +49,15 @@ impl InterfaceContext {
                             {
                                 tracing::info!(%bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
-                                rw_iface.update_with(|| factory.bind(bind_uri.clone()));
+                                rw_iface.write().rebind();
                                 receive_task =
-                                    ReceiveTask::Running(Box::pin(receive_and_deliver(rw_iface.clone())));
+                                    ReceiveTask::Running(Box::pin(receive_and_deliver(Arc::downgrade(&rw_iface))));
                             }
                         }
                         result = &mut receive_task => {
-                            if let Err(io_error) = result {
-                                tracing::error!(%bind_uri, "Receive task failed with error: {io_error:?}");
+                            match result {
+                                Ok(()) => tracing::warn!(%bind_uri, "Receive task completed due to interface freed"),
+                                Err(e) => tracing::error!(%bind_uri, "Receive task failed with error: {e}"),
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
                             receive_task = ReceiveTask::Stopped;
@@ -76,7 +70,7 @@ impl InterfaceContext {
         Self { iface, _task: task }
     }
 
-    pub fn iface(&self) -> &Arc<RwInterface> {
+    pub fn iface(&self) -> &Weak<RwInterface> {
         &self.iface
     }
 }
@@ -98,10 +92,14 @@ impl<F: Future + Unpin> Future for ReceiveTask<F> {
     }
 }
 
-async fn receive_and_deliver(iface: Arc<RwInterface>) -> io::Result<()> {
+async fn receive_and_deliver(iface: Weak<RwInterface>) -> io::Result<()> {
     let (mut bufs, mut hdrs) = (vec![], vec![]);
     loop {
-        for (pkt, way) in iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await? {
+        let pkts = match iface.upgrade() {
+            Some(iface) => iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await?,
+            None => return Ok(()),
+        };
+        for (pkt, way) in pkts {
             Router::global().deliver(pkt, way).await;
         }
     }

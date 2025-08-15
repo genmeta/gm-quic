@@ -10,6 +10,7 @@ use derive_more::Into;
 pub struct UniqueId(usize);
 
 /// Thread safe, lock free unique ID generator.
+#[derive(Debug)]
 pub struct UniqueIdGenerator(AtomicUsize);
 
 impl Default for UniqueIdGenerator {
