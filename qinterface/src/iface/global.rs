@@ -1,106 +1,77 @@
-use std::{
-    io,
-    sync::{Arc, OnceLock, Weak},
-};
+use std::sync::{Arc, OnceLock};
 
 use dashmap::{DashMap, Entry};
-use qbase::net::addr::BindUri;
+use qbase::{net::addr::BindUri, util::UniqueIdGenerator};
 
+use super::RwInterface;
 use crate::{
     factory::ProductQuicIO,
-    iface::{QuicInterface, context::InterfaceContext, monitor::InterfacesMonitor},
+    iface::{
+        BindInterface, Interface, QuicInterface, context::InterfaceContext,
+        monitor::InterfacesMonitor,
+    },
 };
 
+/// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
+///
+/// Calling the [`QuicInterfaces::bind`] method with a [`BindUri`] returns a [`BindInterface`], primarily used for listening on addresses.
+/// As long as [`BindInterface`] instances exist, the corresponding [`QuicIO`] for that [`BindUri`] won't be automatically released.
+///
+/// For actual data transmission, you need [`QuicInterface`], which can be obtained via [`QuicInterfaces::get`] or [`BindInterface::borrow`].
+/// Like [`BindInterface`], it keeps the [`QuicIO`] alive, but with one key difference: once a rebind occurs,
+/// any previous [`QuicInterface`] for that [`BindUri`] becomes invalid, and attempting to send or receive packets
+/// will result in [`io::ErrorKind::NotConnected`] errors.
+///
+/// [`QuicIO`]: crate::QuicIO
+/// [`io::ErrorKind::NotConnected`]: std::io::ErrorKind::NotConnected
 #[derive(Default, Debug)]
 pub struct QuicInterfaces {
-    interfaces: DashMap<BindUri, (InterfaceContext, Weak<QuicInterface>)>,
+    interfaces: DashMap<BindUri, InterfaceContext>,
+    pub(super) bind_id_generator: UniqueIdGenerator,
 }
 
 impl QuicInterfaces {
+    #[inline]
     pub fn global() -> &'static Arc<Self> {
         static GLOBAL: OnceLock<Arc<QuicInterfaces>> = OnceLock::new();
         GLOBAL.get_or_init(QuicInterfaces::new)
     }
 
+    #[inline]
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    pub fn insert(
+    pub fn bind(
         self: &Arc<Self>,
         bind_uri: BindUri,
         factory: Arc<dyn ProductQuicIO>,
-    ) -> io::Result<Arc<QuicInterface>> {
-        match self.interfaces.entry(bind_uri.clone()) {
-            dashmap::Entry::Occupied(..) => Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("Interface already exists for {bind_uri}"),
-            )),
-            dashmap::Entry::Vacant(entry) => {
-                let interfaces = InterfacesMonitor::global().subscribe();
-                let iface_ctx = InterfaceContext::new(bind_uri.clone(), factory, interfaces);
-                let iface = Arc::new(QuicInterface::new(
-                    bind_uri.clone(),
-                    Arc::downgrade(iface_ctx.iface()),
-                    self.clone(),
-                ));
-
-                entry.insert((iface_ctx, Arc::downgrade(&iface)));
-                Ok(iface)
-            }
-        }
-    }
-
-    pub fn get(&self, bind_uri: BindUri) -> Option<Arc<QuicInterface>> {
-        match self.interfaces.entry(bind_uri) {
-            Entry::Occupied(entry) => match entry.get().1.upgrade() {
-                Some(iface) => Some(iface),
-                None => {
-                    entry.remove();
-                    None
-                }
-            },
-            Entry::Vacant(..) => None,
-        }
-    }
-
-    pub fn get_or_insert(
-        self: &Arc<Self>,
-        bind_uri: BindUri,
-        factory: Arc<dyn ProductQuicIO>,
-    ) -> Arc<QuicInterface> {
+    ) -> BindInterface {
         let entry = self.interfaces.entry(bind_uri.clone());
-
         if let Entry::Occupied(entry) = &entry {
-            if let Some(iface) = entry.get().1.upgrade() {
-                return iface;
+            if let Some(iface) = entry.get().iface().upgrade() {
+                return iface.binding();
             }
         }
 
-        let interfaces = InterfacesMonitor::global().subscribe();
-        let iface_ctx = InterfaceContext::new(bind_uri.clone(), factory, interfaces);
-        let iface = Arc::new(QuicInterface::new(
-            bind_uri.clone(),
-            Arc::downgrade(iface_ctx.iface()),
-            self.clone(),
-        ));
+        let iface = Interface::new(bind_uri, factory, self.clone());
+        let iface = Arc::new(RwInterface::from(iface));
+        let context = InterfaceContext::new(iface.clone(), InterfacesMonitor::global().subscribe());
+        entry.insert(context);
 
-        entry.insert((iface_ctx, Arc::downgrade(&iface)));
-        iface
+        iface.binding()
     }
 
-    pub fn remove(&self, bind_uri: BindUri) {
-        self.interfaces.remove(&bind_uri);
+    #[inline]
+    pub fn get(&self, bind_uri: &BindUri) -> Option<QuicInterface> {
+        self.interfaces
+            .get(bind_uri)
+            .and_then(|ctx| ctx.iface().upgrade()?.borrow().ok())
     }
-}
 
-impl Drop for QuicInterface {
-    fn drop(&mut self) {
-        self.ifaces
-            .interfaces
-            .remove_if(&self.bind_uri, |_, (iface_ctx, _)| {
-                Weak::ptr_eq(&Arc::downgrade(iface_ctx.iface()), &self.iface)
-            });
+    #[inline]
+    pub fn remove(&self, bind_uri: &BindUri) {
+        self.interfaces.remove(bind_uri);
     }
 }
 
@@ -108,6 +79,7 @@ impl Drop for QuicInterface {
 mod tests {
     use std::{
         future::Future,
+        io,
         ops::DerefMut,
         pin::Pin,
         sync::{
@@ -198,9 +170,8 @@ mod tests {
 
     #[tokio::test]
     async fn async_close() {
-        let _quic_interface = QuicInterfaces::global()
-            .insert(BindUri::from("127.0.0.1:0"), Arc::new(TestQuicIO::bind))
-            .unwrap();
+        let _quic_interface =
+            QuicInterfaces::global().bind(BindUri::from("127.0.0.1:0"), Arc::new(TestQuicIO::bind));
         InterfacesMonitor::global().on_interface_changed();
 
         InterfacesMonitor::global()

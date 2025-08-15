@@ -43,7 +43,7 @@ use crate::{ArcDcidCell, Components, path::burst::BurstError};
 // pub mod burst;
 
 pub struct Path {
-    interface: Arc<QuicInterface>,
+    interface: QuicInterface,
     validated: AtomicBool,
     link: Link,
     pathway: Pathway,
@@ -71,7 +71,7 @@ impl Components {
         let try_create = || {
             let interface = self
                 .interfaces
-                .get(bind_uri.clone())
+                .get(&bind_uri)
                 .ok_or(CreatePathFailure::NoInterface(bind_uri))?;
             let dcid_cell = self.cid_registry.remote.apply_dcid();
             let max_ack_delay = self
@@ -188,7 +188,7 @@ impl Components {
 impl Path {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        interface: Arc<QuicInterface>,
+        interface: QuicInterface,
         link: Link,
         pathway: Pathway,
         dcid_cell: ArcDcidCell,

@@ -15,7 +15,7 @@ use qconnection::{builder::*, prelude::handy::*};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    iface::{QuicInterface, QuicInterfaces},
+    iface::{BindInterface, QuicInterfaces},
 };
 use rustls::{
     ConfigBuilder, WantsVerifier,
@@ -44,7 +44,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// Call [`QuicClient::connect`] to establish connections. The client supports:
 /// - **Automatic interface selection**: Matches interface with server endpoint address
 pub struct QuicClient {
-    bind_interfaces: Option<DashMap<BindUri, Arc<QuicInterface>>>,
+    bind_interfaces: Option<DashMap<BindUri, BindInterface>>,
     defer_idle_timeout: Duration,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
@@ -163,7 +163,8 @@ impl QuicClient {
         let server_name = server_name.into();
         let avaliable_ifaces = self.bind_interfaces.as_ref().map(|map| {
             map.iter()
-                .filter_map(|entry| Some((entry.value().clone(), entry.value().real_addr().ok()?)))
+                .filter_map(|entry| entry.value().borrow().ok())
+                .filter_map(|iface| Some((iface.real_addr().ok()?, iface)))
                 .collect::<Vec<_>>()
         });
 
@@ -176,13 +177,12 @@ impl QuicClient {
                     AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
                         .expect("URL should be valid")
                         .alloc_port(),
-                    _ => {
-                        return Err(ConnectEndpointError::NoSuitableInterface);
-                    }
+                    _ => return Err(ConnectEndpointError::NoSuitableInterface),
                 };
                 let iface = QuicInterfaces::global()
-                    .insert(bind_uri.clone(), self.quic_iface_factory.clone())
-                    .and_then(|iface| Ok((iface.clone(), iface.real_addr()?)))
+                    .bind(bind_uri.clone(), self.quic_iface_factory.clone())
+                    .borrow()
+                    .and_then(|iface| Ok((iface.real_addr()?, iface)))
                     .map_err(|bind_error| ConnectEndpointError::InterfaceBindFailed {
                         bind_uri,
                         bind_error,
@@ -192,7 +192,7 @@ impl QuicClient {
             Some(bind_interfaces) => {
                 let ifaces = bind_interfaces
                     .iter()
-                    .filter(|(_, addr)| addr.kind() == server_ep.addr_kind())
+                    .filter(|(addr, _)| addr.kind() == server_ep.addr_kind())
                     .cloned()
                     .collect::<Vec<_>>();
                 if ifaces.is_empty() {
@@ -218,7 +218,7 @@ impl QuicClient {
                     })
                     .into_iter()
                     .flatten()
-                    .map(move |(iface, real_addr)| {
+                    .map(move |(real_addr, iface)| {
                         let dst = match server_ep {
                             EndpointAddr::Socket(socket_endpoint_addr) => {
                                 RealAddr::Internet(*socket_endpoint_addr)
@@ -263,7 +263,7 @@ impl QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindUri, Arc<QuicInterface>>,
+    bind_interfaces: DashMap<BindUri, BindInterface>,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
     defer_idle_timeout: Duration,
@@ -308,9 +308,6 @@ impl<T> QuicClientBuilder<T> {
     /// If you call this multiple times, only the last set of interface will be used,
     /// previous bound interface will be freed immediately.
     ///
-    /// If the interface is closed for some reason after being created (meaning [`QuicInterface::poll_recv`]
-    /// returns an error), only the log will be printed.
-    ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
     pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
         self.bind_interfaces.clear();
@@ -319,8 +316,8 @@ impl<T> QuicClientBuilder<T> {
             if self.bind_interfaces.contains_key(&bind_uri) {
                 continue;
             }
-            let interface = QuicInterfaces::global()
-                .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone());
+            let interface =
+                QuicInterfaces::global().bind(bind_uri.clone(), self.quic_iface_factory.clone());
             self.bind_interfaces.insert(bind_uri, interface);
         }
 

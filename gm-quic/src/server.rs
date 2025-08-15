@@ -13,7 +13,7 @@ use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    iface::{QuicInterface, QuicInterfaces},
+    iface::{BindInterface, QuicInterfaces},
     route::{Router, Way},
 };
 use rustls::{
@@ -108,7 +108,7 @@ impl ResolvesServerCert for VirtualHosts {
 
 #[derive(Debug)]
 pub struct Server {
-    bind_ifaces: DashMap<BindUri, Arc<QuicInterface>>,
+    bind_ifaces: DashMap<BindUri, BindInterface>,
     cert_chain: Vec<CertificateDer<'static>>,
     private_key: Arc<dyn SigningKey>,
     ocsp: Option<Vec<u8>>,
@@ -119,10 +119,12 @@ impl Display for Server {
         let bind_ifaces = self
             .bind_ifaces
             .iter()
-            .map(|entry| match entry.value().real_addr() {
-                Ok(real_addr) => format!("{}: {}", entry.key(), real_addr),
-                Err(e) => format!("{}: <unknown address: {e}>", entry.key()),
-            })
+            .map(
+                |entry| match entry.value().borrow().and_then(|iface| iface.real_addr()) {
+                    Ok(real_addr) => format!("{}: {}", entry.key(), real_addr),
+                    Err(e) => format!("{}: <unknown address: {e}>", entry.key()),
+                },
+            )
             .collect::<Vec<_>>()
             .join(", ");
         write!(f, "[{bind_ifaces}]")
@@ -130,26 +132,26 @@ impl Display for Server {
 }
 
 impl Server {
-    pub fn bind_interfaces(&self) -> HashMap<BindUri, Arc<QuicInterface>> {
+    pub fn bind_interfaces(&self) -> HashMap<BindUri, BindInterface> {
         self.bind_ifaces
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
     }
 
-    pub fn add_interface(&self, interface: Arc<QuicInterface>) {
+    pub fn add_interface(&self, interface: BindInterface) {
         self.bind_ifaces
             .entry(interface.bind_uri())
             .or_insert(interface);
     }
 
-    pub fn get_interface(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
+    pub fn get_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.bind_ifaces
             .get(bind_uri)
             .map(|iface| iface.value().clone())
     }
 
-    pub fn unbind_interface(&self, bind_uri: &BindUri) -> Option<Arc<QuicInterface>> {
+    pub fn unbind_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
     }
 
@@ -321,7 +323,7 @@ impl QuicListeners {
                 .fold(DashMap::new(), |bind_ifaces, bind_uri| {
                     bind_ifaces.entry(bind_uri.clone()).or_insert_with(|| {
                         self.ifaces
-                            .get_or_insert(bind_uri.clone(), self.quic_iface_factory.clone())
+                            .bind(bind_uri.clone(), self.quic_iface_factory.clone())
                     });
                     bind_ifaces
                 });
@@ -393,7 +395,7 @@ impl QuicListeners {
                 server_entry.get().bind_ifaces.entry(bind_uri.clone())
             {
                 let factory = self.quic_iface_factory.clone();
-                let interface = self.ifaces.get_or_insert(bind_uri.clone(), factory);
+                let interface = self.ifaces.bind(bind_uri.clone(), factory);
                 iface_entry.insert(interface);
             }
         }

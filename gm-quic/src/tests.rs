@@ -69,6 +69,7 @@ where
             .map(|(_bind_uri, interface)| interface)
             .expect("Server should bind at least one address");
         let server_addr = localhost_bind_interface
+            .borrow()?
             .real_addr()?
             .try_into()
             .expect("This test support only SocketAddr");
