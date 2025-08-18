@@ -1,7 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::{Connection, QuicListeners, StreamReader, StreamWriter, handy::server_parameters};
+use qconnection::prelude::BindUri;
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::{
     fs,
@@ -28,9 +29,9 @@ struct Options {
         long,
         value_delimiter = ',',
         default_values = ["127.0.0.1:4433", "[::1]:4433"],
-        help = "What address:port to listen for new connections"
+        help = "What BindUris to listen for new connections"
     )]
-    listen: Vec<SocketAddr>,
+    listen: Vec<BindUri>,
     #[arg(
         long,
         short,
@@ -126,7 +127,7 @@ async fn run(options: Options) -> Result<(), Error> {
         options.certs.server_name.as_str(),
         options.certs.cert.as_path(),
         options.certs.key.as_path(),
-        options.listen.as_slice(),
+        options.listen,
         None,
     )?;
     tracing::info!(

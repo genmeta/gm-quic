@@ -1,10 +1,11 @@
-use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
+use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use gm_quic::handy::{LegacySeqLogger, NoopLogger, server_parameters};
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
+use qconnection::prelude::BindUri;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, prelude::*};
@@ -28,9 +29,9 @@ struct Options {
         long,
         value_delimiter = ',',
         default_values = ["127.0.0.1:4433", "[::1]:4433"],
-        help = "What address:port to listen for new connections"
+        help = "What BindUris to listen for new connections"
     )]
-    listen: Vec<SocketAddr>,
+    listen: Vec<BindUri>,
     #[arg(
         long,
         short,
@@ -139,7 +140,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         server_name.as_str(),
         cert.as_path(),
         key.as_path(),
-        options.listen.as_slice(),
+        options.listen,
         None,
     )?;
     tracing::info!(
