@@ -42,7 +42,7 @@ struct Options {
     #[arg(
         long,
         short,
-        default_value = "128",
+        default_value = "4096",
         help = "Maximum number of requests in the backlog. \
                 If the backlog is full, new connections will be refused."
     )]

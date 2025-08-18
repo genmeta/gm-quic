@@ -93,7 +93,7 @@ impl ArcDeferIdleTimer {
 /// A maximum idle timer for each path.
 #[derive(Debug)]
 pub struct MaxIdleTimer {
-    max_idle_timeout: SetOnce<Duration>,
+    max_idle_timeout: Arc<SetOnce<Duration>>,
     last_rcvd_time: Option<Instant>,
 }
 
@@ -117,7 +117,7 @@ impl IdleTimedOut {
 impl MaxIdleTimer {
     /// Creates a new `MaxIdleTimer` with the specified parameters.
     pub(crate) fn new(parameters: &ArcParameters) -> Self {
-        let max_idle_timeout = SetOnce::new();
+        let max_idle_timeout = Arc::new(SetOnce::new());
         if let Some(time) = parameters
             .lock_guard()
             .ok()

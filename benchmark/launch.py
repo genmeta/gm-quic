@@ -5,7 +5,6 @@ import os
 import subprocess
 import re
 import json
-import sys
 import logging
 import shutil
 import argparse
