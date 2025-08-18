@@ -1,6 +1,5 @@
 use std::{
     fmt::Debug,
-    future::Future,
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
@@ -447,6 +446,7 @@ impl From<Parameters> for ArcParameters {
 }
 
 impl ArcParameters {
+    #[inline]
     pub fn lock_guard(&self) -> Result<ArcParametersGuard<'_>, Error> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
@@ -455,6 +455,7 @@ impl ArcParameters {
         }
     }
 
+    #[inline]
     pub async fn remote_ready(&self) -> Result<ArcParametersGuard<'_>, Error> {
         std::future::poll_fn(|cx| {
             let mut parameters = self.lock_guard()?;
@@ -463,8 +464,9 @@ impl ArcParameters {
         .await
     }
 
+    #[inline]
     pub fn max_idle_timer(&self) -> MaxIdleTimer {
-        MaxIdleTimer::new(self.clone())
+        MaxIdleTimer::new(self)
     }
 
     // /// Sets the retry source connection ID in the server
@@ -486,15 +488,6 @@ impl ArcParameters {
         if guard.deref_mut().is_ok() {
             *guard = Err(error.clone());
         }
-    }
-}
-
-impl Future for ArcParameters {
-    type Output = Result<(), Error>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut parameters = self.lock_guard()?;
-        parameters.poll_ready(cx).map(|()| Ok(()))
     }
 }
 

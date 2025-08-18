@@ -36,6 +36,7 @@ rand = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

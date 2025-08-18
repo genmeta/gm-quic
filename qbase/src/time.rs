@@ -4,6 +4,7 @@ use std::{
 };
 
 use thiserror::Error;
+use tokio::sync::SetOnce;
 
 use crate::param::ArcParameters;
 
@@ -92,7 +93,7 @@ impl ArcDeferIdleTimer {
 /// A maximum idle timer for each path.
 #[derive(Debug)]
 pub struct MaxIdleTimer {
-    parameters: ArcParameters,
+    max_idle_timeout: SetOnce<Duration>,
     last_rcvd_time: Option<Instant>,
 }
 
@@ -115,9 +116,33 @@ impl IdleTimedOut {
 
 impl MaxIdleTimer {
     /// Creates a new `MaxIdleTimer` with the specified parameters.
-    pub(crate) fn new(parameters: ArcParameters) -> Self {
+    pub(crate) fn new(parameters: &ArcParameters) -> Self {
+        let max_idle_timeout = SetOnce::new();
+        if let Some(time) = parameters
+            .lock_guard()
+            .ok()
+            .and_then(|p| p.negotiated_max_idle_timeout())
+        {
+            max_idle_timeout
+                .set(time)
+                .expect("Set will only be called once");
+        } else {
+            let parameters = parameters.clone();
+            let max_idle_timeout = max_idle_timeout.clone();
+            tokio::spawn(async move {
+                let Ok(parameters) = parameters.remote_ready().await else {
+                    return;
+                };
+                let time = parameters
+                    .negotiated_max_idle_timeout()
+                    .expect("Remote parameters has been ready");
+                max_idle_timeout
+                    .set(time)
+                    .expect("Set will only be called here");
+            });
+        }
         Self {
-            parameters,
+            max_idle_timeout,
             last_rcvd_time: None,
         }
     }
@@ -131,14 +156,9 @@ impl MaxIdleTimer {
     ///
     /// Every time the path task wakes up, it needs to check this timer.
     pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
-        let Ok(parameters) = self.parameters.lock_guard() else {
+        let Some(max_idle_timeout) = self.max_idle_timeout.get().copied() else {
             return Ok(());
         };
-
-        let Some(max_idle_timeout) = parameters.negotiated_max_idle_timeout() else {
-            return Ok(());
-        };
-
         let max_idle_timeout = max_idle_timeout.max(pto * 3);
 
         let Some(last_rcvd_time) = self.last_rcvd_time else {
