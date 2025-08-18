@@ -1,9 +1,4 @@
-use std::{
-    future::Future,
-    net::SocketAddr,
-    sync::{Arc, Once},
-    time::Duration,
-};
+use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
 use qevent::telemetry::{Log, handy::*};
 use rustls::server::WebPkiClientVerifier;
@@ -16,6 +11,7 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
+use tracing_appender::non_blocking::WorkerGuard;
 use x509_parser::prelude::FromDer;
 
 use crate::{handy::*, *};
@@ -36,12 +32,15 @@ where
     Sl: Future<Output = Result<(Arc<QuicListeners>, St), Error>> + Send + 'static,
     St: Future<Output: Send> + Send + 'static,
 {
-    static SUBSCRIBER: Once = Once::new();
+    static SUBSCRIBER: OnceLock<WorkerGuard> = OnceLock::new();
 
-    SUBSCRIBER.call_once(|| {
+    SUBSCRIBER.get_or_init(|| {
+        let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
         tracing_subscriber::fmt()
+            .with_writer(non_blocking)
             .with_max_level(tracing::Level::INFO)
-            .init()
+            .init();
+        guard
     });
 
     static RT: OnceLock<Runtime> = OnceLock::new();

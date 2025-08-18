@@ -62,6 +62,7 @@ struct Options {
 #[tokio::main]
 async fn main() {
     let options = Options::parse();
+    let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::registry()
         // .with(
         //     console_subscriber::ConsoleLayer::builder()
@@ -70,6 +71,7 @@ async fn main() {
         // )
         .with(
             tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
                 .with_ansi(options.ansi)
                 .with_filter(
                     tracing_subscriber::EnvFilter::builder()

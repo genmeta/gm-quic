@@ -73,6 +73,7 @@ http = "1"
 indicatif = { version = "0.18", features = ["tokio"] }
 rustls-native-certs = "0.8"
 tracing-subscriber = "0.3"
+tracing-appender = "0.2"
 x509-parser = "0.17"
 
 # members
@@ -90,4 +91,7 @@ h3-shim = { path = "./h3-shim", version = "0.3.0" }
 
 
 [profile.bench]
+debug = true
+
+[profile.release]
 debug = true

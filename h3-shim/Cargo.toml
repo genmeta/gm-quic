@@ -41,6 +41,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "fs", "rt-multi-thread"] }
 tracing = { workspace = true }
+tracing-appender = { workspace = true }
 
 # console-subscriber = "0.4"
 
