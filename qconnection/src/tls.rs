@@ -15,7 +15,7 @@ use qbase::{
 };
 use qrecovery::crypto::CryptoStream;
 use rustls::{
-    ClientConfig, ServerConfig,
+    ClientConfig, HandshakeKind, ServerConfig,
     quic::{ClientConnection, KeyChange, ServerConnection},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -72,6 +72,17 @@ impl TlsSession {
             TlsSession::Client(session) => session.tls_conn.is_handshaking(),
             TlsSession::Server(session) => session.tls_conn.is_handshaking(),
         }
+    }
+
+    fn handshake_kind(&self) -> Option<HandshakeKind> {
+        match self {
+            TlsSession::Client(session) => session.tls_conn.handshake_kind(),
+            TlsSession::Server(session) => session.tls_conn.handshake_kind(),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        !self.is_handshaking() && self.handshake_kind().is_some()
     }
 
     fn r#yield(&self) -> TlsHandshakeInfo {
@@ -388,7 +399,7 @@ impl ArcTlsHandshake {
     pub fn is_finished(&self) -> Result<bool, Error> {
         let tls_handshake = self.state();
         match tls_handshake.as_ref() {
-            Ok(state) => Ok(!state.session.is_handshaking()),
+            Ok(state) => Ok(state.session.is_finished()),
             Err(e) => Err(e.clone()),
         }
     }
@@ -435,7 +446,7 @@ impl ArcTlsHandshake {
             }
         }
 
-        if !tls_handshake.session.is_handshaking() && tls_handshake.info.try_get().is_none() {
+        if tls_handshake.session.is_finished() && tls_handshake.info.try_get().is_none() {
             let info = Arc::new(tls_handshake.session.r#yield());
             tracing::debug!("TLS handshake finished");
             tls_handshake.info.set(info.clone());
