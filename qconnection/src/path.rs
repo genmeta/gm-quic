@@ -154,8 +154,8 @@ impl Components {
                 let mut packages = self.packages();
                 let burst = path.new_burst(self);
                 async move {
+                    let mut buffers = vec![];
                     loop {
-                        let mut buffers = vec![];
                         match burst.burst(&mut packages, &mut buffers).await {
                             Ok(segments) => path.send_packets(&segments).await?,
                             Err(BurstError::Signals(s)) => path.tx_waker.wait_for(s).await,
