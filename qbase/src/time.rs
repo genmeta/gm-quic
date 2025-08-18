@@ -1,10 +1,10 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
-use tokio::sync::SetOnce;
+use tokio::{
+    sync::SetOnce,
+    time::{Duration, Instant},
+};
 
 use crate::param::ArcParameters;
 
