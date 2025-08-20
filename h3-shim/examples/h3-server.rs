@@ -2,10 +2,12 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::handy::{LegacySeqLogger, NoopLogger, server_parameters};
+use gm_quic::{
+    BindUri,
+    handy::{LegacySeqLogger, NoopLogger, server_parameters},
+};
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
-use qconnection::prelude::BindUri;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, prelude::*};

@@ -411,4 +411,13 @@ impl<T> NewPacketGuard<'_, T> {
                 .expect("packet number never overflow");
         }
     }
+
+    pub fn build_trivial(mut self) {
+        assert_eq!(self.inner.queue.len(), self.origin_len);
+        assert!(self.trivial);
+        self.inner
+            .sent_packets
+            .push_back(SentPktState::Skipped)
+            .expect("packet number never overflow");
+    }
 }

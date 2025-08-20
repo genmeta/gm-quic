@@ -5,7 +5,7 @@ use std::{
 };
 
 use qbase::{
-    frame::{EncodeSize, FrameFeture, SendFrame},
+    frame::{EncodeSize, FrameFeature, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::Package,
 };
@@ -83,7 +83,7 @@ where
 
 impl<T, F> SendFrame<T> for ArcReliableFrameDeque<F>
 where
-    F: EncodeSize + FrameFeture,
+    F: EncodeSize + FrameFeature,
     T: Into<F>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {

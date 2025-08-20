@@ -49,7 +49,7 @@ impl InterfaceContext {
                             {
                                 tracing::info!(%bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
-                                rw_iface.write().rebind();
+                                rw_iface.rebind();
                                 receive_task =
                                     ReceiveTask::Running(Box::pin(receive_and_deliver(Arc::downgrade(&rw_iface))));
                             }

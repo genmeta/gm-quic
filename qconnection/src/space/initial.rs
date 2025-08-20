@@ -19,7 +19,6 @@ use qbase::{
 };
 use qcongestion::{Feedback, Transport};
 use qevent::{
-    packet::PacketWriter as QEventPacketWriter,
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -41,7 +40,7 @@ use crate::{
     path::{self, Path, error::CreatePathFailure},
     space::{AckInitialSpace, assemble_closing_packet, pipe},
     termination::Terminator,
-    tx::PacketWriter,
+    tx::{PacketWriter, TrivialPacketWriter},
 };
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
@@ -321,18 +320,16 @@ impl Feedback for InitialTracker {
 }
 
 impl PacketSpace<InitialHeader> for InitialSpace {
-    type PacketAssembler<'a> = QEventPacketWriter<'a>;
+    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, CryptoFrame>;
 
-    /// NOTE: this should only be used for assembling packets in closing state.
+    #[inline]
     fn new_packet<'a>(
         &'a self,
         header: InitialHeader,
         buffer: &'a mut [u8],
     ) -> Result<Self::PacketAssembler<'a>, Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
-        // peek next pn without consuming it
-        let pn = self.journal.of_sent_packets().new_packet().pn();
-        QEventPacketWriter::new_long(&header, buffer, pn, keys.local)
+        TrivialPacketWriter::new_long(header, buffer, keys.local, self.journal.as_ref())
     }
 }
 

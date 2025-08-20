@@ -50,7 +50,7 @@ use qbase::{
     cid,
     error::{AppError, Error, QuicError},
     flow,
-    frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
     net::{
         addr::BindUri,
         route::{EndpointAddr, Link, Pathway},
@@ -99,6 +99,19 @@ pub enum GuaranteedFrame {
     Stream(StreamFrame),
     Crypto(CryptoFrame),
     Reliable(ReliableFrame),
+}
+
+impl<'f, D> TryFrom<&'f Frame<D>> for GuaranteedFrame {
+    type Error = &'f Frame<D>;
+
+    fn try_from(frame: &'f Frame<D>) -> Result<Self, Self::Error> {
+        Ok(match ReliableFrame::try_from(frame) {
+            Ok(reliable) => Self::Reliable(reliable),
+            Err(Frame::Crypto(crypto, _data)) => Self::Crypto(*crypto),
+            Err(Frame::Stream(stream, _data)) => Self::Stream(*stream),
+            Err(frame) => return Err(frame),
+        })
+    }
 }
 
 /// For initial space, only reliable transmission of crypto frames is required.

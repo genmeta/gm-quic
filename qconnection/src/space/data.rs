@@ -20,7 +20,6 @@ use qbase::{
 };
 use qcongestion::{ArcCC, Feedback, Transport};
 use qevent::{
-    packet::PacketWriter as QEventPacketWriter,
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
@@ -40,7 +39,7 @@ use crate::{
     path::{self, Path, error::CreatePathFailure},
     space::{AckDataSpace, FlowControlledDataStreams, assemble_closing_packet, pipe},
     termination::Terminator,
-    tx::PacketWriter,
+    tx::{PacketWriter, TrivialPacketWriter},
 };
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
@@ -605,9 +604,9 @@ impl Feedback for DataTracker {
 }
 
 impl PacketSpace<ZeroRttHeader> for DataSpace {
-    type PacketAssembler<'a> = QEventPacketWriter<'a>;
+    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
 
-    /// NOTE: this should only be used for assembling packets in closing state.
+    #[inline]
     fn new_packet<'a>(
         &'a self,
         header: ZeroRttHeader,
@@ -621,15 +620,14 @@ impl PacketSpace<ZeroRttHeader> for DataSpace {
             return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
         };
 
-        let pn = self.journal.of_sent_packets().new_packet().pn();
-        QEventPacketWriter::new_long(&header, buffer, pn, keys)
+        TrivialPacketWriter::new_long(header, buffer, keys, self.journal.as_ref())
     }
 }
 
 impl PacketSpace<OneRttHeader> for DataSpace {
-    type PacketAssembler<'a> = QEventPacketWriter<'a>;
+    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
 
-    /// NOTE: this should only be used for assembling packets in closing state.
+    #[inline]
     fn new_packet<'a>(
         &'a self,
         header: OneRttHeader,
@@ -637,17 +635,15 @@ impl PacketSpace<OneRttHeader> for DataSpace {
     ) -> Result<Self::PacketAssembler<'a>, Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
-        // peek next pn without consuming it
-        let pn = self.journal.of_sent_packets().new_packet().pn();
-        QEventPacketWriter::new_short(
-            &header,
+        TrivialPacketWriter::new_short(
+            header,
             buffer,
-            pn,
             DirectionalKeys {
                 header: hpk,
                 packet: pk,
             },
             key_phase,
+            self.journal.as_ref(),
         )
     }
 }
