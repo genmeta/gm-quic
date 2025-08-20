@@ -221,7 +221,7 @@ def gm_quic_multi_path_runner() -> ServerRunner:
         "-l", "127.0.0.1:4435"
     ]
 
-    return ServerRunner('gm-quic(multi-path)', launch, 4435)
+    return ServerRunner('gm-quic-multi-path', launch, 4435)
 
 
 def tquic_runner() -> ServerRunner:
@@ -343,7 +343,7 @@ class H3Client:
                 env={**os.environ, "RUST_LOG": "counting"},
                 stdout=client_log,
                 text=True,
-                # timeout=15
+                timeout=15
             )
         except subprocess.TimeoutExpired:
             server.kill()
@@ -503,7 +503,7 @@ if __name__ == "__main__":
         'tquic': tquic_runner,
         'quinn': quinn_runner,
         'cf-quiche': cf_quiche_runner,
-        'gm-quic(multi-path)': gm_quic_multi_path_runner,
+        'gm-quic-multi-path': gm_quic_multi_path_runner,
     }
 
     # Diaplay runners
