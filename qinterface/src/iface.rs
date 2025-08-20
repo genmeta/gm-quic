@@ -10,14 +10,14 @@ use bytes::BytesMut;
 use qbase::{
     net::{
         addr::{BindUri, BindUriSchema, RealAddr, TryIntoSocketAddrError},
-        route::{Link, PacketHeader},
+        route::{EndpointAddr, Link, PacketHeader},
     },
     util::UniqueId,
 };
 use thiserror::Error;
 use tokio::net::UdpSocket;
 
-use crate::{QuicIO, QuicIoExt, factory::ProductQuicIO};
+use crate::{QuicIO, QuicIoExt, factory::ProductQuicIO, local::Locations};
 
 pub mod global;
 pub mod monitor;
@@ -58,20 +58,6 @@ pub struct InterfaceUnavailable {
 }
 
 impl Interface {
-    fn new(
-        bind_uri: BindUri,
-        factory: Arc<dyn ProductQuicIO>,
-        ifaces: Arc<QuicInterfaces>,
-    ) -> Self {
-        Self {
-            io: factory.bind(bind_uri.clone()),
-            bind_id: ifaces.bind_id_generator.generate(),
-            bind_uri,
-            factory,
-            ifaces,
-        }
-    }
-
     fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
         match self.io.as_ref() {
             Ok(iface) => Ok(f(iface.as_ref())),
@@ -92,6 +78,13 @@ impl Interface {
     }
 }
 
+impl Drop for Interface {
+    #[inline]
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 #[derive(Debug)]
 struct RwInterface(RwLock<Interface>);
 
@@ -102,12 +95,52 @@ impl From<Interface> for RwInterface {
 }
 
 impl RwInterface {
+    fn new(
+        bind_uri: BindUri,
+        factory: Arc<dyn ProductQuicIO>,
+        ifaces: Arc<QuicInterfaces>,
+    ) -> Self {
+        Self::from(Interface {
+            io: factory.bind(bind_uri.clone()),
+            bind_id: ifaces.bind_id_generator.generate(),
+            bind_uri,
+            factory,
+            ifaces,
+        })
+    }
+
     fn read(&self) -> RwLockReadGuard<'_, Interface> {
         self.0.read().unwrap()
     }
 
     fn write(&self) -> RwLockWriteGuard<'_, Interface> {
         self.0.write().unwrap()
+    }
+
+    fn publish_endpoint_addr(self: &Arc<Self>) {
+        if self.bind_uri().is_templorary() {
+            return;
+        }
+
+        let iface = self.clone();
+
+        // tokio::spawn(async move {
+        let iface = iface.read();
+        let Ok(Ok(real_addr)) = iface.io.as_ref().map(|io| io.real_addr()) else {
+            return;
+        };
+        let endpoint_addr = match real_addr {
+            RealAddr::Internet(addr) => EndpointAddr::Socket(addr.into()),
+            RealAddr::Bluetooth(addr) => EndpointAddr::Ble(addr.into()),
+            _ => return,
+        };
+        Locations::global().insert(iface.bind_uri.clone(), endpoint_addr);
+        // });
+    }
+
+    fn rebind(self: &Arc<Self>) {
+        self.write().rebind();
+        self.publish_endpoint_addr();
     }
 }
 
@@ -193,7 +226,7 @@ impl InterfaceFailure {
 }
 
 impl RwInterface {
-    pub async fn is_alive(&self) -> Result<(), InterfaceFailure> {
+    async fn is_alive(&self) -> Result<(), InterfaceFailure> {
         if self.bind_uri().scheme() == BindUriSchema::Ble {
             return Err(InterfaceFailure::BleProtocol);
         }
@@ -241,13 +274,13 @@ impl RwInterface {
         Ok(())
     }
 
-    pub fn binding(self: &Arc<Self>) -> BindInterface {
+    fn binding(self: &Arc<Self>) -> BindInterface {
         BindInterface {
             iface: self.clone(),
         }
     }
 
-    pub fn borrow(self: &Arc<Self>) -> io::Result<QuicInterface> {
+    fn borrow(self: &Arc<Self>) -> io::Result<QuicInterface> {
         let iface = self.read();
         iface.borrow(|_| QuicInterface {
             bind_id: iface.bind_id,

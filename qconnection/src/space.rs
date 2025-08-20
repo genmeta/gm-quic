@@ -8,7 +8,7 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{
-        AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeture, GetFrameType, ReceiveFrame,
+        AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeature, GetFrameType, ReceiveFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame,
     },
     packet::{

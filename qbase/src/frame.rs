@@ -183,14 +183,14 @@ pub enum FrameType {
 }
 
 #[enum_dispatch]
-pub trait FrameFeture {
+pub trait FrameFeature {
     /// Return whether a frame type belongs to the given packet_type
     fn belongs_to(&self, packet_type: Type) -> bool;
     /// Return the specs of the frame type
     fn specs(&self) -> u8;
 }
 
-impl<T: GetFrameType> FrameFeture for T {
+impl<T: GetFrameType> FrameFeature for T {
     fn belongs_to(&self, packet_type: Type) -> bool {
         self.frame_type().belongs_to(packet_type)
     }
@@ -200,7 +200,7 @@ impl<T: GetFrameType> FrameFeture for T {
     }
 }
 
-impl FrameFeture for FrameType {
+impl FrameFeature for FrameType {
     fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
             long::{Type::V1, Ver1},
@@ -352,7 +352,7 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 }
 
 /// Sum type of all the stream related frames except [`StreamFrame`].
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[enum_dispatch(EncodeSize, GetFrameType)]
 pub enum StreamCtlFrame {
     /// RESET_STREAM frame, see [`ResetStreamFrame`].
@@ -429,6 +429,7 @@ pub enum Frame<D = Bytes> {
 }
 
 impl<D> From<ReliableFrame> for Frame<D> {
+    #[inline]
     fn from(frame: ReliableFrame) -> Self {
         match frame {
             ReliableFrame::NewToken(new_token_frame) => Frame::NewToken(new_token_frame),
@@ -450,26 +451,41 @@ impl<D> From<ReliableFrame> for Frame<D> {
     }
 }
 
-impl<D> TryFrom<Frame<D>> for ReliableFrame {
-    type Error = Frame<D>;
+impl<'f, D> TryFrom<&'f Frame<D>> for CryptoFrame {
+    type Error = &'f Frame<D>;
 
-    fn try_from(frame: Frame<D>) -> Result<Self, Self::Error> {
+    #[inline]
+    fn try_from(frame: &'f Frame<D>) -> Result<Self, Self::Error> {
         match frame {
-            Frame::NewToken(new_token_frame) => Ok(ReliableFrame::NewToken(new_token_frame)),
-            Frame::MaxData(max_data_frame) => Ok(ReliableFrame::MaxData(max_data_frame)),
+            Frame::Crypto(frame, _data) => Ok(*frame),
+            frame => Err(frame),
+        }
+    }
+}
+
+impl<'f, D> TryFrom<&'f Frame<D>> for ReliableFrame {
+    type Error = &'f Frame<D>;
+
+    #[inline]
+    fn try_from(frame: &'f Frame<D>) -> Result<Self, Self::Error> {
+        match frame {
+            Frame::NewToken(new_token_frame) => {
+                Ok(ReliableFrame::NewToken(new_token_frame.clone()))
+            }
+            Frame::MaxData(max_data_frame) => Ok(ReliableFrame::MaxData(*max_data_frame)),
             Frame::DataBlocked(data_blocked_frame) => {
-                Ok(ReliableFrame::DataBlocked(data_blocked_frame))
+                Ok(ReliableFrame::DataBlocked(*data_blocked_frame))
             }
             Frame::NewConnectionId(new_connection_id_frame) => {
-                Ok(ReliableFrame::NewConnectionId(new_connection_id_frame))
+                Ok(ReliableFrame::NewConnectionId(*new_connection_id_frame))
             }
             Frame::RetireConnectionId(retire_connection_id_frame) => Ok(
-                ReliableFrame::RetireConnectionId(retire_connection_id_frame),
+                ReliableFrame::RetireConnectionId(*retire_connection_id_frame),
             ),
             Frame::HandshakeDone(handshake_done_frame) => {
-                Ok(ReliableFrame::HandshakeDone(handshake_done_frame))
+                Ok(ReliableFrame::HandshakeDone(*handshake_done_frame))
             }
-            Frame::StreamCtl(stream_frame) => Ok(ReliableFrame::StreamCtl(stream_frame)),
+            Frame::StreamCtl(stream_frame) => Ok(ReliableFrame::StreamCtl(*stream_frame)),
             frame => Err(frame),
         }
     }

@@ -1,7 +1,6 @@
 use bytes::{BufMut, buf::UninitSlice};
 use derive_more::Deref;
 use qbase::{
-    frame::Frame,
     net::tx::Signals,
     packet::{
         RecordFrame,
@@ -152,9 +151,13 @@ unsafe impl<'b> BufMut for PacketWriter<'b> {
     }
 }
 
-impl<D: ContinuousData> RecordFrame<D> for PacketWriter<'_> {
+impl<'b, F, D: ContinuousData> RecordFrame<F, D> for PacketWriter<'b>
+where
+    for<'f> &'f F: Into<QEventFrame>,
+    BasePacketWriter<'b>: RecordFrame<F, D>,
+{
     #[inline]
-    fn record_frame(&mut self, frame: &Frame<D>) {
+    fn record_frame(&mut self, frame: &F) {
         self.logger.record_frame(frame);
         self.writer.record_frame(frame);
     }

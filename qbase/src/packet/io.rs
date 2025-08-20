@@ -300,7 +300,7 @@ macro_rules! frame_packages {
     (@imp_frame $($frame:tt)*) => {
         impl<Target> Package<Target> for $($frame)*
         where
-            Target: BufMut + RecordFrame<NonData> + ?Sized,
+            Target: BufMut + RecordFrame<Frame<NonData>, NonData> + ?Sized,
         {
             #[inline]
             fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
@@ -324,7 +324,7 @@ macro_rules! frame_packages {
     (@imp_data_frame $($frame_with_data:tt)*) => {
         impl<Target,D> Package<Target> for $($frame_with_data)*
         where
-            Target: BufMut + RecordFrame<D> + ?Sized,
+            Target: BufMut + RecordFrame<Frame<D>, D> + ?Sized,
             D: ContinuousData + Clone,
             for<'b> &'b mut Target: WriteData<D>,
         {
@@ -494,11 +494,11 @@ impl PacketProperties {
     }
 }
 
-pub trait RecordFrame<D: ContinuousData> {
-    fn record_frame(&mut self, frame: &Frame<D>);
+pub trait RecordFrame<F, D: ContinuousData> {
+    fn record_frame(&mut self, frame: &F);
 }
 
-impl<D: ContinuousData> RecordFrame<D> for PacketProperties {
+impl<D: ContinuousData> RecordFrame<Frame<D>, D> for PacketProperties {
     fn record_frame(&mut self, frame: &Frame<D>) {
         debug_assert!(
             frame.belongs_to(self.packet_type(),),
@@ -518,9 +518,12 @@ impl<D: ContinuousData> RecordFrame<D> for PacketProperties {
     }
 }
 
-impl<D: ContinuousData> RecordFrame<D> for PacketWriter<'_> {
+impl<F, D: ContinuousData> RecordFrame<F, D> for PacketWriter<'_>
+where
+    PacketProperties: RecordFrame<F, D>,
+{
     #[inline]
-    fn record_frame(&mut self, frame: &Frame<D>) {
+    fn record_frame(&mut self, frame: &F) {
         self.props.record_frame(frame);
     }
 }

@@ -1,4 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::{
+    io,
+    sync::{Arc, OnceLock},
+};
 
 use dashmap::{DashMap, Entry};
 use qbase::{net::addr::BindUri, util::UniqueIdGenerator};
@@ -10,6 +13,7 @@ use crate::{
         BindInterface, Interface, QuicInterface, context::InterfaceContext,
         monitor::InterfacesMonitor,
     },
+    local::Locations,
 };
 
 /// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
@@ -54,9 +58,9 @@ impl QuicInterfaces {
             }
         }
 
-        let iface = Interface::new(bind_uri, factory, self.clone());
-        let iface = Arc::new(RwInterface::from(iface));
+        let iface = Arc::new(RwInterface::new(bind_uri, factory, self.clone()));
         let context = InterfaceContext::new(iface.clone(), InterfacesMonitor::global().subscribe());
+
         entry.insert(context);
 
         iface.binding()
@@ -72,6 +76,30 @@ impl QuicInterfaces {
     #[inline]
     pub fn remove(&self, bind_uri: &BindUri) {
         self.interfaces.remove(bind_uri);
+    }
+
+    #[inline]
+    pub fn clear(&self) {
+        // clear map & close interfaces
+        self.interfaces.retain(|_bind_uri, iface| {
+            if let Some(iface) = iface.iface().upgrade() {
+                iface.write().io = Err(io::ErrorKind::NotConnected.into());
+            }
+            false
+        });
+    }
+}
+
+impl Interface {
+    pub(super) fn close(&mut self) {
+        self.io = Err(io::ErrorKind::NotConnected.into());
+        if let Entry::Occupied(entry) = self.ifaces.interfaces.entry(self.bind_uri.clone()) {
+            if entry.get().iface().upgrade().is_none() {
+                // NOTE: QuicInterfaces and Locations must be kept in sync.
+                Locations::global().remove(&self.bind_uri);
+                entry.remove();
+            }
+        }
     }
 }
 

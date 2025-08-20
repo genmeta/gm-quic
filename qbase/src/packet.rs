@@ -8,7 +8,7 @@ use header::{LongHeader, io::WriteHeader};
 
 use crate::{
     cid::ConnectionId,
-    frame::{ContainSpec, FrameFeture, FrameType, Spec},
+    frame::{ContainSpec, FrameFeature, FrameType, Spec},
     packet::keys::DirectionalKeys,
 };
 
