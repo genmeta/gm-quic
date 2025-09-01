@@ -60,8 +60,8 @@ impl QuicInterfaces {
 
         let iface = Arc::new(RwInterface::new(bind_uri, factory, self.clone()));
         let context = InterfaceContext::new(iface.clone(), InterfacesMonitor::global().subscribe());
-
         entry.insert(context);
+        iface.publish_endpoint_addr();
 
         iface.binding()
     }
