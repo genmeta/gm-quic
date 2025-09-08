@@ -29,7 +29,10 @@ pub mod prelude {
         pub use qinterface::{factory::handy::*, iface::handy::*};
     }
 
-    pub use crate::{Connection, StreamReader, StreamWriter, tls::AuthClient};
+    pub use crate::{
+        Connection, StreamReader, StreamWriter,
+        tls::{AuthClient, ClientCertsVerifyResult, ClientNameVerifyResult},
+    };
 }
 
 pub mod builder;

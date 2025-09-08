@@ -259,7 +259,7 @@ impl QuicListeners {
             token_provider: None,
             parameters: handy::server_parameters(),
             anti_port_scan: false,
-            client_auther: Arc::new(NoopClientAuther),
+            client_auther: Arc::new(AcceptAllClientAuther),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             defer_idle_timeout: Duration::ZERO,
@@ -484,19 +484,26 @@ impl Drop for QuicListeners {
 }
 
 struct ServerAuther {
+    anti_port_scan: bool,
     iface: BindUri,
     servers: Arc<DashMap<String, Server>>,
 }
 
 impl AuthClient for ServerAuther {
-    fn verify_client_name(&self, host: &str, _: Option<&str>) -> bool {
-        self.servers
+    fn verify_client_name(&self, host: &str, _: Option<&str>) -> ClientNameVerifyResult {
+        match self
+            .servers
             .get(host)
             .is_some_and(|server| server.bind_ifaces.contains_key(&self.iface))
+        {
+            true => ClientNameVerifyResult::Accept,
+            false if self.anti_port_scan => ClientNameVerifyResult::SilentRefuse("".to_owned()),
+            false => ClientNameVerifyResult::Refuse("".to_owned()),
+        }
     }
 
-    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> bool {
-        true
+    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> ClientCertsVerifyResult {
+        ClientCertsVerifyResult::Accept
     }
 }
 
@@ -528,6 +535,7 @@ impl QuicListeners {
         }
 
         let server_auther = ServerAuther {
+            anti_port_scan: self.anti_port_scan,
             iface: bind_uri.clone(),
             servers: self.servers.clone(),
         };
@@ -535,7 +543,6 @@ impl QuicListeners {
         let connection = Arc::new(
             Connection::new_server(self.token_provider.clone())
                 .with_parameters(self.parameters.clone())
-                .with_anti_port_scan(self.anti_port_scan)
                 .with_client_auther(Box::new((server_auther, self.client_auther.clone())))
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())

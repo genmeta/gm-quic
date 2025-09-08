@@ -4,7 +4,9 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-pub use client_auth::{ArcSendLock, AuthClient, NoopClientAuther};
+pub use client_auth::{
+    AcceptAllClientAuther, ArcSendLock, AuthClient, ClientCertsVerifyResult, ClientNameVerifyResult,
+};
 use futures::{future::poll_fn, never::Never};
 use qbase::{
     Epoch,
@@ -196,7 +198,6 @@ impl ServerTlsSession {
         tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
         client_auther: Box<dyn AuthClient>,
-        anti_port_scan: bool,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
         params_buf.put_parameters(server_params);
@@ -208,10 +209,7 @@ impl ServerTlsSession {
             read_waker: None,
             client_name: None,
             server_name: None,
-            send_lock: match anti_port_scan {
-                true => ArcSendLock::new(),
-                false => ArcSendLock::unrestricted(),
-            },
+            send_lock: ArcSendLock::new(),
             client_auther,
             client_cert: None,
         };
@@ -239,30 +237,46 @@ impl ServerTlsSession {
             QuicError::with_default_fty(ErrorKind::ConnectionRefused, "Missing SNI in client hello")
         })?;
 
-        if !self
+        match self
             .client_auther
             .verify_client_name(host, self.client_name.as_deref())
         {
-            tracing::warn!(
-                host,
-                ?self.client_name,
-                "Client name verification failed, refusing connection."
-            );
-            return Err(Error::Quic(QuicError::with_default_fty(
-                ErrorKind::ConnectionRefused,
-                "",
-            )));
+            ClientNameVerifyResult::Accept => {
+                self.send_lock.grant_permit();
+                parameters.lock_guard()?.recv_remote_params(client_params)?;
+
+                match self.tls_conn.zero_rtt_keys() {
+                    Some(keys) => zero_rtt_keys.set_keys(keys.into()),
+                    None => _ = zero_rtt_keys.invalid(),
+                }
+
+                Ok(())
+            }
+            ClientNameVerifyResult::Refuse(reason) => {
+                self.send_lock.grant_permit();
+                tracing::warn!(
+                    host,
+                    ?self.client_name,
+                    "Client name verification failed, refusing connection."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    reason,
+                )))
+            }
+            ClientNameVerifyResult::SilentRefuse(reason) => {
+                tracing::warn!(
+                    host,
+                    ?reason,
+                    ?self.client_name,
+                    "Client name verification failed, refusing connection silently."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    "",
+                )))
+            }
         }
-
-        self.send_lock.grant_permit();
-        parameters.lock_guard()?.recv_remote_params(client_params)?;
-
-        match self.tls_conn.zero_rtt_keys() {
-            Some(keys) => zero_rtt_keys.set_keys(keys.into()),
-            None => _ = zero_rtt_keys.invalid(),
-        }
-
-        Ok(())
     }
 
     fn try_process_cert(&mut self) -> Result<(), Error> {
@@ -280,22 +294,24 @@ impl ServerTlsSession {
             .as_deref()
             .expect("Server name must be known at this point");
 
-        if !self
+        match self
             .client_auther
             .verify_client_certs(host, self.client_name.as_deref(), cert)
         {
-            tracing::warn!(
-                ?host,
-                ?self.client_name,
-                "Client certificate verification failed, refusing connection."
-            );
-            return Err(Error::Quic(QuicError::with_default_fty(
-                ErrorKind::ConnectionRefused,
-                "",
-            )));
+            ClientCertsVerifyResult::Refuse(reason) => {
+                tracing::warn!(
+                    ?host,
+                    ?reason,
+                    ?self.client_name,
+                    "Client certificate verification failed, refusing connection."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    reason,
+                )))
+            }
+            ClientCertsVerifyResult::Accept => Ok(()),
         }
-
-        Ok(())
     }
 }
 
