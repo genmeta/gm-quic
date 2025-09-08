@@ -531,43 +531,59 @@ fn auth_client_cert_after_connected() -> Result<(), Error> {
     })
 }
 
-struct ClientNameAuther;
+struct ClientNameAuther<const SILENT_REFUSE: bool>;
 
-impl AuthClient for ClientNameAuther {
-    fn verify_client_name(&self, _: &str, client_name: Option<&str>) -> bool {
-        matches!(client_name, Some("client"))
+impl<const SILENT: bool> AuthClient for ClientNameAuther<SILENT> {
+    fn verify_client_name(&self, _: &str, client_name: Option<&str>) -> ClientNameVerifyResult {
+        match matches!(client_name, Some("client")) {
+            true => ClientNameVerifyResult::Accept,
+            false if !SILENT => ClientNameVerifyResult::Refuse("".to_owned()),
+            false => ClientNameVerifyResult::SilentRefuse("Client name ".to_owned()),
+        }
     }
 
-    fn verify_client_certs(&self, _: &str, _: Option<&str>, client_cert: &[u8]) -> bool {
-        auth_client_cert(client_cert)
+    fn verify_client_certs(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        client_cert: &[u8],
+    ) -> ClientCertsVerifyResult {
+        match auth_client_cert(client_cert) {
+            true => ClientCertsVerifyResult::Accept,
+            false => ClientCertsVerifyResult::Refuse("Client name ".to_owned()),
+        }
     }
+}
+
+async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
+    server_parameters: ServerParameters,
+) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), Error> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(CA_CERT.to_certificate());
+    let listeners = QuicListeners::builder()?
+        .with_client_cert_verifier(
+            WebPkiClientVerifier::builder(Arc::new(roots))
+                .build()
+                .unwrap(),
+        )
+        .with_client_auther(ClientNameAuther::<SILENT_REFUSE>)
+        .with_parameters(server_parameters)
+        .with_qlog(qlogger())
+        .listen(128);
+    listeners.add_server(
+        "localhost",
+        SERVER_CERT,
+        SERVER_KEY,
+        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+        None,
+    )?;
+    Ok((listeners.clone(), serve_echo(listeners)))
 }
 
 #[test]
 fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
-    let launch_server = || async {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add_parsable_certificates(CA_CERT.to_certificate());
-        let listeners = QuicListeners::builder()?
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
-                    .unwrap(),
-            )
-            .with_client_auther(ClientNameAuther)
-            .with_parameters(server_parameters())
-            .with_qlog(qlogger())
-            .listen(128);
-        listeners.add_server(
-            "localhost",
-            SERVER_CERT,
-            SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-            None,
-        )?;
-        Ok((listeners.clone(), serve_echo(listeners)))
-    };
-    test_serially(launch_server, |server_addr| async move {
+    const SILENT_REFUSE: bool = false;
+    let launch_client = |server_addr| async move {
         let client = {
             let mut parameters = client_parameters();
             _ = parameters.set(ParameterId::ClientName, "client".to_string());
@@ -588,34 +604,17 @@ fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
-    })
+    };
+    test_serially(
+        || launch_client_auth_test_server::<SILENT_REFUSE>(server_parameters()),
+        launch_client,
+    )
 }
 
 #[test]
 fn refuse_client_connection() -> std::result::Result<(), Error> {
-    let launch_server = || async {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add_parsable_certificates(CA_CERT.to_certificate());
-        let listeners = QuicListeners::builder()?
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
-                    .unwrap(),
-            )
-            .with_client_auther(ClientNameAuther)
-            .with_parameters(server_parameters())
-            .with_qlog(qlogger())
-            .listen(128);
-        listeners.add_server(
-            "localhost",
-            SERVER_CERT,
-            SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-            None,
-        )?;
-        Ok((listeners.clone(), serve_echo(listeners)))
-    };
-    test_serially(launch_server, |server_addr| async move {
+    const SILENT_REFUSE: bool = false;
+    let launch_client = |server_addr| async move {
         let client = {
             let parameters = client_parameters();
             // no CLIENT_NAME
@@ -641,35 +640,17 @@ fn refuse_client_connection() -> std::result::Result<(), Error> {
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
 
         Ok(())
-    })
+    };
+    test_serially(
+        || launch_client_auth_test_server::<SILENT_REFUSE>(server_parameters()),
+        launch_client,
+    )
 }
 
 #[test]
 fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
-    let launch_server = || async {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add_parsable_certificates(CA_CERT.to_certificate());
-        let listeners = QuicListeners::builder()?
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
-                    .unwrap(),
-            )
-            .with_client_auther(ClientNameAuther)
-            .enable_anti_port_scan() // Enable anti-port-scan
-            .with_parameters(server_parameters())
-            .with_qlog(qlogger())
-            .listen(128);
-        listeners.add_server(
-            "localhost",
-            SERVER_CERT,
-            SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-            None,
-        )?;
-        Ok((listeners.clone(), serve_echo(listeners)))
-    };
-    test_serially(launch_server, |server_addr| async move {
+    const SILENT_REFUSE: bool = true;
+    let launch_client = |server_addr| async move {
         let client = {
             let parameters = client_parameters();
             // no CLIENT_NAME
@@ -695,5 +676,9 @@ fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
         );
 
         Ok(())
-    })
+    };
+    test_serially(
+        || launch_client_auth_test_server::<SILENT_REFUSE>(server_parameters()),
+        launch_client,
+    )
 }

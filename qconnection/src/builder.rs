@@ -43,7 +43,7 @@ pub use rustls::{ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfi
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-pub use crate::tls::{AuthClient, NoopClientAuther};
+pub use crate::tls::{AcceptAllClientAuther, AuthClient};
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     ConnectionState, DataJournal, DataStreams, FlowController, Handshake, RawHandshake,
@@ -74,8 +74,7 @@ impl Connection {
         ServerFoundation {
             token_registry: ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
-            anti_port_scan: false,
-            client_auther: Box::new(NoopClientAuther),
+            client_auther: Box::new(AcceptAllClientAuther),
         }
     }
 }
@@ -96,18 +95,12 @@ impl ClientFoundation {
 pub struct ServerFoundation {
     token_registry: ArcTokenRegistry,
     server_params: ServerParameters,
-    anti_port_scan: bool,
     client_auther: Box<dyn AuthClient>,
 }
 
 impl ServerFoundation {
     pub fn with_parameters(mut self, params: ServerParameters) -> Self {
         self.server_params = params;
-        self
-    }
-
-    pub fn with_anti_port_scan(mut self, enabled: bool) -> Self {
-        self.anti_port_scan = enabled;
         self
     }
 
@@ -259,13 +252,13 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
-        let mut clinet_params = self.foundation.client_params;
-        _ = clinet_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
+        let mut client_params = self.foundation.client_params;
+        _ = client_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
 
         let tls_session = ClientTlsSession::init(
             self.foundation.server_name.clone(),
             Arc::new(self.tls_config),
-            &clinet_params,
+            &client_params,
         )
         .expect("Failed to initialize TLS handshake");
 
@@ -278,9 +271,9 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
                     client_parameters: &remembered_parameters,
                 });
                 zero_rtt_keys.set_keys(avaliable_zero_rtt_keys);
-                Parameters::new_client(clinet_params, Some(remembered_parameters), origin_dcid)
+                Parameters::new_client(client_params, Some(remembered_parameters), origin_dcid)
             }
-            None => Parameters::new_client(clinet_params, None, origin_dcid),
+            None => Parameters::new_client(client_params, None, origin_dcid),
         };
 
         PendingConnection {
@@ -334,7 +327,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             Arc::new(self.tls_config),
             &server_params,
             self.foundation.client_auther,
-            self.foundation.anti_port_scan,
         )
         .expect("Failed to initialize TLS handshake"); // TODO: tls创建的错误处理
 
