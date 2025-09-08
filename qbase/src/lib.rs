@@ -10,7 +10,7 @@
 //! Finally, the `qbase` module also defines some utility functions
 //! for handling common data structures in the QUIC protocol.
 //!
-
+#![allow(clippy::all)]
 use std::ops::{Index, IndexMut};
 
 /// Operations about QUIC connection IDs.
