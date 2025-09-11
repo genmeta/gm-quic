@@ -144,7 +144,7 @@ impl SentPktState {
                 if expire_time > now {
                     true
                 } else {
-                    tracing::debug!("Retransmitted packet {pn} is expired without ack");
+                    tracing::debug!(target: "quic", "Retransmitted packet {pn} is expired without ack");
                     false
                 }
             }
@@ -202,7 +202,6 @@ impl<T: Clone> SentJournal<T> {
     }
 
     fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ {
-        tracing::debug!("Fast retransmit");
         self.resize();
 
         let now = tokio::time::Instant::now();
@@ -306,9 +305,6 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
     pub fn update_largest(&mut self, ack_frame: &AckFrame) -> Result<(), QuicError> {
         if ack_frame.largest() > self.inner.sent_packets.largest() {
-            tracing::error!(
-                "   Cause by: received an invalid ack frame whose largest pn is larger than the largest pn sent"
-            );
             return Err(QuicError::new(
                 ErrorKind::ProtocolViolation,
                 ack_frame.frame_type().into(),

@@ -125,7 +125,6 @@ impl ResetStreamError {
 
 impl From<&ResetStreamFrame> for ResetStreamError {
     fn from(frame: &ResetStreamFrame) -> Self {
-        tracing::error!("   Cause by: received ResetStreamFrame {:?}", frame);
         Self {
             app_error_code: frame.app_error_code,
             final_size: frame.final_size,

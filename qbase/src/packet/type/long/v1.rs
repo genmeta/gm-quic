@@ -39,7 +39,6 @@ impl TryFrom<u8> for Type {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         if value & FIXED_BIT == 0 {
-            tracing::error!("   Cause by: invalid fixed bit in quic packet header");
             return Err(Error::InvalidFixedBit);
         }
         match value & LONG_PACKET_TYPE_MASK {

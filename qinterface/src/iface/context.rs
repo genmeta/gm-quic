@@ -43,11 +43,11 @@ impl InterfaceContext {
                             // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
                             if matches!(receive_task, ReceiveTask::Stopped)
                                 || rw_iface.is_alive().await.is_err_and(|e| {
-                                    tracing::warn!(%bind_uri, "Interface may not alive: {e}");
+                                    tracing::debug!(target: "quic", %bind_uri, "Interface may not alive: {e}");
                                     e.is_recoverable()
                                 })
                             {
-                                tracing::info!(%bind_uri, "Rebinding interface");
+                                tracing::info!(target: "quic", %bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
                                 rw_iface.rebind();
                                 receive_task =
@@ -56,8 +56,8 @@ impl InterfaceContext {
                         }
                         result = &mut receive_task => {
                             match result {
-                                Ok(()) => tracing::warn!(%bind_uri, "Receive task completed due to interface freed"),
-                                Err(e) => tracing::error!(%bind_uri, "Receive task failed with error: {e}"),
+                                Ok(()) => tracing::warn!(target: "quic", %bind_uri, "Receive task completed due to interface freed"),
+                                Err(e) => tracing::error!(target: "quic", %bind_uri, "Receive task failed with error: {e}"),
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
                             receive_task = ReceiveTask::Stopped;
