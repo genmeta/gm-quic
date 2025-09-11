@@ -254,7 +254,8 @@ impl ServerTlsSession {
             }
             ClientNameVerifyResult::Refuse(reason) => {
                 self.send_lock.grant_permit();
-                tracing::warn!(
+                tracing::debug!(
+                    target: "quic",
                     host,
                     ?self.client_name,
                     "Client name verification failed, refusing connection."
@@ -265,7 +266,8 @@ impl ServerTlsSession {
                 )))
             }
             ClientNameVerifyResult::SilentRefuse(reason) => {
-                tracing::warn!(
+                tracing::debug!(
+                    target: "quic",
                     host,
                     ?reason,
                     ?self.client_name,
@@ -299,7 +301,8 @@ impl ServerTlsSession {
             .verify_client_certs(host, self.client_name.as_deref(), cert)
         {
             ClientCertsVerifyResult::Refuse(reason) => {
-                tracing::warn!(
+                tracing::debug!(
+                    target: "quic",
                     ?host,
                     ?reason,
                     ?self.client_name,
@@ -384,7 +387,6 @@ impl ArcTlsHandshake {
         match tls_handshake.session.write_hs(buf) {
             Ok(_) => Ok(()),
             Err(error) => {
-                tracing::error!("TLS write error: {error}");
                 let error_kind = match tls_handshake.session.alert() {
                     Some(alert) => ErrorKind::Crypto(alert.into()),
                     None => ErrorKind::ProtocolViolation,
@@ -464,7 +466,7 @@ impl ArcTlsHandshake {
 
         if tls_handshake.session.is_finished() && tls_handshake.info.try_get().is_none() {
             let info = Arc::new(tls_handshake.session.r#yield());
-            tracing::debug!("TLS handshake finished");
+            tracing::debug!(target: "quic", "TLS handshake finished");
             tls_handshake.info.set(info.clone());
             return Ok(Some(info));
         }

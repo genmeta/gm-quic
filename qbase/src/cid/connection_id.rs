@@ -34,6 +34,12 @@ impl core::fmt::LowerHex for ConnectionId {
     }
 }
 
+impl core::fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::LowerHex::fmt(self, f)
+    }
+}
+
 /// Parse a connection ID from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 ///
@@ -54,7 +60,6 @@ pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
 /// The connection ID length is limited to 20 bytes, or it will return an error.
 pub fn be_connection_id_with_len(input: &[u8], len: usize) -> IResult<&[u8], ConnectionId> {
     if len > MAX_CID_SIZE {
-        tracing::error!("   Cause by: parse connection id with too large length");
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::TooLarge,

@@ -199,8 +199,9 @@ where
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
         );
-        tracing::error!(
-            "Error: {} is canceled by app layer, with error code {err_code}",
+        tracing::debug!(
+            target: "quic",
+            "{} is canceled by app layer, with error code {err_code}",
             self.stream_id
         );
         self.broker
@@ -408,8 +409,9 @@ where
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
         );
-        tracing::error!(
-            "Error: {} is canceled by app layer, with error code {err_code}",
+        tracing::debug!(
+            target: "quic",
+            "{} is canceled by app layer, with error code {err_code}",
             self.stream_id
         );
         self.broker
@@ -551,8 +553,9 @@ where
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
         );
-        tracing::error!(
-            "Error: {} is canceled by app layer, with error code {err_code}",
+        tracing::debug!(
+            target: "quic",
+            "{} is canceled by app layer, with error code {err_code}",
             self.stream_id
         );
         self.broker

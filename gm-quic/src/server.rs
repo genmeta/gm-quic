@@ -23,6 +23,7 @@ use rustls::{
     sign::SigningKey,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::Instrument;
 
 use crate::*;
 
@@ -514,9 +515,14 @@ impl QuicListeners {
         INCOMINGS.get_or_init(Default::default)
     }
 
+    #[tracing::instrument(
+        target = "quic_server", level = "debug", skip_all, 
+        fields(%bind_uri, %pathway, %link, odcid=tracing::field::Empty, server_name=tracing::field::Empty)
+    )]
     pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_uri, pathway, link): Way) {
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
+            tracing::debug!(target: "quic_server", "Backlog full, dropping incoming packet");
             return;
         };
 
@@ -528,9 +534,10 @@ impl QuicListeners {
             },
             _ => return,
         };
+        tracing::Span::current().record("odcid", origin_dcid.to_string());
 
         if origin_dcid.is_empty() {
-            tracing::warn!("Received a packet with empty destination CID, ignoring it");
+            tracing::debug!(target: "quic_server", "Received an initial/0rtt packet with empty destination CID, ignoring it");
             return;
         }
 
@@ -555,13 +562,14 @@ impl QuicListeners {
 
         let incomings = self.incomings.clone();
 
-        tokio::spawn(async move {
+        let try_accept_connection = async move {
             Router::global()
                 .deliver(packet, (bind_uri.clone(), pathway, link))
                 .await;
 
             match connection.server_name().await {
                 Ok(server_name) => {
+                    tracing::Span::current().record("server_name", &server_name);
                     let incoming = (connection.clone(), server_name, pathway, link);
                     if incomings.send((incoming, premit)).await.is_err() {
                         connection.close("", 1);
@@ -569,15 +577,13 @@ impl QuicListeners {
                 }
                 Err(error) => {
                     tracing::error!(
-                        role = "server",
-                        %bind_uri,
-                        %link, %pathway,
-                        odcid = format!("{origin_dcid:x}"),
+                        target: "quic_server",
                         "Failed to accept connection from: {error:?}",
                     );
                 }
             }
-        });
+        };
+        tokio::spawn(try_accept_connection.in_current_span());
     }
 }
 

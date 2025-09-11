@@ -204,10 +204,7 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for FlowControlledDataStreams {
                 self.flow_ctrl
                     .on_new_rcvd(data_frame.0.frame_type(), new_data_size)?;
             }
-            Err(e) => {
-                tracing::error!("   Cause by: received an invalid StreamFrame");
-                return Err(e.into());
-            }
+            Err(e) => return Err(e.into()),
         }
         Ok(())
     }
@@ -222,10 +219,7 @@ impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
                 self.flow_ctrl
                     .on_new_rcvd(frame.frame_type(), new_data_size)?;
             }
-            Err(e) => {
-                tracing::error!("   Cause by: received an invalid StreamCtlFrame");
-                return Err(e.into());
-            }
+            Err(e) => return Err(e.into()),
         }
         Ok(())
     }

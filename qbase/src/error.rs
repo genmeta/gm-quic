@@ -133,10 +133,7 @@ impl TryFrom<VarInt> for ErrorKind {
             0x0f => ErrorKind::AeadLimitReached,
             0x10 => ErrorKind::NoViablePath,
             0x0100..=0x01ff => ErrorKind::Crypto((value.into_inner() & 0xff) as u8),
-            other => {
-                tracing::error!("   Cause by: parsing quic error kind");
-                return Err(InvalidErrorKind(other));
-            }
+            other => return Err(InvalidErrorKind(other)),
         })
     }
 }
@@ -272,9 +269,9 @@ impl AppError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error, From)]
 pub enum Error {
-    #[error("{0}")]
+    #[error(transparent)]
     Quic(QuicError),
-    #[error("{0}")]
+    #[error(transparent)]
     App(AppError),
 }
 
@@ -296,9 +293,6 @@ impl Error {
 
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
-        if let Error::Quic(e) = &e {
-            tracing::error!("   Cause by: quic error={e}");
-        }
         Self::new(std::io::ErrorKind::BrokenPipe, e)
     }
 }
@@ -306,10 +300,7 @@ impl From<Error> for std::io::Error {
 impl From<Error> for ConnectionCloseFrame {
     fn from(e: Error) -> Self {
         match e {
-            Error::Quic(e) => {
-                tracing::error!("   Cause by: error occur at quic layer {:?}", e);
-                Self::new_quic(e.kind, e.frame_type, e.reason)
-            }
+            Error::Quic(e) => Self::new_quic(e.kind, e.frame_type, e.reason),
             Error::App(app_error) => Self::new_app(app_error.error_code, app_error.reason),
         }
     }
@@ -317,7 +308,6 @@ impl From<Error> for ConnectionCloseFrame {
 
 impl From<AppError> for ConnectionCloseFrame {
     fn from(e: AppError) -> Self {
-        tracing::info!("Closed by app layer with error: {:?}", e);
         Self::new_app(e.error_code, e.reason)
     }
 }
@@ -325,21 +315,14 @@ impl From<AppError> for ConnectionCloseFrame {
 impl From<ConnectionCloseFrame> for Error {
     fn from(frame: ConnectionCloseFrame) -> Self {
         match frame {
-            ConnectionCloseFrame::Quic(frame) => {
-                if frame.error_kind() != ErrorKind::Application {
-                    tracing::error!(
-                        "   Cause by: error occured from peer at quic layer {:?}",
-                        frame
-                    );
-                }
-                Self::Quic(QuicError {
-                    kind: frame.error_kind(),
-                    frame_type: frame.frame_type(),
-                    reason: frame.reason().to_owned().into(),
-                })
-            }
+            ConnectionCloseFrame::Quic(frame) => Self::Quic(QuicError {
+                kind: frame.error_kind(),
+                frame_type: frame.frame_type(),
+                reason: frame.reason().to_owned().into(),
+            }),
             ConnectionCloseFrame::App(frame) => Self::App(AppError {
-                error_code: VarInt::from_u64(frame.error_code()).expect("error code overflow"),
+                error_code: VarInt::from_u64(frame.error_code())
+                    .expect("error code never overflow"),
                 reason: frame.reason().to_owned().into(),
             }),
         }

@@ -140,7 +140,6 @@ impl Io for UdpSocketController {
                             return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
                         }
                         Err(e) => {
-                            tracing::error!("   Cause by: failing to sendmsg {e}");
                             return Err(e.into());
                         }
                     }
