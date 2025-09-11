@@ -228,7 +228,6 @@ pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8],
             (remain, remain.len())
         };
         if offset.into_inner() + length as u64 > VARINT_MAX {
-            tracing::error!("   Cause by: the stream data size exceeds 2^62");
             return Err(nom::Err::Error(nom::error::make_error(
                 input,
                 nom::error::ErrorKind::TooLarge,

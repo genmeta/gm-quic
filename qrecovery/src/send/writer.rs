@@ -212,12 +212,14 @@ impl<TX> Drop for Writer<TX> {
             match sending_state {
                 Sender::Ready(s) => {
                     tracing::warn!(
+                        target: "quic",
                         "The sending {} is not closed before dropped!",
                         s.stream_id(),
                     );
                 }
                 Sender::Sending(s) => {
                     tracing::warn!(
+                        target: "quic",
                         "The sending {} is not closed before dropped!",
                         s.stream_id(),
                     );

@@ -16,8 +16,8 @@ pub enum Error {
     IncompleteHeader(Type, String),
     #[error("Incomplete packet body {0:?}: {1}")]
     IncompletePacket(Type, String),
-    #[error("Sampling of packet content less than 20 bytes, only {0} bytes available")]
-    UnderSampling(usize),
+    #[error("Sampling of {0:?} packet content less than 20 bytes, only {1} bytes available")]
+    UnderSampling(Type, usize),
     #[error("Fail to remove protection")]
     RemoveProtectionFailure,
     #[error("Invalid reserved bits: {0:05b} & {1:05b} must be 0")]
@@ -42,7 +42,6 @@ impl nom::error::ParseError<&[u8]> for Error {
 
 impl From<Error> for crate::error::QuicError {
     fn from(e: Error) -> Self {
-        tracing::error!("   Cause by: parsing quic packet error {e}");
         match e {
             Error::InvalidReservedBits(_, _) => crate::error::QuicError::with_default_fty(
                 crate::error::ErrorKind::ProtocolViolation,

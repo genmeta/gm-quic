@@ -189,12 +189,14 @@ impl<TX> Drop for Reader<TX> {
             match receiving_state {
                 Recver::Recv(r) if !r.is_stopped() => {
                     tracing::warn!(
+                        target: "quic",
                         "The receiving {} is not stopped with error before dropped!",
                         r.stream_id(),
                     );
                 }
                 Recver::SizeKnown(r) if !r.is_stopped() => {
                     tracing::warn!(
+                        target: "quic",
                         "The receiving {} is not stopped with error before dropped!",
                         r.stream_id()
                     );

@@ -131,10 +131,7 @@ pub struct DataStreams<TX> {
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
-    move |e| {
-        tracing::error!("   Cause by: {e}");
-        QuicError::new(ErrorKind::StreamLimit, fty.into(), e.to_string())
-    }
+    move |e| QuicError::new(ErrorKind::StreamLimit, fty.into(), e.to_string())
 }
 
 impl<TX> DataStreams<TX>
@@ -398,7 +395,6 @@ where
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
             if sid.dir() == Dir::Uni {
-                tracing::error!("   Cause by: {sid} received invalid {:?}", stream_frame);
                 return Err(QuicError::new(
                     ErrorKind::StreamState,
                     stream_frame.frame_type().into(),
@@ -444,7 +440,6 @@ where
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
                     if sid.dir() == Dir::Uni {
-                        tracing::error!("   Cause by: {sid} received invalid {:?}", reset);
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
                             reset.frame_type().into(),
@@ -468,7 +463,6 @@ where
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
-                        tracing::error!("   Cause by: {sid} received invalid {:?}", stop_sending);
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stop_sending.frame_type().into(),
@@ -487,8 +481,6 @@ where
                     .and_then(|set| set.get(&sid))
                     .and_then(|(outgoing, _s)| outgoing.be_stopped(stop_sending.app_err_code()))
                 {
-                    tracing::error!("  Cause by: received StopSendingFrame {:?}", stop_sending);
-                    tracing::error!("Error: {sid} was stopped by peer");
                     self.ctrl_frames.send_frame([StreamCtlFrame::ResetStream(
                         stop_sending.reset_stream(VarInt::from_u64(final_size).unwrap()),
                     )]);
@@ -500,10 +492,6 @@ where
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
                     if sid.dir() == Dir::Uni {
-                        tracing::error!(
-                            "   Cause by: {sid} received invalid {:?}",
-                            max_stream_data
-                        );
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
                             max_stream_data.frame_type().into(),
@@ -532,10 +520,6 @@ where
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
                     if sid.dir() == Dir::Uni {
-                        tracing::error!(
-                            "   Cause by: {sid} received invalid {:?}",
-                            stream_data_blocked
-                        );
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stream_data_blocked.frame_type().into(),

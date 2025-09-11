@@ -490,7 +490,7 @@ impl From<qbase::packet::error::Error> for PacketDroppedTrigger {
             | qbase::packet::error::Error::IncompleteType(_)
             | qbase::packet::error::Error::IncompleteHeader(_, _)
             | qbase::packet::error::Error::IncompletePacket(_, _)
-            | qbase::packet::error::Error::UnderSampling(_) => Self::Invalid,
+            | qbase::packet::error::Error::UnderSampling(..) => Self::Invalid,
             qbase::packet::error::Error::RemoveProtectionFailure
             | qbase::packet::error::Error::DecryptPacketFailure => Self::DecryptionFailure,
         }

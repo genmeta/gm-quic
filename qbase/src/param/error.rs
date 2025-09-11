@@ -32,7 +32,6 @@ pub enum Error {
 
 impl From<Error> for QuicError {
     fn from(e: Error) -> Self {
-        tracing::error!("   Cause by: parse parameter error {e}");
         Self::new(
             QuicErrorKind::TransportParameter,
             FrameType::Crypto.into(),

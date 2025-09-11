@@ -45,7 +45,7 @@ impl Io for UdpSocketController {
             }
         }
         if let Err(e) = socket.bind(&addr.into()) {
-            tracing::error!("Failed to bind socket: {}", e);
+            tracing::error!(target: "qudp", "Failed to bind socket: {}", e);
             return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
         Ok(())
@@ -355,6 +355,7 @@ fn wsarecvmsg_ptr() -> &'static WinSock::LPFN_WSARECVMSG {
         let s = unsafe { WinSock::socket(WinSock::AF_INET as _, WinSock::SOCK_DGRAM as _, 0) };
         if s == WinSock::INVALID_SOCKET {
             tracing::warn!(
+                target: "qudp",
                 "Failed to create socket for WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
@@ -383,11 +384,13 @@ fn wsarecvmsg_ptr() -> &'static WinSock::LPFN_WSARECVMSG {
 
         if ret == -1 {
             tracing::warn!(
+                target: "qudp",
                 "Failed to get WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
         } else if len as usize != mem::size_of::<WinSock::LPFN_WSARECVMSG>() {
             tracing::warn!(
+                target: "qudp",
                 "WSARecvMsg function pointer size mismatch: expected {}, got {}",
                 mem::size_of::<WinSock::LPFN_WSARECVMSG>(),
                 len

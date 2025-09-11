@@ -69,7 +69,7 @@ impl EmitEvent for ArcEventBroker {
             }
             Event::StatelessReset => todo!("unsupported"),
         };
-        tracing::info!(status = ?event, "connection");
+        tracing::debug!(target: "quic", new_state = ?event, "Connection state changed");
         self.raw_broker.emit(event);
     }
 }

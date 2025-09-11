@@ -39,9 +39,10 @@ impl IoExpoter {
             };
             if let Err(error) = task.await {
                 tracing::error!(
+                    target: "qlog",
                     ?error,
                     ?qlog_file_seq,
-                    "failed to write qlog, subsequent qlogs in this exporter will be ignored."
+                    "Failed to write qlog, subsequent qlogs in this exporter will be ignored."
                 );
             }
         });

@@ -105,7 +105,6 @@ impl CryptoFrame {
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
     let (remain, (offset, length)) = (be_varint, be_varint).parse(input)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {
-        tracing::error!("   Cause by: the received crypto data size exceeds 2^62");
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::TooLarge,
