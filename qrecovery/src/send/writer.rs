@@ -211,14 +211,28 @@ impl<TX> Drop for Writer<TX> {
         if let Ok(sending_state) = inner {
             match sending_state {
                 Sender::Ready(s) => {
+                    #[cfg(debug_assertions)]
                     tracing::warn!(
+                        target: "quic",
+                        "The sending {} is not closed before dropped!",
+                        s.stream_id(),
+                    );
+                    #[cfg(not(debug_assertions))]
+                    tracing::debug!(
                         target: "quic",
                         "The sending {} is not closed before dropped!",
                         s.stream_id(),
                     );
                 }
                 Sender::Sending(s) => {
+                    #[cfg(debug_assertions)]
                     tracing::warn!(
+                        target: "quic",
+                        "The sending {} is not closed before dropped!",
+                        s.stream_id(),
+                    );
+                    #[cfg(not(debug_assertions))]
+                    tracing::debug!(
                         target: "quic",
                         "The sending {} is not closed before dropped!",
                         s.stream_id(),
