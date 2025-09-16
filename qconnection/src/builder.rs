@@ -654,7 +654,7 @@ fn spawn_drive_connection(mut events: mpsc::UnboundedReceiver<Event>, state: Arc
                 match event {
                     Event::Handshaked => {}
                     Event::Failed(quic_error) => _ = state.enter_closing(quic_error),
-                    Event::ApplicationClose => {}
+                    Event::ApplicationClose(_app_error) => {}
                     Event::Closed(ccf) => _ = state.enter_draining(ccf),
                     Event::StatelessReset => {}
                     Event::Terminated => {}

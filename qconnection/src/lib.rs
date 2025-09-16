@@ -51,7 +51,7 @@ use events::{ArcEventBroker, EmitEvent, Event};
 use path::ArcPathContexts;
 use qbase::{
     cid,
-    error::{AppError, Error, QuicError},
+    error::{AppError, Error, ErrorKind, QuicError},
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
     net::{
@@ -447,29 +447,32 @@ struct ConnectionState {
 pub struct Connection(Arc<ConnectionState>);
 
 impl ConnectionState {
-    pub fn enter_closing(&self, error: QuicError) -> bool {
+    // called by event
+    pub fn enter_closing(&self, error: QuicError) -> Result<(), Error> {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         let mut conn = self.state.write().unwrap();
-        let state_changed = conn.is_ok();
-        if let Ok(components) = conn.as_mut() {
-            *conn = Err(components.clone().enter_closing(error.into()));
-        }
-        state_changed
+        let core_conn = conn.as_ref().map_err(|t| t.error())?;
+
+        *conn = Err(core_conn.clone().enter_closing(error.into()));
+        Ok(())
     }
 
-    pub fn application_close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> bool {
+    pub fn application_close(
+        &self,
+        reason: impl Into<Cow<'static, str>>,
+        code: u64,
+    ) -> Result<(), Error> {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        let mut conn = self.state.write().unwrap();
+        let core_conn = conn.as_ref().map_err(|t| t.error())?;
 
         let error_code = code.try_into().expect("application error code overflow");
+        let error = AppError::new(error_code, reason);
+        let event = Event::ApplicationClose(error.clone());
+        core_conn.event_broker.emit(event);
+        *conn = Err(core_conn.clone().enter_closing(error.into()));
 
-        let mut conn = self.state.write().unwrap();
-        let state_changed = conn.is_ok();
-        if let Ok(components) = conn.as_mut() {
-            components.event_broker.emit(Event::ApplicationClose);
-            let error = AppError::new(error_code, reason);
-            *conn = Err(components.clone().enter_closing(error.into()));
-        }
-        state_changed
+        Ok(())
     }
 
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) -> bool {
@@ -493,10 +496,32 @@ impl ConnectionState {
             .map(op)
             .map_err(|termination| termination.error())
     }
+
+    fn validate(&self) -> Result<(), Error> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        let mut conn = self.state.write().unwrap();
+        let core_conn = conn.as_ref().map_err(|e| e.error())?;
+        let validate = 'validate: {
+            if core_conn.paths.is_empty() {
+                let error =
+                    QuicError::with_default_fty(ErrorKind::NoViablePath, "No viable path exist");
+                break 'validate Err(error);
+            }
+            Ok(())
+        };
+        if let Err(error) = validate {
+            core_conn.event_broker.emit(Event::Failed(error.clone()));
+            *conn = Err(core_conn.clone().enter_closing(error.into()));
+        }
+        Ok(())
+    }
 }
 
 impl Connection {
-    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> bool {
+    /// Close the connection with application close frame.
+    ///
+    /// Return error if the connection is already closed.
+    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> Result<(), Error> {
         self.0.application_close(reason, code)
     }
 
@@ -562,31 +587,24 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.del_path(pathway))
     }
 
-    pub fn is_active(&self) -> bool {
-        self.0.try_map_components(|_| true).unwrap_or_default()
-    }
-
     pub fn origin_dcid(&self) -> Result<cid::ConnectionId, Error> {
         self.0
             .try_map_components(|core_conn| core_conn.cid_registry.origin_dcid())
     }
 
-    pub async fn handshaked(&self) -> bool {
-        if let Ok(f) = self
-            .0
-            .try_map_components(|core_conn| core_conn.conn_state.handshaked())
-        {
-            return f.await;
-        }
-        false
+    pub async fn handshaked(&self) -> Result<(), Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.conn_state.handshaked())?
+            .await
     }
 
-    pub async fn terminated(&self) {
-        if let Ok(f) = self
+    pub async fn terminated(&self) -> Error {
+        match self
             .0
             .try_map_components(|core_conn| core_conn.conn_state.terminated())
         {
-            f.await
+            Ok(f) => f.await,
+            Err(error) => error,
         }
     }
 
@@ -618,12 +636,19 @@ impl Connection {
         self.0
             .try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
     }
+
+    /// Check if the connection is still valid.
+    ///
+    /// Return error if no viable path exists, or the connection is closed.
+    pub fn validate(&self) -> Result<(), Error> {
+        self.0.validate()
+    }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         if let Ok(origin_dcid) = self.origin_dcid() {
-            if self.close("", 0) {
+            if self.close("", 0).is_ok() {
                 #[cfg(debug_assertions)]
                 tracing::warn!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
                 #[cfg(not(debug_assertions))]

@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use qbase::{error::Error, net::route::Link, role::Role};
+use qbase::{error::Error, frame::ConnectionCloseFrame, net::route::Link, role::Role};
 use qevent::{
     quic::{
         Owner,
@@ -18,7 +18,7 @@ use qevent::{
     },
     telemetry::Instrument,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::SetOnce;
 use tracing::Instrument as _;
 
 use crate::Components;
@@ -26,16 +26,16 @@ use crate::Components;
 #[derive(Clone)]
 pub struct ArcConnState {
     state: Arc<AtomicU8>,
-    handshaked: Arc<Semaphore>,
-    terminated: Arc<Semaphore>,
+    handshaked: Arc<SetOnce<()>>,
+    terminated: Arc<SetOnce<Error>>,
 }
 
 impl Default for ArcConnState {
     fn default() -> Self {
         Self {
             state: Default::default(),
-            handshaked: Arc::new(Semaphore::new(0)),
-            terminated: Arc::new(Semaphore::new(0)),
+            handshaked: Arc::new(SetOnce::new()),
+            terminated: Arc::new(SetOnce::new()),
         }
     }
 }
@@ -113,19 +113,6 @@ impl ArcConnState {
                     // enter Closing directly without enter Attempted.
                     let old_state =
                         decode(old_state_code).unwrap_or(BaseConnectionStates::Attempted.into());
-                    match state {
-                        QlogConnectionState::Granular(
-                            GranularConnectionStates::HandshakeConfirmed,
-                        ) => {
-                            self.handshaked.add_permits(1024);
-                        }
-                        QlogConnectionState::Granular(GranularConnectionStates::Closing)
-                        | QlogConnectionState::Granular(GranularConnectionStates::Draining) => {
-                            self.handshaked.close();
-                            self.terminated.add_permits(1024);
-                        }
-                        _ => {}
-                    }
                     qevent::event!(ConnectionStateUpdated {
                         new: state,
                         old: old_state
@@ -137,23 +124,54 @@ impl ArcConnState {
         }
     }
 
-    pub fn handshaked(&self) -> impl Future<Output = bool> + Send {
-        let handshaked = self.handshaked.clone();
-        async move { handshaked.acquire().await.is_ok() }
-            .instrument_in_current()
-            .in_current_span()
+    pub fn enter_handshaked(&self) -> Option<QlogConnectionState> {
+        if let Some(old_state) = self.update(GranularConnectionStates::HandshakeConfirmed.into()) {
+            self.handshaked.set(()).expect("Handshaked already set");
+            return Some(old_state);
+        }
+        None
     }
 
-    pub fn terminated(&self) -> impl Future<Output = ()> + Send {
+    pub fn enter_closing(&self, error: &(impl Into<Error> + Clone)) -> Option<QlogConnectionState> {
+        if let Some(old_state) = self.update(GranularConnectionStates::Closing.into()) {
+            self.terminated
+                .set(error.clone().into())
+                .expect("Terminated error already set");
+            return Some(old_state);
+        }
+        None
+    }
+
+    pub fn enter_draining(&self, ccf: &ConnectionCloseFrame) -> Option<QlogConnectionState> {
+        if let Some(old_state) = self.update(GranularConnectionStates::Draining.into()) {
+            if old_state != QlogConnectionState::Granular(GranularConnectionStates::Closing) {
+                self.terminated
+                    .set(ccf.clone().into())
+                    .expect("Terminated error already set");
+            }
+            return Some(old_state);
+        }
+        None
+    }
+
+    pub fn handshaked(&self) -> impl Future<Output = Result<(), Error>> + Send {
+        let handshaked = self.handshaked.clone();
         let terminated = self.terminated.clone();
         async move {
-            _ = terminated
-                .acquire()
-                .await
-                .expect("terminated semaphore should never be closed")
+            tokio::select! {
+                _ = handshaked.wait() => Ok(()),
+                error = terminated.wait() => Err(error.clone()),
+            }
         }
         .instrument_in_current()
         .in_current_span()
+    }
+
+    pub fn terminated(&self) -> impl Future<Output = Error> + Send {
+        let terminated = self.terminated.clone();
+        async move { terminated.wait().await.clone() }
+            .instrument_in_current()
+            .in_current_span()
     }
 }
 
