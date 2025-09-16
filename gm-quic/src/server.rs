@@ -572,13 +572,13 @@ impl QuicListeners {
                     tracing::Span::current().record("server_name", &server_name);
                     let incoming = (connection.clone(), server_name, pathway, link);
                     if incomings.send((incoming, premit)).await.is_err() {
-                        connection.close("", 1);
+                        _ = connection.close("", 1);
                     }
                 }
                 Err(error) => {
-                    tracing::error!(
+                    tracing::debug!(
                         target: "quic_server",
-                        "Failed to accept connection from: {error:?}",
+                        "Failed to accept connection: {error}",
                     );
                 }
             }

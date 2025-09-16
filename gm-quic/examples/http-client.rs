@@ -172,7 +172,7 @@ async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Resu
         None => io::copy(&mut response, &mut io::stdout()).await?,
     };
 
-    connection.close("Bye bye", 0);
+    _ = connection.close("Bye bye", 0);
 
     tracing::info!("Saved to file {file_path}");
     Ok(())
