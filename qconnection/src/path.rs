@@ -134,7 +134,7 @@ impl Components {
                             Ok(())
                         }
                         _ => {
-                            if !conn_state.handshaked().await {
+                            if conn_state.handshaked().await.is_err() {
                                 return Ok(());
                             }
                             path.validate().await

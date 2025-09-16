@@ -1,10 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{io, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use qbase::net::{
@@ -93,42 +87,14 @@ impl QuicClient {
 }
 
 #[derive(Debug, Error)]
-pub enum ConnectEndpointError {
-    #[error("No suitable bound interface found for endpoint")]
-    NoSuitableInterface,
-    #[error("Failed to bind interface {bind_uri}: {bind_error}")]
-    InterfaceBindFailed {
-        bind_uri: BindUri,
-        #[source]
-        bind_error: io::Error,
-    },
-}
-
-#[derive(Debug, Error)]
-pub struct ConnectServerError {
-    server_name: String,
-    accumulator: HashMap<EndpointAddr, ConnectEndpointError>,
-}
-
-impl std::fmt::Display for ConnectServerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Failed to connect to server '{}': {}",
-            self.server_name,
-            self.accumulator
-                .iter()
-                .map(|(server_ep, error)| format!("endpoint {server_ep}: {error}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
-}
-
-impl From<ConnectServerError> for io::Error {
-    fn from(error: ConnectServerError) -> Self {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, error)
-    }
+#[error(
+    "Failed to bind interface `{}` for client connection",
+    bind_uri.as_ref().map_or(String::from("<no bind uri generated>"), |bind_uri| bind_uri.to_string())
+)]
+pub struct BindInterfaceError {
+    bind_uri: Option<BindUri>,
+    #[source]
+    bind_error: io::Error,
 }
 
 impl QuicClient {
@@ -138,28 +104,25 @@ impl QuicClient {
     ///
     /// `server_addr` is the address of the server, packets will be sent to this address.
     ///
-    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
-    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
-    /// failed to connect.
+    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you want,
+    /// such as sending data, receiving data... operations will be pending until the connection is connected or failed to connect.
     ///
-    /// ### Select an interface
+    /// ### Create paths
     ///
-    /// First, the client will select an interface to communicate with the server.
+    /// If the client binds some addresses during construction,
+    /// the client will try to use the available addresses to pair with the addresses of each server to create multiple paths.
     ///
-    /// If the client has already bound a set of addresses, The client will select the interface whose IP family of the
-    /// first address matches the server addr from the bound and not closed interfaces.
+    /// If the client does not bind an address during construction,
+    /// the client will try to bind some random addresses based on the type of server address to create paths.
     ///
-    /// ### Connect to server
+    /// This method returns an error only if binding a new interface fails.
     ///
-    /// If the client does not bind any interface, the client will bind the interface on the address/port randomly assigned
-    /// by the system through `quic_iface_factory` *every time* it establishes a connection.
-    ///
-    /// The client will initiate a new connection to the server.
+    /// This method may produce a connection without any path
     pub fn connect(
         &self,
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> Result<Arc<Connection>, ConnectServerError> {
+    ) -> Result<Arc<Connection>, BindInterfaceError> {
         let server_name = server_name.into();
         let avaliable_ifaces = self.bind_interfaces.as_ref().map(|map| {
             map.iter()
@@ -177,15 +140,23 @@ impl QuicClient {
                     AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
                         .expect("URL should be valid")
                         .alloc_port(),
-                    _ => return Err(ConnectEndpointError::NoSuitableInterface),
+                    _ => {
+                        return Err(BindInterfaceError {
+                            bind_uri: None,
+                            bind_error: io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "BLE and other address kinds are not supported yet",
+                            ),
+                        });
+                    }
                 };
                 let iface = QuicInterfaces::global()
                     .bind(bind_uri.clone(), self.quic_iface_factory.clone())
                     .borrow()
                     .and_then(|iface| Ok((iface.real_addr()?, iface)))
-                    .map_err(|bind_error| ConnectEndpointError::InterfaceBindFailed {
-                        bind_uri,
-                        bind_error,
+                    .map_err(|source| BindInterfaceError {
+                        bind_uri: Some(bind_uri),
+                        bind_error: source,
                     })?;
                 Ok(vec![iface])
             }
@@ -195,50 +166,28 @@ impl QuicClient {
                     .filter(|(addr, _)| addr.kind() == server_ep.addr_kind())
                     .cloned()
                     .collect::<Vec<_>>();
-                if ifaces.is_empty() {
-                    return Err(ConnectEndpointError::NoSuitableInterface);
-                };
                 Ok(ifaces)
             }
         };
 
-        let mut error_accumulator = HashMap::new();
-        let paths = server_eps
-            .into_iter()
-            .map(Into::into)
-            .collect::<HashSet<_>>() // dedup
-            .into_iter()
-            .flat_map(|server_ep| {
-                select_or_bind_ifaces(&server_ep)
-                    .map_err(|connect_error| {
-                        assert!(
-                            error_accumulator.insert(server_ep, connect_error).is_none(),
-                            "Duplicate error for the same server endpoint"
-                        );
-                    })
-                    .into_iter()
-                    .flatten()
-                    .map(move |(real_addr, iface)| {
-                        let dst = match server_ep {
-                            EndpointAddr::Socket(socket_endpoint_addr) => {
-                                RealAddr::Internet(*socket_endpoint_addr)
-                            }
-                            EndpointAddr::Ble(ble_endpont_addr) => {
-                                RealAddr::Bluetooth(*ble_endpont_addr)
-                            }
-                        };
-                        let link = Link::new(real_addr, dst);
-                        let pathway = Pathway::new(real_addr.into(), server_ep);
-                        (iface, link, pathway)
-                    })
-            })
-            .collect::<Vec<_>>();
+        let mut paths = vec![];
 
-        if paths.is_empty() {
-            return Err(ConnectServerError {
-                server_name,
-                accumulator: error_accumulator,
-            });
+        for server_ep in server_eps.into_iter().map(Into::into) {
+            paths.extend(select_or_bind_ifaces(&server_ep)?.into_iter().map(
+                move |(real_addr, iface)| {
+                    let dst = match server_ep {
+                        EndpointAddr::Socket(socket_endpoint_addr) => {
+                            RealAddr::Internet(*socket_endpoint_addr)
+                        }
+                        EndpointAddr::Ble(ble_endpont_addr) => {
+                            RealAddr::Bluetooth(*ble_endpont_addr)
+                        }
+                    };
+                    let link = Link::new(real_addr, dst);
+                    let pathway = Pathway::new(real_addr.into(), server_ep);
+                    (iface, link, pathway)
+                },
+            ));
         }
 
         let connection = Arc::new(

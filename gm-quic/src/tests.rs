@@ -39,6 +39,8 @@ where
         tracing_subscriber::fmt()
             .with_writer(non_blocking)
             .with_max_level(tracing::Level::INFO)
+            .with_file(true)
+            .with_line_number(true)
             .init();
         guard
     });
@@ -210,7 +212,7 @@ fn shutdown() -> Result<(), Error> {
             tokio::spawn(async move {
                 let (_sid, (reader, writer)) = connection.accept_bi_stream().await?;
                 echo_stream(reader, writer).await?;
-                connection.close("Bye bye", 0);
+                _ = connection.close("Bye bye", 0);
                 Result::<(), Error>::Ok(())
             });
         }
@@ -234,12 +236,14 @@ fn shutdown() -> Result<(), Error> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", [server_addr])?;
-        connection.handshaked().await; // 可有可无
+        _ = connection.handshaked().await; // 可有可无
 
         assert!(
             send_and_verify_echo(&connection, b"").await.is_err()
                 || send_and_verify_echo(&connection, b"").await.is_err()
         );
+
+        connection.terminated().await;
 
         Result::Ok(())
     };

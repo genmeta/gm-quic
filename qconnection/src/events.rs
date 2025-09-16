@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
-use qbase::{self, error::QuicError, frame::ConnectionCloseFrame};
-use qevent::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
+use qbase::{
+    self,
+    error::{AppError, QuicError},
+    frame::ConnectionCloseFrame,
+};
+use qevent::quic::connectivity::BaseConnectionStates;
 use tokio::sync::mpsc;
 
 use crate::state::ArcConnState;
@@ -14,7 +18,7 @@ pub enum Event {
     // An Error occurred during the connection, will enter the closing state
     Failed(QuicError),
     // The connection is closed by application, just a notification
-    ApplicationClose,
+    ApplicationClose(AppError),
     // Received a connection close frame, will enter the draining state
     Closed(ConnectionCloseFrame),
     // Received a stateless reset, will enter the draining state
@@ -46,20 +50,22 @@ impl EmitEvent for ArcEventBroker {
     fn emit(&self, event: Event) {
         match &event {
             Event::Handshaked => {
-                let handshaked_state = GranularConnectionStates::HandshakeConfirmed;
-                if self.conn_state.update(handshaked_state.into()).is_none() {
+                if self.conn_state.enter_handshaked().is_none() {
                     return;
                 }
             }
-            Event::ApplicationClose | Event::Failed(..) => {
-                let closing_state = GranularConnectionStates::Closing;
-                if self.conn_state.update(closing_state.into()).is_none() {
+            Event::Failed(error) => {
+                if self.conn_state.enter_closing(error).is_none() {
                     return;
                 }
             }
-            Event::Closed(..) => {
-                let draining_state = GranularConnectionStates::Draining;
-                if self.conn_state.update(draining_state.into()).is_none() {
+            Event::ApplicationClose(error) => {
+                if self.conn_state.enter_closing(error).is_none() {
+                    return;
+                }
+            }
+            Event::Closed(ccf) => {
+                if self.conn_state.enter_draining(ccf).is_none() {
                     return;
                 }
             }

@@ -47,7 +47,7 @@ impl InterfaceContext {
                                     e.is_recoverable()
                                 })
                             {
-                                tracing::info!(target: "quic", %bind_uri, "Rebinding interface");
+                                tracing::debug!(target: "quic", %bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
                                 rw_iface.rebind();
                                 receive_task =
@@ -56,8 +56,8 @@ impl InterfaceContext {
                         }
                         result = &mut receive_task => {
                             match result {
-                                Ok(()) => tracing::warn!(target: "quic", %bind_uri, "Receive task completed due to interface freed"),
-                                Err(e) => tracing::error!(target: "quic", %bind_uri, "Receive task failed with error: {e}"),
+                                Ok(()) => tracing::debug!(target: "quic", %bind_uri, "Receive task completed due to interface freed"),
+                                Err(e) => tracing::debug!(target: "quic", %bind_uri, "Receive task failed with error: {e}"),
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
                             receive_task = ReceiveTask::Stopped;
