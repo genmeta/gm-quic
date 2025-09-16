@@ -204,6 +204,7 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
     }
 }
 
+#[cfg(debug_assertions)]
 impl<TX> Drop for Writer<TX> {
     fn drop(&mut self) {
         let mut sender = self.inner.sender();

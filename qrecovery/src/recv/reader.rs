@@ -181,6 +181,7 @@ where
     }
 }
 
+#[cfg(debug_assertions)]
 impl<TX> Drop for Reader<TX> {
     fn drop(&mut self) {
         let mut recver = self.inner.recver();
