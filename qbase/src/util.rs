@@ -10,8 +10,5 @@ pub use data::{ContinuousData, DataPair, NonData, WriteData};
 mod index_deque;
 pub use index_deque::{IndexDeque, IndexError};
 
-mod future;
-pub use future::{Future, ReadyFuture};
-
 mod unique_id;
 pub use unique_id::{UniqueId, UniqueIdGenerator};

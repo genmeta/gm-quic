@@ -1,10 +1,9 @@
 use std::{
     ops::{BitAnd, Deref},
     sync::Arc,
-    task::{Context, Poll},
 };
 
-use qbase::util::Future;
+use tokio::sync::SetOnce;
 
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub enum ClientNameVerifyResult {
@@ -151,7 +150,7 @@ impl_auth_client_for_tuple! {
 /// the client's transport parameters and verified the requested server name (SNI),
 /// enhancing security by preventing premature data transmission before proper validation.
 #[derive(Default, Debug, Clone)]
-pub struct ArcSendLock(Arc<Future<()>>);
+pub struct ArcSendLock(Arc<SetOnce<()>>);
 
 impl ArcSendLock {
     /// Create a new `SendLock` in the restricted state.
@@ -171,7 +170,7 @@ impl ArcSendLock {
     ///
     /// Usually for client, which does not need to do extra verify server name and certs.
     pub fn unrestricted() -> Self {
-        Self(Future::with(()).into())
+        Self(Arc::new(SetOnce::new_with(Some(()))))
     }
 
     /// Request permission to send data.
@@ -181,21 +180,12 @@ impl ArcSendLock {
     ///
     /// This method will not block when silent rejection is not enabled
     pub async fn request_permit(&self) {
-        self.0.get().await;
-    }
-
-    /// Poll for permission to send data.
-    ///
-    /// `poll` version of [`request_permit`].
-    ///
-    /// [`request_permit`]: Self::request_permit
-    pub fn poll_request_permit(&self, cx: &mut Context) -> Poll<()> {
-        self.0.poll_get(cx).map(|_| ())
+        _ = self.0.wait().await
     }
 
     /// Check if transmission is currently permitted.
     pub fn is_permitted(&self) -> bool {
-        self.0.try_get().is_some()
+        self.0.get().is_some()
     }
 
     /// Grant permission for transmission.
@@ -203,6 +193,6 @@ impl ArcSendLock {
     /// Called after client parameters and server verification are completed
     /// successfully. Unblocks all pending transmission requests.
     pub fn grant_permit(&self) {
-        self.0.set(());
+        _ = self.0.set(());
     }
 }

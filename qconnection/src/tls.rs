@@ -13,7 +13,6 @@ use qbase::{
     error::{Error, ErrorKind, QuicError},
     packet::keys::{ArcKeys, ArcOneRttKeys, ArcZeroRttKeys, DirectionalKeys},
     param::{ArcParameters, ClientParameters, ParameterId, ServerParameters, WriteParameters},
-    util::Future,
 };
 use qrecovery::crypto::CryptoStream;
 use rustls::{
@@ -350,9 +349,54 @@ impl TlsHandshakeInfo {
     }
 }
 
+enum InfoState {
+    Demand(Vec<Waker>),
+    Ready(Arc<TlsHandshakeInfo>),
+}
+
+impl InfoState {
+    fn set(&mut self, info: Arc<TlsHandshakeInfo>) {
+        // wakers woken in drop
+        *self = Self::Ready(info);
+    }
+
+    fn poll_get(&mut self, cx: &mut Context) -> Poll<Arc<TlsHandshakeInfo>> {
+        match self {
+            InfoState::Demand(wakers) => {
+                wakers.push(cx.waker().clone());
+                Poll::Pending
+            }
+            InfoState::Ready(tls_handshake_info) => Poll::Ready(tls_handshake_info.clone()),
+        }
+    }
+
+    fn get(&self) -> Option<&Arc<TlsHandshakeInfo>> {
+        match self {
+            InfoState::Demand(..) => None,
+            InfoState::Ready(tls_handshake_info) => Some(tls_handshake_info),
+        }
+    }
+}
+
+impl Default for InfoState {
+    fn default() -> Self {
+        Self::Demand(vec![])
+    }
+}
+
+impl Drop for InfoState {
+    fn drop(&mut self) {
+        if let Self::Demand(wakers) = self {
+            for waker in wakers.drain(..) {
+                waker.wake();
+            }
+        }
+    }
+}
+
 pub struct TlsHandshake {
     session: TlsSession,
-    info: Future<Arc<TlsHandshakeInfo>>,
+    info: InfoState,
 }
 
 #[derive(Clone)]
@@ -362,7 +406,7 @@ impl ArcTlsHandshake {
     pub fn new(session: TlsSession) -> ArcTlsHandshake {
         Self(Arc::new(Mutex::new(Ok(TlsHandshake {
             session,
-            info: Future::default(),
+            info: Default::default(),
         }))))
     }
 
@@ -403,7 +447,7 @@ impl ArcTlsHandshake {
         poll_fn(|cx| {
             let mut tls_handshake = self.state();
             match tls_handshake.as_mut() {
-                Ok(state) => state.info.poll_get(cx).map(|info| info.clone()).map(Ok),
+                Ok(state) => state.info.poll_get(cx).map(Ok),
                 Err(e) => Poll::Ready(Err(e.clone())),
             }
         })
@@ -464,7 +508,7 @@ impl ArcTlsHandshake {
             }
         }
 
-        if tls_handshake.session.is_finished() && tls_handshake.info.try_get().is_none() {
+        if tls_handshake.session.is_finished() && tls_handshake.info.get().is_none() {
             let info = Arc::new(tls_handshake.session.r#yield());
             tracing::debug!(target: "quic", "TLS handshake finished");
             tls_handshake.info.set(info.clone());
