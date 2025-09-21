@@ -236,10 +236,15 @@ fn initial_keys_with(
                 | rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256
                 | rustls::CipherSuite::TLS13_AES_128_CCM_SHA256,
                 Some(suite),
-            ) => Some(suite.quic_suite()),
+            ) => {
+                if let Some(quic) = suite.quic_suite() {
+                    Some(quic)
+                } else {
+                    None
+                }
+            }
             _ => None,
         })
-        .flatten()
         .expect("crypto provider does not provide supported cipher suite")
         .keys(origin_dcid, side, version)
 }
