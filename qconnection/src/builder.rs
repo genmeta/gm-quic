@@ -230,9 +230,13 @@ fn initial_keys_with(
         .cipher_suites
         .iter()
         .find_map(|cs| match (cs.suite(), cs.tls13()) {
-            (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
-                Some(suite.quic_suite())
-            }
+            (
+                rustls::CipherSuite::TLS13_AES_128_GCM_SHA256
+                | rustls::CipherSuite::TLS13_AES_256_GCM_SHA384
+                | rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256
+                | rustls::CipherSuite::TLS13_AES_128_CCM_SHA256,
+                Some(suite),
+            ) => Some(suite.quic_suite()),
             _ => None,
         })
         .flatten()
