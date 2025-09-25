@@ -72,7 +72,6 @@ where
     fn set_limit(&mut self, active_cid_limit: u64) -> Result<(), Error> {
         debug_assert!(self.active_cid_limit.is_none());
         if active_cid_limit < 2 {
-            tracing::error!("   Cause by: setting new active connection id limit");
             return Err(QuicError::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto.into(),
@@ -103,7 +102,6 @@ where
     fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
         let seq = frame.sequence();
         if seq >= self.cid_deque.largest() {
-            tracing::error!("   Cause by: received a invalid RetireConnectionIdFrame");
             return Err(QuicError::new(
                 ErrorKind::ConnectionIdLimit,
                 frame.frame_type().into(),

@@ -109,7 +109,7 @@ impl ArcPathContexts {
     pub fn remove(&self, pathway: &Pathway, reason: &PathDeactivated) {
         if self.paths.remove(pathway).is_some() {
             self.tx_wakers.remove(pathway);
-            tracing::warn!(%pathway, %reason, "Path deactivated");
+            tracing::debug!(target: "quic", %pathway, %reason, "Path deactivated");
             if self.is_empty() {
                 let error = QuicError::with_default_fty(
                     ErrorKind::NoViablePath,

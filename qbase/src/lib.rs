@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! # The QUIC base library
 //!
 //! The `qbase` library defines the necessary basic structures in the QUIC protocol,

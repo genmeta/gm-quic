@@ -188,13 +188,29 @@ impl<TX> Drop for Reader<TX> {
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) if !r.is_stopped() => {
+                    #[cfg(debug_assertions)]
                     tracing::warn!(
+                        target: "quic",
+                        "The receiving {} is not stopped with error before dropped!",
+                        r.stream_id(),
+                    );
+                    #[cfg(not(debug_assertions))]
+                    tracing::warn!(
+                        target: "quic",
                         "The receiving {} is not stopped with error before dropped!",
                         r.stream_id(),
                     );
                 }
                 Recver::SizeKnown(r) if !r.is_stopped() => {
+                    #[cfg(debug_assertions)]
                     tracing::warn!(
+                        target: "quic",
+                        "The receiving {} is not stopped with error before dropped!",
+                        r.stream_id()
+                    );
+                    #[cfg(not(debug_assertions))]
+                    tracing::debug!(
+                        target: "quic",
                         "The receiving {} is not stopped with error before dropped!",
                         r.stream_id()
                     );

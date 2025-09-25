@@ -4,14 +4,15 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-pub use client_auth::{ArcSendLock, AuthClient, NoopClientAuther};
+pub use client_auth::{
+    AcceptAllClientAuther, ArcSendLock, AuthClient, ClientCertsVerifyResult, ClientNameVerifyResult,
+};
 use futures::{future::poll_fn, never::Never};
 use qbase::{
     Epoch,
     error::{Error, ErrorKind, QuicError},
     packet::keys::{ArcKeys, ArcOneRttKeys, ArcZeroRttKeys, DirectionalKeys},
     param::{ArcParameters, ClientParameters, ParameterId, ServerParameters, WriteParameters},
-    util::Future,
 };
 use qrecovery::crypto::CryptoStream;
 use rustls::{
@@ -196,7 +197,6 @@ impl ServerTlsSession {
         tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
         client_auther: Box<dyn AuthClient>,
-        anti_port_scan: bool,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
         params_buf.put_parameters(server_params);
@@ -208,10 +208,7 @@ impl ServerTlsSession {
             read_waker: None,
             client_name: None,
             server_name: None,
-            send_lock: match anti_port_scan {
-                true => ArcSendLock::new(),
-                false => ArcSendLock::unrestricted(),
-            },
+            send_lock: ArcSendLock::new(),
             client_auther,
             client_cert: None,
         };
@@ -239,30 +236,48 @@ impl ServerTlsSession {
             QuicError::with_default_fty(ErrorKind::ConnectionRefused, "Missing SNI in client hello")
         })?;
 
-        if !self
+        match self
             .client_auther
             .verify_client_name(host, self.client_name.as_deref())
         {
-            tracing::warn!(
-                host,
-                ?self.client_name,
-                "Client name verification failed, refusing connection."
-            );
-            return Err(Error::Quic(QuicError::with_default_fty(
-                ErrorKind::ConnectionRefused,
-                "",
-            )));
+            ClientNameVerifyResult::Accept => {
+                self.send_lock.grant_permit();
+                parameters.lock_guard()?.recv_remote_params(client_params)?;
+
+                match self.tls_conn.zero_rtt_keys() {
+                    Some(keys) => zero_rtt_keys.set_keys(keys.into()),
+                    None => _ = zero_rtt_keys.invalid(),
+                }
+
+                Ok(())
+            }
+            ClientNameVerifyResult::Refuse(reason) => {
+                self.send_lock.grant_permit();
+                tracing::debug!(
+                    target: "quic",
+                    host,
+                    ?self.client_name,
+                    "Client name verification failed, refusing connection."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    reason,
+                )))
+            }
+            ClientNameVerifyResult::SilentRefuse(reason) => {
+                tracing::debug!(
+                    target: "quic",
+                    host,
+                    ?reason,
+                    ?self.client_name,
+                    "Client name verification failed, refusing connection silently."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    "",
+                )))
+            }
         }
-
-        self.send_lock.grant_permit();
-        parameters.lock_guard()?.recv_remote_params(client_params)?;
-
-        match self.tls_conn.zero_rtt_keys() {
-            Some(keys) => zero_rtt_keys.set_keys(keys.into()),
-            None => _ = zero_rtt_keys.invalid(),
-        }
-
-        Ok(())
     }
 
     fn try_process_cert(&mut self) -> Result<(), Error> {
@@ -280,22 +295,25 @@ impl ServerTlsSession {
             .as_deref()
             .expect("Server name must be known at this point");
 
-        if !self
+        match self
             .client_auther
             .verify_client_certs(host, self.client_name.as_deref(), cert)
         {
-            tracing::warn!(
-                ?host,
-                ?self.client_name,
-                "Client certificate verification failed, refusing connection."
-            );
-            return Err(Error::Quic(QuicError::with_default_fty(
-                ErrorKind::ConnectionRefused,
-                "",
-            )));
+            ClientCertsVerifyResult::Refuse(reason) => {
+                tracing::debug!(
+                    target: "quic",
+                    ?host,
+                    ?reason,
+                    ?self.client_name,
+                    "Client certificate verification failed, refusing connection."
+                );
+                Err(Error::Quic(QuicError::with_default_fty(
+                    ErrorKind::ConnectionRefused,
+                    reason,
+                )))
+            }
+            ClientCertsVerifyResult::Accept => Ok(()),
         }
-
-        Ok(())
     }
 }
 
@@ -331,9 +349,54 @@ impl TlsHandshakeInfo {
     }
 }
 
+enum InfoState {
+    Demand(Vec<Waker>),
+    Ready(Arc<TlsHandshakeInfo>),
+}
+
+impl InfoState {
+    fn set(&mut self, info: Arc<TlsHandshakeInfo>) {
+        // wakers woken in drop
+        *self = Self::Ready(info);
+    }
+
+    fn poll_get(&mut self, cx: &mut Context) -> Poll<Arc<TlsHandshakeInfo>> {
+        match self {
+            InfoState::Demand(wakers) => {
+                wakers.push(cx.waker().clone());
+                Poll::Pending
+            }
+            InfoState::Ready(tls_handshake_info) => Poll::Ready(tls_handshake_info.clone()),
+        }
+    }
+
+    fn get(&self) -> Option<&Arc<TlsHandshakeInfo>> {
+        match self {
+            InfoState::Demand(..) => None,
+            InfoState::Ready(tls_handshake_info) => Some(tls_handshake_info),
+        }
+    }
+}
+
+impl Default for InfoState {
+    fn default() -> Self {
+        Self::Demand(vec![])
+    }
+}
+
+impl Drop for InfoState {
+    fn drop(&mut self) {
+        if let Self::Demand(wakers) = self {
+            for waker in wakers.drain(..) {
+                waker.wake();
+            }
+        }
+    }
+}
+
 pub struct TlsHandshake {
     session: TlsSession,
-    info: Future<Arc<TlsHandshakeInfo>>,
+    info: InfoState,
 }
 
 #[derive(Clone)]
@@ -343,7 +406,7 @@ impl ArcTlsHandshake {
     pub fn new(session: TlsSession) -> ArcTlsHandshake {
         Self(Arc::new(Mutex::new(Ok(TlsHandshake {
             session,
-            info: Future::default(),
+            info: Default::default(),
         }))))
     }
 
@@ -368,7 +431,6 @@ impl ArcTlsHandshake {
         match tls_handshake.session.write_hs(buf) {
             Ok(_) => Ok(()),
             Err(error) => {
-                tracing::error!("TLS write error: {error}");
                 let error_kind = match tls_handshake.session.alert() {
                     Some(alert) => ErrorKind::Crypto(alert.into()),
                     None => ErrorKind::ProtocolViolation,
@@ -385,7 +447,7 @@ impl ArcTlsHandshake {
         poll_fn(|cx| {
             let mut tls_handshake = self.state();
             match tls_handshake.as_mut() {
-                Ok(state) => state.info.poll_get(cx).map(|info| info.clone()).map(Ok),
+                Ok(state) => state.info.poll_get(cx).map(Ok),
                 Err(e) => Poll::Ready(Err(e.clone())),
             }
         })
@@ -446,9 +508,9 @@ impl ArcTlsHandshake {
             }
         }
 
-        if tls_handshake.session.is_finished() && tls_handshake.info.try_get().is_none() {
+        if tls_handshake.session.is_finished() && tls_handshake.info.get().is_none() {
             let info = Arc::new(tls_handshake.session.r#yield());
-            tracing::debug!("TLS handshake finished");
+            tracing::debug!(target: "quic", "TLS handshake finished");
             tls_handshake.info.set(info.clone());
             return Ok(Some(info));
         }

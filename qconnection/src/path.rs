@@ -134,7 +134,7 @@ impl Components {
                             Ok(())
                         }
                         _ => {
-                            if !conn_state.handshaked().await {
+                            if conn_state.handshaked().await.is_err() {
                                 return Ok(());
                             }
                             path.validate().await
@@ -177,7 +177,7 @@ impl Components {
                 Instrument::instrument(task, qevent::span!(@current, path=pathway.to_string()))
                     .in_current_span();
 
-            tracing::info!(%pathway, %link, is_probed, is_initial_path, "Add new path");
+            tracing::debug!(target: "quic", %pathway, %link, is_probed, is_initial_path, "Add new path");
 
             Ok((path, task))
         };
