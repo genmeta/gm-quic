@@ -226,7 +226,7 @@ impl QuicListeners {
     }
 
     /// Start to build a QuicServer with the given tls crypto provider.
-    pub fn builder_with_crypto_provieder(
+    pub fn builder_with_crypto_provider(
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildServerError> {
         Self::builder_with_tls(
