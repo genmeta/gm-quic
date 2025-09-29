@@ -64,7 +64,7 @@ impl QuicClient {
     }
 
     /// Create a [`QuicClient`] builder with custom crypto provider.
-    pub fn builder_with_crypto_provieder(
+    pub fn builder_with_crypto_provider(
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         Self::builder_with_tls(
