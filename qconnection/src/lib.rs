@@ -19,7 +19,7 @@ pub mod prelude {
         varint::VarInt,
     };
     pub use qinterface::QuicIO;
-    pub use qrecovery::{recv::StopSending, send::CancelStream};
+    pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 

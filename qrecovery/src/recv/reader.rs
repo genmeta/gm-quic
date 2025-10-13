@@ -5,6 +5,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::Bytes;
+use futures::Stream;
 use qbase::{
     frame::{MaxStreamDataFrame, SendFrame, StopSendingFrame},
     varint::VARINT_MAX,
@@ -13,6 +15,7 @@ use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdat
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
+use crate::streams::error::StreamError;
 
 pub trait StopSending {
     /// Tell peer to stop sending data with the given error code.
@@ -99,6 +102,91 @@ impl<TX> Reader<TX> {
             tracing_span: tracing::Span::current(),
         }
     }
+
+    #[inline]
+    pub fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut impl bytes::BufMut,
+    ) -> Poll<Result<(), StreamError>>
+    where
+        TX: SendFrame<MaxStreamDataFrame>,
+    {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut recver = self.inner.recver();
+        let receiving_state = recver.as_mut().map_err(|e| e.clone())?;
+        // 能相当清楚地看到应用层读取数据驱动的接收状态演变
+        match receiving_state {
+            Recver::Recv(r) => r.poll_read(cx, buf).map(Ok),
+            Recver::SizeKnown(r) => r.poll_read(cx, buf).map(Ok),
+            Recver::DataRcvd(r) => {
+                r.poll_read(buf);
+                if r.is_all_read() {
+                    r.upgrade();
+                    *receiving_state = Recver::DataRead;
+                }
+                Poll::Ready(Ok(()))
+            }
+            Recver::DataRead => Poll::Ready(Ok(())),
+            Recver::ResetRcvd(r) => {
+                qevent::event!(StreamStateUpdated {
+                    stream_id: r.stream_id().id(),
+                    stream_type: r.stream_id().dir(),
+                    old: GranularStreamStates::ResetReceived,
+                    new: GranularStreamStates::ResetRead,
+                    stream_side: StreamSide::Receiving
+                });
+                let reset_stream_error = (&*r).into();
+                *receiving_state = Recver::ResetRead(reset_stream_error);
+                Poll::Ready(Err(reset_stream_error.into()))
+            }
+            Recver::ResetRead(r) => Poll::Ready(Err((*r).into())),
+        }
+    }
+
+    #[inline]
+    pub fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Bytes, StreamError>>>
+    where
+        TX: SendFrame<MaxStreamDataFrame>,
+    {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut recver = self.inner.recver();
+        let receiving_state = recver.as_mut().map_err(|e| e.clone())?;
+        // 能相当清楚地看到应用层读取数据驱动的接收状态演变
+        match receiving_state {
+            Recver::Recv(r) => r.poll_next(cx).map(Ok).map(Some),
+            Recver::SizeKnown(r) => r.poll_next(cx).map(Ok).map(Some),
+            Recver::DataRcvd(r) => {
+                let Some(data) = r.poll_next() else {
+                    return Poll::Ready(None);
+                };
+                if r.is_all_read() {
+                    r.upgrade();
+                    *receiving_state = Recver::DataRead;
+                }
+                Poll::Ready(Some(Ok(data)))
+            }
+            Recver::DataRead => Poll::Ready(None),
+            Recver::ResetRcvd(r) => {
+                qevent::event!(StreamStateUpdated {
+                    stream_id: r.stream_id().id(),
+                    stream_type: r.stream_id().dir(),
+                    old: GranularStreamStates::ResetReceived,
+                    new: GranularStreamStates::ResetRead,
+                    stream_side: StreamSide::Receiving
+                });
+                let reset_stream_error = (&*r).into();
+                *receiving_state = Recver::ResetRead(reset_stream_error);
+                Poll::Ready(Some(Err(reset_stream_error.into())))
+            }
+            Recver::ResetRead(r) => Poll::Ready(Some(Err((*r).into()))),
+        }
+    }
 }
 
 impl<TX> StopSending for Reader<TX>
@@ -133,51 +221,28 @@ where
     }
 }
 
-impl<TX: Unpin> Unpin for Reader<TX> {}
-
 impl<TX> AsyncRead for Reader<TX>
 where
     TX: SendFrame<MaxStreamDataFrame>,
 {
+    #[inline]
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        Reader::poll_read(self.get_mut(), cx, buf).map_err(io::Error::from)
+    }
+}
 
-        let mut recver = self.inner.recver();
-        let receiving_state = recver.as_mut().map_err(|e| e.clone())?;
-        // 能相当清楚地看到应用层读取数据驱动的接收状态演变
-        match receiving_state {
-            Recver::Recv(r) => r.poll_read(cx, buf),
-            Recver::SizeKnown(r) => r.poll_read(cx, buf),
-            Recver::DataRcvd(r) => {
-                r.poll_read(buf);
-                if r.is_all_read() {
-                    r.upgrade();
-                    *receiving_state = Recver::DataRead;
-                }
-                Poll::Ready(Ok(()))
-            }
-            Recver::DataRead => Poll::Ready(Ok(())),
-            Recver::ResetRcvd(r) => {
-                qevent::event!(StreamStateUpdated {
-                    stream_id: r.stream_id().id(),
-                    stream_type: r.stream_id().dir(),
-                    old: GranularStreamStates::ResetReceived,
-                    new: GranularStreamStates::ResetRead,
-                    stream_side: StreamSide::Receiving
-                });
-                let reset_stream_error = (&*r).into();
-                *receiving_state = Recver::ResetRead(reset_stream_error);
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    reset_stream_error,
-                )))
-            }
-            Recver::ResetRead(r) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *r))),
-        }
+impl<TX> Stream for Reader<TX>
+where
+    TX: SendFrame<MaxStreamDataFrame>,
+{
+    type Item = Result<Bytes, StreamError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Reader::poll_next(self, cx)
     }
 }
 

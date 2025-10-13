@@ -452,9 +452,9 @@ impl PendingConnection {
         );
 
         let crypto_streams = [
-            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
-            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
-            CryptoStream::new(4096, 4096, self.tx_wakers.clone()),
+            CryptoStream::new(self.tx_wakers.clone()),
+            CryptoStream::new(self.tx_wakers.clone()),
+            CryptoStream::new(self.tx_wakers.clone()),
         ];
 
         let (data_streams, flow_ctrl, datagram_flow) = match self.role {

@@ -5,6 +5,7 @@ use std::{
     ops::Range,
 };
 
+use bytes::Bytes;
 use qbase::net::tx::Signals;
 
 /// To indicate the state of a data segment, it is colored.
@@ -86,29 +87,30 @@ impl Debug for State {
 struct BufMap(VecDeque<State>, u64);
 
 impl BufMap {
+    fn size(&self) -> u64 {
+        self.1
+    }
+
     // 追加写数据
     fn extend_to(&mut self, pos: u64) -> u64 {
-        debug_assert!(
-            pos < (1 << 62) && pos > self.1,
-            "pos({pos}) overflow or less than {}",
-            self.1
-        );
+        debug_assert!(pos < (1 << 62), "pos({pos}) overflow",);
+        debug_assert!(pos >= self.size(), "pos({pos}) less than {}", self.size());
 
-        if pos > self.1 {
+        if pos > self.size() {
             let back = self.0.back();
             match back {
                 Some(s) if s.color() == Color::Pending => {}
-                _ => self.0.push_back(State::encode(self.1, Color::Pending)),
+                _ => self.0.push_back(State::encode(self.size(), Color::Pending)),
             };
             self.1 = pos;
         }
-        self.1
+        self.size()
     }
 
     fn sent(&self) -> u64 {
         match self.0.back() {
             Some(s) if s.color() == Color::Pending => s.offset(),
-            _ => self.1,
+            _ => self.size(),
         }
     }
 
@@ -130,7 +132,7 @@ impl BufMap {
             .enumerate()
             .find(|(.., state)| {
                 if state.offset() >= send_window_size {
-                    // 如果offset已经超过了发送窗口大小，说明该区间能被发送
+                    // 如果offset已经超过了发送窗口大小，说明该区间不能被发送
                     signals |= Signals::FLOW_CONTROL;
                     return false;
                 }
@@ -174,7 +176,7 @@ impl BufMap {
                     .0
                     .get(index + 1)
                     .map(|s| s.offset())
-                    .unwrap_or(self.1)
+                    .unwrap_or(self.size())
                     .min(send_window_size);
 
                 let mut i = self.same_before(index, Color::Flighting);
@@ -270,12 +272,12 @@ impl BufMap {
                 },
                 None => {
                     debug_assert!(
-                        range.end <= self.1,
+                        range.end <= self.size(),
                         "Recved Range({:?}) over {}",
                         range,
-                        self.1
+                        self.size()
                     );
-                    need_insert_at_end = range.end < self.1 && pre_color != Color::Recved;
+                    need_insert_at_end = range.end < self.size() && pre_color != Color::Recved;
                     break;
                 }
             }
@@ -310,15 +312,9 @@ impl BufMap {
         loop {
             let entry = self.0.front();
             match entry {
-                Some(s) if s.color() == Color::Recved => {
-                    self.0.pop_front();
-                }
-                Some(s) => {
-                    return s.offset();
-                }
-                None => {
-                    return self.1;
-                }
+                Some(s) if s.color() == Color::Recved => _ = self.0.pop_front(),
+                Some(s) => return s.offset(),
+                None => return self.size(),
             }
         }
     }
@@ -427,13 +423,13 @@ impl BufMap {
                 None => {
                     // 找不到，说明到最后一段了
                     debug_assert!(
-                        range.end <= self.1,
+                        range.end <= self.size(),
                         "Lost Range({:?}) over {}",
                         range,
-                        self.1
+                        self.size()
                     );
                     // 如果上一段的color是Flighting，它要一分为二，到range.end的部分为Lost，后续部分为Flighting
-                    need_insert_at_end = range.end < self.1 && pre_color == Color::Flighting;
+                    need_insert_at_end = range.end < self.size() && pre_color == Color::Flighting;
                     break;
                 }
             };
@@ -460,10 +456,6 @@ impl BufMap {
         if drain_start < drain_end {
             self.0.drain(drain_start..drain_end);
         }
-    }
-
-    fn resend_sent(&mut self) {
-        self.0 = VecDeque::from(vec![State::encode(0, Color::Lost)]);
     }
 
     fn resend_flighting(&mut self) {
@@ -543,8 +535,12 @@ impl BufMap {
                     }
                 },
                 None => {
-                    debug_assert!(end <= self.1, "Lost Range.end({end}) over {}", self.1);
-                    need_insert_at_end = end < self.1 && pre_color == Color::Flighting;
+                    debug_assert!(
+                        end <= self.size(),
+                        "Lost Range.end({end}) over {}",
+                        self.size()
+                    );
+                    need_insert_at_end = end < self.size() && pre_color == Color::Flighting;
                     break;
                 }
             }
@@ -583,40 +579,65 @@ impl BufMap {
 #[derive(Default, Debug)]
 pub struct SendBuf {
     offset: u64,
-    // 写入数据的环形队列，与接收队列不同的是，它是连续的
-    data: VecDeque<u8>,
+    // 写入数据的队列，与接收队列不同的是，每一段数据都是前后连续的
+    data: VecDeque<Bytes>,
+    // 对BufMap::size的限制
+    max_data: u64,
     state: BufMap,
 }
 
 impl SendBuf {
     /// Create a new [`SendBuf`] with the given size.
-    pub fn with_capacity(n: usize) -> Self {
+    pub fn with_capacity(capacity: u64) -> Self {
         Self {
             offset: 0,
-            data: VecDeque::with_capacity(n),
+            data: VecDeque::new(),
+            max_data: capacity,
             state: BufMap::default(),
         }
     }
 
     /// Write data to the [`SendBuf`].
     ///
-    /// Return the number of bytes written, always equal to the length of the `data`.
+    /// When [`SendBuf`] has buffered [`Self::max_data`] amount of data,
+    /// no more data should be written.
+    pub fn write(&mut self, data: Bytes) {
+        // debug_assert!(self.remaining_mut() > 0, "Sendbuf buffers excess data");
+        if !data.is_empty() {
+            self.state
+                .extend_to((self.written() + data.len() as u64).min(self.max_data));
+            self.data.push_back(data);
+        }
+    }
+
+    /// The maximum amount of data that can be sent in the [`SendBuf`].
     ///
-    /// For [`DataStreams`], the amount of data that can be written to the [`SendBuf`] is limited
-    /// by the flow control of the stream.
+    /// For [`DataStreams`], this is the flow control of the stream.
     ///
-    /// To reduce the memory reallocation, the bytes in [`SendBuf`] should not exceed the return
-    /// value of [`SendBuf::remaining_mut`].
+    /// For [`CryptoStream`], there should be no restrictions.
     ///
     /// [`DataStreams`]: crate::streams::DataStreams
-    pub fn write(&mut self, data: &[u8]) -> usize {
-        // 写的数据量受流量控制限制，Crypto流则受Crypto流自身控制
-        let n = data.len();
-        if n > 0 {
-            self.data.extend(data);
-            self.state.extend_to(self.written() + n as u64);
-        }
-        n
+    /// [`CryptoStream`]: crate::crypto::CryptoStream
+    pub fn max_data(&self) -> u64 {
+        self.max_data
+    }
+
+    /// Forget all state of data that has been sent.
+    ///
+    /// This is usually called when the zero rtt is rejected by server.
+    ///
+    /// All data sent should be resent as fresh data,
+    /// and for the subsequent correction of max_data, max_data is also reset to 0.
+    pub fn forget_sent_state(&mut self) {
+        self.state = BufMap::default();
+        self.max_data = 0;
+    }
+
+    /// Extend the [`Self::max_data`] limit.
+    pub fn extend(&mut self, max_data: u64) {
+        debug_assert!(max_data >= self.max_data, "Cannot reduce sndbuf size");
+        self.max_data = max_data;
+        self.state.extend_to(self.written().min(self.max_data));
     }
 
     /// Return whether the [`SendBuf`] is empty.
@@ -625,8 +646,10 @@ impl SendBuf {
     }
 
     /// Return the total length of data that has been cumulatively written to the send buffer in the past.
+    ///
+    /// Note that data the returned size may be larger than [`Self::max_data`].
     pub fn written(&self) -> u64 {
-        self.state.1
+        self.offset + self.data.iter().map(|data| data.len() as u64).sum::<u64>()
     }
 
     /// Return the number of bytes that have been sent.
@@ -634,9 +657,18 @@ impl SendBuf {
         self.state.sent()
     }
 
-    /// Return the number of bytes can be written without reallocation.
-    pub fn remaining_mut(&self) -> usize {
-        self.data.capacity() - self.data.len()
+    /// Return the number of bytes that can be written without exceeding the [`Self::max_data`] limit.
+    ///
+    /// To prevent [`SendBuf`] from buffering excessive data, data should not be written when this method returns 0.
+    pub fn remaining_mut(&self) -> u64 {
+        self.max_data().saturating_sub(self.written())
+    }
+
+    /// Return whether there is remaining space to write data without exceeding the [`Self::max_data`] limit.
+    ///
+    /// When this method returns false, data should not be written.
+    pub fn has_remaining_mut(&self) -> bool {
+        self.max_data() > self.written()
     }
 
     // 无需close：不在写入即可，具体到某个状态，才有close
@@ -644,12 +676,12 @@ impl SendBuf {
     // 无需clean：Sender上下文直接释放即可，
 }
 
-type Data<'s> = (u64, bool, (&'s [u8], &'s [u8]));
+type Data<'s> = (Range<u64>, bool, Vec<Bytes>);
 
 impl SendBuf {
     /// Pick up data that can be sent.
     ///
-    /// The selected data is also subject to `predicate`, which accepts the starting position of the
+    /// The selected data is subject to `predicate`, which accepts the starting position of the
     /// data segment, returns whether the segment could be sent and the maximum amount of bytes could
     /// take.
     ///
@@ -660,29 +692,38 @@ impl SendBuf {
     /// `None` if there is no data picked up.
     ///
     /// Otherwise, return a tuple:
-    /// * `u64`: offset, the starting position of the data.
+    /// * `Range<u64>`: the range of data picked up (start inclusive, end exclusive).
     /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
     ///   picked up is in two parts, the begin of the second slice are the end of the first slice
-    pub fn pick_up<P>(
-        &mut self,
-        predicate: P,
-        flow_limit: usize,
-        max_data: u64,
-    ) -> Result<Data<'_>, Signals>
+    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data<'_>, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
         self.state
-            .pick(predicate, flow_limit, max_data)
+            .pick(predicate, flow_limit, self.max_data())
             .map(|(range, is_fresh)| {
-                let start = (range.start - self.offset) as usize;
-                let end = (range.end - self.offset) as usize;
+                let iter = self
+                    .data
+                    .iter()
+                    .scan(self.offset, |offset, data| {
+                        let current_range = *offset..*offset + data.len() as u64;
+                        *offset += data.len() as u64;
+                        Some((current_range, data))
+                    })
+                    .filter(move |(slice, ..)| slice.end > range.start && slice.start < range.end)
+                    .map(move |(slice, data)| {
+                        if slice.start >= range.start && slice.end <= range.end {
+                            data.clone()
+                        } else {
+                            data.slice(
+                                (range.start.saturating_sub(slice.start)) as usize
+                                    ..(range.end.min(slice.end) - slice.start) as usize,
+                            )
+                        }
+                    });
 
-                let (l, r) = self.data.as_slices();
-                let s1 = &l[start.min(l.len())..l.len().min(end)];
-                let s2 = &r[start.saturating_sub(l.len())..end.saturating_sub(l.len())];
-                (range.start, is_fresh, (s1, s2))
+                (range, is_fresh, iter.collect())
             })
     }
 
@@ -696,8 +737,21 @@ impl SendBuf {
         // 对于头部连续确认接收到的，还要前进，以免浪费空间
         let min_unrecved_pos = self.state.shift();
         if self.offset < min_unrecved_pos {
-            self.data.drain(..(min_unrecved_pos - self.offset) as usize);
+            let mut drain_len = (min_unrecved_pos - self.offset) as usize;
             self.offset = min_unrecved_pos;
+
+            while !self.data.is_empty() && drain_len > 0 {
+                match drain_len {
+                    n if n >= self.data[0].len() => {
+                        drain_len -= self.data[0].len();
+                        self.data.pop_front().unwrap();
+                    }
+                    n => {
+                        self.data[0] = self.data[0].slice(n..);
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -708,10 +762,6 @@ impl SendBuf {
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
     pub fn may_loss_data(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
-    }
-
-    pub fn resend_sent(&mut self) {
-        self.state.resend_sent()
     }
 
     pub fn resend_flighting(&mut self) {

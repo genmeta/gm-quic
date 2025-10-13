@@ -1,4 +1,4 @@
-use bytes::{BufMut, Bytes};
+use bytes::{BufMut, Bytes, BytesMut};
 
 pub trait ContinuousData {
     fn len(&self) -> usize;
@@ -131,7 +131,46 @@ impl<D: ContinuousData + ?Sized> ContinuousData for &D {
     }
 }
 
-pub trait WriteData<D: ContinuousData>: BufMut {
+impl<D: ContinuousData> ContinuousData for [D] {
+    #[inline]
+    fn len(&self) -> usize {
+        self.iter().map(|d| d.len()).sum()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.iter().all(|d| d.is_empty())
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        self.iter()
+            .fold(BytesMut::with_capacity(self.len()), |mut acc, d| {
+                acc.extend(d.to_bytes());
+                acc
+            })
+            .freeze()
+    }
+}
+
+impl<D: ContinuousData, const N: usize> ContinuousData for [D; N] {
+    #[inline]
+    fn len(&self) -> usize {
+        <[D]>::len(self)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        <[D]>::is_empty(self)
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        <[D]>::to_bytes(self)
+    }
+}
+
+pub trait WriteData<D: ContinuousData + ?Sized>: BufMut {
     fn put_data(&mut self, data: &D);
 }
 
@@ -143,9 +182,9 @@ impl<T: BufMut> WriteData<DataPair<'_>> for T {
     }
 }
 
-impl<T: BufMut> WriteData<&[u8]> for T {
+impl<T: BufMut> WriteData<[u8]> for T {
     #[inline]
-    fn put_data(&mut self, data: &&[u8]) {
+    fn put_data(&mut self, data: &[u8]) {
         self.put_slice(data)
     }
 }
@@ -167,4 +206,36 @@ impl<T: BufMut> WriteData<Bytes> for T {
 impl<T: BufMut> WriteData<NonData> for T {
     #[inline]
     fn put_data(&mut self, &(): &()) {}
+}
+
+impl<T, D: ContinuousData + ?Sized> WriteData<&D> for T
+where
+    T: BufMut + WriteData<D>,
+{
+    #[inline]
+    fn put_data(&mut self, data: &&D) {
+        <T as WriteData<D>>::put_data(self, data);
+    }
+}
+
+impl<T, D: ContinuousData> WriteData<[D]> for T
+where
+    T: BufMut + WriteData<D>,
+{
+    #[inline]
+    fn put_data(&mut self, data: &[D]) {
+        for data in data {
+            self.put_data(data);
+        }
+    }
+}
+
+impl<T, D: ContinuousData, const N: usize> WriteData<[D; N]> for T
+where
+    T: BufMut + WriteData<D>,
+{
+    #[inline]
+    fn put_data(&mut self, data: &[D; N]) {
+        <T as WriteData<[D]>>::put_data(self, data);
+    }
 }

@@ -7,13 +7,12 @@ mod send {
         task::{Context, Poll, Waker},
     };
 
-    use bytes::BufMut;
+    use bytes::{BufMut, Bytes};
     use qbase::{
         Epoch,
         frame::CryptoFrame,
         net::tx::{ArcSendWakers, Signals},
         packet::Package,
-        util::{ContinuousData, DataPair},
         varint::{VARINT_MAX, VarInt},
     };
     use tokio::io::AsyncWrite;
@@ -35,18 +34,18 @@ mod send {
         fn try_load_data<P>(&mut self, packet: &mut P) -> Result<(), Signals>
         where
             P: BufMut + ?Sized,
-            for<'b> (CryptoFrame, DataPair<'b>): Package<P>,
+            for<'b> (CryptoFrame, &'b [Bytes]): Package<P>,
         {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
             self.sndbuf
-                .pick_up(predicate, usize::MAX, u64::MAX)
-                .map(|(offset, _is_fresh, data)| {
+                .pick_up(predicate, usize::MAX)
+                .map(|(range, _is_fresh, data)| {
                     let frame = CryptoFrame::new(
-                        VarInt::from_u64(offset).unwrap(),
-                        VarInt::try_from(data.len()).unwrap(),
+                        VarInt::from_u64(range.start).unwrap(),
+                        VarInt::try_from(range.end - range.start).unwrap(),
                     );
-                    (frame, data).dump(packet).unwrap();
+                    (frame, data.as_slice()).dump(packet).unwrap();
                 })
         }
 
@@ -82,15 +81,11 @@ mod send {
                 )));
             }
 
-            let remaining = self.sndbuf.remaining_mut();
-            if remaining > 0 {
-                let n = std::cmp::min(remaining, buf.len());
-                self.tx_wakers.wake_all_by(Signals::TRANSPORT);
-                Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
-            } else {
-                self.writable_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+            debug_assert!(self.sndbuf.has_remaining_mut());
+
+            self.tx_wakers.wake_all_by(Signals::TRANSPORT);
+            self.sndbuf.write(Bytes::copy_from_slice(buf));
+            Poll::Ready(Ok(buf.len()))
         }
 
         fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -145,7 +140,7 @@ mod send {
         pub fn try_load_data_into<P>(&self, packet: &mut P, force: bool) -> Result<(), Signals>
         where
             P: BufMut + ?Sized,
-            for<'b> (CryptoFrame, DataPair<'b>): Package<P>,
+            for<'b> (CryptoFrame, &'b [Bytes]): Package<P>,
         {
             use std::ops::ControlFlow::*;
             let mut inner = self.0.lock().unwrap();
@@ -194,7 +189,7 @@ mod send {
     impl<P> Package<P> for CryptoStreamPackage
     where
         P: BufMut + ?Sized,
-        for<'b> (CryptoFrame, DataPair<'b>): Package<P>,
+        for<'b> (CryptoFrame, &'b [Bytes]): Package<P>,
     {
         fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
             let force = self.first_load;
@@ -208,9 +203,9 @@ mod send {
         }
     }
 
-    pub(super) fn create(capacity: usize, tx_wakers: ArcSendWakers) -> ArcSender {
+    pub(super) fn create(tx_wakers: ArcSendWakers) -> ArcSender {
         Arc::new(Mutex::new(Sender {
-            sndbuf: SendBuf::with_capacity(capacity),
+            sndbuf: SendBuf::with_capacity(VARINT_MAX),
             writable_waker: None,
             flush_waker: None,
             tx_wakers,
@@ -321,9 +316,9 @@ pub struct CryptoStream {
 
 impl CryptoStream {
     /// Create a new instance of [`CryptoStream`] with the given buffer size.
-    pub fn new(sndbuf_size: usize, _rcvbuf_size: usize, tx_wakers: ArcSendWakers) -> Self {
+    pub fn new(tx_wakers: ArcSendWakers) -> Self {
         Self {
-            sender: send::create(sndbuf_size, tx_wakers),
+            sender: send::create(tx_wakers),
             recver: recv::create(),
         }
     }
@@ -361,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0, Default::default());
+        let crypto_stream: CryptoStream = CryptoStream::new(Default::default());
         crypto_stream
             .writer()
             .write_all(b"hello world")

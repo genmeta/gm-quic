@@ -285,6 +285,20 @@ impl RecvBuf {
         }
         origin - dst.remaining_mut()
     }
+
+    /// Try to get the next continuous data segment.
+    ///
+    /// Compared with [`Self::try_read`], this method is more efficient
+    /// because it reduces some calculations and copies.
+    pub fn try_next(&mut self) -> Option<Bytes> {
+        if self.is_readable() {
+            let data = self.segments.pop_front().unwrap().data;
+            self.nread += data.len() as u64;
+            return Some(data);
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
