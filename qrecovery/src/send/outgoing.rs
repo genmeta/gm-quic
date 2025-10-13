@@ -1,18 +1,18 @@
 use std::ops::DerefMut;
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamError, StreamFrame},
     net::tx::Signals,
     packet::Package,
     sid::StreamId,
-    util::{ContinuousData, DataPair},
+    util::ContinuousData,
     varint::VarInt,
 };
 use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
-use super::sender::{ArcSender, Sender, SendingSender};
+use super::sender::{ArcSender, Sender, SendingSender, StreamData};
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
@@ -37,19 +37,19 @@ impl<TX: Clone> Outgoing<TX> {
     ) -> Result<(usize, bool), Signals>
     where
         P: BufMut + ?Sized,
-        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+        for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
     {
         let origin_len = packet.remaining_mut();
-        let mut write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
-            let mut frame = StreamFrame::new(sid, offset, data.len());
+        let mut write = |(range, is_fresh, data, is_eos): StreamData| {
+            let mut frame = StreamFrame::new(sid, range.start, (range.end - range.start) as usize);
 
             frame.set_eos_flag(is_eos);
             let strategy = frame.encoding_strategy(origin_len);
             frame.set_len_flag(strategy.carry_length());
             packet.put_bytes(0, strategy.padding());
-            (frame, data).dump(packet).unwrap();
+            (frame, data.as_slice()).dump(packet).unwrap();
 
-            (data.len(), is_fresh)
+            (ContinuousData::len(data.as_slice()), is_fresh)
         };
 
         let predicate = |offset| {

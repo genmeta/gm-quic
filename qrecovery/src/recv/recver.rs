@@ -35,39 +35,71 @@ impl<TX> Recv<TX>
 where
     TX: SendFrame<MaxStreamDataFrame>,
 {
-    pub(super) fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &mut impl BufMut,
-    ) -> Poll<io::Result<()>> {
-        if self.rcvbuf.is_readable() {
-            let offset = self.rcvbuf.nread();
-            let length = self.rcvbuf.try_read(buf) as u64;
-            qevent::event!(StreamDataMoved {
-                stream_id: self.stream_id,
-                offset,
-                length,
-                from: StreamDataLocation::Transport,
-                to: StreamDataLocation::Application,
-            });
-
-            let threshold = 1_000_000;
-            if self.rcvbuf.nread() + threshold > self.max_stream_data {
-                let max_stream_data = (self.rcvbuf.nread() + threshold * 2).min(VARINT_MAX);
-                if max_stream_data > self.max_stream_data {
-                    self.max_stream_data = max_stream_data;
-                    self.broker.send_frame([MaxStreamDataFrame::new(
-                        self.stream_id,
-                        VarInt::from_u64(max_stream_data).unwrap(),
-                    )]);
-                }
-            }
-
-            Poll::Ready(Ok(()))
-        } else {
-            self.read_waker = Some(cx.waker().clone());
-            Poll::Pending
+    pub(super) fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut impl BufMut) -> Poll<()> {
+        if let Some(_reset) = self.stop_state {
+            // Though STOP_SENDING has been sent, the application layer can still read the data
         }
+
+        if !self.rcvbuf.is_readable() {
+            self.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let offset = self.rcvbuf.nread();
+        let length = self.rcvbuf.try_read(buf) as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
+
+        let threshold = 1_000_000;
+        if self.rcvbuf.nread() + threshold > self.max_stream_data {
+            let max_stream_data = (self.rcvbuf.nread() + threshold * 2).min(VARINT_MAX);
+            if max_stream_data > self.max_stream_data {
+                self.max_stream_data = max_stream_data;
+                self.broker.send_frame([MaxStreamDataFrame::new(
+                    self.stream_id,
+                    VarInt::from_u64(max_stream_data).unwrap(),
+                )]);
+            }
+        }
+
+        Poll::Ready(())
+    }
+
+    pub(super) fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Bytes> {
+        if !self.rcvbuf.is_readable() {
+            self.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let offset = self.rcvbuf.nread();
+        let data = self.rcvbuf.try_next().expect("is_readable checked");
+        let length = data.len() as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
+
+        let threshold = 1_000_000;
+        if self.rcvbuf.nread() + threshold > self.max_stream_data {
+            let max_stream_data = (self.rcvbuf.nread() + threshold * 2).min(VARINT_MAX);
+            if max_stream_data > self.max_stream_data {
+                self.max_stream_data = max_stream_data;
+                self.broker.send_frame([MaxStreamDataFrame::new(
+                    self.stream_id,
+                    VarInt::from_u64(max_stream_data).unwrap(),
+                )]);
+            }
+        }
+
+        Poll::Ready(data)
     }
 }
 
@@ -301,26 +333,45 @@ impl<TX> SizeKnown<TX> {
         }
     }
 
-    pub(super) fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &mut impl BufMut,
-    ) -> Poll<io::Result<()>> {
-        if self.rcvbuf.is_readable() {
-            let offset = self.rcvbuf.nread();
-            let length = self.rcvbuf.try_read(buf) as u64;
-            qevent::event!(StreamDataMoved {
-                stream_id: self.stream_id,
-                offset,
-                length,
-                from: StreamDataLocation::Transport,
-                to: StreamDataLocation::Application,
-            });
-            Poll::Ready(Ok(()))
-        } else {
-            self.read_waker = Some(cx.waker().clone());
-            Poll::Pending
+    pub(super) fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut impl BufMut) -> Poll<()> {
+        if let Some(_reset) = self.stop_state {
+            // Though STOP_SENDING has been sent, the application layer can still read the data
         }
+
+        if !self.rcvbuf.is_readable() {
+            self.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let offset = self.rcvbuf.nread();
+        let length = self.rcvbuf.try_read(buf) as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
+        Poll::Ready(())
+    }
+
+    pub(super) fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Bytes> {
+        if !self.rcvbuf.is_readable() {
+            self.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let offset = self.rcvbuf.nread();
+        let data = self.rcvbuf.try_next().expect("is_readable checked");
+        let length = data.len() as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
+        Poll::Ready(data)
     }
 
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
@@ -423,6 +474,20 @@ impl DataRcvd {
             from: StreamDataLocation::Transport,
             to: StreamDataLocation::Application,
         });
+    }
+
+    pub(super) fn poll_next(&mut self) -> Option<Bytes> {
+        let offset = self.rcvbuf.nread();
+        let data = self.rcvbuf.try_next()?;
+        let length = data.len() as u64;
+        qevent::event!(StreamDataMoved {
+            stream_id: self.stream_id,
+            offset,
+            length,
+            from: StreamDataLocation::Transport,
+            to: StreamDataLocation::Application,
+        });
+        Some(data)
     }
 
     pub(super) fn is_all_read(&self) -> bool {

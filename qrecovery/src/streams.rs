@@ -38,6 +38,7 @@ use qbase::{
 };
 
 use crate::{recv::Reader, send::Writer};
+pub mod error;
 mod io;
 mod listener;
 pub mod raw;

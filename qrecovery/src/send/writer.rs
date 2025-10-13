@@ -1,14 +1,16 @@
 use std::{
-    io,
     ops::DerefMut,
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, ready},
 };
 
+use bytes::Bytes;
+use futures::Sink;
 use qbase::frame::{ResetStreamFrame, SendFrame};
-use tokio::io::AsyncWrite;
+use tokio::io::{self, AsyncWrite};
 
 use super::sender::{ArcSender, Sender};
+use crate::streams::error::StreamError;
 
 pub trait CancelStream {
     /// Cancels the stream with the given error code.
@@ -132,75 +134,151 @@ where
     }
 }
 
-impl<TX: Unpin> Unpin for Writer<TX> {}
+impl<TX> Writer<TX> {
+    /// Poll to check whether [`Writer`] can cache more appropriate amount of data.
+    ///
+    /// Even without calling this method in advance, writing data can succeed.
+    /// However, this may cause the QUIC layer to cache excessive data.
+    #[inline]
+    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
 
-impl<TX: Clone> AsyncWrite for Writer<TX> {
-    /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
+        let mut sender = self.inner.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_ready(cx),
+            Sender::Sending(s) => s.poll_ready(cx),
+            Sender::DataSent(_) => Poll::Ready(Err(StreamError::EosSent)),
+            Sender::DataRcvd => Poll::Ready(Err(StreamError::EosSent)),
+            Sender::ResetSent(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+        }
+    }
+
+    /// Write data to the stream.
+    ///
+    /// Although data written by this method can also be sent,
+    /// it is recommended to use the `Sink` or `AsyncWrite` API to avoid excessive data caching at the QUIC layer.
+    #[inline]
+    pub fn write(&mut self, buf: Bytes) -> Result<(), StreamError> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.write(buf),
+            Sender::Sending(s) => s.write(buf),
+            Sender::DataSent(_) => Err(StreamError::EosSent),
+            Sender::DataRcvd => Err(StreamError::EosSent),
+            Sender::ResetSent(reset) => Err(StreamError::Reset(*reset)),
+            Sender::ResetRcvd(reset) => Err(StreamError::Reset(*reset)),
+        }
+    }
+
+    #[inline]
+    pub fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        data: Bytes,
+    ) -> Poll<Result<(), StreamError>> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => {
+                ready!(s.poll_ready(cx)?);
+                Poll::Ready(s.write(data))
+            }
+            Sender::Sending(s) => {
+                ready!(s.poll_ready(cx)?);
+                Poll::Ready(s.write(data))
+            }
+            Sender::DataSent(_) => Poll::Ready(Err(StreamError::EosSent)),
+            Sender::DataRcvd => Poll::Ready(Err(StreamError::EosSent)),
+            Sender::ResetSent(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+        }
+    }
+
+    #[inline]
+    pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_flush(cx).map(Ok),
+            Sender::Sending(s) => s.poll_flush(cx).map(Ok),
+            Sender::DataSent(s) => s.poll_flush(cx).map(Ok),
+            Sender::DataRcvd => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+        }
+    }
+
+    #[inline]
+    #[doc(alias = "poll_close")]
+    pub fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+
+        let mut sender = self.inner.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_shutdown(cx).map(Ok),
+            Sender::Sending(s) => s.poll_shutdown(cx).map(Ok),
+            Sender::DataSent(s) => s.poll_shutdown(cx).map(Ok),
+            Sender::DataRcvd => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(StreamError::Reset(*reset))),
+        }
+    }
+}
+
+impl<TX> AsyncWrite for Writer<TX> {
+    #[inline]
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
-
-        let mut sender = self.inner.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => s.poll_write(cx, buf),
-            Sender::Sending(s) => s.poll_write(cx, buf),
-            Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "EOS has been sent",
-            ))),
-            Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "All data has been received",
-            ))),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-        }
+        Writer::poll_write(self.get_mut(), cx, Bytes::copy_from_slice(buf))
+            .map_ok(|()| buf.len())
+            .map_err(io::Error::from)
     }
 
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
-
-        let mut sender = self.inner.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => s.poll_flush(cx),
-            Sender::Sending(s) => s.poll_flush(cx),
-            Sender::DataSent(s) => s.poll_flush(cx),
-            Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-        }
+        Writer::poll_flush(self.get_mut(), cx).map_err(io::Error::from)
     }
 
+    #[inline]
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let _span = (self.qlog_span.enter(), self.tracing_span.enter());
+        Writer::poll_shutdown(self.get_mut(), cx).map_err(io::Error::from)
+    }
+}
 
-        let mut sender = self.inner.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => s.poll_shutdown(cx),
-            Sender::Sending(s) => s.poll_shutdown(cx),
-            Sender::DataSent(s) => s.poll_shutdown(cx),
-            Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-        }
+impl<TX> Sink<Bytes> for Writer<TX> {
+    type Error = StreamError;
+
+    #[inline]
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Writer::poll_ready(self.get_mut(), cx)
+    }
+
+    #[inline]
+    fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
+        Writer::write(self.get_mut(), item)
+    }
+
+    #[inline]
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Writer::poll_flush(self.get_mut(), cx)
+    }
+
+    #[inline]
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Writer::poll_shutdown(self.get_mut(), cx)
     }
 }
 

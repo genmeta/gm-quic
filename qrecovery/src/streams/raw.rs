@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind, QuicError},
     flow::ArcSendControler,
@@ -149,7 +149,7 @@ where
     ) -> Result<(), Signals>
     where
         P: BufMut + ?Sized,
-        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+        for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
         FTX: SendFrame<DataBlockedFrame>,
     {
         // todo: use core::range instead in rust 2024
@@ -177,7 +177,7 @@ where
         ) -> Result<(StreamId, usize, usize), Signals>
         where
             P: BufMut + ?Sized,
-            for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+            for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
         {
             let mut signals = Signals::TRANSPORT;
             for (sid, (outgoing, _ios), tokens) in streams {
@@ -306,7 +306,7 @@ where
     ) -> Result<(), Signals>
     where
         P: BufMut + ?Sized,
-        for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+        for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
         FTX: SendFrame<DataBlockedFrame>,
     {
         use core::ops::ControlFlow::*;
@@ -571,13 +571,11 @@ pub struct StreamFramePackages<TX> {
     zero_rtt: bool,
 }
 
-type DataPair<'a> = (&'a [u8], &'a [u8]);
-
 impl<TX, P> Package<P> for StreamFramePackages<TX>
 where
     TX: SendFrame<StreamCtlFrame> + SendFrame<DataBlockedFrame> + Clone + Send + 'static,
     P: BufMut + ?Sized,
-    for<'a> (StreamFrame, DataPair<'a>): Package<P>,
+    for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
 {
     #[inline]
     fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {

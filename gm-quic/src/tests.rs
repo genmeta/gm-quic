@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use qevent::telemetry::{Log, handy::*};
 use rustls::server::WebPkiClientVerifier;
@@ -18,7 +18,9 @@ use crate::{handy::*, *};
 
 fn qlogger() -> Arc<dyn Log + Send + Sync> {
     static QLOGGER: OnceLock<Arc<dyn Log + Send + Sync>> = OnceLock::new();
-    QLOGGER.get_or_init(|| Arc::new(NoopLogger)).clone()
+    QLOGGER
+        .get_or_init(|| Arc::new(LegacySeqLogger::new(PathBuf::from("/tmp/qlog/"))))
+        .clone()
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
