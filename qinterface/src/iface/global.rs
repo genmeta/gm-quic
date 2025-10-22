@@ -61,16 +61,23 @@ impl QuicInterfaces {
         let iface = Arc::new(RwInterface::new(bind_uri, factory, self.clone()));
         let context = InterfaceContext::new(iface.clone(), InterfacesMonitor::global().subscribe());
         entry.insert(context);
-        iface.publish_endpoint_addr();
+        iface.publish_address();
 
         iface.binding()
     }
 
     #[inline]
-    pub fn get(&self, bind_uri: &BindUri) -> Option<QuicInterface> {
+    pub fn borrow(&self, bind_uri: &BindUri) -> Option<QuicInterface> {
         self.interfaces
             .get(bind_uri)
             .and_then(|ctx| ctx.iface().upgrade()?.borrow().ok())
+    }
+
+    #[inline]
+    pub fn get(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+        self.interfaces
+            .get(bind_uri)
+            .and_then(|ctx| Some(ctx.iface().upgrade()?.binding()))
     }
 
     #[inline]
@@ -96,7 +103,7 @@ impl Interface {
         if let Entry::Occupied(entry) = self.ifaces.interfaces.entry(self.bind_uri.clone()) {
             if entry.get().iface().upgrade().is_none() {
                 // NOTE: QuicInterfaces and Locations must be kept in sync.
-                Locations::global().remove(&self.bind_uri);
+                Locations::global().remove_all(&self.bind_uri);
                 entry.remove();
             }
         }

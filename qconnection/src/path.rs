@@ -71,7 +71,7 @@ impl Components {
         let try_create = || {
             let interface = self
                 .interfaces
-                .get(&bind_uri)
+                .borrow(&bind_uri)
                 .ok_or(CreatePathFailure::NoInterface(bind_uri))?;
             let dcid_cell = self.cid_registry.remote.apply_dcid();
             let max_ack_delay = self

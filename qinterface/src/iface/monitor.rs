@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use netdev::Interface;
+pub use netdev::Interface;
 use tokio::{sync::watch, time::MissedTickBehavior};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -112,5 +112,22 @@ impl InterfacesMonitor {
 impl Default for InterfacesMonitor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_name() {
+        let global = InterfacesMonitor::global();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        for (name, iface) in global.devices().iter() {
+            eprintln!("{}: {:?}", name, iface.gateway.as_ref().map(|g| g.mac_addr));
+        }
+
+        panic!()
     }
 }
