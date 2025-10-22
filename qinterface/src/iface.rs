@@ -10,7 +10,7 @@ use bytes::BytesMut;
 use qbase::{
     net::{
         addr::{BindUri, BindUriSchema, RealAddr, TryIntoSocketAddrError},
-        route::{EndpointAddr, Link, PacketHeader},
+        route::{Link, PacketHeader},
     },
     util::UniqueId,
 };
@@ -117,30 +117,23 @@ impl RwInterface {
         self.0.write().unwrap()
     }
 
-    fn publish_endpoint_addr(self: &Arc<Self>) {
+    fn publish_address(self: &Arc<Self>) {
         if self.bind_uri().is_templorary() {
             return;
         }
 
         let iface = self.clone();
-
         // tokio::spawn(async move {
-        let iface = iface.read();
-        let Ok(Ok(real_addr)) = iface.io.as_ref().map(|io| io.real_addr()) else {
+        let Ok(real_addr) = iface.real_addr() else {
             return;
         };
-        let endpoint_addr = match real_addr {
-            RealAddr::Internet(addr) => EndpointAddr::Socket(addr.into()),
-            RealAddr::Bluetooth(addr) => EndpointAddr::Ble(addr.into()),
-            _ => return,
-        };
-        Locations::global().insert(iface.bind_uri.clone(), endpoint_addr);
+        Locations::global().upsert(&iface.bind_uri(), real_addr);
         // });
     }
 
     fn rebind(self: &Arc<Self>) {
         self.write().rebind();
-        self.publish_endpoint_addr();
+        self.publish_address();
     }
 }
 
