@@ -84,7 +84,7 @@ pub enum ConnectionCode {
     Value(u32),
 }
 
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ApplicationCode {
     ApplicationError(ApplicationError),
@@ -995,7 +995,7 @@ pub enum ConnectionCloseTriggerFrameType {
     Text(String),
 }
 
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCloseErrorCode {
     TransportError(TransportError),
@@ -1170,8 +1170,8 @@ pub enum TransportError {
 }
 
 // A.11.23
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ApplicationError {}
+#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplicationError(String);
 
 // A.11.24
 #[derive(Debug, Clone, Copy, From, PartialEq)]
