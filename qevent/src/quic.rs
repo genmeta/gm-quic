@@ -992,7 +992,7 @@ impl<E> From<QuicFramesCollector<E>> for Vec<QuicFrame> {
     }
 }
 
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ApplicationCode {
     ApplicationError(ApplicationError),
@@ -1033,7 +1033,7 @@ pub enum ConnectionCloseErrorSpace {
     Application,
 }
 
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCloseErrorCode {
     TransportError(TransportError),
@@ -1073,9 +1073,9 @@ pub enum TransportError {
 }
 
 // 8.13.24
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ApplicationError {}
+pub struct ApplicationError(String);
 
 // 8.13.25
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1454,13 +1454,13 @@ mod rollback {
                     trigger_frame_type,
                 } => legacy::QuicFrame::ConnectionClose {
                     error_space: error_space.map(Into::into),
-                    error_code: error_code.and_then(|error_code| error_code.try_into().ok()),
-                    raw_error_code: match error_code {
+                    raw_error_code: match &error_code {
                         Some(ConnectionCloseErrorCode::CryptoError(CryptoError(value))) => {
-                            Some(value as u32)
+                            Some(*value as u32)
                         }
                         _ => None,
                     },
+                    error_code: error_code.and_then(|error_code| error_code.try_into().ok()),
                     reason,
                     trigger_frame_type: trigger_frame_type.map(Into::into),
                 },
@@ -1483,7 +1483,7 @@ mod rollback {
     impl From<ApplicationError> for legacy::ApplicationError {
         #[inline]
         fn from(value: ApplicationError) -> Self {
-            match value {}
+            value.0.into()
         }
     }
 
