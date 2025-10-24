@@ -152,7 +152,7 @@ impl Server {
             .map(|iface| iface.value().clone())
     }
 
-    pub fn unbind_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+    pub fn remove_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
     }
 
@@ -361,90 +361,16 @@ impl QuicListeners {
         self.servers.remove(server_name).is_some()
     }
 
-    /// Add additional network interfaces to an existing virtual server.
-    ///
-    /// Extends an existing server to listen on additional network interfaces, enabling
-    /// horizontal scaling and multi-homed server configurations. Interfaces that are
-    /// already bound to the server will be silently ignored, allowing for idempotent operations.
-    ///
-    /// The server must have been created with [`add_server`] first. Added interfaces can later
-    /// be removed selectively with [`unbind_interface`], supporting hot-swapping and zero-downtime
-    /// updates.
-    ///
-    /// # Related Methods
-    ///
-    /// - [`add_server`] - Create the server first
-    /// - [`unbind_interface`] - Remove specific interfaces
-    ///
-    /// [`add_server`]: QuicListeners::add_server
-    /// [`unbind_interface`]: QuicListeners::unbind_interface
-    pub fn bind_interfaces(
-        &self,
-        server_name: impl Into<String>,
-        bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
-    ) -> Result<(), ServerError> {
-        let server_name = server_name.into();
-        let server_entry = match self.servers.entry(server_name.clone()) {
-            dashmap::Entry::Occupied(server_entry) => server_entry,
-            dashmap::Entry::Vacant(..) => {
-                return Err(ServerError::ServerNotFound { name: server_name });
-            }
-        };
-
-        for bind_uri in bind_uris.into_iter().map(Into::into) {
-            if let dashmap::Entry::Vacant(iface_entry) =
-                server_entry.get().bind_ifaces.entry(bind_uri.clone())
-            {
-                let factory = self.quic_iface_factory.clone();
-                let interface = self.ifaces.bind(bind_uri.clone(), factory);
-                iface_entry.insert(interface);
-            }
-        }
-
-        Ok(())
-    }
-
     /// Get the server by its name.
     pub fn get_server<'l>(&'l self, server_name: &str) -> Option<impl Deref<Target = Server> + 'l> {
         self.servers.get(server_name)
     }
 
-    /// Remove a specific network interface from one or more servers.
-    ///
-    /// Provides fine-grained control over interface management, allowing selective removal
-    /// of interfaces without affecting the server's core configuration or other interfaces.
-    /// This is the counterpart to [`bind_interfaces`] for flexible network topology management.
-    ///
-    /// The `server_names` parameter controls the scope:
-    /// - `Some(server_names)` - Remove the interface only from specified servers
-    /// - `None` - Remove the interface from ALL servers currently using it
-    ///
-    /// Operations are graceful: non-existent servers or unbound interfaces are silently ignored,
-    /// enabling safe cleanup and idempotent scripts.
-    ///
-    /// # Related Methods
-    ///
-    /// - [`bind_interfaces`] - Add interfaces (counterpart operation)
-    /// - [`remove_server`] - Remove entire server instead
-    ///
-    /// [`bind_interfaces`]: QuicListeners::bind_interfaces
-    /// [`remove_server`]: QuicListeners::remove_server
-    pub fn unbind_interface<'s>(
-        &self,
-        server_names: Option<impl IntoIterator<Item = &'s str>>,
-        bind_uri: BindUri,
-    ) {
-        match server_names {
-            Some(server_names) => server_names
-                .into_iter()
-                .filter_map(|server_name| self.servers.get(server_name))
-                .for_each(|server| {
-                    server.bind_ifaces.remove(&bind_uri);
-                }),
-            None => self.servers.iter().for_each(|entry| {
-                entry.value().bind_ifaces.remove(&bind_uri);
-            }),
-        }
+    pub fn servers(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Accept an incoming QUIC connection from the queue.
