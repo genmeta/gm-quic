@@ -50,7 +50,7 @@ impl Debug for Interface {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Interface {bind_uri} is unavailable: {error}")]
+#[error("Interface {bind_uri} is not available")]
 pub struct InterfaceUnavailable {
     bind_uri: BindUri,
     #[source]
@@ -74,6 +74,14 @@ impl Interface {
     fn rebind(&mut self) {
         self.io = Err(io::ErrorKind::AddrNotAvailable.into());
         self.io = self.factory.bind(self.bind_uri.clone());
+        match self.io.as_ref() {
+            Ok(_) => {
+                tracing::debug!(target: "interface", bind_uri=%self.bind_uri, "Rebind interface successfully")
+            }
+            Err(error) => {
+                tracing::debug!(target: "interface", bind_uri=%self.bind_uri, ?error, "Failed to rebind interface")
+            }
+        }
         self.bind_id = self.ifaces.bind_id_generator.generate();
     }
 }
@@ -100,8 +108,17 @@ impl RwInterface {
         factory: Arc<dyn ProductQuicIO>,
         ifaces: Arc<QuicInterfaces>,
     ) -> Self {
+        let io = factory.bind(bind_uri.clone());
+        match io.as_ref() {
+            Ok(_) => {
+                tracing::debug!(target: "interface", %bind_uri, "Bind interface successfully")
+            }
+            Err(error) => {
+                tracing::debug!(target: "interface", %bind_uri, ?error, "Failed to bind interface")
+            }
+        }
         Self::from(Interface {
-            io: factory.bind(bind_uri.clone()),
+            io,
             bind_id: ifaces.bind_id_generator.generate(),
             bind_uri,
             factory,
