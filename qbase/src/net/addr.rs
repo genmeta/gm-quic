@@ -35,7 +35,7 @@ pub enum ParseBindUriError {
     InvalidIpAddr(AddrParseError),
 }
 
-fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, String, u16), ParseBindUriError> {
+fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, &str, u16), ParseBindUriError> {
     let authority = uri.authority().expect("BindUri is absolute URI");
     let (ip_family, interface) = authority
         .host()
@@ -45,7 +45,7 @@ fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, String, u16), ParseBindUri
     let ip_family: Family = ip_family
         .parse()
         .or(Err(ParseBindUriError::InvalidIpFamily))?;
-    Ok((ip_family, interface.to_string(), port))
+    Ok((ip_family, interface, port))
 }
 
 fn parse_inet_bind_uri(uri: &Uri) -> Result<SocketAddr, ParseBindUriError> {
@@ -165,7 +165,7 @@ impl BindUri {
         }
     }
 
-    pub fn as_iface_bind_uri(&self) -> Option<(Family, String, u16)> {
+    pub fn as_iface_bind_uri(&self) -> Option<(Family, &str, u16)> {
         if self.scheme() != BindUriSchema::Iface {
             return None;
         }
@@ -245,39 +245,22 @@ impl BindUri {
             None | Some(..) => false,
         }
     }
-}
 
-#[derive(Debug, Error)]
-pub enum TryIntoSocketAddrError {
-    #[error("Only inet or iface schema BindUri can be converted to SocketAddr")]
-    NotSocketBindUri,
-    #[error("Device not found")]
-    InterfaceNotFound,
-    #[error("Link not found")]
-    LinkNotFound,
-}
-
-impl TryFrom<&BindUri> for SocketAddr {
-    type Error = TryIntoSocketAddrError;
-
-    fn try_from(bind_uri: &BindUri) -> Result<Self, Self::Error> {
-        match bind_uri.scheme() {
+    pub fn resolve<'i>(
+        &self,
+        physical_interfaces: impl IntoIterator<Item = &'i netdev::Interface>,
+    ) -> Result<SocketAddr, TryIntoSocketAddrError> {
+        match self.scheme() {
             BindUriSchema::Iface => {
-                let (ip_family, interface, port) = bind_uri
+                let (ip_family, interface, port) = self
                     .as_iface_bind_uri()
                     .expect("Already checked BindUriSchema is iface");
-                let interface = netdev::get_interfaces()
+                let interface = physical_interfaces
                     .into_iter()
-                    .map(|mut iface| {
-                        // compatibility with windows interface names
-                        iface.name = iface
-                            .name
-                            .trim_start_matches('{')
-                            .trim_end_matches('}')
-                            .to_string();
-                        iface
+                    .find_map(|iface| {
+                        (iface.name.trim_start_matches('{').trim_end_matches('}') == interface)
+                            .then_some(iface)
                     })
-                    .find(|iface| iface.name == interface)
                     .ok_or(TryIntoSocketAddrError::InterfaceNotFound)?;
                 let ip_addr = match ip_family {
                     Family::V4 => interface
@@ -297,11 +280,30 @@ impl TryFrom<&BindUri> for SocketAddr {
 
                 Ok(SocketAddr::new(ip_addr, port))
             }
-            BindUriSchema::Inet => Ok(bind_uri
+            BindUriSchema::Inet => Ok(self
                 .as_inet_bind_uri()
                 .expect("Already checked BindUriSchema is inet")),
             BindUriSchema::Ble => Err(TryIntoSocketAddrError::NotSocketBindUri),
         }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TryIntoSocketAddrError {
+    #[error("Only inet or iface schema BindUri can be converted to SocketAddr")]
+    NotSocketBindUri,
+    #[error("Device not found")]
+    InterfaceNotFound,
+    #[error("Link not found")]
+    LinkNotFound,
+}
+
+impl TryFrom<&BindUri> for SocketAddr {
+    type Error = TryIntoSocketAddrError;
+
+    fn try_from(bind_uri: &BindUri) -> Result<Self, Self::Error> {
+        let physical_interfaces = netdev::get_interfaces();
+        bind_uri.resolve(physical_interfaces.iter())
     }
 }
 

@@ -33,7 +33,9 @@ impl Debug for InterfaceContext {
 impl InterfaceContext {
     pub fn new(rw_iface: Arc<RwInterface>, mut events: InterfaceEventReceiver) -> Self {
         let bind_uri = rw_iface.bind_uri();
-        let device = bind_uri.as_iface_bind_uri().map(|(_, device, _)| device);
+        let device = bind_uri
+            .as_iface_bind_uri()
+            .map(|(_, device, _)| device.to_owned());
         let iface = Arc::downgrade(&rw_iface);
         let task = AbortOnDropHandle::new(tokio::spawn({
             let rw_iface = iface.clone();
