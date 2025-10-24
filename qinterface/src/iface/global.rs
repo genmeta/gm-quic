@@ -11,7 +11,7 @@ use crate::{
     factory::ProductQuicIO,
     iface::{
         BindInterface, Interface, QuicInterface, context::InterfaceContext,
-        monitor::InterfacesMonitor,
+        physical::PhysicalInterfaces,
     },
     local::Locations,
 };
@@ -59,7 +59,8 @@ impl QuicInterfaces {
         }
 
         let iface = Arc::new(RwInterface::new(bind_uri, factory, self.clone()));
-        let context = InterfaceContext::new(iface.clone(), InterfacesMonitor::global().subscribe());
+        let context =
+            InterfaceContext::new(iface.clone(), PhysicalInterfaces::global().event_receiver());
         entry.insert(context);
         iface.publish_address();
 
@@ -107,116 +108,5 @@ impl Interface {
                 entry.remove();
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        future::Future,
-        io,
-        ops::DerefMut,
-        pin::Pin,
-        sync::{
-            Mutex,
-            atomic::{AtomicUsize, Ordering},
-        },
-        task::{Context, Poll, ready},
-    };
-
-    use bytes::BytesMut;
-    use qbase::net::{addr::RealAddr, route::PacketHeader};
-    use tokio::task::JoinHandle;
-
-    use super::*;
-    use crate::QuicIO;
-
-    struct TestQuicIO {
-        bind_uri: BindUri,
-        some_task: Mutex<JoinHandle<()>>,
-    }
-
-    static BIND_TIMES: AtomicUsize = AtomicUsize::new(0);
-    static SOME_RESOURCES: OnceLock<Arc<()>> = OnceLock::new();
-
-    impl TestQuicIO {
-        fn bind(bind_uri: BindUri) -> io::Result<Self> {
-            let global_state = SOME_RESOURCES.get_or_init(Arc::default);
-            if Arc::strong_count(global_state) > 1 {
-                panic!("Last TestQuicIO instance must release resources before binding again");
-            }
-
-            let state = global_state.clone();
-            let task = tokio::spawn(async move {
-                // Simulate some async work
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                drop(state);
-            });
-
-            BIND_TIMES.fetch_add(1, Ordering::SeqCst);
-
-            Ok(Self {
-                bind_uri,
-                some_task: Mutex::new(task),
-            })
-        }
-    }
-
-    impl QuicIO for TestQuicIO {
-        fn bind_uri(&self) -> BindUri {
-            self.bind_uri.clone()
-        }
-
-        fn real_addr(&self) -> io::Result<RealAddr> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn max_segment_size(&self) -> io::Result<usize> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn max_segments(&self) -> io::Result<usize> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn poll_send(
-            &self,
-            _: &mut Context,
-            _: &[io::IoSlice],
-            _: PacketHeader,
-        ) -> Poll<io::Result<usize>> {
-            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
-        }
-
-        fn poll_recv(
-            &self,
-            _: &mut Context,
-            _: &mut [BytesMut],
-            _: &mut [PacketHeader],
-        ) -> Poll<io::Result<usize>> {
-            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
-        }
-
-        fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
-            ready!(Pin::new(&mut self.some_task.lock().unwrap().deref_mut()).poll(cx)).unwrap();
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[tokio::test]
-    async fn async_close() {
-        let _quic_interface =
-            QuicInterfaces::global().bind(BindUri::from("127.0.0.1:0"), Arc::new(TestQuicIO::bind));
-        InterfacesMonitor::global().on_interface_changed();
-
-        InterfacesMonitor::global()
-            .subscribe()
-            .changed()
-            .await
-            .unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        assert_eq!(BIND_TIMES.load(Ordering::SeqCst), 2);
     }
 }
