@@ -1,4 +1,4 @@
-use std::{io, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use qbase::net::{
@@ -73,7 +73,7 @@ impl QuicClient {
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls<T>(tls_config: T) -> QuicClientBuilder<T> {
         QuicClientBuilder {
-            bind_interfaces: DashMap::new(),
+            bind_interfaces: None,
             prefer_versions: vec![1],
             defer_idle_timeout: Duration::ZERO,
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
@@ -98,6 +98,29 @@ pub struct BindInterfaceError {
 }
 
 impl QuicClient {
+    #[inline]
+    pub fn bind_interfaces(&self) -> Option<HashMap<BindUri, BindInterface>> {
+        self.bind_interfaces.as_ref().map(|map| {
+            map.iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect()
+        })
+    }
+
+    #[inline]
+    pub fn add_interface(&self, interface: BindInterface) {
+        if let Some(interfaces) = self.bind_interfaces.as_ref() {
+            interfaces.insert(interface.bind_uri(), interface);
+        }
+    }
+
+    #[inline]
+    pub fn remove_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+        self.bind_interfaces
+            .as_ref()
+            .and_then(|interfaces| interfaces.remove(bind_uri).map(|(_, iface)| iface))
+    }
+
     /// Returns the connection to the specified server.
     ///
     /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
@@ -212,7 +235,7 @@ impl QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: DashMap<BindUri, BindInterface>,
+    bind_interfaces: Option<DashMap<BindUri, BindInterface>>,
     prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
     defer_idle_timeout: Duration,
@@ -258,18 +281,21 @@ impl<T> QuicClientBuilder<T> {
     /// previous bound interface will be freed immediately.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
-        self.bind_interfaces.clear();
+    pub fn bind(mut self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
+        // clear previously bound interfaces
+        self.bind_interfaces = None;
+        let bind_interfaces = DashMap::new();
 
         for bind_uri in addrs.into_iter().map(Into::into) {
-            if self.bind_interfaces.contains_key(&bind_uri) {
+            if bind_interfaces.contains_key(&bind_uri) {
                 continue;
             }
             let interface =
                 QuicInterfaces::global().bind(bind_uri.clone(), self.quic_iface_factory.clone());
-            self.bind_interfaces.insert(bind_uri, interface);
+            bind_interfaces.insert(bind_uri, interface);
         }
 
+        self.bind_interfaces = Some(bind_interfaces);
         self
     }
 
@@ -567,13 +593,8 @@ impl QuicClientBuilder<TlsClientConfig> {
 
     /// Build the QuicClient, ready to initiates connect to the servers.
     pub fn build(self) -> QuicClient {
-        let bind_interfaces = if self.bind_interfaces.is_empty() {
-            None
-        } else {
-            Some(self.bind_interfaces)
-        };
         QuicClient {
-            bind_interfaces,
+            bind_interfaces: self.bind_interfaces,
             _prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
