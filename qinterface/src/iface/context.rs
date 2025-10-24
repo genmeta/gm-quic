@@ -8,10 +8,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{QuicIO, QuicIoExt, iface::RwInterface, route::Router};
+use crate::{
+    QuicIO, QuicIoExt,
+    iface::{RwInterface, physical::InterfaceEventReceiver},
+    route::Router,
+};
 
 pub struct InterfaceContext {
     iface: Weak<RwInterface>,
@@ -28,8 +31,9 @@ impl Debug for InterfaceContext {
 }
 
 impl InterfaceContext {
-    pub fn new(rw_iface: Arc<RwInterface>, mut interfaces: watch::Receiver<()>) -> Self {
+    pub fn new(rw_iface: Arc<RwInterface>, mut events: InterfaceEventReceiver) -> Self {
         let bind_uri = rw_iface.bind_uri();
+        let device = bind_uri.as_iface_bind_uri().map(|(_, device, _)| device);
         let iface = Arc::downgrade(&rw_iface);
         let task = AbortOnDropHandle::new(tokio::spawn({
             let rw_iface = iface.clone();
@@ -38,16 +42,20 @@ impl InterfaceContext {
             async move {
                 loop {
                     tokio::select! {
-                        Ok(()) = interfaces.changed() => {
+                        Some(event) = events.recv() => {
+                            // skip events not related to this interface
+                            if Some(event.device()) != device.as_deref() {
+                                continue;
+                            }
                             let Some(rw_iface) = rw_iface.upgrade() else { break };
                             // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
                             if matches!(receive_task, ReceiveTask::Stopped)
                                 || rw_iface.is_alive().await.is_err_and(|e| {
-                                    tracing::debug!(target: "quic", %bind_uri, "Interface may not alive: {e}");
+                                    tracing::debug!(target: "interface", %bind_uri, "Interface may not alive: {e}");
                                     e.is_recoverable()
                                 })
                             {
-                                tracing::debug!(target: "quic", %bind_uri, "Rebinding interface");
+                                tracing::debug!(target: "interface", %bind_uri, "Rebinding interface");
                                 _ = rw_iface.close().await;
                                 rw_iface.rebind();
                                 receive_task =
@@ -56,8 +64,8 @@ impl InterfaceContext {
                         }
                         result = &mut receive_task => {
                             match result {
-                                Ok(()) => tracing::debug!(target: "quic", %bind_uri, "Receive task completed due to interface freed"),
-                                Err(e) => tracing::debug!(target: "quic", %bind_uri, "Receive task failed with error: {e}"),
+                                Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed due to interface freed"),
+                                Err(e) => tracing::debug!(target: "interface", %bind_uri, "Receive task failed with error: {e}"),
                             }
                             // Task completed (likely due to error), mark as stopped and wait for interface change
                             receive_task = ReceiveTask::Stopped;
