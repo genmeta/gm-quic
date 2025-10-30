@@ -1,4 +1,10 @@
-use std::{future::Future, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use qevent::telemetry::{Log, handy::*};
 use rustls::server::WebPkiClientVerifier;
@@ -14,7 +20,10 @@ use tracing::Instrument;
 use tracing_appender::non_blocking::WorkerGuard;
 use x509_parser::prelude::FromDer;
 
-use crate::{handy::*, *};
+use crate::{
+    builder::*,
+    prelude::{handy::*, *},
+};
 
 fn qlogger() -> Arc<dyn Log + Send + Sync> {
     static QLOGGER: OnceLock<Arc<dyn Log + Send + Sync>> = OnceLock::new();
@@ -361,8 +370,8 @@ fn parallel_big_stream() -> Result<(), Error> {
 
 #[test]
 fn limited_streams() -> Result<(), Error> {
-    pub fn client_parameters() -> super::ClientParameters {
-        let mut params = super::ClientParameters::default();
+    pub fn client_parameters() -> ClientParameters {
+        let mut params = ClientParameters::default();
 
         for (id, value) in [
             (ParameterId::InitialMaxStreamsBidi, 2u32),
@@ -378,8 +387,8 @@ fn limited_streams() -> Result<(), Error> {
         params
     }
 
-    pub fn server_parameters() -> super::ServerParameters {
-        let mut params = super::ServerParameters::default();
+    pub fn server_parameters() -> ServerParameters {
+        let mut params = ServerParameters::default();
 
         for (id, value) in [
             (ParameterId::InitialMaxStreamsBidi, 2u32),

@@ -2,10 +2,7 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::{
-    BindUri,
-    handy::{LegacySeqLogger, NoopLogger, server_parameters},
-};
+use gm_quic::prelude::*;
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};
@@ -122,8 +119,8 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
     }
 
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
-        None => Arc::new(NoopLogger),
+        Some(dir) => Arc::new(handy::LegacySeqLogger::new(dir)),
+        None => Arc::new(handy::NoopLogger),
     };
 
     let Certs {
@@ -132,10 +129,10 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         key,
     } = options.certs;
 
-    let listeners = ::gm_quic::QuicListeners::builder()?
+    let listeners = QuicListeners::builder()?
         .with_qlog(qlogger)
         .without_client_cert_verifier()
-        .with_parameters(server_parameters())
+        .with_parameters(handy::server_parameters())
         .with_alpns(options.alpns)
         .listen(options.backlog);
     listeners.add_server(

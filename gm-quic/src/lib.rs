@@ -1,18 +1,29 @@
-use std::sync::OnceLock;
+pub mod prelude {
+    pub use ::qconnection;
+    pub use qconnection::prelude::*;
 
-pub use qconnection::{
-    builder::{
-        ClientParameters, ControlStreamsConcurrency, ServerParameters, TokenProvider, TokenSink,
-    },
-    prelude::*,
-};
-pub use qinterface::factory::ProductQuicIO;
+    pub use crate::{
+        client::QuicClient,
+        server::{QuicListeners, Server, ServerError},
+    };
 
-pub use crate::{
-    cert::{ToCertificate, ToPrivateKey},
-    client::{BindInterfaceError, QuicClient, QuicClientBuilder},
-    server::{BuildServerError, QuicListeners, QuicListenersBuilder, ServerError},
-};
+    pub mod handy {
+        pub use qconnection::prelude::handy::*;
+
+        pub use crate::cert::{ToCertificate, ToPrivateKey};
+    }
+}
+
+pub mod builder {
+    pub use qconnection::builder::*;
+
+    pub use crate::{
+        client::{BindInterfaceError, QuicClientBuilder},
+        server::{BuildServerError, QuicListenersBuilder},
+    };
+}
+
+pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qunreliable};
 
 mod cert;
 mod client;

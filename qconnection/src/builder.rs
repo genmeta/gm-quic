@@ -26,15 +26,19 @@ use qbase::{
     token::ArcTokenRegistry,
 };
 use qcongestion::HandshakeStatus;
+pub use qevent::telemetry::Log;
 use qevent::{
     GroupID,
     quic::{
         Owner,
         transport::{ParametersRestored, ParametersSet},
     },
-    telemetry::{Instrument, Log, handy::NoopLogger},
+    telemetry::{Instrument, handy::NoopLogger},
 };
-pub use qinterface::route::{Router, Way};
+pub use qinterface::{
+    factory::ProductQuicIO,
+    route::{Router, Way},
+};
 use qinterface::{iface::QuicInterfaces, queue::RcvdPacketQueue};
 use qrecovery::crypto::CryptoStream;
 use qunreliable::DatagramFlow;

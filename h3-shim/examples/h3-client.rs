@@ -1,9 +1,9 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant};
 
 use clap::Parser;
-use gm_quic::{
-    QuicClient, ToCertificate,
-    handy::{LegacySeqLogger, NoopLogger, client_parameters},
+use gm_quic::prelude::{
+    handy::{ToCertificate, client_parameters},
+    *,
 };
 use http::{
     Uri,
@@ -118,8 +118,8 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
-        Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
-        None => Arc::new(NoopLogger),
+        Some(dir) => Arc::new(handy::LegacySeqLogger::new(dir)),
+        None => Arc::new(handy::NoopLogger),
     };
 
     let client_builder = if options.skip_verify {

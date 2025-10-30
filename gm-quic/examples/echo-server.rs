@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
-use gm_quic::{handy::*, *};
+use gm_quic::prelude::*;
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;
@@ -91,7 +91,7 @@ async fn run(options: Options) -> io::Result<()> {
 
     let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
-        .with_parameters(server_parameters())
+        .with_parameters(handy::server_parameters())
         .with_qlog(qlogger)
         .defer_idle_timeout(Duration::from_secs(0))
         .enable_0rtt()

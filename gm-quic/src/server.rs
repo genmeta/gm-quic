@@ -3,7 +3,7 @@ use std::{
     fmt::{Debug, Display},
     io,
     ops::Deref,
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, OnceLock, RwLock, Weak},
     time::Duration,
 };
 
@@ -25,7 +25,7 @@ use rustls::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
-use crate::*;
+use crate::{prelude::*, *};
 
 /// Errors that can occur during server management operations.
 #[derive(Debug, thiserror::Error)]
@@ -291,8 +291,8 @@ impl QuicListeners {
     pub fn add_server(
         &self,
         server_name: impl Into<String>,
-        cert_chain: impl ToCertificate,
-        private_key: impl ToPrivateKey,
+        cert_chain: impl handy::ToCertificate,
+        private_key: impl handy::ToPrivateKey,
         bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
         ocsp: impl Into<Option<Vec<u8>>>,
     ) -> Result<(), ServerError> {

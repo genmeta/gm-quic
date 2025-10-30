@@ -17,13 +17,7 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
-qbase = { workspace = true }
-qcongestion = { workspace = true }
 qconnection = { workspace = true }
-qinterface = { workspace = true, features = ["qudp"] }
-qevent = { workspace = true }
-qrecovery = { workspace = true }
-qunreliable = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -45,7 +39,7 @@ x509-parser = { workspace = true }
 
 [features]
 default = ["unreliable"]
-telemetry = ["qevent/telemetry"]
+telemetry = ["qconnection/telemetry"]
 unreliable = ["qconnection/unreliable"]
 
 [dev-dependencies.tracing-subscriber]

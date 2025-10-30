@@ -35,6 +35,9 @@ pub mod prelude {
     };
 }
 
+// Re-export dependencies
+pub use ::{qbase, qevent, qinterface, qrecovery, qunreliable};
+
 pub mod builder;
 
 use std::{

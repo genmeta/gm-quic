@@ -38,3 +38,4 @@ qunreliable = { workspace = true, optional = true }
 [features]
 default = ["unreliable"]
 unreliable = ["dep:qunreliable"]
+telemetry = ["qevent/telemetry"]
