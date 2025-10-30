@@ -17,7 +17,7 @@ use rustls::{
 };
 use thiserror::Error;
 
-use crate::*;
+use crate::{prelude::*, *};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -506,8 +506,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     /// Read [TlsClientConfigBuilder::with_single_cert] for more information.
     pub fn with_cert(
         self,
-        cert_chain: impl ToCertificate,
-        key_der: impl ToPrivateKey,
+        cert_chain: impl handy::ToCertificate,
+        key_der: impl handy::ToPrivateKey,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,

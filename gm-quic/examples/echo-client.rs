@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
+use gm_quic::prelude::{handy::ToCertificate, *};
 use http::uri::Authority;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
@@ -105,7 +105,7 @@ async fn run(options: Options) -> Result<(), Error> {
     let client = QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
-        .with_parameters(client_parameters())
+        .with_parameters(handy::client_parameters())
         .with_qlog(qlogger)
         .defer_idle_timeout(Duration::from_secs(60))
         .enable_sslkeylog()

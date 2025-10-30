@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
+use gm_quic::prelude::{handy::ToCertificate, *};
 use http::{
     Uri,
     uri::{Authority, Parts},
@@ -108,7 +108,7 @@ async fn run(options: Options) -> Result<(), Error> {
     let client = client_builder
         .with_qlog(qlogger)
         .without_cert()
-        .with_parameters(client_parameters())
+        .with_parameters(handy::client_parameters())
         .with_alpns(options.alpns)
         .enable_sslkeylog()
         .build();

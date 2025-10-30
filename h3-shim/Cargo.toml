@@ -19,12 +19,11 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 gm-quic = { workspace = true }
-qbase = { workspace = true }
 tokio = { workspace = true }
-qconnection = { workspace = true }
 
 [features]
-unreliable = ["dep:h3-datagram", "qconnection/unreliable"]
+unreliable = ["dep:h3-datagram", "gm-quic/unreliable"]
+telemetry = ["gm-quic/telemetry"]
 
 [dev-dependencies]
 base64 = "0.22"

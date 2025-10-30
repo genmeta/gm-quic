@@ -6,7 +6,7 @@ use std::{
 };
 
 use futures::Stream;
-use gm_quic::{StreamId, StreamReader, StreamWriter};
+use gm_quic::prelude::{Connection, StreamId, StreamReader, StreamWriter};
 use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 };
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
-    connection: Arc<gm_quic::Connection>,
+    connection: Arc<Connection>,
     accept_bi: AcceptBiStreams,
     accept_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
@@ -23,7 +23,7 @@ pub struct QuicConnection {
 }
 
 impl Deref for QuicConnection {
-    type Target = Arc<gm_quic::Connection>;
+    type Target = Arc<Connection>;
 
     fn deref(&self) -> &Self::Target {
         &self.connection
@@ -31,7 +31,7 @@ impl Deref for QuicConnection {
 }
 
 impl QuicConnection {
-    pub fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    pub fn new(conn: Arc<Connection>) -> Self {
         Self {
             accept_bi: AcceptBiStreams::new(conn.clone()),
             accept_uni: AcceptUniStreams::new(conn.clone()),
@@ -120,13 +120,13 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
 
 /// 多此一举，实在是多此一举
 pub struct OpenStreams {
-    connection: Arc<gm_quic::Connection>,
+    connection: Arc<Connection>,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
 }
 
 impl OpenStreams {
-    fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    fn new(conn: Arc<Connection>) -> Self {
         Self {
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
@@ -188,7 +188,7 @@ struct OpenBiStreams(
 );
 
 impl OpenBiStreams {
-    fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    fn new(conn: Arc<Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn
                 .open_bi_stream()
@@ -221,7 +221,7 @@ impl OpenBiStreams {
 struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), ConnectionErrorIncoming>>);
 
 impl OpenUniStreams {
-    fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    fn new(conn: Arc<Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let send = conn
                 .open_uni_stream()
@@ -254,7 +254,7 @@ struct AcceptBiStreams(
 );
 
 impl AcceptBiStreams {
-    fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    fn new(conn: Arc<Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             Some((
                 conn.accept_bi_stream()
@@ -281,7 +281,7 @@ impl AcceptBiStreams {
 struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), ConnectionErrorIncoming>>);
 
 impl AcceptUniStreams {
-    fn new(conn: Arc<gm_quic::Connection>) -> Self {
+    fn new(conn: Arc<Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let uni = conn
                 .accept_uni_stream()
