@@ -1,17 +1,17 @@
-use std::sync::{Arc, atomic::Ordering::SeqCst};
+use std::sync::Arc;
 
 use qbase::{
     Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, Frame, FrameReader, ReceiveFrame, SendFrame},
+    frame::{ConnectionCloseFrame, Frame as V1Frame, ReceiveFrame, SendFrame},
     net::{
         addr::BindUri,
         route::{Link, Pathway},
         tx::Signals,
     },
     packet::{
-        self, PacketContains,
-        header::{GetDcid, GetType, OneRttHeader, long::ZeroRttHeader},
+        self,
+        header::{GetType, OneRttHeader, long::ZeroRttHeader},
         io::PacketSpace,
         keys::{ArcOneRttKeys, ArcZeroRttKeys, DirectionalKeys},
         r#type::Type,
@@ -23,21 +23,22 @@ use qevent::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
-        transport::PacketReceived,
     },
     telemetry::Instrument,
 };
 use qinterface::packet::{CipherPacket, PlainPacket};
 use qrecovery::crypto::CryptoStream;
 use tokio::sync::mpsc;
-use tracing::Instrument as _;
 
 use crate::{
     ArcReliableFrameDeque, Components, DataJournal, DataStreams, GuaranteedFrame,
-    SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{self, Path, error::CreatePathFailure},
-    space::{AckDataSpace, FlowControlledDataStreams, assemble_closing_packet, pipe},
+    space::{
+        AckDataSpace, FlowControlledDataStreams, Frame, assemble_closing_packet,
+        filter_odcid_packet, pipe, read_plain_packet,
+    },
+    state,
     termination::Terminator,
     tx::{PacketWriter, TrivialPacketWriter},
 };
@@ -222,6 +223,27 @@ impl path::PacketSpace<ZeroRttHeader> for DataSpace {
     }
 }
 
+impl PacketSpace<ZeroRttHeader> for DataSpace {
+    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
+
+    #[inline]
+    fn new_packet<'a>(
+        &'a self,
+        header: ZeroRttHeader,
+        buffer: &'a mut [u8],
+    ) -> Result<Self::PacketAssembler<'a>, Signals> {
+        if self.one_rtt_keys.get_local_keys().is_some() {
+            return Err(Signals::TLS_FIN); // should 1rtt
+        }
+
+        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
+            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
+        };
+
+        TrivialPacketWriter::new_long(header, buffer, keys, self.journal.as_ref())
+    }
+}
+
 impl path::PacketSpace<OneRttHeader> for DataSpace {
     type JournalFrame = GuaranteedFrame;
 
@@ -249,13 +271,35 @@ impl path::PacketSpace<OneRttHeader> for DataSpace {
     }
 }
 
-pub fn spawn_deliver_and_parse(
-    zeor_rtt_packets: BoundQueue<ReceivedZeroRttFrom>,
-    one_rtt_packets: BoundQueue<ReceivedOneRttFrom>,
-    space: Arc<DataSpace>,
+impl PacketSpace<OneRttHeader> for DataSpace {
+    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
+
+    #[inline]
+    fn new_packet<'a>(
+        &'a self,
+        header: OneRttHeader,
+        buffer: &'a mut [u8],
+    ) -> Result<Self::PacketAssembler<'a>, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        TrivialPacketWriter::new_short(
+            header,
+            buffer,
+            DirectionalKeys {
+                header: hpk,
+                packet: pk,
+            },
+            key_phase,
+            self.journal.as_ref(),
+        )
+    }
+}
+
+fn frame_dispathcer(
+    space: &DataSpace,
     components: &Components,
-    event_broker: ArcEventBroker,
-) {
+    event_broker: &ArcEventBroker,
+) -> impl for<'p> Fn(Frame, Type, &'p Path) {
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
     // 连接级的
     let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded_channel();
@@ -340,224 +384,214 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let dispatch_data_frame = {
-        let event_broker = event_broker.clone();
-        let rcvd_joural = space.journal.of_rcvd_packets();
-        move |frame: Frame, pty: packet::Type, path: &Path| match frame {
-            Frame::Ack(f) => {
-                path.cc().on_ack_rcvd(Epoch::Data, &f);
-                rcvd_joural.on_rcvd_ack(&f);
-                _ = ack_frames_entry.send(f)
-            }
-            Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
-            Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
-            Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
-            Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
-            Frame::HandshakeDone(f) => {
-                // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
-                _ = handshake_done_frames_entry.send(f)
-            }
-            Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
-            Frame::Challenge(f) => _ = path.recv_frame(&f),
-            Frame::Response(f) => _ = path.recv_frame(&f),
-            Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
-            Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
-            Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-            #[cfg(feature = "unreliable")]
-            Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
-            Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
-            _ => {}
+    let event_broker = event_broker.clone();
+    let rcvd_joural = space.journal.of_rcvd_packets();
+    let dispathc_v1_frame = move |frame: V1Frame, pty: packet::Type, path: &Path| match frame {
+        V1Frame::Ack(f) => {
+            path.cc().on_ack_rcvd(Epoch::Data, &f);
+            rcvd_joural.on_rcvd_ack(&f);
+            _ = ack_frames_entry.send(f)
+        }
+        V1Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
+        V1Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
+        V1Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
+        V1Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
+        V1Frame::HandshakeDone(f) => {
+            // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
+            _ = handshake_done_frames_entry.send(f)
+        }
+        V1Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
+        V1Frame::Challenge(f) => _ = path.recv_frame(&f),
+        V1Frame::Response(f) => _ = path.recv_frame(&f),
+        V1Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
+        V1Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
+        V1Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+        #[cfg(feature = "unreliable")]
+        V1Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
+        V1Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
+        _ => {}
+    };
+    move |frame, pty, path| match frame {
+        Frame::V1(frame) => dispathc_v1_frame(frame, pty, path),
+    }
+}
+
+async fn parse_normal_zero_rtt_packet(
+    (packet, (bind_uri, pathway, link)): ReceivedZeroRttFrom,
+    space: &DataSpace,
+    components: &Components,
+    dispatch_frame: impl Fn(Frame, Type, &Path),
+) -> Result<(), Error> {
+    let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
+        return Ok(());
+    };
+
+    let path = match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+        Ok(path) => path,
+        Err(CreatePathFailure::ConnectionClosed(..)) => {
+            packet.drop_on_conenction_closed();
+            return Ok(());
+        }
+        Err(CreatePathFailure::NoInterface(..)) => {
+            packet.drop_on_interface_not_found();
+            return Ok(());
         }
     };
 
-    let deliver_and_parse_0rtt = {
-        let tls_handshake = components.tls_handshake.clone();
-        let components = components.clone();
-        let space = space.clone();
-        let dispatch_data_frame = dispatch_data_frame.clone();
-        let event_broker = event_broker.clone();
-        async move {
-            // wait for the 1RTT to be ready, then start receiving packets
-            tls_handshake.finished().await;
-            while let Some((packet, (bind_uri, pathway, link))) = zeor_rtt_packets.recv().await {
-                let parse = async {
-                    let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
-                        return Ok(());
-                    };
+    let Some(packet) = filter_odcid_packet(packet, &components.specific) else {
+        return Ok(());
+    };
 
-                    let path =
-                        match components.get_or_try_create_path(bind_uri, link, pathway, true) {
-                            Ok(path) => path,
-                            Err(CreatePathFailure::ConnectionClosed(..)) => {
-                                packet.drop_on_conenction_closed();
-                                return Ok(());
-                            }
-                            Err(CreatePathFailure::NoInterface(..)) => {
-                                packet.drop_on_interface_not_found();
-                                return Ok(());
-                            }
-                        };
+    let packet_contains = read_plain_packet(&packet, |frame| {
+        dispatch_frame(frame, packet.get_type(), &path)
+    })?;
 
-                    // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
-                    // we should stop using the odcid, and drop the subsequent packets with odcid.
-                    //
-                    // We do not remove the route to odcid, otherwise the server may establish multiple connections.
-                    //
-                    // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server {
-                        odcid_router_entry,
-                        using_odcid,
-                    } = &components.specific
-                    {
-                        if odcid_router_entry.signpost() == (*packet.dcid()).into()
-                            && !using_odcid.load(SeqCst)
-                        {
-                            drop(packet); // just drop the packet, It's like we never received this packet.
-                            return Ok(());
-                        }
+    space.journal.of_rcvd_packets().on_rcvd_pn(
+        packet.pn(),
+        packet_contains.ack_eliciting(),
+        path.cc().get_pto(Epoch::Data),
+    );
+    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
 
-                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                            using_odcid.store(false, SeqCst);
-                        }
-                    }
+    Result::<(), Error>::Ok(())
+}
 
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
+async fn parse_normal_one_rtt_packet(
+    (packet, (bind_uri, pathway, link)): ReceivedOneRttFrom,
+    space: &DataSpace,
+    components: &Components,
+    dispatch_frame: impl Fn(Frame, Type, &Path),
+) -> Result<(), Error> {
+    let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {
+        return Ok(());
+    };
 
-                    space.journal.of_rcvd_packets().on_rcvd_pn(
-                        packet.pn(),
-                        packet_contains.ack_eliciting(),
-                        path.cc().get_pto(Epoch::Data),
-                    );
-                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
-
-                    Result::<(), Error>::Ok(())
-                };
-
-                if let Err(Error::Quic(error)) =
-                    Instrument::instrument(parse, qevent::span!(@current, path=pathway.to_string()))
-                        .await
-                {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
+    let path = match components.get_or_try_create_path(bind_uri, link, pathway, true) {
+        Ok(path) => path,
+        Err(CreatePathFailure::ConnectionClosed(..)) => {
+            packet.drop_on_conenction_closed();
+            return Ok(());
+        }
+        Err(CreatePathFailure::NoInterface(..)) => {
+            packet.drop_on_interface_not_found();
+            return Ok(());
         }
     };
 
-    let deliver_and_parse_1rtt = {
-        let tls_handshake = components.tls_handshake.clone();
-        let components = components.clone();
-        let space = space.clone();
-        let dispatch_data_frame = dispatch_data_frame.clone();
-        let event_broker = event_broker.clone();
-        async move {
-            // wait for the 1RTT to be ready, then start receiving packets
-            tls_handshake.finished().await;
-            while let Some((packet, (bind_uri, pathway, link))) = one_rtt_packets.recv().await {
-                let parse = async {
-                    let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {
-                        return Ok(());
-                    };
-
-                    let path =
-                        match components.get_or_try_create_path(bind_uri, link, pathway, true) {
-                            Ok(path) => path,
-                            Err(CreatePathFailure::ConnectionClosed(..)) => {
-                                packet.drop_on_conenction_closed();
-                                return Ok(());
-                            }
-                            Err(CreatePathFailure::NoInterface(..)) => {
-                                packet.drop_on_interface_not_found();
-                                return Ok(());
-                            }
-                        };
-
-                    // the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
-                    // we should stop using the odcid, and drop the subsequent packets with odcid.
-                    //
-                    // We do not remove the route to odcid, otherwise the server may establish multiple connections.
-                    //
-                    // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                    if let SpecificComponents::Server {
-                        odcid_router_entry,
-                        using_odcid,
-                    } = &components.specific
-                    {
-                        if odcid_router_entry.signpost() == (*packet.dcid()).into()
-                            && !using_odcid.load(SeqCst)
-                        {
-                            drop(packet); // just drop the packet, It's like we never received this packet.
-                            return Ok(());
-                        }
-
-                        if odcid_router_entry.signpost() != (*packet.dcid()).into() {
-                            using_odcid.store(false, SeqCst);
-                        }
-                    }
-
-                    components
-                        .quic_handshake
-                        .discard_spaces_on_server_handshake_done(&components.paths);
-
-                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(PacketContains::default(), |packet_contains, frame| {
-                            let (frame, frame_type) = frame?;
-                            frames.extend(Some(&frame));
-                            dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, QuicError>::Ok(packet_contains.include(frame_type))
-                        })?;
-                    packet.log_received(frames);
-
-                    space.journal.of_rcvd_packets().on_rcvd_pn(
-                        packet.pn(),
-                        packet_contains.ack_eliciting(),
-                        path.cc().get_pto(Epoch::Data),
-                    );
-                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
-
-                    Result::<(), Error>::Ok(())
-                };
-
-                if let Err(Error::Quic(error)) =
-                    Instrument::instrument(parse, qevent::span!(@current, path=pathway.to_string()))
-                        .await
-                {
-                    event_broker.emit(Event::Failed(error));
-                };
-            }
-        }
+    let Some(packet) = filter_odcid_packet(packet, &components.specific) else {
+        return Ok(());
     };
 
-    tokio::spawn({
-        let conn_state = components.conn_state.clone();
-        async move {
-            tokio::select! {
-                _ = deliver_and_parse_0rtt => {},
-                _ = conn_state.terminated() => {}
+    components
+        .quic_handshake
+        .discard_spaces_on_server_handshake_done(&components.paths);
+
+    let packet_contains = read_plain_packet(&packet, |frame| {
+        dispatch_frame(frame, packet.get_type(), &path)
+    })?;
+
+    space.journal.of_rcvd_packets().on_rcvd_pn(
+        packet.pn(),
+        packet_contains.ack_eliciting(),
+        path.cc().get_pto(Epoch::Data),
+    );
+    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
+
+    Result::<(), Error>::Ok(())
+}
+
+fn parse_closing_one_rtt_packet(
+    space: &DataSpace,
+    packet: CipherOneRttPacket,
+) -> Option<ConnectionCloseFrame> {
+    let (hpk, pk) = space.one_rtt_keys.remote_keys()?;
+    let packet = packet
+        .decrypt_short_packet(hpk.as_ref(), &pk, |pn| {
+            space.journal.of_rcvd_packets().decode_pn(pn)
+        })
+        .and_then(Result::ok)?;
+
+    let mut ccf = None;
+    _ = read_plain_packet(&packet, |frame| {
+        ccf = ccf.take().or(match frame {
+            Frame::V1(V1Frame::Close(ccf)) => Some(ccf),
+            _ => None,
+        })
+    });
+    ccf
+}
+
+pub async fn deliver_and_parse_packets(
+    zeor_rtt_packets: BoundQueue<ReceivedZeroRttFrom>,
+    one_rtt_packets: BoundQueue<ReceivedOneRttFrom>,
+    space: Arc<DataSpace>,
+    components: Components,
+    event_broker: ArcEventBroker,
+) {
+    let conn_state = &components.conn_state;
+    let dispatch_frame = frame_dispathcer(&space, &components, &event_broker);
+    let normal_deliver_and_parse_zero_rtt_loop = async {
+        while let Some(form) = zeor_rtt_packets.recv().await {
+            let span = qevent::span!(@current, path=form.1.2.to_string());
+            let parse = parse_normal_zero_rtt_packet(form, &space, &components, &dispatch_frame);
+            if let Err(Error::Quic(error)) = Instrument::instrument(parse, span).await {
+                event_broker.emit(Event::Failed(error));
             };
         }
-        .instrument_in_current()
-        .in_current_span()
-    });
-    tokio::spawn({
-        let conn_state = components.conn_state.clone();
-        async move {
-            tokio::select! {
-                _ = deliver_and_parse_1rtt => {},
-                _ = conn_state.terminated() => {}
+    };
+    let normal_deliver_and_parse_one_rtt_loop = async {
+        while let Some(form) = one_rtt_packets.recv().await {
+            let span = qevent::span!(@current, path=form.1.2.to_string());
+            let parse = parse_normal_one_rtt_packet(form, &space, &components, &dispatch_frame);
+            if let Err(Error::Quic(error)) = Instrument::instrument(parse, span).await {
+                event_broker.emit(Event::Failed(error));
             };
         }
-        .instrument_in_current()
-        .in_current_span()
-    });
+    };
+
+    let normal_deliver_and_parse_loops = async {
+        components.tls_handshake.finished().await;
+        tokio::join!(
+            normal_deliver_and_parse_zero_rtt_loop,
+            normal_deliver_and_parse_one_rtt_loop,
+        )
+    };
+
+    let ccf = tokio::select! {
+        // deliver and parse packets. complete when packet queue closed
+        _ = normal_deliver_and_parse_loops => return,
+        // connection terminated(enter closing/draining state)
+        error = conn_state.terminated() => match conn_state.current() {
+            // entered closing_state, keep receiving packets, and send ccf
+            state if state == Some(state::CLOSING) => ConnectionCloseFrame::from(error),
+            // entered other state, do nothing
+            _ => return
+        }
+    };
+
+    let terminator = Terminator::new(ccf, &components);
+    // Release the primary connection state
+    drop(components);
+    zeor_rtt_packets.close();
+
+    while let Some((packet, (_bind_uri, pathway, _link))) = one_rtt_packets.recv().await {
+        if let Some(ccf) = parse_closing_one_rtt_packet(&space, packet) {
+            event_broker.emit(Event::Closed(ccf));
+        }
+
+        if terminator.should_send() {
+            terminator
+                .try_send_on(pathway, |buffer, ccf| {
+                    assemble_closing_packet::<OneRttHeader, _>(
+                        space.as_ref(),
+                        &terminator,
+                        buffer,
+                        ccf,
+                    )
+                })
+                .await
+        }
+    }
 }
 
 pub struct DataTracker {
@@ -601,104 +635,4 @@ impl Feedback for DataTracker {
             });
         }
     }
-}
-
-impl PacketSpace<ZeroRttHeader> for DataSpace {
-    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
-
-    #[inline]
-    fn new_packet<'a>(
-        &'a self,
-        header: ZeroRttHeader,
-        buffer: &'a mut [u8],
-    ) -> Result<Self::PacketAssembler<'a>, Signals> {
-        if self.one_rtt_keys.get_local_keys().is_some() {
-            return Err(Signals::TLS_FIN); // should 1rtt
-        }
-
-        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
-            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
-        };
-
-        TrivialPacketWriter::new_long(header, buffer, keys, self.journal.as_ref())
-    }
-}
-
-impl PacketSpace<OneRttHeader> for DataSpace {
-    type PacketAssembler<'a> = TrivialPacketWriter<'a, 'a, GuaranteedFrame>;
-
-    #[inline]
-    fn new_packet<'a>(
-        &'a self,
-        header: OneRttHeader,
-        buffer: &'a mut [u8],
-    ) -> Result<Self::PacketAssembler<'a>, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        TrivialPacketWriter::new_short(
-            header,
-            buffer,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
-            self.journal.as_ref(),
-        )
-    }
-}
-
-impl DataSpace {
-    pub fn recv_packet(&self, packet: CipherOneRttPacket) -> Option<ConnectionCloseFrame> {
-        let (hpk, pk) = self.one_rtt_keys.remote_keys()?;
-        let packet = packet
-            .decrypt_short_packet(hpk.as_ref(), &pk, |pn| {
-                self.journal.of_rcvd_packets().decode_pn(pn)
-            })
-            .and_then(Result::ok)?;
-
-        let mut frames = QuicFramesCollector::<PacketReceived>::new();
-        let ccf = FrameReader::new(packet.body(), packet.get_type())
-            .filter_map(Result::ok)
-            .inspect(|(f, _ack)| frames.extend(Some(f)))
-            .fold(None, |ccf, (frame, _)| match (ccf, frame) {
-                (ccf @ Some(..), _) => ccf,
-                (None, Frame::Close(ccf)) => Some(ccf),
-                (None, _) => None,
-            });
-        packet.log_received(frames);
-        ccf
-    }
-}
-
-pub fn spawn_deliver_and_parse_closing(
-    packets: BoundQueue<ReceivedOneRttFrom>,
-    space: Arc<DataSpace>,
-    terminator: Arc<Terminator>,
-    event_broker: ArcEventBroker,
-) {
-    tokio::spawn(
-        async move {
-            while let Some((packet, (_, pathway, _socket))) = packets.recv().await {
-                if let Some(ccf) = space.recv_packet(packet) {
-                    event_broker.emit(Event::Closed(ccf.clone()));
-                    return;
-                }
-                if terminator.should_send() {
-                    _ = terminator
-                        .try_send_on(pathway, |buffer, ccf| {
-                            assemble_closing_packet::<OneRttHeader, _>(
-                                space.as_ref(),
-                                terminator.as_ref(),
-                                buffer,
-                                ccf,
-                            )
-                        })
-                        .await;
-                }
-            }
-        }
-        .instrument_in_current()
-        .in_current_span(),
-    );
 }

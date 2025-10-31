@@ -25,7 +25,7 @@ use tokio::time::Instant;
 
 use crate::{ArcLocalCids, Components, path::ArcPathContexts};
 
-/// Keep a few states to support sending a packet with ccf.
+/// Keep a few states to support sending packets with ccf.
 ///
 /// when it is dropped all paths will be destroyed
 pub struct Terminator {

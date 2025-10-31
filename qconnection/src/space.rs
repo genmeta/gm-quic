@@ -6,19 +6,25 @@ use std::{fmt::Debug, sync::Arc};
 
 use bytes::Bytes;
 use qbase::{
-    error::Error,
+    error::{Error, QuicError},
     frame::{
-        AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeature, GetFrameType, ReceiveFrame,
-        ReliableFrame, StreamCtlFrame, StreamFrame,
+        AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeature, FrameReader, GetFrameType,
+        ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
     packet::{
-        AssemblePacket, Package, PacketSpace, PacketWriter, ProductHeader,
-        header::short::OneRttHeader,
+        AssemblePacket, Package, PacketContains, PacketSpace, PacketWriter, ProductHeader,
+        header::{GetDcid, GetType, short::OneRttHeader},
         io::{Packages, PadTo20},
     },
 };
-use qevent::{quic::transport::PacketsAcked, telemetry::Instrument};
-use qinterface::queue::RcvdPacketQueue;
+use qevent::{
+    quic::{
+        PacketHeaderBuilder, QuicFramesCollector,
+        transport::{PacketReceived, PacketsAcked},
+    },
+    telemetry::Instrument,
+};
+use qinterface::packet::PlainPacket;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
@@ -27,7 +33,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::Instrument as _;
 
 use crate::{
-    Components, DataStreams, FlowController, GuaranteedFrame,
+    Components, DataStreams, FlowController, GuaranteedFrame, SpecificComponents,
     events::{ArcEventBroker, EmitEvent, Event},
     termination::Terminator,
 };
@@ -93,72 +99,17 @@ where
 }
 
 impl Spaces {
-    pub async fn close(
-        self,
-        terminator: Arc<Terminator>,
-        rcvd_pkt_q: Arc<RcvdPacketQueue>,
-        event_broker: ArcEventBroker,
-    ) {
-        _ = terminator
-            .try_send(|buf, ccf| {
-                assemble_closing_packet(self.initial().as_ref(), terminator.as_ref(), buf, ccf)
-            })
-            .await;
-        initial::spawn_deliver_and_parse_closing(
-            rcvd_pkt_q.initial().clone(),
-            self.initial.clone(),
-            terminator.clone(),
-            event_broker.clone(),
-        );
-
-        rcvd_pkt_q.zero_rtt().close();
-
-        _ = terminator
-            .try_send(|buf, ccf| {
-                assemble_closing_packet(self.handshake().as_ref(), terminator.as_ref(), buf, ccf)
-            })
-            .await;
-        handshake::spawn_deliver_and_parse_closing(
-            rcvd_pkt_q.handshake().clone(),
-            self.handshake.clone(),
-            terminator.clone(),
-            event_broker.clone(),
-        );
-
-        _ = terminator
-            .try_send(|buf, ccf| {
-                let space = self.data().as_ref();
-                assemble_closing_packet::<OneRttHeader, _>(space, terminator.as_ref(), buf, ccf)
-            })
-            .await;
-        data::spawn_deliver_and_parse_closing(
-            rcvd_pkt_q.one_rtt().clone(),
-            self.data.clone(),
-            terminator.clone(),
-            event_broker.clone(),
-        );
-    }
-
-    pub async fn drain(self, terminator: Arc<Terminator>, rcvd_pkt_q: Arc<RcvdPacketQueue>) {
-        rcvd_pkt_q.close_all();
-        // For the client, this may cause the server to establish a new connection state and then quickly end it.
-        // (especially when the pto is very small, such as a loopback NIC).
-        _ = terminator
-            .try_send(|buf, ccf| {
-                assemble_closing_packet(self.initial().as_ref(), terminator.as_ref(), buf, ccf)
-            })
-            .await;
-        _ = terminator
-            .try_send(|buf, ccf| {
-                assemble_closing_packet(self.handshake().as_ref(), terminator.as_ref(), buf, ccf)
-            })
-            .await;
-        _ = terminator
-            .try_send(|buf, ccf| {
-                let space = self.data().as_ref();
-                assemble_closing_packet::<OneRttHeader, _>(space, terminator.as_ref(), buf, ccf)
-            })
-            .await;
+    pub async fn send_ccf_packets(&self, terminator: &Terminator) {
+        let send_initial = terminator.try_send(|buf, ccf| {
+            assemble_closing_packet(self.initial().as_ref(), terminator, buf, ccf)
+        });
+        let send_handshake = terminator.try_send(|buf, ccf| {
+            assemble_closing_packet(self.handshake().as_ref(), terminator, buf, ccf)
+        });
+        let send_one_rtt = terminator.try_send(|buf, ccf| {
+            assemble_closing_packet::<OneRttHeader, _>(self.data().as_ref(), terminator, buf, ccf)
+        });
+        tokio::join!(send_initial, send_handshake, send_one_rtt);
     }
 }
 
@@ -351,23 +302,89 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
 
 pub fn spawn_deliver_and_parse(components: &Components) {
     let received_packets_queue = &components.rcvd_pkt_q;
-    initial::spawn_deliver_and_parse(
+    let initial = initial::deliver_and_parse_packets(
         received_packets_queue.initial().clone(),
         components.spaces.initial.clone(),
-        components,
+        components.clone(),
         components.event_broker.clone(),
     );
-    handshake::spawn_deliver_and_parse(
+    let handshake = handshake::deliver_and_parse_packets(
         received_packets_queue.handshake().clone(),
         components.spaces.handshake.clone(),
-        components,
+        components.clone(),
         components.event_broker.clone(),
     );
-    data::spawn_deliver_and_parse(
+    let data = data::deliver_and_parse_packets(
         received_packets_queue.zero_rtt().clone(),
         received_packets_queue.one_rtt().clone(),
         components.spaces.data.clone(),
-        components,
+        components.clone(),
         components.event_broker.clone(),
     );
+    tokio::spawn(
+        async move { tokio::join!(initial, handshake, data) }
+            .instrument_in_current()
+            .in_current_span(),
+    );
+}
+
+/// For server connection, the origin dcid doesnot own a sequences number, once we received a packet which dcid != odcid,
+/// we should stop using the odcid, and drop the subsequent packets with odcid.
+///
+/// We do not remove the route to odcid, otherwise the server may establish multiple connections for packets with same odcid.
+///
+/// https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+fn filter_odcid_packet<H: GetDcid>(
+    packet: PlainPacket<H>,
+    specific: &SpecificComponents,
+) -> Option<PlainPacket<H>> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if let SpecificComponents::Server {
+        odcid_router_entry,
+        using_odcid,
+    } = &specific
+    {
+        let dcid = (*packet.dcid()).into();
+        if odcid_router_entry.signpost() == dcid && !using_odcid.load(SeqCst) {
+            drop(packet); // just drop the packet, It's like we never received this packet.
+            return None;
+        }
+
+        if odcid_router_entry.signpost() != dcid {
+            using_odcid.store(false, SeqCst);
+        }
+    }
+    Some(packet)
+}
+
+enum Frame {
+    V1(qbase::frame::Frame),
+}
+
+fn read_plain_packet<H>(
+    packet: &PlainPacket<H>,
+    mut dispatch_frame: impl FnMut(Frame),
+) -> Result<PacketContains, Error>
+where
+    H: GetType,
+    PacketHeaderBuilder: for<'a> From<&'a H>,
+{
+    let mut frames_collector = QuicFramesCollector::<PacketReceived>::new();
+    let mut packet_contains = PacketContains::default();
+    let mut frame_reader = FrameReader::new(packet.body(), packet.get_type());
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(frame_result) = frame_reader.next() {
+        match frame_result {
+            Ok((frame, r#type)) => {
+                frames_collector.extend([&frame]);
+                packet_contains = packet_contains.include(r#type);
+                dispatch_frame(Frame::V1(frame))
+            }
+            // Custom frames could try their own parse here
+            Err(error) => return Err(QuicError::from(error).into()),
+        }
+    }
+
+    packet.log_received(frames_collector);
+    Ok(packet_contains)
 }
