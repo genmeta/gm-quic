@@ -32,7 +32,7 @@ mod doc {
     // mod en {}
 }
 
-pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qunreliable};
+pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
 
 mod cert;
 mod client;

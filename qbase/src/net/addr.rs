@@ -10,7 +10,9 @@ use http::Uri;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{net::Family, util::UniqueIdGenerator};
+use crate::{frame::EncodeSize, net::Family, util::UniqueIdGenerator};
+
+pub const TEMPORARY: &str = "temporary";
 
 #[derive(Debug, Display, Clone, Into, PartialEq, Eq, Hash)]
 pub struct BindUri(Uri);
@@ -100,6 +102,16 @@ impl FromStr for BindUri {
         }
 
         Ok(Self(uri))
+    }
+}
+
+impl From<String> for BindUri {
+    #[inline]
+    fn from(value: String) -> Self {
+        match BindUri::from_str(&value) {
+            Ok(bind_uri) => bind_uri,
+            Err(e) => panic!("bind uri should be valid: {e}"),
+        }
     }
 }
 
@@ -197,7 +209,6 @@ impl BindUri {
         self.0 = Uri::from_parts(uri_parts).expect("BindUri should be valid");
     }
 
-    pub const TEMPORARY: &'static str = "temporary";
     pub const ALLOC_PORT_ID: &'static str = "alloc_port_id";
 
     pub fn alloc_port(&self) -> Self {
@@ -240,7 +251,7 @@ impl BindUri {
     }
 
     pub fn is_templorary(&self) -> bool {
-        match self.prop(Self::TEMPORARY) {
+        match self.prop(TEMPORARY) {
             Some(bool) if bool == "true" => true,
             None | Some(..) => false,
         }
@@ -382,6 +393,20 @@ impl RealAddr {
     }
 }
 
+impl EncodeSize for RealAddr {
+    fn encoding_size(&self) -> usize {
+        match self {
+            RealAddr::Internet(SocketAddr::V4(_)) => 2 + 4,
+            RealAddr::Internet(SocketAddr::V6(_)) => 2 + 16,
+            RealAddr::Bluetooth(_) => unreachable!(),
+        }
+    }
+
+    fn max_encoding_size(&self) -> usize {
+        18
+    }
+}
+
 impl Display for RealAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -480,7 +505,7 @@ mod tests {
         assert_eq!(family, Family::V4);
         assert_eq!(interface, "wlan0");
         assert_eq!(port, 8080);
-        assert_eq!(bind_uri.prop(BindUri::TEMPORARY).as_deref(), Some("true"));
+        assert_eq!(bind_uri.prop(TEMPORARY).as_deref(), Some("true"));
     }
 
     #[test]
@@ -549,7 +574,7 @@ mod tests {
         assert!(!bind_uri.is_templorary());
 
         let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
-        bind_uri.add_prop(BindUri::TEMPORARY, "true");
+        bind_uri.add_prop(TEMPORARY, "true");
         assert_eq!(
             bind_uri.to_string(),
             "iface://v4.wlan0:8080/?temporary=true"

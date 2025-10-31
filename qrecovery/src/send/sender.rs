@@ -296,7 +296,7 @@ impl<TX> SendingSender<TX> {
     }
 
     pub(super) fn pick_up<P>(
-        &mut self,
+        &'_ mut self,
         predicate: P,
         flow_limit: usize,
     ) -> Result<StreamData<'_>, Signals>
@@ -460,7 +460,7 @@ pub struct DataSentSender<TX> {
 
 impl<TX> DataSentSender<TX> {
     pub(super) fn pick_up<P>(
-        &mut self,
+        &'_ mut self,
         predicate: P,
         flow_limit: usize,
     ) -> Result<StreamData<'_>, Signals>

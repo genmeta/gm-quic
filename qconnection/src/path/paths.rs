@@ -10,7 +10,10 @@ use qbase::{
     Epoch,
     cid::ConnectionId,
     error::{ErrorKind, QuicError},
-    net::{route::Pathway, tx::ArcSendWakers},
+    net::{
+        route::{EndpointAddr, Pathway, SocketEndpointAddr},
+        tx::ArcSendWakers,
+    },
 };
 use qcongestion::Transport;
 use qevent::telemetry::Instrument;
@@ -141,5 +144,21 @@ impl ArcPathContexts {
 
     pub fn clear(&self) {
         self.paths.clear();
+    }
+
+    pub fn on_path_validated(&self, pathway: Pathway) {
+        if matches!(
+            pathway.remote(),
+            EndpointAddr::Socket(SocketEndpointAddr::Direct { .. })
+        ) {
+            self.paths.iter().for_each(|p| {
+                if matches!(
+                    p.pathway.remote(),
+                    EndpointAddr::Socket(SocketEndpointAddr::Direct { .. })
+                ) {
+                    p.path.deactivate();
+                }
+            });
+        }
     }
 }

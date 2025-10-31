@@ -231,7 +231,11 @@ where
     #[inline]
     fn record_frame(&mut self, frame: &F) {
         // however, this will be checked again in NewPacketGuard::build_trivial
-        debug_assert!(frame.specs().contain(Spec::NonAckEliciting));
+        debug_assert!(
+            frame.specs().contain(Spec::NonAckEliciting),
+            "Frame is not non-ack eliciting {}",
+            std::any::type_name::<F>()
+        );
         self.clerk.record_trivial();
         self.writer.record_frame(frame);
     }

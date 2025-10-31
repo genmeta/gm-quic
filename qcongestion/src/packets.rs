@@ -114,7 +114,7 @@ impl RcvdRecords {
 
     /// Checks whether an ACK frame needs to be sent.
     /// Returns [`Some`] if it's time to send an ACK based on the maximum delay.
-    pub(crate) fn need_ack(&self) -> Option<(u64, Instant)> {
+    pub(crate) fn need_ack(&mut self) -> Option<(u64, Instant)> {
         let now = Instant::now();
         if self.ack_immedietly {
             return self.largest_rcvd_packet;

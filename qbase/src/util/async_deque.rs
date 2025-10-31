@@ -60,6 +60,7 @@ impl<T> AsyncDeque<T> {
                             "Multiple tasks are attempting to wait on the same AsyncDeque. This is a bug, place report it."
                         );
                     }
+                    self.waker = Some(cx.waker().clone());
                     // same waker, no need to update again
                     Poll::Pending
                 } else {
