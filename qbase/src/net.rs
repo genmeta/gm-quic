@@ -1,7 +1,19 @@
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    str::FromStr,
+};
 
+use bytes::BufMut;
+use nom::{
+    IResult, Parser,
+    combinator::{flat_map, map},
+    number::complete::{be_u16, be_u32, be_u128},
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::frame::EncodeSize;
 
 pub mod addr;
 pub mod route;
@@ -13,9 +25,9 @@ pub mod tx;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Family {
     /// IPv4 protocol family
-    V4,
+    V4 = 0,
     /// IPv6 protocol family
-    V6,
+    V6 = 1,
 }
 
 impl Display for Family {
@@ -79,6 +91,47 @@ impl AddrFamily for std::net::IpAddr {
 impl AddrFamily for std::net::SocketAddr {
     fn family(&self) -> Family {
         self.ip().family()
+    }
+}
+
+pub trait WriteSocketAddr {
+    fn put_socket_addr(&mut self, addr: &SocketAddr);
+}
+
+impl<T: BufMut> WriteSocketAddr for T {
+    fn put_socket_addr(&mut self, addr: &SocketAddr) {
+        self.put_u16(addr.port());
+        match addr.ip() {
+            IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
+            IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
+        }
+    }
+}
+
+pub fn be_socket_addr(input: &[u8], family: Family) -> IResult<&[u8], SocketAddr> {
+    flat_map(be_u16, |port| {
+        map(be_ip_addr(family), move |ip| SocketAddr::new(ip, port))
+    })
+    .parse(input)
+}
+
+pub fn be_ip_addr(family: Family) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
+    move |input| match family {
+        Family::V6 => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
+        Family::V4 => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
+    }
+}
+
+impl EncodeSize for SocketAddr {
+    fn max_encoding_size(&self) -> usize {
+        2 + 16 // IPv6 address
+    }
+
+    fn encoding_size(&self) -> usize {
+        match self.ip() {
+            IpAddr::V4(_) => 2 + 4,
+            IpAddr::V6(_) => 2 + 16,
+        }
     }
 }
 

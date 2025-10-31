@@ -496,6 +496,7 @@ impl QuicListeners {
             match connection.server_name().await {
                 Ok(server_name) => {
                     tracing::Span::current().record("server_name", &server_name);
+                    _ = connection.subscribe_address();
                     let incoming = (connection, server_name, pathway, link);
                     match incomings.send((incoming, premit)).await {
                         Ok(..) => {

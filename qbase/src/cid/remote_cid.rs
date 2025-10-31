@@ -419,7 +419,7 @@ where
     /// then this cid apply is retired.
     /// In this case, None will be returned.
     pub fn borrow_cid(
-        &self,
+        &'_ self,
         tx_waker: ArcSendWaker,
     ) -> Result<Option<BorrowedCid<'_, RETIRED>>, Signals> {
         self.0.lock().unwrap().borrow_cid(tx_waker).map(|cid| {

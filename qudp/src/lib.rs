@@ -4,13 +4,14 @@ use std::{
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicI32},
     task::{Context, Poll, Wake, Waker, ready},
 };
 
+use bytes::BytesMut;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
-const DEFAULT_TTL: libc::c_int = 64;
+pub const DEFAULT_TTL: libc::c_int = 64;
 pub const BATCH_SIZE: usize = 64;
 cfg_if::cfg_if! {
     if #[cfg(unix)]{
@@ -64,6 +65,7 @@ pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
     read: Arc<Wakers>,
     write: Arc<Wakers>,
+    ttl: AtomicI32,
 }
 
 impl UdpSocketController {
@@ -82,6 +84,7 @@ impl UdpSocketController {
             io,
             read: Default::default(),
             write: Default::default(),
+            ttl: AtomicI32::new(DEFAULT_TTL),
         };
         Ok(usc)
     }
@@ -110,6 +113,7 @@ impl UdpSocketController {
     ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.poll_send_ready(cx))?;
+            self.set_ttl(hdr.ttl as i32)?;
             match self
                 .io
                 .try_io(Interest::WRITABLE, || self.sendmsg(bufs, hdr))
@@ -137,6 +141,40 @@ impl UdpSocketController {
                 return Poll::Ready(ret);
             }
         }
+    }
+
+    #[allow(unreachable_code)]
+    pub fn bind_device(&self, _device: &str) -> io::Result<()> {
+        // #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        // android and linux support bind_device_by_index, which is called by codes below
+        #[cfg(target_os = "fuchsia")]
+        {
+            let socket = socket2::SockRef::from(&self.io);
+            return socket.bind_device(Some(_device.as_bytes()));
+        }
+        #[cfg(any(
+            target_os = "ios",
+            target_os = "visionos",
+            target_os = "macos",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "linux",
+            target_os = "android",
+        ))]
+        {
+            let socket = socket2::SockRef::from(&self.io);
+            let index = nix::net::if_::if_nametoindex(_device)?;
+            let index = std::num::NonZeroU32::new(index)
+                .expect("Already checked by nix::net::if_::if_nametoindex");
+            match self.io.local_addr()? {
+                SocketAddr::V4(..) => socket.bind_device_by_index_v4(Some(index))?,
+                SocketAddr::V6(..) => socket.bind_device_by_index_v6(Some(index))?,
+            }
+            return Ok(());
+        }
+        Ok(())
     }
 }
 
@@ -175,6 +213,8 @@ pub trait Io {
 
     fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [DatagramHeader])
     -> io::Result<usize>;
+
+    fn set_ttl(&self, ttl: i32) -> io::Result<()>;
 }
 
 impl UdpSocketController {
@@ -190,7 +230,11 @@ impl UdpSocketController {
         Receiver {
             usc: self,
             iovecs: (0..BATCH_SIZE)
-                .map(|_| [0u8; 1500].to_vec())
+                .map(|_| {
+                    let mut buf = BytesMut::with_capacity(1500);
+                    buf.resize(1500, 0);
+                    buf
+                })
                 .collect::<Vec<_>>(),
             headers: (0..BATCH_SIZE)
                 .map(|_| DatagramHeader::default())
@@ -216,7 +260,7 @@ impl Future for Send<'_> {
 
 pub struct Receiver<'u> {
     pub usc: &'u UdpSocketController,
-    pub iovecs: Vec<Vec<u8>>,
+    pub iovecs: Vec<BytesMut>,
     pub headers: Vec<DatagramHeader>,
 }
 

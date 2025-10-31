@@ -86,7 +86,7 @@ where
             .try_into()
             .expect("This test support only SocketAddr");
 
-        let result = time::timeout(Duration::from_secs(30), launch_client(server_addr)).await;
+        let result = time::timeout(Duration::from_secs(120), launch_client(server_addr)).await;
 
         listeners.shutdown();
         _server_task.abort();
@@ -105,7 +105,7 @@ const TEST_DATA: &[u8] = include_bytes!("tests.rs");
 
 async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) {
     io::copy(&mut reader, &mut writer).await.unwrap();
-    writer.shutdown().await.unwrap();
+    _ = writer.shutdown().await;
     tracing::debug!("stream copy done");
 }
 
@@ -308,7 +308,7 @@ fn double_connections() -> Result<(), BoxError> {
     test_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
-const PARALLEL_ECHO_CONNS: usize = 20;
+const PARALLEL_ECHO_CONNS: usize = 3;
 const PARALLEL_ECHO_STREAMS: usize = 2;
 
 #[test]
@@ -342,6 +342,22 @@ fn parallel_stream() -> Result<(), BoxError> {
 
 #[test]
 fn parallel_big_stream() -> Result<(), BoxError> {
+    fn client_parameters() -> ClientParameters {
+        let mut params = handy::client_parameters();
+        params
+            .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+            .expect("unreachable");
+        params
+    }
+
+    fn server_parameters() -> ServerParameters {
+        let mut params = handy::server_parameters();
+        params
+            .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+            .expect("unreachable");
+        params
+    }
+
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
 

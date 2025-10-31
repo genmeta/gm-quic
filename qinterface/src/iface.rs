@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     fmt::Debug,
     io,
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -104,9 +105,22 @@ impl RwInterface {
             .upsert(iface.bind_uri(), Arc::new(real_addr));
         // });
     }
+
+    // fn rebind(self: &Arc<Self>) {
+    //     self.write().rebind();
+    //     self.publish_address();
+    // }
+
+    // pub fn restart(&self) -> io::Result<()> {
+    //     self.read().borrow(|iface| iface.restart())?
+    // }
 }
 
 impl QuicIO for RwInterface {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     #[inline]
     fn bind_uri(&self) -> BindUri {
         self.read().bind_uri.clone()
@@ -152,6 +166,11 @@ impl QuicIO for RwInterface {
     fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.read().borrow(|iface| iface.poll_close(cx))?
     }
+
+    #[inline]
+    fn restart(&self) -> io::Result<()> {
+        self.read().borrow(|iface| iface.restart())?
+    }
 }
 
 impl RwInterface {
@@ -194,7 +213,7 @@ pub struct QuicInterface {
 }
 
 impl QuicInterface {
-    pub(super) fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
+    pub fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
         if self.iface.read().bind_id != self.bind_id {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -206,6 +225,10 @@ impl QuicInterface {
 }
 
 impl QuicIO for QuicInterface {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     #[inline]
     fn bind_uri(&self) -> BindUri {
         self.iface.bind_uri().clone()
@@ -249,5 +272,10 @@ impl QuicIO for QuicInterface {
     #[inline]
     fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.borrow(|iface| iface.poll_close(cx))?
+    }
+
+    #[inline]
+    fn restart(&self) -> io::Result<()> {
+        self.borrow(|iface| iface.restart())?
     }
 }

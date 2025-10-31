@@ -4,7 +4,7 @@ pub mod initial;
 
 use std::{fmt::Debug, sync::Arc};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use qbase::{
     error::{Error, QuicError},
     frame::{
@@ -359,6 +359,7 @@ fn filter_odcid_packet<H: GetDcid>(
 
 enum Frame {
     V1(qbase::frame::Frame),
+    Traversal(qtraversal::frame::TraversalFrame),
 }
 
 fn read_plain_packet<H>(
@@ -378,10 +379,17 @@ where
             Ok((frame, r#type)) => {
                 frames_collector.extend([&frame]);
                 packet_contains = packet_contains.include(r#type);
-                dispatch_frame(Frame::V1(frame))
+                dispatch_frame(Frame::V1(frame));
             }
             // Custom frames could try their own parse here
-            Err(error) => return Err(QuicError::from(error).into()),
+            Err(_error) => {
+                let (size, frame, _type) =
+                    qtraversal::frame::io::be_frame(&frame_reader, packet.get_type())
+                        .map_err(QuicError::from)?;
+                frame_reader.advance(size);
+                packet_contains = PacketContains::EffectivePayload;
+                dispatch_frame(Frame::Traversal(frame));
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use std::mem;
+use std::{any::Any, mem};
 
 use bytes::BytesMut;
 use nom::{Parser, multi::length_data};
@@ -488,6 +488,24 @@ impl PacketProperties {
                 },
             },
             Type::Short(..) => Some(Epoch::Data),
+        }
+    }
+
+    pub fn add_frame<F: FrameFeature + 'static>(&mut self, frame: &F) {
+        debug_assert!(
+            frame.belongs_to(self.packet_type()),
+            "Frame {:?} does not belong to packet type {:?}",
+            std::any::type_name_of_val(frame),
+            self.packet_type()
+        );
+        self.ack_eliciting |= !frame.specs().contain(Spec::NonAckEliciting);
+        self.in_flight |= !frame.specs().contain(Spec::CongestionControlFree);
+        self.probe_new_path |= frame.specs().contain(Spec::ProbeNewPath);
+        if let Some(ack_frame) = (frame as &dyn Any).downcast_ref::<AckFrame>() {
+            self.largest_ack = Some(match self.largest_ack {
+                Some(largest_ack) => largest_ack.max(ack_frame.largest()),
+                None => ack_frame.largest(),
+            });
         }
     }
 }

@@ -12,6 +12,8 @@ members = [
     "qconnection",
     "gm-quic",
     "h3-shim",
+    "qtraversal",
+    "qdns",
 ]
 default-members = [
     "qmacro",
@@ -23,6 +25,7 @@ default-members = [
     "qconnection",
     "gm-quic",
     "h3-shim",
+    "qtraversal",
 ]
 
 [workspace.package]
@@ -36,6 +39,7 @@ categories = ["network-programming", "asynchronous"]
 rust-version = "1.88.0"
 
 [workspace.dependencies]
+async-trait = "0.1.88"
 bitflags = "2"
 bytes = "1"
 cfg-if = "1"
@@ -55,12 +59,14 @@ rustls = { version = "0.23", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
-socket2 = "0.6"
+socket2 = { version = "0.6", features = ["all"] }
+snafu = "0.8"
 thiserror = "2"
 tokio = { version = "1" }
 tokio-util = { version = "0.7" }
 tracing = "0.1"
 x509-parser = "0.18"
+url = "2.5.7"
 
 # h3 for h3-shim only , windows-sys, nix and libc for qudp only
 # they are not the default members of the workspace
@@ -91,6 +97,7 @@ qinterface = { path = "./qinterface", version = "0.4.0" }
 qunreliable = { path = "./qunreliable", version = "0.4.0" }
 gm-quic = { path = "./gm-quic", version = "0.4.0" }
 h3-shim = { path = "./h3-shim", version = "0.4.0" }
+qtraversal = { path = "./qtraversal", version = "0.4.0" }
 
 
 [profile.bench]

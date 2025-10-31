@@ -87,7 +87,7 @@ where
     T: Into<F>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
-        self.tx_wakers.wake_all_by(Signals::TRANSPORT);
         self.frames_guard().extend(iter.into_iter().map(Into::into));
+        self.tx_wakers.wake_all_by(Signals::TRANSPORT);
     }
 }

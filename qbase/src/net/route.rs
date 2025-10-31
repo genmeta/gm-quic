@@ -1,17 +1,23 @@
 use std::{
     convert::Infallible,
-    fmt::Display,
+    fmt::{self, Display},
     net::{AddrParseError, SocketAddr},
     ops::Deref,
     str::FromStr,
 };
 
+use bytes::BufMut;
 use derive_more::{Deref, From, TryInto};
+use nom::number::streaming::be_u8;
 use serde::{Deserialize, Serialize};
 
-use crate::net::{
-    Family,
-    addr::{AddrKind, RealAddr},
+use crate::{
+    frame::EncodeSize,
+    net::{
+        Family,
+        addr::{AddrKind, RealAddr},
+        be_socket_addr,
+    },
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,13 +51,77 @@ impl SocketEndpointAddr {
             SocketEndpointAddr::Agent { outer, .. } => *outer,
         }
     }
+
+    pub fn encoding_size(&self) -> usize {
+        match self {
+            SocketEndpointAddr::Direct {
+                addr: SocketAddr::V4(_),
+            } => 2 + 4,
+            SocketEndpointAddr::Direct {
+                addr: SocketAddr::V6(_),
+            } => 2 + 16,
+            SocketEndpointAddr::Agent {
+                agent: SocketAddr::V4(_),
+                outer: SocketAddr::V4(_),
+            } => 2 + 4 + 2 + 4,
+            SocketEndpointAddr::Agent {
+                agent: SocketAddr::V6(_),
+                outer: SocketAddr::V6(_),
+            } => 2 + 16 + 2 + 16,
+            _ => unimplemented!("Unix socket addresses are not supported"),
+        }
+    }
+}
+
+pub trait WriteSocketEndpointAddr {
+    fn put_socket_endpoint_addr(&mut self, endpoint: SocketEndpointAddr);
+}
+
+impl<T: BufMut> WriteSocketEndpointAddr for T {
+    fn put_socket_endpoint_addr(&mut self, endpoint: SocketEndpointAddr) {
+        use crate::net::WriteSocketAddr;
+        match endpoint {
+            SocketEndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
+            SocketEndpointAddr::Agent {
+                agent,
+                outer: inner,
+            } => {
+                self.put_socket_addr(&agent);
+                self.put_socket_addr(&inner);
+            }
+        }
+    }
+}
+
+pub fn be_socket_endpoint_addr(
+    input: &[u8],
+    relay: u8,
+    family: Family,
+) -> nom::IResult<&[u8], SocketEndpointAddr> {
+    if relay != 0 {
+        let (remain, agent) = be_socket_addr(input, family)?;
+        let (remain, outer) = be_socket_addr(remain, family)?;
+        Ok((remain, SocketEndpointAddr::with_agent(agent, outer)))
+    } else {
+        let (remain, addr) = be_socket_addr(input, family)?;
+        Ok((remain, SocketEndpointAddr::direct(addr)))
+    }
+}
+
+impl fmt::Display for EndpointAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EndpointAddr::Socket(ep) => write!(f, "{ep}"),
+            EndpointAddr::Ble(ble) => write!(f, "{ble}"),
+        }
+    }
 }
 
 impl Display for SocketEndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SocketEndpointAddr::Direct { addr } => write!(f, "Direct({addr})"),
-            SocketEndpointAddr::Agent { agent, outer } => write!(f, "Agent({agent}-{outer})"),
+            SocketEndpointAddr::Direct { addr } => write!(f, "{addr}"),
+            SocketEndpointAddr::Agent { agent, outer } => write!(f, "{agent}-{outer}"),
         }
     }
 }
@@ -141,15 +211,6 @@ impl EndpointAddr {
     }
 }
 
-impl Display for EndpointAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EndpointAddr::Socket(addr) => addr.fmt(f),
-            EndpointAddr::Ble(addr) => addr.fmt(f),
-        }
-    }
-}
-
 impl From<RealAddr> for EndpointAddr {
     fn from(addr: RealAddr) -> Self {
         match addr {
@@ -214,6 +275,31 @@ impl<E> Pathway<E> {
     }
 }
 
+impl From<Pathway<SocketEndpointAddr>> for Pathway<EndpointAddr> {
+    fn from(value: Pathway<SocketEndpointAddr>) -> Self {
+        Pathway::new(
+            EndpointAddr::Socket(value.local),
+            EndpointAddr::Socket(value.remote),
+        )
+    }
+}
+
+impl TryInto<Pathway<SocketEndpointAddr>> for Pathway<EndpointAddr> {
+    type Error = std::io::Error;
+
+    fn try_into(self) -> Result<Pathway<SocketEndpointAddr>, Self::Error> {
+        match (self.local, self.remote) {
+            (EndpointAddr::Socket(local), EndpointAddr::Socket(remote)) => {
+                Ok(Pathway::new(local, remote))
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid socket endpoint address type",
+            )),
+        }
+    }
+}
+
 impl<E: Display> Display for Pathway<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}---{}", self.local, self.remote)
@@ -229,6 +315,69 @@ pub struct Link<A = RealAddr> {
 impl<A: Display> Display for Link<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}<->{}", self.src, self.dst)
+    }
+}
+
+pub fn be_link(input: &[u8]) -> nom::IResult<&[u8], Link<SocketAddr>> {
+    let (remain, family) = be_u8(input)?;
+    let family = match family {
+        0 => Family::V4,
+        1 => Family::V6,
+        _ => {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            )));
+        }
+    };
+    let (remain, src) = be_socket_addr(remain, family)?;
+    let (remain, dst) = be_socket_addr(remain, family)?;
+    Ok((remain, Link::<SocketAddr> { src, dst }))
+}
+
+pub trait WriteLink {
+    fn put_link(&mut self, link: &Link<SocketAddr>);
+}
+
+impl<T: BufMut> WriteLink for T {
+    fn put_link(&mut self, link: &Link<SocketAddr>) {
+        use crate::net::WriteSocketAddr;
+        self.put_u8(link.src().is_ipv6() as u8);
+        self.put_socket_addr(&link.src);
+        self.put_socket_addr(&link.dst);
+    }
+}
+
+impl From<Link<SocketAddr>> for Link<RealAddr> {
+    fn from(value: Link<SocketAddr>) -> Self {
+        Self {
+            src: RealAddr::from(value.src),
+            dst: RealAddr::from(value.dst),
+        }
+    }
+}
+
+impl TryInto<Link<SocketAddr>> for Link<RealAddr> {
+    type Error = std::io::Error;
+
+    fn try_into(self) -> Result<Link<SocketAddr>, Self::Error> {
+        match (self.src, self.dst) {
+            (RealAddr::Internet(src), RealAddr::Internet(dst)) => Ok(Link::new(src, dst)),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid socket address type",
+            )),
+        }
+    }
+}
+
+impl EncodeSize for Link<SocketAddr> {
+    fn max_encoding_size(&self) -> usize {
+        1 + self.src.max_encoding_size() + self.dst.max_encoding_size()
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.src.encoding_size() + self.dst.encoding_size()
     }
 }
 
@@ -266,12 +415,6 @@ impl<A> Link<A> {
 impl<A, E: From<A>> From<Link<A>> for Pathway<E> {
     fn from(link: Link<A>) -> Self {
         Pathway::new(E::from(link.src), E::from(link.dst))
-    }
-}
-
-impl From<Link<SocketAddr>> for Link<RealAddr> {
-    fn from(Link { src, dst }: Link<SocketAddr>) -> Self {
-        Link::new(RealAddr::from(src), RealAddr::from(dst))
     }
 }
 

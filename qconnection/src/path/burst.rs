@@ -26,6 +26,7 @@ use qbase::{
 use qcongestion::{ArcCC, Transport};
 use qinterface::QuicIO;
 use qrecovery::journal::{AckPackege, ArcRcvdJournal, Journal};
+use qtraversal::packet::{ForwardHeader, WriteForwardHeader};
 
 use crate::{
     ArcDcidCell, ArcReliableFrameDeque, CidRegistry, Components,
@@ -257,6 +258,7 @@ impl Components {
             .outgoing()
             .package(Epoch::Handshake);
         let one_rtt_packages = Packages((
+            Repeat(self.traversal_frames.clone()),
             self.crypto_streams[Epoch::Data]
                 .outgoing()
                 .package(Epoch::Data),
@@ -516,10 +518,12 @@ impl Burst {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
         }
 
-        let reversed_size = 0; // TODO
+        use core::ops::ControlFlow::*;
 
-        use std::ops::ControlFlow::*;
-        let (Break(segemnts_lens) | Continue(segemnts_lens)) = buffers
+        let reversed_size =
+            ForwardHeader::encoding_size(&self.path.pathway.try_into().expect("BLE"));
+
+        let (Break(result) | Continue(result)) = buffers
             .iter_mut()
             .map(move |buffer| {
                 if buffer.len() < max_segment_size {
@@ -527,9 +531,9 @@ impl Burst {
                 }
                 &mut buffer[..max_segment_size]
             })
-            .map(|segment| {
+            .map(move |segment| {
                 let buffer_size = segment.len().min(self.path.mtu() as _);
-                let buffer = &mut segment[..buffer_size];
+                let buffer = &mut segment[..buffer_size][reversed_size..];
 
                 self.load_spaces(data_sources, buffer)
                     .inspect(|_| {
@@ -553,7 +557,18 @@ impl Burst {
                         }
                         e @ BurstError::PathDeactived => Err(e),
                     })
-                    .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
+                    .map(|packet_size| {
+                        if reversed_size > 0 {
+                            let (mut header, payload) = segment.split_at_mut(reversed_size);
+                            let forward_hdr = ForwardHeader::new(
+                                0,
+                                &self.path.pathway.try_into().unwrap(),
+                                payload,
+                            );
+                            header.put_forward_header(&forward_hdr);
+                        }
+                        io::IoSlice::new(&segment[..reversed_size + packet_size])
+                    })
             })
             .try_fold(
                 Ok(Vec::with_capacity(max_segments)),
@@ -574,7 +589,7 @@ impl Burst {
                 },
             );
 
-        Ok(segemnts_lens?
+        Ok(result?
             .iter()
             .zip(buffers)
             .map(|(&len, buffer)| io::IoSlice::new(&buffer[..len]))

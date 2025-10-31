@@ -47,3 +47,12 @@ unreliable = ["qconnection/unreliable"]
 [dev-dependencies.tracing-subscriber]
 workspace = true
 features = ["env-filter", "time"]
+
+
+[[example]]
+name = "traversal_server"
+path = "examples/traversal/server.rs"
+
+[[example]]
+name = "traversal_client"
+path = "examples/traversal/client.rs"

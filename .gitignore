@@ -22,3 +22,7 @@ tarpaulin-report.html
 .vscode/*
 .idea/
 *.log
+log
+.DS_Store
+*.sqlog
+.cargo/config.toml

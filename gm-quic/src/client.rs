@@ -240,9 +240,16 @@ impl QuicClient {
             }
         };
 
-        let mut paths = vec![];
+        let server_eps = server_eps.into_iter().map(Into::into).collect::<Vec<_>>();
 
-        for server_ep in server_eps.into_iter().map(Into::into) {
+        let mut paths = vec![];
+        for &server_ep in &server_eps {
+            if matches!(
+                server_ep,
+                EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
+            ) {
+                continue;
+            }
             paths.extend(select_or_bind_ifaces(&server_ep).await?.into_iter().map(
                 move |(real_addr, iface)| {
                     let dst = match server_ep {
@@ -280,10 +287,19 @@ impl QuicClient {
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Connection, ConnectServerError> {
-        let paths = self.probe(server_eps).await?;
+        let server_eps = server_eps.into_iter().map(Into::into).collect::<Vec<_>>();
+        let paths = self
+            .probe(server_eps.iter().copied())
+            .await
+            .map_err(|source| ConnectServerError::BindInterface { source })?;
         let connection = self.new_connection(server_name);
         for (iface, link, pathway) in paths {
             _ = connection.add_path(iface.bind_uri(), link, pathway);
+        }
+
+        _ = connection.subscribe_address();
+        for server_ep in server_eps.into_iter() {
+            _ = connection.add_peer_endpoint(server_ep);
         }
         Ok(connection)
     }
@@ -313,6 +329,7 @@ impl QuicClient {
         tracing::debug!("Connecting to {server_name}:{port}");
         let server_name = server_name.to_owned();
         async move {
+            // TODO: http dns mdns
             let server_eps = tokio::net::lookup_host((server_name.as_str(), port)).await?;
             tracing::debug!(target: "h3x::client", "DNS lookup for {server_name}:{port} returned about {} addresses", server_eps.size_hint().0);
             self.connected_to(&server_name, server_eps).await

@@ -31,6 +31,7 @@ impl super::Path {
                 Ok(Some(response)) if *response == *challenge => {
                     self.validated();
                     self.anti_amplifier.grant();
+                    tracing::debug!(target: "quic", pathway=%self.pathway, "Path validated successfully");
                     return Ok(());
                 }
                 // 外部发生变化，导致路径验证任务作废

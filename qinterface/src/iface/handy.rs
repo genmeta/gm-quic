@@ -1,6 +1,7 @@
 #[cfg(all(feature = "qudp", any(unix, windows)))]
 pub mod qudp {
     use std::{
+        any::Any,
         io::{self, IoSliceMut},
         net::SocketAddr,
         task::{Context, Poll, ready},
@@ -45,6 +46,10 @@ pub mod qudp {
     }
 
     impl QuicIO for UdpSocketController {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
         fn bind_uri(&self) -> BindUri {
             self.bind_uri.clone()
         }
@@ -125,6 +130,7 @@ pub mod qudp {
 
 pub mod unsupported {
     use std::{
+        any::Any,
         io,
         task::{Context, Poll},
     };
@@ -149,6 +155,10 @@ pub mod unsupported {
     }
 
     impl QuicIO for Unsupported {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
         fn bind_uri(&self) -> BindUri {
             unreachable!()
         }

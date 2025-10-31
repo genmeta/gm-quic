@@ -170,7 +170,14 @@ fn frame_dispathcer(
         _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
     };
     move |frame, path| match frame {
-        Frame::V1(frame) => dispatch_v1_frame(frame, path),
+        Frame::V1(frame) => {
+            dispatch_v1_frame(frame, path);
+        }
+        // TODO: improve this
+        Frame::Traversal(frame) => unreachable!(
+            "Traversal frame should not appear in Initial packet: {:?}",
+            frame
+        ),
     }
 }
 
@@ -273,7 +280,7 @@ fn parse_closing_packet(
         ccf = ccf.take().or(match frame {
             Frame::V1(V1Frame::Close(ccf)) => Some(ccf),
             _ => None,
-        })
+        });
     });
     ccf
 }
