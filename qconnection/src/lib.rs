@@ -18,7 +18,7 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::QuicIO;
+    pub use qinterface::{QuicIO, QuicIoExt};
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
@@ -377,8 +377,7 @@ impl Components {
             true => {
                 let terminator = Arc::new(Terminator::new(error.clone().into(), &self));
                 tokio::spawn(
-                    self.spaces
-                        .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
+                    async move { self.spaces.send_ccf_packets(terminator.as_ref()).await }
                         .instrument_in_current()
                         .in_current_span(),
                 );
@@ -423,8 +422,7 @@ impl Components {
             true => {
                 let terminator = Arc::new(Terminator::new(ccf, &self));
                 tokio::spawn(
-                    self.spaces
-                        .drain(terminator, self.rcvd_pkt_q.clone())
+                    async move { self.spaces.send_ccf_packets(terminator.as_ref()).await }
                         .instrument_in_current()
                         .in_current_span(),
                 );

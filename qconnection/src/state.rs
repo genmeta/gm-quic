@@ -173,6 +173,10 @@ impl ArcConnState {
             .instrument_in_current()
             .in_current_span()
     }
+
+    pub fn current(&self) -> Option<QlogConnectionState> {
+        decode(self.state.load(Ordering::Acquire))
+    }
 }
 
 macro_rules! mapping {
@@ -205,3 +209,15 @@ mapping! {
     // QlogConnectionState::Granular(GranularConnectionStates::Closed) => 9,
     QlogConnectionState::Base(BaseConnectionStates::Closed) => 9,
 }
+
+pub const HANDSHAKE_CONFIRMED: QlogConnectionState =
+    QlogConnectionState::Granular(GranularConnectionStates::HandshakeConfirmed);
+
+pub const CLOSING: QlogConnectionState =
+    QlogConnectionState::Granular(GranularConnectionStates::Closing);
+
+pub const DRAINING: QlogConnectionState =
+    QlogConnectionState::Granular(GranularConnectionStates::Draining);
+
+pub const CLOSED: QlogConnectionState =
+    QlogConnectionState::Granular(GranularConnectionStates::Closed);
