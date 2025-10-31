@@ -6,8 +6,9 @@ pub mod queue;
 pub mod route;
 
 use std::{
+    any::Any,
     future::Future,
-    io,
+    io::{self},
     task::{Context, Poll},
 };
 
@@ -29,7 +30,10 @@ use qbase::net::{
 /// you can refer to the implementations in the [`iface::handy`] module.
 ///
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
-pub trait QuicIO: Send + Sync {
+#[async_trait::async_trait]
+pub trait QuicIO: Send + Sync + Any {
+    fn as_any(&self) -> &dyn Any;
+
     /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
@@ -88,6 +92,11 @@ pub trait QuicIO: Send + Sync {
     /// the implementation should ensure that [`QuicIO`] does not
     /// leak any resources when it is dropped.
     fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>>;
+
+    /// Restart the interface
+    fn restart(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub trait QuicIoExt: QuicIO {
@@ -130,7 +139,7 @@ pub trait QuicIoExt: QuicIO {
     }
 
     #[inline]
-    fn close(&self) -> impl std::future::Future<Output = io::Result<()>> + Send {
+    fn close(&self) -> impl Future<Output = io::Result<()>> + Send {
         async { core::future::poll_fn(|cx| self.poll_close(cx)).await }
     }
 
@@ -156,7 +165,7 @@ pub trait QuicIoExt: QuicIO {
                     let bind_uri = bind_uri.clone();
                     PacketReader::new(buf, 8)
                         .flatten()
-                        .filter(move |pkt| !(is_initial_packet(pkt) && size < 1200))
+                        .filter(move |pkt| !(is_initial_packet(pkt) && size < 1100))
                         .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
                 }))
         }

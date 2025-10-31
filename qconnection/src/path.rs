@@ -21,7 +21,7 @@ use qbase::{
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
-use qinterface::{QuicIoExt, iface::QuicInterface};
+use qinterface::{QuicIO, QuicIoExt, iface::QuicInterface};
 use tokio::time::Duration;
 
 mod aa;
@@ -45,6 +45,7 @@ use crate::{ArcDcidCell, Components, path::burst::BurstError};
 pub struct Path {
     interface: QuicInterface,
     validated: AtomicBool,
+    active: AtomicBool,
     link: Link,
     pathway: Pathway,
     cc: ArcCC,
@@ -110,6 +111,7 @@ impl Components {
                         self.crypto_streams[Epoch::Data].clone(),
                         self.data_streams.clone(),
                         self.reliable_frames.clone(),
+                        self.traversal_frames.clone(),
                     )),
                 ],
                 self.quic_handshake.status(),
@@ -216,6 +218,7 @@ impl Path {
             cc,
             dcid_cell,
             validated: AtomicBool::new(false),
+            active: AtomicBool::new(true),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
             max_idle_timer: ArcMaxIdleTimer::from(max_idle_timer),
             heartbeat: ArcHeartbeat::new(defer_idle_timer, Duration::from_secs(1)),
@@ -270,6 +273,26 @@ impl Path {
         }
         let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
         self.interface.sendmmsg(bufs, hdr).await
+    }
+
+    pub fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
+    pub fn active(&self) {
+        self.active.store(true, Ordering::Release);
+    }
+
+    pub fn link(&self) -> &Link {
+        &self.link
+    }
+
+    pub fn pathway(&self) -> &Pathway {
+        &self.pathway
+    }
+
+    pub fn bind_uri(&self) -> BindUri {
+        self.interface.bind_uri()
     }
 }
 

@@ -6,8 +6,8 @@ pub mod space;
 pub mod state;
 pub mod termination;
 pub mod tls;
+mod traversal;
 pub mod tx;
-
 pub mod prelude {
     pub use qbase::{
         cid::ConnectionId,
@@ -45,10 +45,12 @@ use std::{
     fmt::Debug,
     future::Future,
     io,
+    net::SocketAddr,
     sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
-pub use ::{qbase, qevent, qinterface, qrecovery, qunreliable};
+pub use ::{qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
+use derive_more::From;
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
 use futures::{FutureExt, TryFutureExt};
@@ -82,6 +84,7 @@ use qrecovery::{
     journal, recv, reliable, send,
     streams::{self, Ext},
 };
+use qtraversal::frame::TraversalFrame;
 use qunreliable::DatagramFlow;
 #[cfg(feature = "unreliable")]
 use qunreliable::{DatagramReader, DatagramWriter};
@@ -92,20 +95,23 @@ use tls::ArcSendLock;
 use tracing::Instrument as _;
 
 use crate::{
-    path::error::{CreatePathFailure, PathDeactivated},
+    path::{CreatePathFailure, PathDeactivated},
+    space::data::{ArcTraversalFrameDeque, DataSpace},
     termination::Terminator,
     tls::{ArcTlsHandshake, LocalAgent, RemoteAgent},
+    traversal::PunchTransaction,
 };
 
 /// The kind of frame which guaratend to be received by peer.
 ///
 /// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(EncodeFrame, FrameFeture)]
+#[derive(Debug, Clone, From, Eq, PartialEq)]
+#[enum_dispatch(EncodeSize, FrameFeture)]
 pub enum GuaranteedFrame {
     Stream(StreamFrame),
     Crypto(CryptoFrame),
     Reliable(ReliableFrame),
+    Traversal(TraversalFrame),
 }
 
 impl<'f, D> TryFrom<&'f Frame<D>> for GuaranteedFrame {
@@ -118,6 +124,14 @@ impl<'f, D> TryFrom<&'f Frame<D>> for GuaranteedFrame {
             Err(Frame::Stream(stream, _data)) => Self::Stream(*stream),
             Err(frame) => return Err(frame),
         })
+    }
+}
+
+impl<'f> TryFrom<&'f TraversalFrame> for GuaranteedFrame {
+    type Error = &'f TraversalFrame;
+
+    fn try_from(frame: &'f TraversalFrame) -> Result<Self, Self::Error> {
+        Err(frame)
     }
 }
 
@@ -144,6 +158,8 @@ pub type RawHandshake = handshake::RawHandshake<ArcReliableFrameDeque>;
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
+pub type ArcPuncher =
+    qtraversal::punch::puncher::ArcPuncher<ArcTraversalFrameDeque, PunchTransaction, DataSpace>;
 
 #[derive(Clone)]
 pub struct Components {
@@ -162,12 +178,14 @@ pub struct Components {
     spaces: Spaces,
     crypto_streams: [CryptoStream; 3],
     reliable_frames: ArcReliableFrameDeque,
+    traversal_frames: ArcTraversalFrameDeque,
     data_streams: DataStreams,
     flow_ctrl: FlowController,
     datagram_flow: DatagramFlow,
     event_broker: ArcEventBroker,
     metrics: qbase::metric::ArcConnectionMetrics,
     specific: SpecificComponents,
+    puncher: ArcPuncher,
 }
 
 #[derive(Clone)]
@@ -271,14 +289,6 @@ impl Components {
         }
         .instrument_in_current()
         .in_current_span()
-    }
-
-    pub fn add_local_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
-        unimplemented!()
-    }
-
-    pub fn add_peer_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
-        unimplemented!()
     }
 
     pub fn add_path(
@@ -643,9 +653,24 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
     }
 
-    pub fn add_peer_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {
+    pub fn add_peer_endpoint(&self, addr: EndpointAddr) -> Result<(), Error> {
         self.0
-            .try_map_components(|core_conn| core_conn.add_peer_endpoint(bind, addr))
+            .try_map_components(|core_conn| core_conn.add_peer_endpoint(addr))
+    }
+
+    pub fn remove_address(&self, addr: SocketAddr) -> Result<(), Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.remove_address(addr))
+    }
+
+    pub fn subscribe_address(&self) -> Result<(), Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.subscribe_local_address())
+    }
+
+    pub fn paths(&self) -> Result<ArcPathContexts, Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.paths.clone())
     }
 
     /// Check if the connection is still valid.

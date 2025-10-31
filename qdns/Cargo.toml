@@ -1,0 +1,40 @@
+[package]
+name = "qdns"
+version = "0.2.2"
+edition.workspace = true
+description = "DNS publishing and resolution for gm-quic-traversal"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+futures = "0.3"
+gmdns = { git = "https://github.com/genmeta/gmdns.git", branch = "main" }
+qbase = { workspace = true }
+qinterface = { workspace = true }
+qtraversal = { workspace = true }
+rustls = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = [
+    # default features(excluding "default-tls")
+    "charset",
+    "rustls-tls",                 # no openssl
+    "http2",
+    "macos-system-configuration",
+    # additional features
+    "json",
+] }
+url = { workspace =  true }
+serde = { workspace = true }
+snafu = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+rustls = { workspace = true }

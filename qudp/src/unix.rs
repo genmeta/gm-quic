@@ -259,6 +259,42 @@ impl Io for UdpSocketController {
             }
         }
     }
+
+    fn set_ttl(&self, ttl: i32) -> io::Result<()> {
+        use std::sync::atomic::Ordering::{Acquire, SeqCst};
+
+        if ttl == self.ttl.load(Acquire) {
+            return Ok(());
+        }
+        let local = self.local_addr()?;
+        let io = self.io.as_raw_fd();
+        let ret = match local.ip() {
+            IpAddr::V4(_) => unsafe {
+                libc::setsockopt(
+                    io,
+                    libc::IPPROTO_IP,
+                    libc::IP_TTL,
+                    &ttl as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&ttl) as libc::socklen_t,
+                )
+            },
+            IpAddr::V6(_) => unsafe {
+                libc::setsockopt(
+                    io,
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_UNICAST_HOPS,
+                    &ttl as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&ttl) as libc::socklen_t,
+                )
+            },
+        };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        self.ttl.store(ttl, SeqCst);
+        Ok(())
+    }
 }
 
 fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut DatagramHeader) {

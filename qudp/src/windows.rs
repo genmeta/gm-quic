@@ -270,6 +270,29 @@ impl Io for UdpSocketController {
         };
         Ok(1)
     }
+
+    fn set_ttl(&self, ttl: i32) -> io::Result<()> {
+        use std::sync::atomic::Ordering::{Acquire, SeqCst};
+
+        if ttl == self.ttl.load(Acquire) {
+            return Ok(());
+        }
+
+        let local = self.local_addr()?;
+        let socket = self.io.as_raw_socket() as usize;
+
+        match local.ip() {
+            IpAddr::V4(_) => setsockopt(socket, WinSock::IPPROTO_IP, WinSock::IP_TTL, ttl),
+            IpAddr::V6(_) => setsockopt(
+                socket,
+                WinSock::IPPROTO_IPV6,
+                WinSock::IPV6_UNICAST_HOPS,
+                ttl,
+            ),
+        };
+        self.ttl.store(ttl, SeqCst);
+        Ok(())
+    }
 }
 
 fn append_cmsg<'a, V: Copy>(

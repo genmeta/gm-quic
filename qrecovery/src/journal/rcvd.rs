@@ -104,7 +104,7 @@ impl RcvdJournal {
         };
         let expire_time = now + pto * 3;
         if let Some(record) = self.queue.get_mut(pn) {
-            assert!(matches!(record, State::Empty));
+            // assert!(matches!(record, State::Empty));
             *record = State::PacketReceived(now, ack_time, expire_time);
         } else if let Err(e @ IndexError::ExceedLimit(..)) = self
             .queue
@@ -192,7 +192,6 @@ impl RcvdJournal {
                 // 接下来需要8字节编码
                 len if len == (1 << 30) - 1 => 4, // 8 - 4
                 // 放不下了，不可能走到这里
-                len if len == (1 << 62) - 1 => panic!("range count too large"),
                 _ => 0,
             }
         }

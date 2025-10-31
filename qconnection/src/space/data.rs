@@ -27,7 +27,8 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::packet::{CipherPacket, PlainPacket};
-use qrecovery::crypto::CryptoStream;
+use qrecovery::{crypto::CryptoStream, reliable};
+use qtraversal::frame::TraversalFrame;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -50,6 +51,8 @@ pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, (BindUri, Pathway, Link));
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindUri, Pathway, Link));
+
+pub type ArcTraversalFrameDeque = reliable::ArcReliableFrameDeque<TraversalFrame>;
 
 pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
@@ -105,54 +108,6 @@ impl DataSpace {
         }
     }
 
-    pub fn new_0rtt_packet<'b, 's>(
-        &'s self,
-        header: ZeroRttHeader,
-        cc: &ArcCC,
-        buffer: &'b mut [u8],
-    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
-        if self.one_rtt_keys.get_local_keys().is_some() {
-            return Err(Signals::TLS_FIN); // should 1rtt
-        }
-
-        let Some(keys) = self.zero_rtt_keys.get_encrypt_keys() else {
-            return Err(Signals::empty()); // no 0rtt keys, just skip 0rtt
-        };
-
-        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
-        PacketWriter::new_long(
-            header,
-            buffer,
-            keys,
-            self.journal.as_ref(),
-            retran_timeout,
-            expire_timeout,
-        )
-    }
-
-    pub fn new_1rtt_packet<'b, 's>(
-        &'s self,
-        header: OneRttHeader,
-        cc: &ArcCC,
-        buffer: &'b mut [u8],
-    ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
-        PacketWriter::new_short(
-            header,
-            buffer,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
-            self.journal.as_ref(),
-            retran_timeout,
-            expire_timeout,
-        )
-    }
-
     pub fn is_one_rtt_keys_ready(&self) -> bool {
         self.one_rtt_keys.get_local_keys().is_some()
     }
@@ -178,12 +133,14 @@ impl DataSpace {
         crypto_stream: CryptoStream,
         streams: DataStreams,
         reliable_frames: ArcReliableFrameDeque,
+        traversal_frames: ArcTraversalFrameDeque,
     ) -> DataTracker {
         DataTracker {
             journal: self.journal.clone(),
             crypto_stream,
             streams,
             reliable_frames,
+            traversal_frames,
         }
     }
 }
@@ -314,6 +271,7 @@ fn frame_dispathcer(
     let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded_channel();
     #[cfg(feature = "unreliable")]
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
+    let (traversal_frames_entry, rcvd_traversal_frames) = mpsc::unbounded_channel();
 
     let flow_controlled_data_streams = FlowControlledDataStreams::new(
         components.data_streams.clone(),
@@ -383,6 +341,11 @@ fn frame_dispathcer(
         components.token_registry.clone(),
         event_broker.clone(),
     );
+    pipe(
+        rcvd_traversal_frames,
+        components.clone(),
+        event_broker.clone(),
+    );
 
     let event_broker = event_broker.clone();
     let rcvd_joural = space.journal.of_rcvd_packets();
@@ -413,6 +376,14 @@ fn frame_dispathcer(
     };
     move |frame, pty, path| match frame {
         Frame::V1(frame) => dispathc_v1_frame(frame, pty, path),
+        Frame::Traversal(frame) => {
+            _ = traversal_frames_entry.send((
+                path.bind_uri().clone(),
+                *path.pathway(),
+                *path.link(),
+                frame,
+            ))
+        }
     }
 }
 
@@ -443,7 +414,7 @@ async fn parse_normal_zero_rtt_packet(
     };
 
     let packet_contains = read_plain_packet(&packet, |frame| {
-        dispatch_frame(frame, packet.get_type(), &path)
+        dispatch_frame(frame, packet.get_type(), &path);
     })?;
 
     space.journal.of_rcvd_packets().on_rcvd_pn(
@@ -487,9 +458,8 @@ async fn parse_normal_one_rtt_packet(
         .discard_spaces_on_server_handshake_done(&components.paths);
 
     let packet_contains = read_plain_packet(&packet, |frame| {
-        dispatch_frame(frame, packet.get_type(), &path)
+        dispatch_frame(frame, packet.get_type(), &path);
     })?;
-
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
         packet_contains.ack_eliciting(),
@@ -516,7 +486,7 @@ fn parse_closing_one_rtt_packet(
         ccf = ccf.take().or(match frame {
             Frame::V1(V1Frame::Close(ccf)) => Some(ccf),
             _ => None,
-        })
+        });
     });
     ccf
 }
@@ -601,6 +571,7 @@ pub struct DataTracker {
     crypto_stream: CryptoStream,
     streams: DataStreams,
     reliable_frames: ArcReliableFrameDeque,
+    traversal_frames: ArcTraversalFrameDeque,
 }
 
 impl Feedback for DataTracker {
@@ -623,6 +594,10 @@ impl Feedback for DataTracker {
                     GuaranteedFrame::Reliable(frame) => {
                         may_lost_frames.extend([&frame]);
                         self.reliable_frames.send_frame([frame]);
+                    }
+                    GuaranteedFrame::Traversal(frame) => {
+                        // may_lost_frames.extend([&frame]);
+                        self.traversal_frames.send_frame([frame]);
                     }
                 };
             }

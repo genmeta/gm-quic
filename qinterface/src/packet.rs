@@ -16,6 +16,7 @@ use qevent::quic::{
     transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
 };
 use rustls::quic::{HeaderProtectionKey, PacketKey};
+use tracing::{info, warn};
 
 #[derive(Deref)]
 pub struct CipherPacket<H> {
@@ -127,10 +128,12 @@ where
         {
             Ok(Some(undecoded_pn)) => undecoded_pn,
             Ok(None) => {
+                warn!("Failed to remove long header protection");
                 self.drop_on_remove_header_protection_failure();
                 return None;
             }
             Err(invalid_reverse_bits) => {
+                info!("Invalid reverse bits: {}", invalid_reverse_bits);
                 self.drop_on_reverse_bit_error(&invalid_reverse_bits);
                 return Some(Err(invalid_reverse_bits.into()));
             }
@@ -146,6 +149,7 @@ where
         let body_length = match decrypt_packet(pk, decoded_pn, pkt_buf, body_offset) {
             Ok(body_length) => body_length,
             Err(error) => {
+                info!("Failed to decrypt long packet");
                 self.drop_on_decryption_failure(error, decoded_pn);
                 return None;
             }
