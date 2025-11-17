@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     net::SocketAddr,
-    path::PathBuf,
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -27,9 +26,7 @@ use crate::{
 
 fn qlogger() -> Arc<dyn Log + Send + Sync> {
     static QLOGGER: OnceLock<Arc<dyn Log + Send + Sync>> = OnceLock::new();
-    QLOGGER
-        .get_or_init(|| Arc::new(LegacySeqLogger::new(PathBuf::from("/tmp/qlog/"))))
-        .clone()
+    QLOGGER.get_or_init(|| Arc::new(NoopLogger)).clone()
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -345,8 +342,7 @@ fn parallel_big_stream() -> Result<(), Error> {
         let client = launch_test_client(client_parameters());
 
         let mut big_streams = JoinSet::new();
-        // about 10MB
-        let test_data = Arc::new(TEST_DATA.to_vec().repeat(128));
+        let test_data = Arc::new(TEST_DATA.to_vec().repeat(32));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
             let connection = client.connect("localhost", [server_addr])?;

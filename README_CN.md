@@ -177,7 +177,7 @@ github action会定期运行[基准测试][5]，效果如下。go-quic和quiche�
 - 聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
 
 ## Rust版本要求（MSRV）
-gm-quic支持的Rust版本为`1.75`及以上版本。
+gm-quic支持的Rust版本为`1.85`及以上版本。
 
 目前的策略是在主要版本更新时改变它。
 

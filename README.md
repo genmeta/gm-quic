@@ -184,7 +184,7 @@ and we will reply to your email with an invitation link and QR code to join the 
 
 ## Rust version requirements (MSRV)
 
-The gm-quic supports **Rustc version 1.75 or greater**.
+The gm-quic supports **Rustc version 1.85 or greater**.
 
 The current policy is that this will only be updated in the next major gm-quic release.  
 
