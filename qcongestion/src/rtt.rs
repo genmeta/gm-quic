@@ -70,11 +70,7 @@ impl Rtt {
                 adjusted_rtt = latest_rtt - ack_delay;
             }
 
-            let abs_diff = if self.smoothed_rtt > adjusted_rtt {
-                self.smoothed_rtt - adjusted_rtt
-            } else {
-                adjusted_rtt - self.smoothed_rtt
-            };
+            let abs_diff = self.smoothed_rtt.abs_diff(adjusted_rtt);
             self.rttvar = self.rttvar.mul_f32(0.75) + abs_diff.mul_f32(0.25);
             self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
         }

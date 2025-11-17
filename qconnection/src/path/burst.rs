@@ -532,9 +532,8 @@ impl Burst {
                 let buffer = &mut segment[..buffer_size];
 
                 self.load_spaces(data_sources, buffer)
-                    .map(|pkt_size| {
+                    .inspect(|_| {
                         self.path.heartbeat.renew_on_effective_communicated();
-                        pkt_size
                     })
                     .or_else(|error| match error {
                         BurstError::Signals(signals) => {

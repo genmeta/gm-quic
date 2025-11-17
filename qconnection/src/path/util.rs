@@ -48,7 +48,7 @@ impl Heartbeat {
         // 如果self.last_heartbeat为None，或者已经超过了interval，则需要发送心跳包
         if self
             .last_heartbeat
-            .map_or(true, |last| last.elapsed() >= self.interval)
+            .is_none_or(|last| last.elapsed() >= self.interval)
         {
             self.triggered_heartbeat = true;
             return true;

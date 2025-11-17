@@ -276,18 +276,10 @@ impl QuicListeners {
     /// If no matching server is found, the connection will be rejected.
     ///
     /// A server can be added without binding to any interface initially, but will not accept
-    /// connections until interfaces are added via [`bind_interfaces`]. This allows flexible
+    /// connections until interfaces are added via [`add_interface`]. This allows flexible
     /// server configuration and hot-swapping of network bindings.
     ///
-    /// # Related Methods
-    ///
-    /// - [`bind_interfaces`] - Add more interfaces to this server
-    /// - [`unbind_interface`] - Remove specific interfaces
-    /// - [`remove_server`] - Remove the entire server
-    ///
-    /// [`bind_interfaces`]: QuicListeners::bind_interfaces
-    /// [`unbind_interface`]: QuicListeners::unbind_interface
-    /// [`remove_server`]: QuicListeners::remove_server
+    /// [`add_interface`]: Server::add_interface
     pub fn add_server(
         &self,
         server_name: impl Into<String>,
@@ -350,13 +342,7 @@ impl QuicListeners {
     /// specified name was found. You must remove an existing server before adding a new
     /// one with the same name.
     ///
-    /// # Related Methods
-    ///
-    /// - [`add_server`] - Create a server (counterpart operation)
-    /// - [`unbind_interface`] - Remove specific interfaces only
-    ///
     /// [`add_server`]: QuicListeners::add_server
-    /// [`unbind_interface`]: QuicListeners::unbind_interface
     pub fn remove_server(&self, server_name: &str) -> bool {
         self.servers.remove(server_name).is_some()
     }
