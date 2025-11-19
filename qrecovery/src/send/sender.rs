@@ -106,7 +106,7 @@ impl<TX> ReadySender<TX> {
         }
 
         let data_len = data.len() as u64;
-        
+
         qevent::event!(StreamDataMoved {
             stream_id: self.stream_id,
             offset: self.sndbuf.written(),
@@ -115,12 +115,12 @@ impl<TX> ReadySender<TX> {
             to: StreamDataLocation::Transport,
             raw: data.clone()
         });
-        
+
         // Update metrics when application writes data
         if let Some(metrics) = &self.metrics {
             metrics.add_pending_send(data_len);
         }
-        
+
         self.tx_wakers.wake_all_by(Signals::WRITTEN);
         self.sndbuf.write(data);
         Ok(())
@@ -260,7 +260,7 @@ impl<TX> SendingSender<TX> {
         }
 
         let data_len = data.len() as u64;
-        
+
         qevent::event!(StreamDataMoved {
             stream_id: self.stream_id,
             offset: self.sndbuf.written(),
@@ -269,12 +269,12 @@ impl<TX> SendingSender<TX> {
             to: StreamDataLocation::Transport,
             raw: data.clone()
         });
-        
+
         // Update metrics when application writes data
         if let Some(metrics) = &self.metrics {
             metrics.add_pending_send(data_len);
         }
-        
+
         self.tx_wakers.wake_all_by(Signals::WRITTEN);
         self.sndbuf.write(data);
         Ok(())
@@ -596,7 +596,9 @@ impl<TX> Sender<TX> {
         tx_wakers: ArcSendWakers,
         metrics: Option<qbase::metric::ArcConnectionMetrics>,
     ) -> Self {
-        Sender::Ready(ReadySender::new(stream_id, buf_size, broker, tx_wakers, metrics))
+        Sender::Ready(ReadySender::new(
+            stream_id, buf_size, broker, tx_wakers, metrics,
+        ))
     }
 }
 
@@ -663,7 +665,7 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        ArcSender::new(stream_id, buf_size, broker, Default::default())
+        ArcSender::new(stream_id, buf_size, broker, Default::default(), None)
     }
 
     #[test]
@@ -671,7 +673,7 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        let sender = ReadySender::new(stream_id, buf_size, broker, Default::default());
+        let sender = ReadySender::new(stream_id, buf_size, broker, Default::default(), None);
 
         assert_eq!(sender.stream_id, stream_id);
         assert_eq!(sender.sndbuf.max_data(), buf_size);
@@ -685,7 +687,7 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 10;
         let broker = MockBroker::default();
-        let mut sender = ReadySender::new(stream_id, buf_size, broker, Default::default());
+        let mut sender = ReadySender::new(stream_id, buf_size, broker, Default::default(), None);
 
         let data = Bytes::from_static(b"hello");
         let result = sender.write(data);
@@ -702,7 +704,7 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 10;
         let broker = MockBroker::default();
-        let mut sender = ReadySender::new(stream_id, buf_size, broker, Default::default());
+        let mut sender = ReadySender::new(stream_id, buf_size, broker, Default::default(), None);
 
         let data = Bytes::from_static(b"test");
 
@@ -720,7 +722,7 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        let mut ready = ReadySender::new(stream_id, buf_size, broker, Default::default());
+        let mut ready = ReadySender::new(stream_id, buf_size, broker, Default::default(), None);
 
         // Test transition to SendingSender
         let mut sending = ready.upgrade();

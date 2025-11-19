@@ -128,7 +128,7 @@ pub struct DataStreams<TX> {
     initial_max_stream_data_bidi_local: u64,
     initial_max_stream_data_bidi_remote: u64,
     initial_max_stream_data_uni: u64,
-    
+
     metrics: Option<qbase::metric::ArcConnectionMetrics>,
 }
 
@@ -247,14 +247,14 @@ where
 
         output.cursor = Some((sid, remain_tokens));
         credit.post_sent(fresh_bytes);
-        
+
         // Update metrics when fresh data is sent
         if fresh_bytes > 0 {
             if let Some(metrics) = &self.metrics {
                 metrics.on_data_sent(fresh_bytes as u64);
             }
         }
-        
+
         Ok(())
     }
 
@@ -340,15 +340,15 @@ where
             let mut is_all_rcvd = false;
             if let Some((o, s)) = set.get(&frame.stream_id()) {
                 is_all_rcvd = o.on_data_acked(&frame);
-                
+
                 // Update metrics when data is acknowledged
-                let acked_len = (frame.range().end - frame.range().start) as u64;
+                let acked_len = frame.range().end - frame.range().start;
                 if acked_len > 0 {
                     if let Some(metrics) = &self.metrics {
                         metrics.on_data_acked(acked_len);
                     }
                 }
-                
+
                 if is_all_rcvd {
                     s.shutdown_send();
                     if s.is_terminated() {

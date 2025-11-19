@@ -113,31 +113,31 @@ mod tests {
     #[test]
     fn test_full_data_flow() {
         let metrics = ConnectionMetrics::new();
-        
+
         // Application writes 1000 bytes
         metrics.add_pending_send(1000);
         assert_eq!(metrics.pending_send_bytes(), 1000);
         assert_eq!(metrics.sent_unacked_bytes(), 0);
         assert_eq!(metrics.sent_acked_bytes(), 0);
-        
+
         // Transport layer sends 600 bytes
         metrics.on_data_sent(600);
         assert_eq!(metrics.pending_send_bytes(), 400);
         assert_eq!(metrics.sent_unacked_bytes(), 600);
         assert_eq!(metrics.sent_acked_bytes(), 0);
-        
+
         // Peer acknowledges 300 bytes
         metrics.on_data_acked(300);
         assert_eq!(metrics.pending_send_bytes(), 400);
         assert_eq!(metrics.sent_unacked_bytes(), 300);
         assert_eq!(metrics.sent_acked_bytes(), 300);
-        
+
         // Transport layer sends remaining 400 bytes
         metrics.on_data_sent(400);
         assert_eq!(metrics.pending_send_bytes(), 0);
         assert_eq!(metrics.sent_unacked_bytes(), 700);
         assert_eq!(metrics.sent_acked_bytes(), 300);
-        
+
         // Peer acknowledges all remaining data
         metrics.on_data_acked(700);
         assert_eq!(metrics.pending_send_bytes(), 0);
@@ -149,10 +149,10 @@ mod tests {
     fn test_arc_connection_metrics() {
         let metrics = Arc::new(ConnectionMetrics::new());
         let metrics_clone = Arc::clone(&metrics);
-        
+
         metrics.add_pending_send(100);
         assert_eq!(metrics_clone.pending_send_bytes(), 100);
-        
+
         metrics_clone.on_data_sent(100);
         assert_eq!(metrics.sent_unacked_bytes(), 100);
         assert_eq!(metrics.pending_send_bytes(), 0);
