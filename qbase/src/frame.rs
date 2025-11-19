@@ -6,7 +6,7 @@ use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
 use super::varint::VarInt;
-use crate::packet::r#type::Type;
+use crate::{packet::r#type::Type, sid::Dir};
 
 mod ack;
 mod connection_close;
@@ -159,13 +159,13 @@ pub enum FrameType {
     /// MAX_STREAM_DATA frame, see [`MaxStreamDataFrame`].
     MaxStreamData,
     /// MAX_STREAMS frame, see [`MaxStreamsFrame`].
-    MaxStreams(u8),
+    MaxStreams(Dir),
     /// DATA_BLOCKED frame, see [`DataBlockedFrame`].
     DataBlocked,
     /// STREAM_DATA_BLOCKED frame, see [`StreamDataBlockedFrame`].
     StreamDataBlocked,
     /// STREAMS_BLOCKED frame, see [`StreamsBlockedFrame`].
-    StreamsBlocked(u8),
+    StreamsBlocked(Dir),
     /// NEW_CONNECTION_ID frame, see [`NewConnectionIdFrame`].
     NewConnectionId,
     /// RETIRE_CONNECTION_ID frame, see [`RetireConnectionIdFrame`].
@@ -290,11 +290,13 @@ impl TryFrom<VarInt> for FrameType {
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty as u8 & 0b1),
+            0x12 => FrameType::MaxStreams(Dir::Bi),
+            0x13 => FrameType::MaxStreams(Dir::Uni),
             0x14 => FrameType::DataBlocked,
             0x15 => FrameType::StreamDataBlocked,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty as u8 & 0b1),
+            0x16 => FrameType::StreamsBlocked(Dir::Bi),
+            0x17 => FrameType::StreamsBlocked(Dir::Uni),
             0x18 => FrameType::NewConnectionId,
             0x19 => FrameType::RetireConnectionId,
             0x1a => FrameType::PathChallenge,
@@ -324,10 +326,10 @@ impl From<FrameType> for VarInt {
             FrameType::Stream(flag) => VarInt::from(0x08 | flag),
             FrameType::MaxData => VarInt::from_u32(0x10),
             FrameType::MaxStreamData => VarInt::from_u32(0x11),
-            FrameType::MaxStreams(dir) => VarInt::from(0x12 | dir),
+            FrameType::MaxStreams(dir) => VarInt::from(0x12 | dir as u8),
             FrameType::DataBlocked => VarInt::from_u32(0x14),
             FrameType::StreamDataBlocked => VarInt::from_u32(0x15),
-            FrameType::StreamsBlocked(dir) => VarInt::from(0x16 | dir),
+            FrameType::StreamsBlocked(dir) => VarInt::from(0x16 | dir as u8),
             FrameType::NewConnectionId => VarInt::from_u32(0x18),
             FrameType::RetireConnectionId => VarInt::from_u32(0x19),
             FrameType::PathChallenge => VarInt::from_u32(0x1a),
