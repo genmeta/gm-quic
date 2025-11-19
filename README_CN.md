@@ -5,6 +5,8 @@
 [![codecov](https://codecov.io/gh/genmeta/gm-quic/graph/badge.svg)](https://codecov.io/gh/genmeta/gm-quic)
 [![crates.io](https://img.shields.io/crates/v/gm-quic.svg)](https://crates.io/crates/gm-quic)
 [![Documentation](https://docs.rs/gm-quic/badge.svg)](https://docs.rs/gm-quic/)
+[![Dependencies](https://img.shields.io/deps-rs/repo/github/genmeta/gm-quic)](https://github.com/genmeta/gm-quic/network/dependencies)
+![MSRV](https://img.shields.io/crates/msrv/gm-quic)
 
 [English](README.md) | 中文
 
