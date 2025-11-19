@@ -22,8 +22,6 @@ pub enum MaxStreamsFrame {
 
 const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 
-const DIR_BIT: u8 = 0x1;
-
 impl MaxStreamsFrame {
     pub fn with(dir: Dir, max_streams: VarInt) -> Self {
         match dir {
@@ -36,8 +34,8 @@ impl MaxStreamsFrame {
 impl super::GetFrameType for MaxStreamsFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxStreams(match self {
-            MaxStreamsFrame::Bi(_) => 0,
-            MaxStreamsFrame::Uni(_) => 1,
+            MaxStreamsFrame::Bi(_) => Dir::Bi,
+            MaxStreamsFrame::Uni(_) => Dir::Uni,
         })
     }
 }
@@ -58,7 +56,7 @@ impl super::EncodeSize for MaxStreamsFrame {
 /// Returns a parser for MAX_STREAMS frame with the given direction,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn max_streams_frame_with_dir(
-    dir: u8,
+    dir: Dir,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {
     move |input: &[u8]| {
         let (remain, max_streams) = be_varint(input)?;
@@ -70,10 +68,9 @@ pub fn max_streams_frame_with_dir(
         } else {
             Ok((
                 remain,
-                if dir & DIR_BIT == Dir::Bi as u8 {
-                    MaxStreamsFrame::Bi(max_streams)
-                } else {
-                    MaxStreamsFrame::Uni(max_streams)
+                match dir {
+                    Dir::Bi => MaxStreamsFrame::Bi(max_streams),
+                    Dir::Uni => MaxStreamsFrame::Uni(max_streams),
                 },
             ))
         }
@@ -101,18 +98,19 @@ mod tests {
     use super::{MAX_STREAMS_FRAME_TYPE, MaxStreamsFrame, max_streams_frame_with_dir};
     use crate::{
         frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        sid::Dir,
         varint::{VarInt, be_varint},
     };
 
     #[test]
     fn test_max_streams_frame() {
         let frame = MaxStreamsFrame::Bi(VarInt::from_u32(0x1234));
-        assert_eq!(frame.frame_type(), FrameType::MaxStreams(0));
+        assert_eq!(frame.frame_type(), FrameType::MaxStreams(Dir::Bi));
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2);
 
         let frame = MaxStreamsFrame::Uni(VarInt::from_u32(0x1236));
-        assert_eq!(frame.frame_type(), FrameType::MaxStreams(1));
+        assert_eq!(frame.frame_type(), FrameType::MaxStreams(Dir::Uni));
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2);
     }
@@ -122,7 +120,7 @@ mod tests {
         let buf = vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == MAX_STREAMS_FRAME_TYPE as u64 {
-                max_streams_frame_with_dir(frame_type.into_inner() as u8)
+                max_streams_frame_with_dir(Dir::Bi)
             } else {
                 panic!("wrong frame type: {frame_type}")
             }
@@ -135,7 +133,7 @@ mod tests {
         let buf = vec![MAX_STREAMS_FRAME_TYPE | 0x1, 0x52, 0x36];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == (MAX_STREAMS_FRAME_TYPE | 0x1) as u64 {
-                max_streams_frame_with_dir(frame_type.into_inner() as u8)
+                max_streams_frame_with_dir(Dir::Uni)
             } else {
                 panic!("wrong frame type: {frame_type}")
             }
@@ -161,7 +159,7 @@ mod tests {
         ];
         let result = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == MAX_STREAMS_FRAME_TYPE as u64 {
-                max_streams_frame_with_dir(frame_type.into_inner() as u8)
+                max_streams_frame_with_dir(Dir::Bi)
             } else {
                 panic!("wrong frame type: {frame_type}")
             }
