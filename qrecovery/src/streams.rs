@@ -90,6 +90,7 @@ where
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
+        metrics: Option<qbase::metric::ArcConnectionMetrics>,
     ) -> Self {
         Self(Arc::new(raw::DataStreams::new(
             role,
@@ -98,6 +99,7 @@ where
             ctrl,
             ctrl_frames,
             tx_wakers,
+            metrics,
         )))
     }
 

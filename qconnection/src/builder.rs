@@ -387,6 +387,7 @@ fn init_stream_and_datagram<LR: IntoRole, RR: IntoRole>(
     reliable_frames: ArcReliableFrameDeque,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
     tx_wakers: ArcSendWakers,
+    metrics: qbase::metric::ArcConnectionMetrics,
 ) -> (DataStreams, FlowController, DatagramFlow) {
     assert_ne!(LR::into_role(), RR::into_role());
     let flow_ctrl = FlowController::new(
@@ -406,6 +407,7 @@ fn init_stream_and_datagram<LR: IntoRole, RR: IntoRole>(
         streams_ctrl,
         reliable_frames.clone(),
         tx_wakers.clone(),
+        Some(metrics),
     );
     let datagram_flow = DatagramFlow::new(
         local_params
@@ -461,6 +463,8 @@ impl PendingConnection {
             CryptoStream::new(self.tx_wakers.clone()),
         ];
 
+        let metrics = Arc::new(qbase::metric::ConnectionMetrics::new());
+
         let (data_streams, flow_ctrl, datagram_flow) = match self.role {
             Role::Client => init_stream_and_datagram(
                 self.parameters.client().unwrap(),
@@ -471,6 +475,7 @@ impl PendingConnection {
                 self.reliable_frames.clone(),
                 self.streams_ctrl,
                 self.tx_wakers.clone(),
+                metrics.clone(),
             ),
             Role::Server => init_stream_and_datagram(
                 self.parameters.server().unwrap(),
@@ -478,6 +483,7 @@ impl PendingConnection {
                 self.reliable_frames.clone(),
                 self.streams_ctrl,
                 self.tx_wakers.clone(),
+                metrics.clone(),
             ),
         };
 
@@ -500,6 +506,7 @@ impl PendingConnection {
             flow_ctrl,
             datagram_flow,
             event_broker,
+            metrics,
             specific: self.specific,
         };
 

@@ -165,6 +165,7 @@ pub struct Components {
     flow_ctrl: FlowController,
     datagram_flow: DatagramFlow,
     event_broker: ArcEventBroker,
+    metrics: qbase::metric::ArcConnectionMetrics,
     specific: SpecificComponents,
 }
 
