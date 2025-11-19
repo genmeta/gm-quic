@@ -24,6 +24,8 @@ pub mod flow;
 pub mod frame;
 /// Handshake signal for QUIC connections.
 pub mod handshake;
+/// QUIC connection metrics for tracking data volumes.
+pub mod metric;
 /// Endpoint address and Pathway.
 pub mod net;
 /// QUIC packets and their codec.

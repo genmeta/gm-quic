@@ -165,6 +165,7 @@ pub struct Components {
     flow_ctrl: FlowController,
     datagram_flow: DatagramFlow,
     event_broker: ArcEventBroker,
+    metrics: qbase::metric::ArcConnectionMetrics,
     specific: SpecificComponents,
 }
 
@@ -183,6 +184,11 @@ impl Components {
             SpecificComponents::Client { .. } => Role::Client,
             SpecificComponents::Server { .. } => Role::Server,
         }
+    }
+
+    /// Gets the connection metrics for tracking data volumes.
+    pub fn metrics(&self) -> &qbase::metric::ArcConnectionMetrics {
+        &self.metrics
     }
 
     #[allow(clippy::type_complexity)]
@@ -524,6 +530,17 @@ impl Connection {
     /// Return error if the connection is already closed.
     pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) -> Result<(), Error> {
         self.0.application_close(reason, code)
+    }
+
+    /// Gets the connection metrics for tracking data volumes.
+    ///
+    /// Returns the metrics that track:
+    /// - pending_send_bytes: Data written by application but not yet sent
+    /// - sent_unacked_bytes: Data sent but not yet acknowledged
+    /// - sent_acked_bytes: Data sent and acknowledged
+    pub fn metrics(&self) -> Result<qbase::metric::ArcConnectionMetrics, Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.metrics().clone())
     }
 
     pub async fn open_bi_stream(
