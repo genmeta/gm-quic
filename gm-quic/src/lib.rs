@@ -1,3 +1,5 @@
+#![doc=include_str!("../../README.md")]
+
 pub mod prelude {
     pub use ::qconnection;
     pub use qconnection::prelude::*;
@@ -21,6 +23,16 @@ pub mod builder {
         client::{BindInterfaceError, QuicClientBuilder},
         server::{BuildServerError, QuicListenersBuilder},
     };
+}
+
+// Hidden modules used to integrate the code examples from the README into the cargo test
+mod doc {
+    #[doc=include_str!("../../README_CN.md")]
+    mod zh {}
+
+    // Omitted: Duplicate with crate documentation
+    // #[doc=include_str!("../../README.md")]
+    // mod en {}
 }
 
 pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qunreliable};
