@@ -45,7 +45,7 @@ const FIN_BIT: u8 = 0x01;
 
 impl GetFrameType for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::Stream(self.flag)
+        super::FrameType::Stream(super::StreamFlags::from(self.flag))
     }
 }
 
@@ -288,7 +288,14 @@ mod tests {
             length: 11,
             flag: 0b110,
         };
-        assert_eq!(stream_frame.frame_type(), FrameType::Stream(0b110));
+        assert_eq!(
+            stream_frame.frame_type(),
+            FrameType::Stream(super::super::StreamFlags {
+                offset: super::super::Offset::NonZero,
+                length: super::super::Length::Sized,
+                fin: super::super::Fin::No,
+            })
+        );
         assert_eq!(stream_frame.max_encoding_size(), 1 + 8 + 8 + 8);
         assert_eq!(stream_frame.encoding_size(), 1 + 2 + 2 + 1);
     }
