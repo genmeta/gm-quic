@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
 use super::{
-    ack::ack_frame_with_flag, connection_close::connection_close_frame_at_layer,
+    ack::ack_frame_with_ecn, connection_close::connection_close_frame_at_layer,
     crypto::be_crypto_frame, data_blocked::be_data_blocked_frame,
     datagram::datagram_frame_with_flag, max_data::be_max_data_frame,
     max_stream_data::be_max_stream_data_frame, max_streams::max_streams_frame_with_dir,
@@ -42,7 +42,7 @@ fn complete_frame(
         FrameType::PathResponse => map(be_path_response_frame, Frame::Response).parse(input),
         FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
         FrameType::NewToken => map(be_new_token_frame, Frame::NewToken).parse(input),
-        FrameType::Ack(ecn) => map(ack_frame_with_flag(u8::from(ecn)), Frame::Ack).parse(input),
+        FrameType::Ack(ecn) => map(ack_frame_with_ecn(ecn), Frame::Ack).parse(input),
         FrameType::ResetStream => {
             map(be_reset_stream_frame, |f| Frame::StreamCtl(f.into())).parse(input)
         }
@@ -75,7 +75,7 @@ fn complete_frame(
             }
         }
         FrameType::Stream(flags) => {
-            let (input, frame) = stream_frame_with_flag(u8::from(flags))(input)?;
+            let (input, frame) = stream_frame_with_flag(flags)(input)?;
             let start = raw.len() - input.len();
             let len = frame.len();
             if input.len() < len {

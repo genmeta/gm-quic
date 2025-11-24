@@ -2,7 +2,37 @@ use std::ops::RangeInclusive;
 
 use nom::{Parser, combinator::map};
 
-use crate::varint::{VarInt, WriteVarInt, be_varint};
+use crate::{
+    frame::GetFrameType,
+    varint::{VarInt, WriteVarInt, be_varint},
+};
+
+/// ECN flag for ACK frames
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Ecn {
+    /// ECN counts are not present
+    None,
+    /// ECN counts are present
+    Exist,
+}
+
+impl From<Ecn> for u8 {
+    fn from(ecn: Ecn) -> u8 {
+        match ecn {
+            Ecn::None => 0,
+            Ecn::Exist => 1,
+        }
+    }
+}
+
+impl From<u8> for Ecn {
+    fn from(value: u8) -> Self {
+        match value & 0x01 {
+            0 => Ecn::None,
+            _ => Ecn::Exist,
+        }
+    }
+}
 
 /// ACK Frame
 ///
@@ -35,16 +65,12 @@ pub struct AckFrame {
     ecn: Option<EcnCounts>,
 }
 
-const ACK_FRAME_TYPE: u8 = 0x02;
-
-const ECN_OPT: u8 = 0x1;
-
 impl super::GetFrameType for AckFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ack(if self.ecn.is_some() {
-            super::Ecn::Exist
+            Ecn::Exist
         } else {
-            super::Ecn::None
+            Ecn::None
         })
     }
 }
@@ -185,7 +211,7 @@ impl EcnCounts {
 
 /// Parser for parsing an ACK frame with the given ECN flag,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
-pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
+pub fn ack_frame_with_ecn(ecn: Ecn) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
     move |input: &[u8]| {
         let (mut remain, (largest, delay, count, first_range)) =
             (be_varint, be_varint, be_varint, be_varint).parse(input)?;
@@ -198,7 +224,7 @@ pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8]
             remain = i;
         }
 
-        let ecn = if ecn_flag & ECN_OPT != 0 {
+        let ecn = if ecn == Ecn::Exist {
             let (i, ecn) = be_ecn_counts(remain)?;
             remain = i;
             Some(ecn)
@@ -230,11 +256,8 @@ pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
 
 impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
     fn put_frame(&mut self, frame: &AckFrame) {
-        let mut frame_type = ACK_FRAME_TYPE;
-        if frame.ecn.is_some() {
-            frame_type |= ECN_OPT;
-        }
-        self.put_u8(frame_type);
+        let frame_type = frame.frame_type();
+        self.put_varint(&frame_type.into());
         self.put_varint(&frame.largest);
         self.put_varint(&frame.delay);
 
@@ -257,7 +280,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
 mod tests {
     use nom::{Parser, combinator::flat_map};
 
-    use super::{ACK_FRAME_TYPE, AckFrame, EcnCounts, ack_frame_with_flag, be_ecn_counts};
+    use super::*;
     use crate::{
         frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
@@ -273,7 +296,7 @@ mod tests {
             ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
             ecn: None,
         };
-        assert_eq!(frame.frame_type(), FrameType::Ack(super::super::Ecn::None));
+        assert_eq!(frame.frame_type(), FrameType::Ack(Ecn::None));
         assert_eq!(frame.encoding_size(), 1 + 2 * 3 + 1 + 2);
         assert_eq!(frame.max_encoding_size(), 1 + 4 * 8 + 2 * 8);
 
@@ -307,11 +330,9 @@ mod tests {
     fn test_read_ack_frame() {
         let input = vec![0x02, 0x52, 0x34, 0x52, 0x34, 0x01, 0x52, 0x34, 3, 20];
         let (input, ack_frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() as u8 == ACK_FRAME_TYPE {
-                ack_frame_with_flag(frame_type.into_inner() as u8)
-            } else {
-                panic!("wrong frame type")
-            }
+            let ack_frame_type: VarInt = FrameType::Ack(Ecn::None).into();
+            assert_eq!(frame_type, ack_frame_type);
+            ack_frame_with_ecn(Ecn::None)
         })
         .parse(&input)
         .unwrap();

@@ -8,171 +8,6 @@ use io::WriteFrame;
 use super::varint::VarInt;
 use crate::{packet::r#type::Type, sid::Dir};
 
-/// Offset flag for STREAM frames
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Offset {
-    /// Offset field is zero (not present in frame)
-    Zero,
-    /// Offset field is non-zero (present in frame)
-    NonZero,
-}
-
-impl From<Offset> for u8 {
-    fn from(offset: Offset) -> u8 {
-        match offset {
-            Offset::Zero => 0,
-            Offset::NonZero => 1,
-        }
-    }
-}
-
-impl From<u8> for Offset {
-    fn from(value: u8) -> Self {
-        match value & 0x04 {
-            0 => Offset::Zero,
-            _ => Offset::NonZero,
-        }
-    }
-}
-
-/// Length flag for STREAM frames
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Length {
-    /// Length field is present
-    Sized,
-    /// Length field is omitted (extends to end of packet)
-    Omit,
-}
-
-impl From<Length> for u8 {
-    fn from(length: Length) -> u8 {
-        match length {
-            Length::Sized => 1,
-            Length::Omit => 0,
-        }
-    }
-}
-
-impl From<u8> for Length {
-    fn from(value: u8) -> Self {
-        match value & 0x02 {
-            0 => Length::Omit,
-            _ => Length::Sized,
-        }
-    }
-}
-
-/// Fin flag for STREAM frames
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Fin {
-    /// Stream is finished
-    Yes,
-    /// Stream is not finished
-    No,
-}
-
-impl From<Fin> for u8 {
-    fn from(fin: Fin) -> u8 {
-        match fin {
-            Fin::Yes => 1,
-            Fin::No => 0,
-        }
-    }
-}
-
-impl From<u8> for Fin {
-    fn from(value: u8) -> Self {
-        match value & 0x01 {
-            0 => Fin::No,
-            _ => Fin::Yes,
-        }
-    }
-}
-
-/// Stream flags combining offset, length, and fin
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct StreamFlags {
-    /// Offset flag
-    pub offset: Offset,
-    /// Length flag
-    pub length: Length,
-    /// Fin flag
-    pub fin: Fin,
-}
-
-impl From<StreamFlags> for u8 {
-    fn from(flags: StreamFlags) -> u8 {
-        let offset_bit: u8 = flags.offset.into();
-        let length_bit: u8 = flags.length.into();
-        let fin_bit: u8 = flags.fin.into();
-        (offset_bit << 2) | (length_bit << 1) | fin_bit
-    }
-}
-
-impl From<u8> for StreamFlags {
-    fn from(value: u8) -> Self {
-        StreamFlags {
-            offset: Offset::from(value),
-            length: Length::from(value),
-            fin: Fin::from(value),
-        }
-    }
-}
-
-/// ECN flag for ACK frames
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Ecn {
-    /// ECN counts are not present
-    None,
-    /// ECN counts are present
-    Exist,
-}
-
-impl From<Ecn> for u8 {
-    fn from(ecn: Ecn) -> u8 {
-        match ecn {
-            Ecn::None => 0,
-            Ecn::Exist => 1,
-        }
-    }
-}
-
-impl From<u8> for Ecn {
-    fn from(value: u8) -> Self {
-        match value & 0x01 {
-            0 => Ecn::None,
-            _ => Ecn::Exist,
-        }
-    }
-}
-
-/// Layer flag for CONNECTION_CLOSE frames
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Layer {
-    /// QUIC transport layer (0x1c)
-    Conn,
-    /// Application layer (0x1d)
-    App,
-}
-
-impl From<Layer> for u8 {
-    fn from(layer: Layer) -> u8 {
-        match layer {
-            Layer::Conn => 0,
-            Layer::App => 1,
-        }
-    }
-}
-
-impl From<u8> for Layer {
-    fn from(value: u8) -> Self {
-        match value & 0x01 {
-            0 => Layer::Conn,
-            _ => Layer::App,
-        }
-    }
-}
-
 mod ack;
 mod connection_close;
 mod crypto;
@@ -200,8 +35,8 @@ pub mod error;
 /// IO module for frame encoding and decoding
 pub mod io;
 
-pub use ack::{AckFrame, EcnCounts};
-pub use connection_close::{AppCloseFrame, ConnectionCloseFrame, QuicCloseFrame};
+pub use ack::{AckFrame, Ecn, EcnCounts};
+pub use connection_close::{AppCloseFrame, ConnectionCloseFrame, Layer, QuicCloseFrame};
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
 pub use datagram::DatagramFrame;
@@ -220,7 +55,9 @@ pub use ping::PingFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
-pub use stream::{EncodingStrategy, STREAM_FRAME_MAX_ENCODING_SIZE, StreamFrame};
+pub use stream::{
+    EncodingStrategy, Fin, Flags, Len, Offset, STREAM_FRAME_MAX_ENCODING_SIZE, StreamFrame,
+};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
@@ -318,7 +155,7 @@ pub enum FrameType {
     /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken,
     /// STREAM frame, see [`StreamFrame`].
-    Stream(StreamFlags),
+    Stream(Flags),
     /// MAX_DATA frame, see [`MaxDataFrame`].
     MaxData,
     /// MAX_STREAM_DATA frame, see [`MaxStreamDataFrame`].
@@ -403,13 +240,10 @@ impl FrameFeature for FrameType {
             // When an application wishes to abandon a connection during the handshake,
             // an endpoint can send a CONNECTION_CLOSE frame (type 0x1c) with an error code
             // of APPLICATION_ERROR in an Initial or Handshake packet.
-            FrameType::ConnectionClose(layer) => {
-                if matches!(layer, Layer::Conn) && (i || h) {
-                    true
-                } else {
-                    o | l
-                }
-            }
+            FrameType::ConnectionClose(layer) => match layer {
+                Layer::App => o | l,
+                Layer::Quic => i | h | o | l,
+            },
             FrameType::HandshakeDone => l,
             FrameType::Datagram(_) => o | l,
         }
@@ -445,13 +279,14 @@ impl TryFrom<VarInt> for FrameType {
             0x00 => FrameType::Padding,
             0x01 => FrameType::Ping,
             // The last bit is the ECN flag.
-            ty @ (0x02 | 0x03) => FrameType::Ack(Ecn::from(ty as u8)),
+            0x02 => FrameType::Ack(Ecn::None),
+            0x03 => FrameType::Ack(Ecn::Exist),
             0x04 => FrameType::ResetStream,
             0x05 => FrameType::StopSending,
             0x06 => FrameType::Crypto,
             0x07 => FrameType::NewToken,
             // The last three bits are the offset, length, and fin flag bits respectively.
-            ty @ 0x08..=0x0f => FrameType::Stream(StreamFlags::from(ty as u8)),
+            ty @ 0x08..=0x0f => FrameType::Stream(Flags::from(ty as u8)),
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
@@ -466,8 +301,8 @@ impl TryFrom<VarInt> for FrameType {
             0x19 => FrameType::RetireConnectionId,
             0x1a => FrameType::PathChallenge,
             0x1b => FrameType::PathResponse,
-            // The last bit is the layer flag bit, 0 indicates QUIC layer, 1 indicates application layer.
-            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(Layer::from(ty as u8)),
+            0x1c => FrameType::ConnectionClose(Layer::Quic),
+            0x1d => FrameType::ConnectionClose(Layer::App),
             0x1e => FrameType::HandshakeDone,
             // The last bit is the length flag bit, 0 the length field is absent and the Datagram Data
             // field extends to the end of the packet, 1 the length field is present.
@@ -483,7 +318,8 @@ impl From<FrameType> for VarInt {
         match frame_type {
             FrameType::Padding => VarInt::from_u32(0x00),
             FrameType::Ping => VarInt::from_u32(0x01),
-            FrameType::Ack(ecn) => VarInt::from(0x02 | u8::from(ecn)),
+            FrameType::Ack(Ecn::None) => VarInt::from_u32(0x02),
+            FrameType::Ack(Ecn::Exist) => VarInt::from_u32(0x03),
             FrameType::ResetStream => VarInt::from_u32(0x04),
             FrameType::StopSending => VarInt::from_u32(0x05),
             FrameType::Crypto => VarInt::from_u32(0x06),
@@ -491,15 +327,18 @@ impl From<FrameType> for VarInt {
             FrameType::Stream(flags) => VarInt::from(0x08 | u8::from(flags)),
             FrameType::MaxData => VarInt::from_u32(0x10),
             FrameType::MaxStreamData => VarInt::from_u32(0x11),
-            FrameType::MaxStreams(dir) => VarInt::from(0x12 | dir as u8),
+            FrameType::MaxStreams(Dir::Bi) => VarInt::from_u32(0x12),
+            FrameType::MaxStreams(Dir::Uni) => VarInt::from_u32(0x13),
             FrameType::DataBlocked => VarInt::from_u32(0x14),
             FrameType::StreamDataBlocked => VarInt::from_u32(0x15),
-            FrameType::StreamsBlocked(dir) => VarInt::from(0x16 | dir as u8),
+            FrameType::StreamsBlocked(Dir::Bi) => VarInt::from_u32(0x16),
+            FrameType::StreamsBlocked(Dir::Uni) => VarInt::from_u32(0x17),
             FrameType::NewConnectionId => VarInt::from_u32(0x18),
             FrameType::RetireConnectionId => VarInt::from_u32(0x19),
             FrameType::PathChallenge => VarInt::from_u32(0x1a),
             FrameType::PathResponse => VarInt::from_u32(0x1b),
-            FrameType::ConnectionClose(layer) => VarInt::from(0x1c | u8::from(layer)),
+            FrameType::ConnectionClose(Layer::Quic) => VarInt::from_u32(0x1c),
+            FrameType::ConnectionClose(Layer::App) => VarInt::from_u32(0x1d),
             FrameType::HandshakeDone => VarInt::from_u32(0x1e),
             FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
         }
@@ -847,13 +686,9 @@ mod tests {
             FrameType::Padding,
             FrameType::Ping,
             FrameType::Ack(Ecn::None),
-            FrameType::Stream(StreamFlags {
-                offset: Offset::Zero,
-                length: Length::Omit,
-                fin: Fin::No,
-            }),
+            FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)),
             FrameType::MaxData,
-            FrameType::ConnectionClose(Layer::Conn),
+            FrameType::ConnectionClose(Layer::Quic),
             FrameType::HandshakeDone,
             FrameType::Datagram(0),
         ];
@@ -872,13 +707,11 @@ mod tests {
                 .specs()
                 .contain(Spec::CongestionControlFree)
         );
-        assert!(FrameType::Stream(StreamFlags {
-            offset: Offset::Zero,
-            length: Length::Omit,
-            fin: Fin::No,
-        })
-        .specs()
-        .contain(Spec::FlowControlled));
+        assert!(
+            FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No))
+                .specs()
+                .contain(Spec::FlowControlled)
+        );
         assert!(FrameType::PathChallenge.specs().contain(Spec::ProbeNewPath));
     }
 
@@ -888,12 +721,7 @@ mod tests {
         assert!(FrameType::Padding.belongs_to(initial));
         assert!(FrameType::Ping.belongs_to(initial));
         assert!(FrameType::Ack(Ecn::None).belongs_to(initial));
-        assert!(!FrameType::Stream(StreamFlags {
-            offset: Offset::Zero,
-            length: Length::Omit,
-            fin: Fin::No,
-        })
-        .belongs_to(initial));
+        assert!(!FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)).belongs_to(initial));
     }
 
     #[test]
