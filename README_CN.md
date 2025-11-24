@@ -86,6 +86,8 @@ QUIC客户端支持多路径握手，即同时尝试连接到服务器的IPv4和
 以下为简单示例，更多细节请参阅文档。
 
 ```rust
+use gm_quic::prelude::{handy::ToCertificate, *};
+
 // 设置根证书存储
 let mut roots = rustls::RootCertStore::empty();
 
@@ -93,19 +95,18 @@ let mut roots = rustls::RootCertStore::empty();
 roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
 
 // 加载自定义证书（可与系统证书独立使用）
-use gm_quic::ToCertificate;
 roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
 roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
 
 // 构建QUIC客户端
-let quic_client = gm_quic::QuicClient::builder()
+let quic_client = QuicClient::builder()
     .with_root_certificates(roots)
     .without_cert()                                      // 通常不需要客户端证书验证
     // .with_parameters(your_parameters)                 // 自定义传输参数
     // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口eth0的IPv4和IPv6地址
     // .enable_0rtt()                                    // 启用0-RTT
     // .enable_sslkeylog()                               // 启用SSL密钥日志
-    // .with_qlog(Arc::new(gm_quic::handy::LegacySeqLogger::new(
+    // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
     //     PathBuf::from("/path/to/qlog_dir"),
     // )))                                               // 启用qlog，可用qvis工具可视化
     .build();
@@ -126,7 +127,9 @@ QuicListeners支持通过多种方法验证客客户端的身份，包括通过`
 
 ```rust
 // 创建QUIC监听器（每个程序只能有一个实例）
-let quic_listeners = gm_quic::QuicListeners::builder()?
+use gm_quic::prelude::*;
+
+let quic_listeners = QuicListeners::builder()?
     .without_client_cert_verifier()         // 通常不需要客户端证书验证
     // .with_parameters(your_parameters)    // 自定义传输参数
     // .enable_0rtt()                       // 为服务器启用0-RTT
