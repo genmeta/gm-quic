@@ -93,38 +93,41 @@ The QUIC client supports multipath handsahking, it can simultaneously connect to
 The following is a simple example, please refer to the documentation for more details.
 
 ```rust
+use std::path::PathBuf;
 use gm_quic::prelude::{handy::ToCertificate, *};
-        
-// Set up root certificate store
-let mut roots = rustls::RootCertStore::empty();
 
-// Load system certificates
-roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-// Load custom certificates (can be used independently of system certificates)
-roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate());  // Load at runtime
-roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // Embed at compile time
+async fn client() -> Result<(), Box<dyn std::error::Error>> {
+    // Set up root certificate store
+    let mut roots = rustls::RootCertStore::empty();
 
-// Build the QUIC client
-let quic_client = QuicClient::builder()
-    .with_root_certificates(roots)
-    .without_cert()                                      // Client certificate verification is typically not required
-    // .with_parameters(your_parameters)                 // Custom transport parameters
-    // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // Bind to specific network interfaces
-    // .enable_0rtt()                                    // Enable 0-RTT
-    // .enable_sslkeylog()                               // Enable SSL key logging
-    // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
-    //     PathBuf::from("/path/to/qlog_dir"),
-    // )))                                               // Enable qlog for visualization with qvis tool
-    .build();
+    // Load system certificates
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    // Load custom certificates (can be used independently of system certificates)
+    roots.add_parsable_certificates(PathBuf::from("/path/to/ca.cert").to_certificate());  // Load at runtime
+    // roots.add_parsable_certificates(include_bytes!("/path/to/ca.cert").to_certificate()); // Embed at compile time
 
-// Connect to the server
-let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
-let connection = quic_client.connect("localhost", server_addresses)?;
+    // Build the QUIC client
+    let quic_client = QuicClient::builder()
+        .with_root_certificates(roots)
+        .without_cert()                                      // Client certificate verification is typically not required
+        // .with_parameters(your_parameters)                 // Custom transport parameters
+        // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // Bind to specific network interfaces
+        // .enable_0rtt()                                    // Enable 0-RTT
+        // .enable_sslkeylog()                               // Enable SSL key logging
+        // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
+        //     PathBuf::from("/path/to/qlog_dir"),
+        // )))                                               // Enable qlog for visualization with qvis tool
+        .build();
 
-// Start using the QUIC connection!
-// For more usage examples, see gm-quic/examples and h3-shim/examples
+    // Connect to the server
+    let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
+    let connection = quic_client.connect("localhost", server_addresses)?;
 
-Ok(())
+    // Start using the QUIC connection!
+    // For more usage examples, see gm-quic/examples and h3-shim/examples
+
+    Ok(())
+}
 ```
 
 The QUIC server is represented as `QuicListeners`, supporting SNI (Server Name Indication), allowing multiple Servers to be started in one process, each with their own certificates and keys. Each server can also bind to multiple addresses, and multiple Servers can bind to the same address. Clients must correctly connect to the corresponding interface of the corresponding Server, otherwise the connection will be rejected.
@@ -132,35 +135,40 @@ The QUIC server is represented as `QuicListeners`, supporting SNI (Server Name I
 QuicListeners supports verifying client identity through various methods, including through `client_name` transport parameters, verifying client certificate content, etc. QuicListeners also supports anti-port scanning functionality, only responding after preliminary verification of client identity.
 
 ```rust
+use std::path::PathBuf;
 use gm_quic::prelude::*;
 
-let quic_listeners = QuicListeners::builder()?
-    .without_client_cert_verifier()         // Client certificate verification is typically not required
-    // .with_parameters(your_parameters)    // Custom transport parameters
-    // .enable_0rtt()                       // Enable 0-RTT for servers
-    // .enable_anti_port_scan()             // Anti-port scanning protection
-    .listen(8192);                          // Start listening with backlog (similar to Unix listen)
+async fn server() -> Result<(), Box<dyn std::error::Error>> {
+    let quic_listeners = QuicListeners::builder()?
+        .without_client_cert_verifier()         // Client certificate verification is typically not required
+        // .with_parameters(your_parameters)    // Custom transport parameters
+        // .enable_0rtt()                       // Enable 0-RTT for servers
+        // .enable_anti_port_scan()             // Anti-port scanning protection
+        .listen(8192);                          // Start listening with backlog (similar to Unix listen)
 
-// Add a server that can be connected
-quic_listeners.add_server(
-    "localhost",
-    // Certificate and key files as byte arrays or paths
-    include_bytes!("/path/to/server.crt"),
-    include_bytes!("/path/to/server.key"),
-    [
-        "192.168.1.108:4433",   // Bind to the IPv4 address
-        "iface://v6.eth0:4433", // Bind to the eth0's IPv6 address
-    ],
-    None, // ocsp
-);
+    // Add a server that can be connected
+    quic_listeners.add_server(
+        "localhost",
+        // Certificate and key files as byte arrays or paths
+        PathBuf::from("/path/to/server.cert").as_path(),
+        PathBuf::from("/path/to/server.key").as_path(),
+        [
+            "192.168.1.108:4433",   // Bind to the IPv4 address
+            "iface://v6.eth0:4433", // Bind to the eth0's IPv6 address
+        ],
+        None, // ocsp
+    );
 
-// Continue calling `quic_listeners.add_server()` to add more servers
-// Call `quic_listeners.remove_server()` to remove a server
+    // Continue calling `quic_listeners.add_server()` to add more servers
+    // Call `quic_listeners.remove_server()` to remove a server
 
-// Accept trusted new connections
-while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
-    // Handle the incoming QUIC connection!
-    // You can refer to examples in gm-quic/examples and h3-shim/examples
+    // Accept trusted new connections
+    while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
+        // Handle the incoming QUIC connection!
+        // You can refer to examples in gm-quic/examples and h3-shim/examples
+    }
+
+    Ok(())
 }
 ```
 
@@ -184,8 +192,7 @@ This ensures the feature is reasonable and has a solid implementation plan.
 ## Community 
 
 - [Official Community](https://github.com/genmeta/gm-quic/discussions)
-- chat group：[send email](mailto:quic_team@genmeta.net) to introduce your contribution, 
-and we will reply to your email with an invitation link and QR code to join the group.
+- chat group：[send email](mailto:quic_team@genmeta.net) to introduce your contribution, and we will reply to your email with an invitation link and QR code to join the group.
 
 ## Rust version requirements (MSRV)
 

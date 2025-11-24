@@ -86,39 +86,42 @@ QUIC客户端支持多路径握手，即同时尝试连接到服务器的IPv4和
 以下为简单示例，更多细节请参阅文档。
 
 ```rust
+use std::path::PathBuf;
 use gm_quic::prelude::{handy::ToCertificate, *};
 
-// 设置根证书存储
-let mut roots = rustls::RootCertStore::empty();
+async fn client() -> Result<(), Box<dyn std::error::Error>> {
+    // 设置根证书存储
+    let mut roots = rustls::RootCertStore::empty();
 
-// 加载系统证书
-roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    // 加载系统证书
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
 
-// 加载自定义证书（可与系统证书独立使用）
-roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
-roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
+    // 加载自定义证书（可与系统证书独立使用）
+    roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate()); // 运行时加载
+    // roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
 
-// 构建QUIC客户端
-let quic_client = QuicClient::builder()
-    .with_root_certificates(roots)
-    .without_cert()                                      // 通常不需要客户端证书验证
-    // .with_parameters(your_parameters)                 // 自定义传输参数
-    // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口eth0的IPv4和IPv6地址
-    // .enable_0rtt()                                    // 启用0-RTT
-    // .enable_sslkeylog()                               // 启用SSL密钥日志
-    // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
-    //     PathBuf::from("/path/to/qlog_dir"),
-    // )))                                               // 启用qlog，可用qvis工具可视化
-    .build();
+    // 构建QUIC客户端
+    let quic_client = QuicClient::builder()
+        .with_root_certificates(roots)
+        .without_cert()                                      // 通常不需要客户端证书验证
+        // .with_parameters(your_parameters)                 // 自定义传输参数
+        // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // 绑定到指定网络接口eth0的IPv4和IPv6地址
+        // .enable_0rtt()                                    // 启用0-RTT
+        // .enable_sslkeylog()                               // 启用SSL密钥日志
+        // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
+        //     PathBuf::from("/path/to/qlog_dir"),
+        // )))                                               // 启用qlog，可用qvis工具可视化
+        .build();
 
-// 连接到服务器
-let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
-let connection = quic_client.connect("localhost", server_addresses)?;
+    // 连接到服务器
+    let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
+    let connection = quic_client.connect("localhost", server_addresses)?;
 
-// 开始使用QUIC连接！
-// 更多使用示例请参考 gm-quic/examples 和 h3-shim/examples
+    // 开始使用QUIC连接！
+    // 更多使用示例请参考 gm-quic/examples 和 h3-shim/examples
 
-Ok(())
+    Ok(())
+}
 ```
 
 QUIC服务端表现为`QuicListeners`，支持SNI（Server Name Indication），在一个进程启动多个Server，分别有自己的证书和密钥，每个服务端又可以绑定到多个地址上，支持多个Server绑定同一个地址。Client必须正确连接到对应的Server的对应接口上，否则连接会被自动拒绝。
@@ -127,35 +130,40 @@ QuicListeners支持通过多种方法验证客客户端的身份，包括通过`
 
 ```rust
 // 创建QUIC监听器（每个程序只能有一个实例）
+use std::path::PathBuf;
 use gm_quic::prelude::*;
 
-let quic_listeners = QuicListeners::builder()?
-    .without_client_cert_verifier()         // 通常不需要客户端证书验证
-    // .with_parameters(your_parameters)    // 自定义传输参数
-    // .enable_0rtt()                       // 为服务器启用0-RTT
-    // .enable_anti_port_scan()             // 抗端口扫描保护
-    .listen(8192);                          // 开始监听，设置积压队列（类似Unix listen）
+async fn server() -> Result<(), Box<dyn std::error::Error>> {
+    let quic_listeners = QuicListeners::builder()?
+        .without_client_cert_verifier()         // 通常不需要客户端证书验证
+        // .with_parameters(your_parameters)    // 自定义传输参数
+        // .enable_0rtt()                       // 为服务器启用0-RTT
+        // .enable_anti_port_scan()             // 抗端口扫描保护
+        .listen(8192);                          // 开始监听，设置积压队列（类似Unix listen）
 
-// 添加可连接的服务器
-quic_listeners.add_server(
-    "localhost",
-    // 证书和密钥文件的字节数组或路径
-    include_bytes!("/path/to/server.crt"),
-    include_bytes!("/path/to/server.key"),
-    [
-        "192.168.1.106:4433",   // 绑定到此IPv4地址
-        "iface://v6.eth0:4433", // 绑定到eth0的IPv6地址
-    ],
-    None, // ocsp
-);
+    // 添加可连接的服务器
+    quic_listeners.add_server(
+        "localhost",
+        // 证书和密钥文件的字节数组或路径
+        PathBuf::from("/path/to/server.crt").as_path(),
+        PathBuf::from("/path/to/server.key").as_path(),
+        [
+            "192.168.1.106:4433",   // 绑定到此IPv4地址
+            "iface://v6.eth0:4433", // 绑定到eth0的IPv6地址
+        ],
+        None, // ocsp
+    );
 
-// 继续调用 `quic_listeners.add_server()` 来添加更Server
-// 调用 `quic_listeners.remove_server()` 来移除一个Serer
+    // 继续调用 `quic_listeners.add_server()` 来添加更Server
+    // 调用 `quic_listeners.remove_server()` 来移除一个Serer
 
-// 接受可信的新连接
-while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
-    // 处理传入的QUIC连接！
-    // 可以参考 gm-quic/examples 和 h3-shim/examples 中的示例
+    // 接受可信的新连接
+    while let Ok((connection, server_name, pathway, link)) = quic_listeners.accept().await {
+        // 处理传入的QUIC连接！
+        // 可以参考 gm-quic/examples 和 h3-shim/examples 中的示例
+    }
+
+    Ok(())
 }
 ```
 
