@@ -93,25 +93,26 @@ The QUIC client supports multipath handsahking, it can simultaneously connect to
 The following is a simple example, please refer to the documentation for more details.
 
 ```rust
+use gm_quic::prelude::{handy::ToCertificate, *};
+        
 // Set up root certificate store
 let mut roots = rustls::RootCertStore::empty();
 
 // Load system certificates
 roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
 // Load custom certificates (can be used independently of system certificates)
-use gm_quic::ToCertificate;
 roots.add_parsable_certificates(PathBuf::from("path/to/your/cert.pem").to_certificate());  // Load at runtime
 roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // Embed at compile time
 
 // Build the QUIC client
-let quic_client = gm_quic::QuicClient::builder()
+let quic_client = QuicClient::builder()
     .with_root_certificates(roots)
     .without_cert()                                      // Client certificate verification is typically not required
     // .with_parameters(your_parameters)                 // Custom transport parameters
     // .bind(["iface://v4.eth0:0", "iface://v6.eth0:0"]) // Bind to specific network interfaces
     // .enable_0rtt()                                    // Enable 0-RTT
     // .enable_sslkeylog()                               // Enable SSL key logging
-    // .with_qlog(Arc::new(gm_quic::handy::LegacySeqLogger::new(
+    // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
     //     PathBuf::from("/path/to/qlog_dir"),
     // )))                                               // Enable qlog for visualization with qvis tool
     .build();
@@ -131,7 +132,9 @@ The QUIC server is represented as `QuicListeners`, supporting SNI (Server Name I
 QuicListeners supports verifying client identity through various methods, including through `client_name` transport parameters, verifying client certificate content, etc. QuicListeners also supports anti-port scanning functionality, only responding after preliminary verification of client identity.
 
 ```rust
-let quic_listeners = gm_quic::QuicListeners::builder()?
+use gm_quic::prelude::*;
+
+let quic_listeners = QuicListeners::builder()?
     .without_client_cert_verifier()         // Client certificate verification is typically not required
     // .with_parameters(your_parameters)    // Custom transport parameters
     // .enable_0rtt()                       // Enable 0-RTT for servers
