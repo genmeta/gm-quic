@@ -99,14 +99,11 @@ pub enum ConnectionCloseFrame {
 
 const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 
-const QUIC_LAYER: u8 = 0;
-const APP_LAYER: u8 = 1;
-
 impl super::GetFrameType for ConnectionCloseFrame {
     fn frame_type(&self) -> FrameType {
         match self {
-            ConnectionCloseFrame::App(_) => FrameType::ConnectionClose(APP_LAYER),
-            ConnectionCloseFrame::Quic(_) => FrameType::ConnectionClose(QUIC_LAYER),
+            ConnectionCloseFrame::App(_) => FrameType::ConnectionClose(super::Layer::App),
+            ConnectionCloseFrame::Quic(_) => FrameType::ConnectionClose(super::Layer::Conn),
         }
     }
 }
@@ -197,19 +194,14 @@ fn be_quic_close_frame(input: &[u8]) -> nom::IResult<&[u8], QuicCloseFrame> {
 /// Return a parse for a CONNECTION_CLOSE frame with the given layer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn connection_close_frame_at_layer(
-    layer: u8,
+    layer: super::Layer,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
     move |input: &[u8]| {
-        if layer == APP_LAYER {
+        if matches!(layer, super::Layer::App) {
             be_app_close_frame(input).map(|(remain, app)| (remain, ConnectionCloseFrame::App(app)))
-        } else if layer == QUIC_LAYER {
+        } else {
             be_quic_close_frame(input)
                 .map(|(remain, quic)| (remain, ConnectionCloseFrame::Quic(quic)))
-        } else {
-            Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Alt,
-            )))
         }
     }
 }
@@ -219,7 +211,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
         match frame {
             ConnectionCloseFrame::App(frame) => {
                 use crate::varint::WriteVarInt;
-                self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | APP_LAYER);
+                self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | u8::from(super::Layer::App));
                 self.put_varint(&frame.error_code);
                 let len = frame.reason.len().min(self.remaining_mut());
                 self.put_varint(&VarInt::from_u32(len as u32));
@@ -227,7 +219,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
             }
             ConnectionCloseFrame::Quic(frame) => {
                 use crate::varint::WriteVarInt;
-                self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | QUIC_LAYER);
+                self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | u8::from(super::Layer::Conn));
                 self.put_varint(&frame.error_kind.into());
                 self.put_varint(&frame.frame_type.into());
                 let len = frame.reason.len().min(self.remaining_mut());
@@ -251,7 +243,7 @@ mod tests {
         let frame = super::ConnectionCloseFrame::new_app(VarInt::from_u32(0x1234), "wrong");
         assert_eq!(
             frame.frame_type(),
-            FrameType::ConnectionClose(super::APP_LAYER)
+            FrameType::ConnectionClose(super::super::Layer::App)
         );
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 2 + 5);
         assert_eq!(frame.encoding_size(), 1 + 2 + 1 + 5);
@@ -264,7 +256,7 @@ mod tests {
         use super::connection_close_frame_at_layer;
         use crate::varint::be_varint;
         let buf = vec![
-            super::CONNECTION_CLOSE_FRAME_TYPE | super::APP_LAYER,
+            super::CONNECTION_CLOSE_FRAME_TYPE | u8::from(super::super::Layer::App),
             0x0c,
             5,
             b'w',
@@ -275,9 +267,9 @@ mod tests {
         ];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner()
-                == (super::CONNECTION_CLOSE_FRAME_TYPE | super::APP_LAYER) as u64
+                == (super::CONNECTION_CLOSE_FRAME_TYPE | u8::from(super::super::Layer::App)) as u64
             {
-                connection_close_frame_at_layer(super::APP_LAYER)
+                connection_close_frame_at_layer(super::super::Layer::App)
             } else {
                 panic!("wrong frame type: {frame_type}")
             }
@@ -297,14 +289,19 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let frame = super::ConnectionCloseFrame::new_quic(
             ErrorKind::FlowControl,
-            FrameType::Stream(0b110).into(),
+            FrameType::Stream(super::super::StreamFlags {
+                offset: super::super::Offset::NonZero,
+                length: super::super::Length::Sized,
+                fin: super::super::Fin::No,
+            })
+            .into(),
             "wrong",
         );
         buf.put_frame(&frame);
         assert_eq!(
             buf,
             vec![
-                super::CONNECTION_CLOSE_FRAME_TYPE | super::QUIC_LAYER,
+                super::CONNECTION_CLOSE_FRAME_TYPE | u8::from(super::super::Layer::Conn),
                 0x03,
                 0xe,
                 5,

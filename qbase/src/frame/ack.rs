@@ -41,7 +41,11 @@ const ECN_OPT: u8 = 0x1;
 
 impl super::GetFrameType for AckFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
+        super::FrameType::Ack(if self.ecn.is_some() {
+            super::Ecn::Exist
+        } else {
+            super::Ecn::None
+        })
     }
 }
 
@@ -269,7 +273,7 @@ mod tests {
             ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
             ecn: None,
         };
-        assert_eq!(frame.frame_type(), FrameType::Ack(0));
+        assert_eq!(frame.frame_type(), FrameType::Ack(super::super::Ecn::None));
         assert_eq!(frame.encoding_size(), 1 + 2 * 3 + 1 + 2);
         assert_eq!(frame.max_encoding_size(), 1 + 4 * 8 + 2 * 8);
 

@@ -42,7 +42,7 @@ fn complete_frame(
         FrameType::PathResponse => map(be_path_response_frame, Frame::Response).parse(input),
         FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
         FrameType::NewToken => map(be_new_token_frame, Frame::NewToken).parse(input),
-        FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack).parse(input),
+        FrameType::Ack(ecn) => map(ack_frame_with_flag(u8::from(ecn)), Frame::Ack).parse(input),
         FrameType::ResetStream => {
             map(be_reset_stream_frame, |f| Frame::StreamCtl(f.into())).parse(input)
         }
@@ -74,8 +74,8 @@ fn complete_frame(
                 Ok((&input[len..], Frame::Crypto(frame, data)))
             }
         }
-        FrameType::Stream(flag) => {
-            let (input, frame) = stream_frame_with_flag(flag)(input)?;
+        FrameType::Stream(flags) => {
+            let (input, frame) = stream_frame_with_flag(u8::from(flags))(input)?;
             let start = raw.len() - input.len();
             let len = frame.len();
             if input.len() < len {
