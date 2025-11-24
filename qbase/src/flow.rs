@@ -455,11 +455,12 @@ mod tests {
 
     #[test]
     fn test_recv_controller() {
+        use crate::frame::{Fin, Flags, Len, Offset};
         let broker = RecvControllerBroker::default();
         let controler = ArcRecvController::new(100, broker.clone());
         let amount = controler
             .on_new_rcvd(
-                FrameType::Stream(crate::frame::StreamFlags::from(0u8)),
+                FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)),
                 20,
             )
             .unwrap();
@@ -468,7 +469,7 @@ mod tests {
 
         let amount = controler
             .on_new_rcvd(
-                FrameType::Stream(crate::frame::StreamFlags::from(3u8)),
+                FrameType::Stream(Flags(Offset::Zero, Len::Sized, Fin::Yes)),
                 30,
             )
             .unwrap();

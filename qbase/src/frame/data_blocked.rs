@@ -1,4 +1,7 @@
-use crate::varint::{VarInt, WriteVarInt, be_varint};
+use crate::{
+    frame::GetFrameType,
+    varint::{VarInt, WriteVarInt, be_varint},
+};
 
 /// DATA_BLOCKED Frame
 ///
@@ -16,11 +19,9 @@ pub struct DataBlockedFrame {
     limit: VarInt,
 }
 
-const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
-
 impl super::GetFrameType for DataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::Crypto
+        super::FrameType::DataBlocked
     }
 }
 
@@ -55,14 +56,14 @@ pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFra
 
 impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
     fn put_frame(&mut self, frame: &DataBlockedFrame) {
-        self.put_u8(DATA_BLOCKED_FRAME_TYPE);
+        self.put_varint(&frame.frame_type().into());
         self.put_varint(&frame.limit);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DATA_BLOCKED_FRAME_TYPE, DataBlockedFrame};
+    use super::DataBlockedFrame;
     use crate::{
         frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
@@ -71,7 +72,7 @@ mod tests {
     #[test]
     fn test_data_blocked_frame() {
         let frame = DataBlockedFrame::new(VarInt::from_u32(0x1234));
-        assert_eq!(frame.frame_type(), FrameType::Crypto);
+        assert_eq!(frame.frame_type(), FrameType::DataBlocked);
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2);
     }
@@ -88,6 +89,7 @@ mod tests {
     fn test_write_data_blocked_frame() {
         let mut buf = Vec::new();
         buf.put_frame(&DataBlockedFrame::new(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![DATA_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
+        let frame_type: VarInt = FrameType::DataBlocked.into();
+        assert_eq!(buf, vec![frame_type.into_inner() as u8, 0x52, 0x34]);
     }
 }
