@@ -423,9 +423,9 @@ pub struct ArcParameters(Arc<Mutex<Result<Parameters, Error>>>);
 // ArcParameters::lock_guard(&self) -> Result<ArcParametersGuard, Error>;
 // pub struct ArcParametersGuard: impl Deref<Target = Parameters>
 
-pub struct ArcParametersGuard<'a>(MutexGuard<'a, Result<Parameters, Error>>);
+pub struct ParametersGuard<'a>(MutexGuard<'a, Result<Parameters, Error>>);
 
-impl Deref for ArcParametersGuard<'_> {
+impl Deref for ParametersGuard<'_> {
     type Target = Parameters;
 
     fn deref(&self) -> &Self::Target {
@@ -433,7 +433,7 @@ impl Deref for ArcParametersGuard<'_> {
     }
 }
 
-impl DerefMut for ArcParametersGuard<'_> {
+impl DerefMut for ParametersGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.0.as_mut().expect("parameters must be valid")
     }
@@ -447,16 +447,16 @@ impl From<Parameters> for ArcParameters {
 
 impl ArcParameters {
     #[inline]
-    pub fn lock_guard(&self) -> Result<ArcParametersGuard<'_>, Error> {
+    pub fn lock_guard(&self) -> Result<ParametersGuard<'_>, Error> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
-            Ok(_) => Ok(ArcParametersGuard(guard)),
+            Ok(_) => Ok(ParametersGuard(guard)),
             Err(e) => Err(e.clone()),
         }
     }
 
     #[inline]
-    pub async fn remote_ready(&self) -> Result<ArcParametersGuard<'_>, Error> {
+    pub async fn remote_ready(&self) -> Result<ParametersGuard<'_>, Error> {
         std::future::poll_fn(|cx| {
             let mut parameters = self.lock_guard()?;
             parameters.poll_ready(cx).map(|()| Ok(parameters))

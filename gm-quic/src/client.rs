@@ -1,11 +1,15 @@
 use std::{collections::HashMap, io, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use qbase::net::{
-    Family,
-    addr::{AddrKind, BindUri},
+use qbase::{
+    net::{
+        Family,
+        addr::{AddrKind, BindUri},
+    },
+    param::ClientParameters,
+    token::TokenSink,
 };
-use qconnection::{builder::*, prelude::handy::*};
+use qconnection::prelude::handy::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
@@ -19,6 +23,7 @@ use thiserror::Error;
 
 use crate::{prelude::*, *};
 
+type TlsClientConfig = rustls::ClientConfig;
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// A QUIC client for initiating connections to servers.
@@ -334,6 +339,13 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.parameters
+            .set(ParameterId::ClientName, name.into())
+            .expect("parameter 0xffee belong_to client and has type String");
+        self
+    }
+
     /// Specify the streams concurrency strategy controller for the client.
     ///
     /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
@@ -506,8 +518,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     /// Read [TlsClientConfigBuilder::with_single_cert] for more information.
     pub fn with_cert(
         self,
-        cert_chain: impl handy::ToCertificate,
-        key_der: impl handy::ToPrivateKey,
+        cert: impl handy::ToCertificate,
+        key: impl handy::ToPrivateKey,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
@@ -517,7 +529,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_client_auth_cert(cert_chain.to_certificate(), key_der.to_private_key())
+                .with_client_auth_cert(cert.to_certificate(), key.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
             stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,

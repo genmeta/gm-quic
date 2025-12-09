@@ -59,7 +59,7 @@ pub trait TokenProvider: Send + Sync {
 
     // A token sent in a NEW_TOKEN frame or a Retry packet MUST be constructed in
     // a way that allows the server to identify how it was provided to a client
-    fn verify_token(&self, server_name: String, token: &[u8]) -> bool;
+    fn verify_token(&self, server_name: &str, token: &[u8]) -> bool;
 }
 
 pub enum TokenRegistry {
@@ -127,7 +127,7 @@ pub mod handy {
             Vec::new()
         }
 
-        fn verify_token(&self, _: String, _: &[u8]) -> bool {
+        fn verify_token(&self, _: &str, _: &[u8]) -> bool {
             false
         }
     }

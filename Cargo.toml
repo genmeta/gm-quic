@@ -50,6 +50,7 @@ nom = "8"
 netwatcher = "0.4"
 pin-project-lite = "0.2"
 rand = "0.9"
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -59,6 +60,7 @@ thiserror = "2"
 tokio = { version = "1" }
 tokio-util = { version = "0.7" }
 tracing = "0.1"
+x509-parser = "0.18"
 
 # h3 for h3-shim only , windows-sys, nix and libc for qudp only
 # they are not the default members of the workspace
@@ -72,10 +74,10 @@ h3 = "0.0.8"
 h3-datagram = "0.0.2"
 http = "1"
 indicatif = { version = "0.18", features = ["tokio"] }
+postcard = { version = "1", features = ["use-std"] }
 rustls-native-certs = "0.8"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
-x509-parser = "0.18"
 
 # members
 qmacro = { path = "./qmacro", version = "0.3.0" }

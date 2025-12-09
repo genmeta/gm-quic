@@ -1,11 +1,14 @@
+mod agent;
 mod client_auth;
+
 use std::{
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
+pub use agent::{LocalAgent, RemoteAgent, SignError, VerifyError};
 pub use client_auth::{
-    AcceptAllClientAuther, ArcSendLock, AuthClient, ClientCertsVerifyResult, ClientNameVerifyResult,
+    AcceptAllClientAuther, ArcSendLock, AuthClient, ClientAgentVerifyResult, ClientNameVerifyResult,
 };
 use futures::{future::poll_fn, never::Never};
 use qbase::{
@@ -16,12 +19,15 @@ use qbase::{
 };
 use qrecovery::crypto::CryptoStream;
 use rustls::{
-    ClientConfig, HandshakeKind, ServerConfig,
+    ClientConfig, HandshakeKind, ServerConfig, SignatureScheme,
+    client::ResolvesClientCert,
     quic::{ClientConnection, KeyChange, ServerConnection},
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::Handshake;
+use crate::{Handshake, tls::client_auth::ClientNameAuther};
 
 pub enum TlsSession {
     Client(ClientTlsSession),
@@ -87,48 +93,103 @@ impl TlsSession {
     }
 
     fn r#yield(&self) -> TlsHandshakeInfo {
+        const INCOMPLETE: &str = "";
         match self {
-            TlsSession::Client(tls_handshake) => TlsHandshakeInfo::Client {
-                zero_rtt_accepted: tls_handshake.zero_rtt.unwrap(),
-                peer_cert: tls_handshake.server_certs.clone().unwrap(),
+            TlsSession::Client(tls_session) => TlsHandshakeInfo::Client {
+                zero_rtt_accepted: tls_session.zero_rtt_accepted.expect(INCOMPLETE),
+                local_agent: tls_session.local_agent().clone(),
+                remote_agent: tls_session.remote_agent.clone().expect(INCOMPLETE),
             },
-            TlsSession::Server(tls_handshake) => TlsHandshakeInfo::Server {
-                peer_cert: tls_handshake.client_cert.clone(),
-                server_name: tls_handshake.server_name.clone().unwrap(),
-                client_name: tls_handshake.client_name.clone(),
+            TlsSession::Server(tls_session) => TlsHandshakeInfo::Server {
+                local_agent: tls_session.local_agent().clone().expect(INCOMPLETE),
+                remote_agent: tls_session.remote_agent.clone(),
             },
         }
     }
 }
 
 pub struct ClientTlsSession {
+    server_name: String,
     tls_conn: ClientConnection,
     read_waker: Option<Waker>,
 
-    zero_rtt: Option<bool>,
-    server_certs: Option<Vec<u8>>,
+    // shared with ClientCertResolver
+    local_agent: Arc<Mutex<Option<LocalAgent>>>,
+    zero_rtt_accepted: Option<bool>,
+    remote_agent: Option<RemoteAgent>,
+}
+
+#[derive(Debug, Clone)]
+struct ClientCertResolver {
+    client_name: Arc<str>,
+    inner: Arc<dyn ResolvesClientCert>,
+    client_agent: Arc<Mutex<Option<LocalAgent>>>,
+}
+
+impl ResolvesClientCert for ClientCertResolver {
+    fn resolve(
+        &self,
+        root_hint_subjects: &[&[u8]],
+        sigschemes: &[SignatureScheme],
+    ) -> Option<Arc<CertifiedKey>> {
+        self.inner
+            .resolve(root_hint_subjects, sigschemes)
+            .inspect(|resolved_cert| {
+                let client_agent = LocalAgent::new(self.client_name.clone(), resolved_cert.clone());
+                let old = self.client_agent.lock().unwrap().replace(client_agent);
+                assert!(
+                    old.is_none(),
+                    "unreachable: qconnection::tls::ClientCertResolver resolve only once"
+                )
+            })
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        self.inner.only_raw_public_keys()
+    }
+
+    fn has_certs(&self) -> bool {
+        self.inner.has_certs()
+    }
 }
 
 impl ClientTlsSession {
     pub fn init(
         server_name: String,
-        tls_config: Arc<ClientConfig>,
+        mut tls_config: Arc<ClientConfig>,
         client_params: &ClientParameters,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
         params_buf.put_parameters(client_params);
+
+        let local_agent = Arc::new(Mutex::new(None));
+        // 通过注入ServerCertResolver实现CertifiedKey向上传递
+        if let Some(client_name) = client_params.get::<String>(ParameterId::ClientName) {
+            let tls_config = Arc::make_mut(&mut tls_config);
+            tls_config.client_auth_cert_resolver = Arc::new(ClientCertResolver {
+                client_name: client_name.into(),
+                inner: tls_config.client_auth_cert_resolver.clone(),
+                client_agent: local_agent.clone(),
+            });
+        };
 
         let name = rustls::pki_types::ServerName::try_from(server_name.clone())
             .map_err(|e| rustls::Error::Other(rustls::OtherError(Arc::new(e))))?;
         let tls_conn = ClientConnection::new(tls_config, QUIC_VERSION, name, params_buf)?;
 
         let tls_session = Self {
+            local_agent,
+            server_name,
             tls_conn,
             read_waker: None,
-            zero_rtt: None,
-            server_certs: None,
+            zero_rtt_accepted: None,
+            remote_agent: None,
         };
         Ok(tls_session)
+    }
+
+    fn local_agent(&self) -> MutexGuard<'_, Option<LocalAgent>> {
+        self.local_agent.lock().expect("Poison")
     }
 
     #[must_use]
@@ -146,11 +207,8 @@ impl ClientTlsSession {
     }
 
     fn try_process_sh(&mut self) {
-        self.server_certs = self.server_certs.take().or_else(|| {
-            self.tls_conn
-                .peer_certificates()
-                .map(|certs_or_public_key| certs_or_public_key[0].to_vec())
-        })
+        self.remote_agent = (self.tls_conn.peer_certificates())
+            .map(|cert| RemoteAgent::new(self.server_name.as_str().into(), Arc::from(cert)))
     }
 
     fn try_process_ee(&mut self, parameters: &ArcParameters) -> Result<(), Error> {
@@ -164,7 +222,7 @@ impl ClientTlsSession {
         let mut parameters = parameters.lock_guard()?;
         let remebered = parameters.remembered().cloned();
         let params = ServerParameters::parse_from_bytes(raw_params)?;
-        self.zero_rtt = Some(
+        self.zero_rtt_accepted = Some(
             matches!(remebered, Some(remembered) if remembered.is_0rtt_accepted(&params))
                 && matches!(handshake_kind, rustls::HandshakeKind::Resumed),
         );
@@ -182,41 +240,83 @@ impl Drop for ClientTlsSession {
 }
 
 pub struct ServerTlsSession {
+    client_auther: Box<dyn AuthClient>,
     tls_conn: ServerConnection,
     read_waker: Option<Waker>,
 
-    client_name: Option<String>,
-    server_name: Option<String>,
+    // shared with ServerCertResolver
+    local_agent: Arc<Mutex<Option<LocalAgent>>>,
+    client_name: Option<Arc<str>>,
     send_lock: ArcSendLock,
-    client_auther: Box<dyn AuthClient>,
-    client_cert: Option<Vec<u8>>,
+    remote_agent: Option<RemoteAgent>,
+}
+
+#[derive(Debug, Clone)]
+struct ServerCertResolver {
+    inner: Arc<dyn ResolvesServerCert>,
+    server_agent: Arc<Mutex<Option<LocalAgent>>>,
+}
+
+impl ResolvesServerCert for ServerCertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let server_name = client_hello.server_name()?.into();
+        self.inner.resolve(client_hello).inspect(|resolved_cert| {
+            let sever_agent = LocalAgent::new(server_name, resolved_cert.clone());
+            let old = self.server_agent.lock().unwrap().replace(sever_agent);
+            assert!(
+                old.is_none(),
+                "unreachable: qconnection::tls::ServerCertResolver resolve only once"
+            )
+        })
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        self.inner.only_raw_public_keys()
+    }
 }
 
 impl ServerTlsSession {
     pub fn init(
-        tls_config: Arc<ServerConfig>,
+        mut tls_config: Arc<ServerConfig>,
         server_params: &ServerParameters,
         client_auther: Box<dyn AuthClient>,
     ) -> Result<Self, rustls::Error> {
         let mut params_buf = Vec::with_capacity(1024);
         params_buf.put_parameters(server_params);
 
+        let local_agent = Arc::new(Mutex::new(None));
+        // 通过注入ServerCertResolver实现CertifiedKey向上传递
+        {
+            let tls_config = Arc::make_mut(&mut tls_config);
+            tls_config.cert_resolver = Arc::new(ServerCertResolver {
+                inner: tls_config.cert_resolver.clone(),
+                server_agent: local_agent.clone(),
+            });
+        };
         let tls_conn = ServerConnection::new(tls_config, QUIC_VERSION, params_buf)?;
 
         let tls_session = Self {
+            client_auther,
             tls_conn,
             read_waker: None,
+            local_agent,
             client_name: None,
-            server_name: None,
             send_lock: ArcSendLock::new(),
-            client_auther,
-            client_cert: None,
+            remote_agent: None,
         };
         Ok(tls_session)
     }
 
     pub fn send_lock(&self) -> &ArcSendLock {
         &self.send_lock
+    }
+
+    fn local_agent(&self) -> MutexGuard<'_, Option<LocalAgent>> {
+        self.local_agent.lock().expect("Poison")
+    }
+
+    pub fn server_name(&self) -> Option<String> {
+        Some(self.local_agent().as_ref()?.name().to_owned())
     }
 
     fn try_process_ch(
@@ -230,18 +330,20 @@ impl ServerTlsSession {
                 .expect("Client parameters must be present in ClientHello"),
         )?;
 
-        self.client_name = client_params.get(ParameterId::ClientName);
-        self.server_name = self.tls_conn.server_name().map(|s| s.to_string());
-        let host = self.server_name.as_ref().ok_or_else(|| {
+        let client_name = client_params.get::<String>(ParameterId::ClientName);
+
+        let server_agent = self.local_agent().clone().ok_or_else(|| {
             QuicError::with_default_fty(ErrorKind::ConnectionRefused, "Missing SNI in client hello")
         })?;
 
         match self
             .client_auther
-            .verify_client_name(host, self.client_name.as_deref())
+            .verify_client_name(&server_agent, client_name.as_deref())
         {
             ClientNameVerifyResult::Accept => {
                 self.send_lock.grant_permit();
+                tracing::info!(?client_name);
+                self.client_name = client_name.map(Arc::from);
                 parameters.lock_guard()?.recv_remote_params(client_params)?;
 
                 match self.tls_conn.zero_rtt_keys() {
@@ -255,8 +357,9 @@ impl ServerTlsSession {
                 self.send_lock.grant_permit();
                 tracing::debug!(
                     target: "quic",
-                    host,
-                    ?self.client_name,
+                    server_name = %server_agent.name(),
+                    client_name = ?self.client_name.as_deref(),
+                    ?reason,
                     "Client name verification failed, refusing connection."
                 );
                 Err(Error::Quic(QuicError::with_default_fty(
@@ -267,9 +370,9 @@ impl ServerTlsSession {
             ClientNameVerifyResult::SilentRefuse(reason) => {
                 tracing::debug!(
                     target: "quic",
-                    host,
+                    server_name = %server_agent.name(),
+                    client_name = ?self.client_name.as_deref(),
                     ?reason,
-                    ?self.client_name,
                     "Client name verification failed, refusing connection silently."
                 );
                 Err(Error::Quic(QuicError::with_default_fty(
@@ -281,30 +384,33 @@ impl ServerTlsSession {
     }
 
     fn try_process_cert(&mut self) -> Result<(), Error> {
-        self.client_cert = self.client_cert.take().or_else(|| {
-            self.tls_conn
-                .peer_certificates()
-                .map(|certs_or_public_key| certs_or_public_key[0].to_vec())
-        });
-
-        let Some(cert) = self.client_cert.as_ref() else {
+        let Some(client_name) = self.client_name.as_ref() else {
             return Ok(());
         };
-        let host = self
-            .server_name
-            .as_deref()
+        let Some(client_cert) = self.tls_conn.peer_certificates().map(Arc::from) else {
+            return Ok(());
+        };
+
+        let client_agent = RemoteAgent::new(client_name.clone(), client_cert);
+
+        let server_agent = self
+            .local_agent()
+            .clone()
             .expect("Server name must be known at this point");
 
-        match self
-            .client_auther
-            .verify_client_certs(host, self.client_name.as_deref(), cert)
+        match (ClientNameAuther, &self.client_auther)
+            .verify_client_agent(&server_agent, &client_agent)
         {
-            ClientCertsVerifyResult::Refuse(reason) => {
+            ClientAgentVerifyResult::Accept => {
+                self.remote_agent = Some(client_agent);
+                Ok(())
+            }
+            ClientAgentVerifyResult::Refuse(reason) => {
                 tracing::debug!(
                     target: "quic",
-                    ?host,
-                    ?reason,
+                    server_name = %server_agent.name(),
                     ?self.client_name,
+                    ?reason,
                     "Client certificate verification failed, refusing connection."
                 );
                 Err(Error::Quic(QuicError::with_default_fty(
@@ -312,7 +418,6 @@ impl ServerTlsSession {
                     reason,
                 )))
             }
-            ClientCertsVerifyResult::Accept => Ok(()),
         }
     }
 }
@@ -325,16 +430,16 @@ impl Drop for ServerTlsSession {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum TlsHandshakeInfo {
     Client {
+        local_agent: Option<LocalAgent>,
+        remote_agent: RemoteAgent,
         zero_rtt_accepted: bool,
-        peer_cert: Vec<u8>,
     },
     Server {
-        peer_cert: Option<Vec<u8>>,
-        server_name: String,
-        client_name: Option<String>,
+        local_agent: LocalAgent,
+        remote_agent: Option<RemoteAgent>,
     },
 }
 
@@ -468,13 +573,11 @@ impl ArcTlsHandshake {
 
     pub fn server_name(&self) -> Result<Option<String>, Error> {
         let tls_handshake = self.state();
-        match tls_handshake.as_ref() {
-            Ok(state) => match &state.session {
-                TlsSession::Client(_) => Ok(None),
-                TlsSession::Server(session) => Ok(session.server_name.clone()),
-            },
-            Err(e) => Err(e.clone()),
-        }
+        let tls_handshake = tls_handshake.as_ref().map_err(|error| error.clone())?;
+        Ok(match &tls_handshake.session {
+            TlsSession::Client(session) => Some(session.server_name.clone()),
+            TlsSession::Server(session) => session.server_name(),
+        })
     }
 
     pub fn on_conn_error(&self, error: &Error) {
@@ -491,7 +594,7 @@ impl ArcTlsHandshake {
 
         match &mut tls_handshake.session {
             TlsSession::Client(session) => {
-                if session.server_certs.is_none() {
+                if session.remote_agent.is_none() {
                     session.try_process_sh();
                 }
                 if !parameters.lock_guard()?.is_remote_params_received() {
@@ -502,7 +605,7 @@ impl ArcTlsHandshake {
                 if !parameters.lock_guard()?.is_remote_params_received() {
                     session.try_process_ch(parameters, zero_rtt_keys)?;
                 }
-                if session.client_cert.is_none() {
+                if session.remote_agent.is_none() {
                     session.try_process_cert()?;
                 }
             }
@@ -571,7 +674,7 @@ impl ArcTlsHandshake {
                     None => {}
                 };
                 if let Some(info) = self.try_process_tls_message(&parameters, &zero_rtt_keys)? {
-                    (on_handshake_conmplete.take().expect("tls complete twice"))(&info)?;
+                    (on_handshake_conmplete.take().expect("TLS complete twice"))(&info)?;
                 }
             }
         };

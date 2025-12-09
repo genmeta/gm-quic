@@ -27,9 +27,11 @@ tracing = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
 indicatif = { workspace = true }
+postcard = { workspace = true }
 qevent = { workspace = true, features = ["telemetry"] }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing-appender = { workspace = true }

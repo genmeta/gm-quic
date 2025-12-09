@@ -22,12 +22,14 @@ qbase = { workspace = true }
 qcongestion = { workspace = true }
 qevent = { workspace = true }
 qrecovery = { workspace = true }
+ring = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 qinterface = { workspace = true }
+x509-parser = { workspace = true }
 
 [target.'cfg(any(unix, windows))'.dependencies]
 qinterface = { workspace = true, features = ["qudp"] }
