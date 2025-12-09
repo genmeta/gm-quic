@@ -83,7 +83,7 @@ async fn main() {
     }
 }
 
-async fn run(options: Options) -> io::Result<()> {
+async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
@@ -111,10 +111,11 @@ async fn run(options: Options) -> io::Result<()> {
             .unwrap()
     );
 
-    serve_echo(listeners).await
+    serve_echo(listeners).await?;
+    Ok(())
 }
 
-async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
+async fn serve_echo(listeners: Arc<QuicListeners>) -> Result<(), ListenersShutdown> {
     async fn handle_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
         io::copy(&mut reader, &mut writer).await?;
         writer.shutdown().await?;

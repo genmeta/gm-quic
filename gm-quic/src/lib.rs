@@ -5,8 +5,8 @@ pub mod prelude {
     pub use qconnection::prelude::*;
 
     pub use crate::{
-        client::QuicClient,
-        server::{QuicListeners, Server, ServerError},
+        client::{BindInterfaceError, QuicClient},
+        server::{BuildListenersError, ListenersShutdown, QuicListeners, Server, ServerError},
     };
 
     pub mod handy {
@@ -19,10 +19,7 @@ pub mod prelude {
 pub mod builder {
     pub use qconnection::builder::*;
 
-    pub use crate::{
-        client::{BindInterfaceError, QuicClientBuilder},
-        server::{BuildServerError, QuicListenersBuilder},
-    };
+    pub use crate::{client::QuicClientBuilder, server::QuicListenersBuilder};
 }
 
 // Hidden modules used to integrate the code examples from the README into the cargo test

@@ -12,9 +12,15 @@ impl ToCertificate for Vec<CertificateDer<'static>> {
     }
 }
 
+impl ToCertificate for CertificateDer<'static> {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        vec![self]
+    }
+}
+
 impl ToCertificate for &Path {
     fn to_certificate(self) -> Vec<CertificateDer<'static>> {
-        let data = std::fs::read(self).expect("failed to read certificate file");
+        let data = std::fs::read(self).expect("Failed to read certificate file");
         if let Ok(certs) = CertificateDer::pem_slice_iter(&data).collect::<Result<Vec<_>, _>>() {
             if !certs.is_empty() {
                 return certs;

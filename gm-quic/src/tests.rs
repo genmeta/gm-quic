@@ -5,8 +5,12 @@ use std::{
     time::Duration,
 };
 
+use qbase::param::{ClientParameters, ServerParameters};
 use qevent::telemetry::{Log, handy::*};
-use rustls::server::WebPkiClientVerifier;
+use rustls::{
+    pki_types::{CertificateDer, pem::PemObject},
+    server::WebPkiClientVerifier,
+};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     runtime::Runtime,
@@ -17,11 +21,10 @@ use tokio::{
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use tracing_appender::non_blocking::WorkerGuard;
-use x509_parser::prelude::FromDer;
 
 use crate::{
-    builder::*,
     prelude::{handy::*, *},
+    qbase,
 };
 
 fn qlogger() -> Arc<dyn Log + Send + Sync> {
@@ -29,15 +32,15 @@ fn qlogger() -> Arc<dyn Log + Send + Sync> {
     QLOGGER.get_or_init(|| Arc::new(NoopLogger)).clone()
 }
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn test_serially<C, Sl, St>(
     launch_server: impl FnOnce() -> Sl,
     launch_client: impl FnOnce(SocketAddr) -> C,
-) -> Result<(), Error>
+) -> Result<(), BoxError>
 where
-    C: Future<Output = Result<(), Error>> + 'static,
-    Sl: Future<Output = Result<(Arc<QuicListeners>, St), Error>> + Send + 'static,
+    C: Future<Output = Result<(), BoxError>> + 'static,
+    Sl: Future<Output = Result<(Arc<QuicListeners>, St), BoxError>> + Send + 'static,
     St: Future<Output: Send> + Send + 'static,
 {
     static SUBSCRIBER: OnceLock<WorkerGuard> = OnceLock::new();
@@ -46,7 +49,7 @@ where
         let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
         tracing_subscriber::fmt()
             .with_writer(non_blocking)
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_file(true)
             .with_line_number(true)
             .init();
@@ -100,17 +103,14 @@ const CLIENT_CERT: &[u8] = include_bytes!("../../tests/keychain/localhost/client
 const CLIENT_KEY: &[u8] = include_bytes!("../../tests/keychain/localhost/client.key");
 const TEST_DATA: &[u8] = include_bytes!("tests.rs");
 
-async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
-    io::copy(&mut reader, &mut writer).await?;
-    writer.shutdown().await?;
+async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) {
+    io::copy(&mut reader, &mut writer).await.unwrap();
+    writer.shutdown().await.unwrap();
     tracing::debug!("stream copy done");
-
-    io::Result::Ok(())
 }
 
-pub async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
-    loop {
-        let (connection, server, pathway, _link) = listeners.accept().await?;
+pub async fn serve_echo(listeners: Arc<QuicListeners>) {
+    while let Ok((connection, server, pathway, _link)) = listeners.accept().await {
         assert_eq!(server, "localhost");
         tracing::info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
@@ -121,7 +121,7 @@ pub async fn serve_echo(listeners: Arc<QuicListeners>) -> io::Result<()> {
     }
 }
 
-async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<(), Error> {
+async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<(), BoxError> {
     let (_sid, (mut reader, mut writer)) = connection.open_bi_stream().await?.unwrap();
     tracing::debug!("stream opened");
 
@@ -131,13 +131,13 @@ async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<()
             writer.write_all(data).await?;
             writer.shutdown().await?;
             tracing::info!("write done");
-            Result::<(), Error>::Ok(())
+            Result::<(), BoxError>::Ok(())
         },
         async {
             reader.read_to_end(&mut back).await?;
             assert_eq!(back, data);
             tracing::info!("read done");
-            Result::<(), Error>::Ok(())
+            Result::<(), BoxError>::Ok(())
         }
     )
     .map(|_| ())
@@ -145,7 +145,7 @@ async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<()
 
 async fn launch_echo_server(
     parameters: ServerParameters,
-) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), Error> {
+) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
     let listeners = QuicListeners::builder()?
         .without_client_cert_verifier()
         .with_parameters(parameters)
@@ -163,7 +163,7 @@ async fn launch_echo_server(
 
 fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
     let mut roots = rustls::RootCertStore::empty();
-    roots.add_parsable_certificates(CA_CERT.to_certificate());
+    roots.add_parsable_certificates(CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap));
     let client = QuicClient::builder()
         .with_root_certificates(roots)
         .with_parameters(parameters)
@@ -176,7 +176,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
 }
 
 #[test]
-fn single_stream() -> Result<(), Error> {
+fn single_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", [server_addr])?;
@@ -188,7 +188,7 @@ fn single_stream() -> Result<(), Error> {
 }
 
 #[test]
-fn signal_big_stream() -> Result<(), Error> {
+fn signal_big_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", [server_addr])?;
@@ -200,7 +200,7 @@ fn signal_big_stream() -> Result<(), Error> {
 }
 
 #[test]
-fn empty_stream() -> Result<(), Error> {
+fn empty_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
         let connection = client.connect("localhost", [server_addr])?;
@@ -212,16 +212,16 @@ fn empty_stream() -> Result<(), Error> {
 }
 
 #[test]
-fn shutdown() -> Result<(), Error> {
-    async fn serve_only_one_stream(listeners: Arc<QuicListeners>) -> io::Result<()> {
-        loop {
-            let (connection, _server, pathway, _link) = listeners.accept().await?;
+fn shutdown() -> Result<(), BoxError> {
+    async fn serve_only_one_stream(listeners: Arc<QuicListeners>) {
+        while let Ok((connection, server, pathway, _link)) = listeners.accept().await {
+            assert_eq!(server, "localhost");
             tracing::info!(source = ?pathway.remote(), "accepted new connection");
             tokio::spawn(async move {
                 let (_sid, (reader, writer)) = connection.accept_bi_stream().await?;
-                echo_stream(reader, writer).await?;
+                echo_stream(reader, writer).await;
                 _ = connection.close("Bye bye", 0);
-                Result::<(), Error>::Ok(())
+                Result::<(), BoxError>::Ok(())
             });
         }
     }
@@ -279,7 +279,7 @@ fn idle_timeout() {
 }
 
 #[test]
-fn double_connections() -> Result<(), Error> {
+fn double_connections() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
 
@@ -297,7 +297,7 @@ fn double_connections() -> Result<(), Error> {
             .join_all()
             .await
             .into_iter()
-            .collect::<Result<(), Error>>()?;
+            .collect::<Result<(), BoxError>>()?;
 
         Ok(())
     };
@@ -308,7 +308,7 @@ const PARALLEL_ECHO_CONNS: usize = 20;
 const PARALLEL_ECHO_STREAMS: usize = 2;
 
 #[test]
-fn parallel_stream() -> Result<(), Error> {
+fn parallel_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
 
@@ -329,7 +329,7 @@ fn parallel_stream() -> Result<(), Error> {
             .join_all()
             .await
             .into_iter()
-            .collect::<Result<(), Error>>()?;
+            .collect::<Result<(), BoxError>>()?;
 
         Ok(())
     };
@@ -337,7 +337,7 @@ fn parallel_stream() -> Result<(), Error> {
 }
 
 #[test]
-fn parallel_big_stream() -> Result<(), Error> {
+fn parallel_big_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
 
@@ -357,7 +357,7 @@ fn parallel_big_stream() -> Result<(), Error> {
             .join_all()
             .await
             .into_iter()
-            .collect::<Result<(), Error>>()?;
+            .collect::<Result<(), BoxError>>()?;
 
         Ok(())
     };
@@ -365,7 +365,7 @@ fn parallel_big_stream() -> Result<(), Error> {
 }
 
 #[test]
-fn limited_streams() -> Result<(), Error> {
+fn limited_streams() -> Result<(), BoxError> {
     pub fn client_parameters() -> ClientParameters {
         let mut params = ClientParameters::default();
 
@@ -423,7 +423,7 @@ fn limited_streams() -> Result<(), Error> {
             .join_all()
             .await
             .into_iter()
-            .collect::<Result<(), Error>>()?;
+            .collect::<Result<(), BoxError>>()?;
 
         Ok(())
     };
@@ -431,7 +431,7 @@ fn limited_streams() -> Result<(), Error> {
 }
 
 #[test]
-fn client_without_verify() -> Result<(), Error> {
+fn client_without_verify() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = {
             let parameters = client_parameters();
@@ -452,100 +452,14 @@ fn client_without_verify() -> Result<(), Error> {
     test_serially(|| launch_echo_server(server_parameters()), launch_client)
 }
 
-fn auth_client_cert(cert: &[u8]) -> bool {
-    let (_, cert) = x509_parser::parse_x509_certificate(cert).unwrap();
-
-    // Check Common Name in the subject
-    let has_client_cn = cert
-        .subject()
-        .iter_common_name()
-        .any(|cn| cn.as_str().unwrap_or("") == "client");
-
-    // Check Subject Alternative Names
-    let has_client_san = cert.extensions()
-        .iter()
-        .find(|ext| ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
-        .and_then(|ext| {
-            x509_parser::extensions::SubjectAlternativeName::from_der(ext.value).ok()
-        })
-        .map(|(_, san)| {
-            san.general_names.iter().any(|name| {
-                matches!(name, x509_parser::extensions::GeneralName::DNSName(dns) if *dns == "client")
-            })
-        })
-        .unwrap_or(false);
-
-    has_client_cn || has_client_san
-}
-
-#[test]
-fn auth_client_cert_after_connected() -> Result<(), Error> {
-    pub async fn auth_client(listeners: Arc<QuicListeners>) -> io::Result<()> {
-        loop {
-            let (connection, server, _pathway, _link) = listeners.accept().await?;
-            assert_eq!(server, "localhost");
-
-            match connection.peer_certs().await?.as_ref() {
-                Some(cert) => assert!(auth_client_cert(cert)),
-                None => {
-                    panic!("Client should present a certificate")
-                }
-            }
-
-            tokio::spawn(async move {
-                while let Ok((_sid, (reader, writer))) = connection.accept_bi_stream().await {
-                    tokio::spawn(echo_stream(reader, writer));
-                }
-            });
-        }
-    }
-    let launch_server = || async {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add_parsable_certificates(CA_CERT.to_certificate());
-        let listeners = QuicListeners::builder()?
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
-                    .unwrap(),
-            )
-            .with_parameters(server_parameters())
-            .with_qlog(qlogger())
-            .listen(128);
-        listeners.add_server(
-            "localhost",
-            SERVER_CERT,
-            SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-            None,
-        )?;
-        Ok((listeners.clone(), auth_client(listeners)))
-    };
-    test_serially(launch_server, |server_addr| async move {
-        let client = {
-            let parameters = client_parameters();
-            let mut roots = rustls::RootCertStore::empty();
-            roots.add_parsable_certificates(CA_CERT.to_certificate());
-            let client = QuicClient::builder()
-                .with_root_certificates(roots)
-                .with_parameters(parameters)
-                .with_cert(CLIENT_CERT, CLIENT_KEY)
-                .with_qlog(qlogger())
-                .enable_sslkeylog()
-                .build();
-
-            Arc::new(client)
-        };
-        let connection = client.connect("localhost", [server_addr])?;
-        send_and_verify_echo(&connection, TEST_DATA).await?;
-
-        Ok(())
-    })
-}
-
 struct ClientNameAuther<const SILENT_REFUSE: bool>;
 
 impl<const SILENT: bool> AuthClient for ClientNameAuther<SILENT> {
-    fn verify_client_name(&self, _: &str, client_name: Option<&str>) -> ClientNameVerifyResult {
+    fn verify_client_name(
+        &self,
+        _: &LocalAgent,
+        client_name: Option<&str>,
+    ) -> ClientNameVerifyResult {
         match matches!(client_name, Some("client")) {
             true => ClientNameVerifyResult::Accept,
             false if !SILENT => ClientNameVerifyResult::Refuse("".to_owned()),
@@ -553,24 +467,16 @@ impl<const SILENT: bool> AuthClient for ClientNameAuther<SILENT> {
         }
     }
 
-    fn verify_client_certs(
-        &self,
-        _: &str,
-        _: Option<&str>,
-        client_cert: &[u8],
-    ) -> ClientCertsVerifyResult {
-        match auth_client_cert(client_cert) {
-            true => ClientCertsVerifyResult::Accept,
-            false => ClientCertsVerifyResult::Refuse("Client name ".to_owned()),
-        }
+    fn verify_client_agent(&self, _: &LocalAgent, _: &RemoteAgent) -> ClientAgentVerifyResult {
+        ClientAgentVerifyResult::Accept
     }
 }
 
 async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
     server_parameters: ServerParameters,
-) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), Error> {
+) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
     let mut roots = rustls::RootCertStore::empty();
-    roots.add_parsable_certificates(CA_CERT.to_certificate());
+    roots.add_parsable_certificates(CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap));
     let listeners = QuicListeners::builder()?
         .with_client_cert_verifier(
             WebPkiClientVerifier::builder(Arc::new(roots))
@@ -592,7 +498,7 @@ async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
 }
 
 #[test]
-fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
+fn auth_client_name() -> Result<(), BoxError> {
     const SILENT_REFUSE: bool = false;
     let launch_client = |server_addr| async move {
         let client = {
@@ -600,7 +506,9 @@ fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
             _ = parameters.set(ParameterId::ClientName, "client".to_string());
 
             let mut roots = rustls::RootCertStore::empty();
-            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            roots.add_parsable_certificates(
+                CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
+            );
             let client = QuicClient::builder()
                 .with_root_certificates(roots)
                 .with_parameters(parameters)
@@ -623,7 +531,40 @@ fn auth_client_name_while_handshaking() -> std::result::Result<(), Error> {
 }
 
 #[test]
-fn refuse_client_connection() -> std::result::Result<(), Error> {
+fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
+    const SILENT_REFUSE: bool = false;
+    let launch_client = |server_addr| async move {
+        let client = {
+            let mut parameters = client_parameters();
+            _ = parameters.set(ParameterId::ClientName, "another_client".to_string());
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(
+                CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
+            );
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", [server_addr])?;
+        let error = connection.terminated().await;
+        assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
+
+        Ok(())
+    };
+    test_serially(
+        || launch_client_auth_test_server::<SILENT_REFUSE>(server_parameters()),
+        launch_client,
+    )
+}
+#[test]
+fn auth_client_refuse() -> Result<(), BoxError> {
     const SILENT_REFUSE: bool = false;
     let launch_client = |server_addr| async move {
         let client = {
@@ -631,7 +572,9 @@ fn refuse_client_connection() -> std::result::Result<(), Error> {
             // no CLIENT_NAME
 
             let mut roots = rustls::RootCertStore::empty();
-            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            roots.add_parsable_certificates(
+                CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
+            );
             let client = QuicClient::builder()
                 .with_root_certificates(roots)
                 .with_parameters(parameters)
@@ -644,10 +587,7 @@ fn refuse_client_connection() -> std::result::Result<(), Error> {
         };
         let connection = client.connect("localhost", [server_addr])?;
 
-        let error = connection
-            .open_bi_stream()
-            .await
-            .expect_err("Client should be refused");
+        let error = connection.terminated().await;
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
 
         Ok(())
@@ -659,7 +599,7 @@ fn refuse_client_connection() -> std::result::Result<(), Error> {
 }
 
 #[test]
-fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
+fn auth_client_refuse_silently() -> Result<(), BoxError> {
     const SILENT_REFUSE: bool = true;
     let launch_client = |server_addr| async move {
         let client = {
@@ -667,7 +607,9 @@ fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
             // no CLIENT_NAME
 
             let mut roots = rustls::RootCertStore::empty();
-            roots.add_parsable_certificates(CA_CERT.to_certificate());
+            roots.add_parsable_certificates(
+                CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
+            );
             let client = QuicClient::builder()
                 .with_root_certificates(roots)
                 .with_parameters(parameters)
@@ -690,6 +632,141 @@ fn refuse_client_connection_silently() -> std::result::Result<(), Error> {
     };
     test_serially(
         || launch_client_auth_test_server::<SILENT_REFUSE>(server_parameters()),
+        launch_client,
+    )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Message {
+    data: Vec<u8>,
+    sign: Vec<u8>,
+}
+
+const SIGNATURE_SCHEME: rustls::SignatureScheme = rustls::SignatureScheme::ECDSA_NISTP256_SHA256;
+
+async fn send_and_verify_echo_with_sign_verify(
+    connection: &Connection,
+    data: &[u8],
+) -> Result<(), BoxError> {
+    let local_agent = connection.local_agent().await.unwrap().unwrap();
+    let remote_agent = connection.remote_agent().await.unwrap().unwrap();
+    let (_sid, (mut reader, mut writer)) = connection.open_bi_stream().await?.unwrap();
+    tracing::debug!("stream opened");
+
+    let write = async {
+        let data = data.to_vec();
+        let sign = local_agent.sign(SIGNATURE_SCHEME, &data).unwrap();
+        let message = postcard::to_stdvec(&Message { data, sign }).unwrap();
+        writer.write_all(&message).await?;
+        writer.shutdown().await?;
+        tracing::info!("write done");
+        Result::<(), BoxError>::Ok(())
+    };
+    let read = async {
+        let mut message = Vec::new();
+        reader.read_to_end(&mut message).await?;
+        let message: Message = postcard::from_bytes(&message).unwrap();
+        remote_agent
+            .verify(SIGNATURE_SCHEME, &message.data, &message.sign)
+            .unwrap();
+        assert_eq!(message.data, data);
+        tracing::info!("read done");
+        Result::<(), BoxError>::Ok(())
+    };
+
+    tokio::try_join!(read, write).map(|_| ())
+}
+
+async fn echo_stream_with_sign_verify(
+    local_agent: LocalAgent,
+    remote_agent: RemoteAgent,
+    mut reader: StreamReader,
+    mut writer: StreamWriter,
+) {
+    let mut message = Vec::new();
+    reader.read_to_end(&mut message).await.unwrap();
+    let Message { data, sign } = postcard::from_bytes(&message).unwrap();
+    remote_agent.verify(SIGNATURE_SCHEME, &data, &sign).unwrap();
+    tracing::debug!("Message received and verified");
+
+    let sign = local_agent.sign(SIGNATURE_SCHEME, &data).unwrap();
+    let message = postcard::to_stdvec(&Message { data, sign }).unwrap();
+    writer.write_all(&message).await.unwrap();
+    writer.shutdown().await.unwrap();
+    tracing::debug!("Signed echo sent");
+}
+
+pub async fn serve_echo_with_sign_verify(listeners: Arc<QuicListeners>) {
+    while let Ok((connection, server, pathway, _link)) = listeners.accept().await {
+        assert_eq!(server, "localhost");
+        let local_agent = connection.local_agent().await.unwrap().unwrap();
+        let remote_agent = connection.remote_agent().await.unwrap().unwrap();
+        tracing::info!(source = ?pathway.remote(),"accepted new connection");
+        tokio::spawn(async move {
+            while let Ok((_sid, (reader, writer))) = connection.accept_bi_stream().await {
+                tokio::spawn(echo_stream_with_sign_verify(
+                    local_agent.clone(),
+                    remote_agent.clone(),
+                    reader,
+                    writer,
+                ));
+            }
+        });
+    }
+}
+
+async fn launch_echo_with_sign_verify_server(
+    parameters: ServerParameters,
+) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap));
+    let listeners = QuicListeners::builder()?
+        .with_client_cert_verifier(
+            WebPkiClientVerifier::builder(Arc::new(roots))
+                .build()
+                .unwrap(),
+        )
+        .with_parameters(parameters)
+        .with_qlog(qlogger())
+        .listen(128);
+    listeners.add_server(
+        "localhost",
+        SERVER_CERT,
+        SERVER_KEY,
+        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+        None,
+    )?;
+    Ok((listeners.clone(), serve_echo_with_sign_verify(listeners)))
+}
+
+#[test]
+fn sign_and_verify() -> Result<(), BoxError> {
+    let launch_client = |server_addr| async move {
+        let client = {
+            let mut parameters = client_parameters();
+            _ = parameters.set(ParameterId::ClientName, "client".to_string());
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(
+                CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
+            );
+            let client = QuicClient::builder()
+                .with_root_certificates(roots)
+                .with_parameters(parameters)
+                .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_qlog(qlogger())
+                .enable_sslkeylog()
+                .build();
+
+            Arc::new(client)
+        };
+        let connection = client.connect("localhost", [server_addr])?;
+        send_and_verify_echo_with_sign_verify(&connection, TEST_DATA).await?;
+
+        Ok(())
+    };
+    test_serially(
+        || launch_echo_with_sign_verify_server(server_parameters()),
         launch_client,
     )
 }

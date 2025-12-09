@@ -1,3 +1,4 @@
+pub mod builder;
 pub mod events;
 pub mod handshake;
 pub mod path;
@@ -31,26 +32,26 @@ pub mod prelude {
 
     pub use crate::{
         Connection, StreamReader, StreamWriter,
-        tls::{AuthClient, ClientCertsVerifyResult, ClientNameVerifyResult},
+        tls::{
+            AuthClient, ClientAgentVerifyResult, ClientNameVerifyResult, LocalAgent, RemoteAgent,
+            SignError, VerifyError,
+        },
     };
 }
 
 // Re-export dependencies
-pub use ::{qbase, qevent, qinterface, qrecovery, qunreliable};
-
-pub mod builder;
-
 use std::{
     borrow::Cow,
     fmt::Debug,
     future::Future,
     io,
-    ops::Deref,
     sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
+pub use ::{qbase, qevent, qinterface, qrecovery, qunreliable};
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
+use futures::{FutureExt, TryFutureExt};
 use path::ArcPathContexts;
 use qbase::{
     cid,
@@ -65,7 +66,7 @@ use qbase::{
     role::Role,
     sid::StreamId,
     time::ArcDeferIdleTimer,
-    token::{ArcTokenRegistry, TokenRegistry},
+    token::ArcTokenRegistry,
 };
 use qevent::{
     quic::{Owner, connectivity::ConnectionClosed},
@@ -93,7 +94,7 @@ use tracing::Instrument as _;
 use crate::{
     path::error::{CreatePathFailure, PathDeactivated},
     termination::Terminator,
-    tls::ArcTlsHandshake,
+    tls::{ArcTlsHandshake, LocalAgent, RemoteAgent},
 };
 
 /// The kind of frame which guaratend to be received by peer.
@@ -279,11 +280,11 @@ impl Components {
     }
 
     pub fn add_local_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
-        todo!("Implement this method to add a local endpoint.")
+        unimplemented!()
     }
 
     pub fn add_peer_endpoint(&self, _bind: BindUri, _addr: EndpointAddr) {
-        todo!("Implement this method to add a peer endpoint.")
+        unimplemented!()
     }
 
     pub fn add_path(
@@ -300,52 +301,26 @@ impl Components {
         self.paths.remove(pathway, &PathDeactivated::App);
     }
 
-    pub fn peer_certs(&self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send {
+    pub fn local_agent(&self) -> impl Future<Output = Result<Option<LocalAgent>, Error>> + Send {
         let tls_handshake = self.tls_handshake.clone();
         async move {
             match tls_handshake.info().await?.as_ref() {
-                tls::TlsHandshakeInfo::Client { peer_cert, .. } => Ok(Some(peer_cert.to_vec())),
-                tls::TlsHandshakeInfo::Server { peer_cert, .. } => Ok(peer_cert.clone()),
+                tls::TlsHandshakeInfo::Client { local_agent, .. } => Ok(local_agent.clone()),
+                tls::TlsHandshakeInfo::Server { local_agent, .. } => Ok(Some(local_agent.clone())),
             }
         }
         .instrument_in_current()
         .in_current_span()
     }
 
-    pub fn server_name(&self) -> impl Future<Output = Result<String, Error>> + Send {
-        let token_registry = self.token_registry.clone();
+    pub fn remote_agent(&self) -> impl Future<Output = Result<Option<RemoteAgent>, Error>> + Send {
         let tls_handshake = self.tls_handshake.clone();
         async move {
-            if let TokenRegistry::Client((server_name, ..)) = token_registry.deref() {
-                return Ok(server_name.clone());
-            }
             match tls_handshake.info().await?.as_ref() {
-                tls::TlsHandshakeInfo::Client { .. } => {
-                    unreachable!("tls hs has different role with token registry")
+                tls::TlsHandshakeInfo::Client { remote_agent, .. } => {
+                    Ok(Some(remote_agent.clone()))
                 }
-                tls::TlsHandshakeInfo::Server { server_name, .. } => Ok(server_name.clone()),
-            }
-        }
-        .instrument_in_current()
-        .in_current_span()
-    }
-
-    pub fn client_name(&self) -> impl Future<Output = Result<Option<String>, Error>> + Send {
-        let parameters = self.parameters.clone();
-        let tls_handshake = self.tls_handshake.clone();
-        async move {
-            {
-                let parameters = parameters.lock_guard()?;
-                if parameters.role() == Role::Client {
-                    return Ok(parameters.get_local(ParameterId::ClientName));
-                }
-            }
-
-            match tls_handshake.info().await?.as_ref() {
-                tls::TlsHandshakeInfo::Client { .. } => {
-                    unreachable!("tls hs has different role with token registry")
-                }
-                tls::TlsHandshakeInfo::Server { client_name, .. } => Ok(client_name.clone()),
+                tls::TlsHandshakeInfo::Server { remote_agent, .. } => Ok(remote_agent.clone()),
             }
         }
         .instrument_in_current()
@@ -525,6 +500,10 @@ impl ConnectionState {
 }
 
 impl Connection {
+    pub fn role(&self) -> Result<Role, Error> {
+        self.0.try_map_components(|core_conn| core_conn.role())
+    }
+
     /// Close the connection with application close frame.
     ///
     /// Return error if the connection is already closed.
@@ -626,22 +605,30 @@ impl Connection {
         }
     }
 
-    pub async fn peer_certs(&self) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn local_agent(&self) -> Result<Option<LocalAgent>, Error> {
         self.0
-            .try_map_components(|core_conn| core_conn.peer_certs())?
+            .try_map_components(|core_conn| core_conn.local_agent())?
+            .await
+    }
+
+    pub async fn remote_agent(&self) -> Result<Option<RemoteAgent>, Error> {
+        self.0
+            .try_map_components(|core_conn| core_conn.remote_agent())?
             .await
     }
 
     pub async fn server_name(&self) -> Result<String, Error> {
         self.0
-            .try_map_components(|core_conn| core_conn.server_name())?
-            .await
-    }
-
-    // 0xffee: String
-    pub async fn client_name(&self) -> Result<Option<String>, Error> {
-        self.0
-            .try_map_components(|core_conn| core_conn.client_name())?
+            .try_map_components(|core_conn| match core_conn.role() {
+                Role::Client => core_conn
+                    .remote_agent()
+                    .map_ok(|agent| agent.unwrap().name().to_owned())
+                    .left_future(),
+                Role::Server => core_conn
+                    .local_agent()
+                    .map_ok(|agent| agent.unwrap().name().to_owned())
+                    .right_future(),
+            })?
             .await
     }
 

@@ -8,8 +8,13 @@ use std::{
 };
 
 use dashmap::DashMap;
-use qbase::util::BoundQueue;
-use qconnection::{builder::*, prelude::handy::ConsistentConcurrency};
+use qbase::{
+    packet::{DataHeader, GetDcid, Packet, long::DataHeader as LongHeader},
+    param::ServerParameters,
+    token::TokenProvider,
+    util::BoundQueue,
+};
+use qconnection::{prelude::handy::ConsistentConcurrency, tls::AcceptAllClientAuther};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
@@ -20,8 +25,9 @@ use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
     pki_types::CertificateDer,
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
-    sign::SigningKey,
+    sign::{CertifiedKey, SigningKey},
 };
+use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
@@ -31,39 +37,36 @@ use crate::{prelude::*, *};
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// The server with the specified name already exists.
-    #[error("Server '{name}' already exists")]
-    ServerAlreadyExists { name: String },
+    #[error("Server '{server}' already exists")]
+    ServerAlreadyExists { server: String },
 
     /// The server with the specified name was not found.
-    #[error("Server '{name}' not found")]
-    ServerNotFound { name: String },
+    #[error("Server '{server}' not found")]
+    ServerNotFound { server: String },
 
     /// Failed to load the private key for the server.
-    #[error("Failed to load private key for server '{server_name}': {source}")]
-    InvalidPrivateKey {
-        server_name: String,
+    #[error("Failed to load private key for server '{server}': {source}")]
+    InvalidCertOrKey {
+        server: String,
         #[source]
         source: rustls::Error,
     },
 }
 
 impl From<ServerError> for io::Error {
-    fn from(err: ServerError) -> Self {
-        match err {
-            ServerError::ServerAlreadyExists { .. } => {
-                io::Error::new(io::ErrorKind::AlreadyExists, err)
-            }
-            ServerError::ServerNotFound { .. } => io::Error::new(io::ErrorKind::NotFound, err),
-            ServerError::InvalidPrivateKey { .. } => {
-                io::Error::new(io::ErrorKind::InvalidInput, err)
-            }
-        }
+    fn from(error: ServerError) -> Self {
+        let kind = match &error {
+            ServerError::ServerAlreadyExists { .. } => io::ErrorKind::AlreadyExists,
+            ServerError::ServerNotFound { .. } => io::ErrorKind::NotFound,
+            ServerError::InvalidCertOrKey { .. } => io::ErrorKind::InvalidInput,
+        };
+        io::Error::new(kind, error)
     }
 }
 
 /// Errors that can occur during QuicListeners builder creation.
 #[derive(Debug, thiserror::Error)]
-pub enum BuildServerError {
+pub enum BuildListenersError {
     /// A QuicListeners instance is already running globally.
     #[error("A QuicListeners is already running, please shutdown it first")]
     AlreadyRunning,
@@ -76,11 +79,13 @@ pub enum BuildServerError {
     },
 }
 
-impl From<BuildServerError> for io::Error {
-    fn from(err: BuildServerError) -> Self {
+impl From<BuildListenersError> for io::Error {
+    fn from(err: BuildListenersError) -> Self {
         match err {
-            BuildServerError::AlreadyRunning => io::Error::new(io::ErrorKind::AlreadyExists, err),
-            BuildServerError::CryptoProviderConfigError { .. } => {
+            BuildListenersError::AlreadyRunning => {
+                io::Error::new(io::ErrorKind::AlreadyExists, err)
+            }
+            BuildListenersError::CryptoProviderConfigError { .. } => {
                 io::Error::new(io::ErrorKind::InvalidInput, err)
             }
         }
@@ -93,26 +98,17 @@ type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 pub struct VirtualHosts(Arc<DashMap<String, Server>>);
 
 impl ResolvesServerCert for VirtualHosts {
-    fn resolve(
-        &self,
-        client_hello: rustls::server::ClientHello,
-    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        self.0.get(client_hello.server_name()?).map(|host| {
-            Arc::new(rustls::sign::CertifiedKey {
-                cert: host.cert_chain.clone(),
-                key: host.private_key.clone(),
-                ocsp: host.ocsp.clone(),
-            })
-        })
+    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<CertifiedKey>> {
+        self.0
+            .get(client_hello.server_name()?)
+            .map(|server| server.certified_key().clone())
     }
 }
 
 #[derive(Debug)]
 pub struct Server {
     bind_ifaces: DashMap<BindUri, BindInterface>,
-    cert_chain: Vec<CertificateDer<'static>>,
-    private_key: Arc<dyn SigningKey>,
-    ocsp: Option<Vec<u8>>,
+    certified_key: Arc<CertifiedKey>,
 }
 
 impl Display for Server {
@@ -156,16 +152,20 @@ impl Server {
         self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
     }
 
-    pub fn cert_chain(&self) -> &[CertificateDer<'static>] {
-        &self.cert_chain
+    pub fn certified_key(&self) -> &Arc<CertifiedKey> {
+        &self.certified_key
     }
 
-    pub fn private_key(&self) -> &Arc<dyn SigningKey> {
-        &self.private_key
+    pub fn cert(&self) -> &[CertificateDer<'static>] {
+        &self.certified_key().cert
+    }
+
+    pub fn key(&self) -> &Arc<dyn SigningKey> {
+        &self.certified_key().key
     }
 
     pub fn ocsp(&self) -> Option<&[u8]> {
-        self.ocsp.as_deref()
+        self.certified_key().ocsp.as_deref()
     }
 }
 
@@ -220,7 +220,8 @@ pub struct QuicListeners {
 impl QuicListeners {
     /// Start to build a [`QuicListeners`].
     pub fn builder()
-    -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildServerError> {
+    -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildListenersError>
+    {
         Self::builder_with_tls(TlsServerConfig::builder_with_protocol_versions(&[
             &rustls::version::TLS13,
         ]))
@@ -229,24 +230,27 @@ impl QuicListeners {
     /// Start to build a QuicServer with the given tls crypto provider.
     pub fn builder_with_crypto_provider(
         provider: Arc<rustls::crypto::CryptoProvider>,
-    ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildServerError> {
+    ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildListenersError>
+    {
         Self::builder_with_tls(
             TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
-                .map_err(|e| BuildServerError::CryptoProviderConfigError { source: e })?,
+                .map_err(|e| BuildListenersError::CryptoProviderConfigError { source: e })?,
         )
     }
 
     /// Start to build a [`QuicListeners`] with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls<T>(tls_config: T) -> Result<QuicListenersBuilder<T>, BuildServerError> {
+    pub fn builder_with_tls<T>(
+        tls_config: T,
+    ) -> Result<QuicListenersBuilder<T>, BuildListenersError> {
         let mut global_incomings = QuicListeners::global()
             .write()
             .expect("QuicListeners global lock");
         if let Some(incomings) = global_incomings.upgrade() {
             if !incomings.is_closed() {
-                return Err(BuildServerError::AlreadyRunning);
+                return Err(BuildListenersError::AlreadyRunning);
             }
         }
 
@@ -288,26 +292,35 @@ impl QuicListeners {
         bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
         ocsp: impl Into<Option<Vec<u8>>>,
     ) -> Result<(), ServerError> {
-        let server_name = server_name.into();
+        let server = server_name.into();
 
-        let server_entry = match self.servers.entry(server_name.clone()) {
+        let server_entry = match self.servers.entry(server.clone()) {
             dashmap::Entry::Vacant(entry) => entry,
             dashmap::Entry::Occupied(..) => {
-                return Err(ServerError::ServerAlreadyExists { name: server_name });
+                return Err(ServerError::ServerAlreadyExists { server });
             }
         };
 
-        let cert_chain = cert_chain.to_certificate();
-        let signed_key = self
+        let cert = cert_chain.to_certificate();
+        let key = self
             .tls_config
             .crypto_provider()
             .key_provider
             .load_private_key(private_key.to_private_key())
-            .map_err(|e| ServerError::InvalidPrivateKey {
-                server_name: server_name.clone(),
+            .map_err(|e| ServerError::InvalidCertOrKey {
+                server: server.clone(),
                 source: e,
             })?;
         let ocsp = ocsp.into();
+        let certified_key = CertifiedKey { cert, key, ocsp };
+
+        certified_key
+            .keys_match()
+            .map_err(|source| ServerError::InvalidCertOrKey {
+                server: server.clone(),
+                source,
+            })?;
+        let certified_key = Arc::new(certified_key);
 
         let bind_ifaces =
             bind_uris
@@ -323,9 +336,7 @@ impl QuicListeners {
 
         server_entry.insert(Server {
             bind_ifaces,
-            cert_chain,
-            private_key: signed_key,
-            ocsp,
+            certified_key,
         });
 
         Ok(())
@@ -358,7 +369,13 @@ impl QuicListeners {
             .map(|entry| entry.key().clone())
             .collect()
     }
+}
 
+#[derive(Debug, Error, Clone, Copy)]
+#[error("Listeners shutdown")]
+pub struct ListenersShutdown;
+
+impl QuicListeners {
     /// Accept an incoming QUIC connection from the queue.
     ///
     /// Returns the connection, connected server name, and network path information.
@@ -366,11 +383,13 @@ impl QuicListeners {
     ///
     /// The connection queue size is limited by the `backlog` parameter in [`QuicListenersBuilder::listen`].
     /// When the queue is full, new incoming packets may be dropped at the network level.
-    pub async fn accept(&self) -> io::Result<(Arc<Connection>, String, Pathway, Link)> {
+    pub async fn accept(
+        &self,
+    ) -> Result<(Arc<Connection>, String, Pathway, Link), ListenersShutdown> {
         self.incomings
             .recv()
             .await
-            .ok_or_else(|| io::Error::other("Listeners shutdown"))
+            .ok_or(ListenersShutdown)
             .map(|(i, ..)| i)
     }
 
@@ -403,10 +422,14 @@ struct ServerAuther {
 }
 
 impl AuthClient for ServerAuther {
-    fn verify_client_name(&self, host: &str, _: Option<&str>) -> ClientNameVerifyResult {
+    fn verify_client_name(
+        &self,
+        server_agent: &LocalAgent,
+        _: Option<&str>,
+    ) -> ClientNameVerifyResult {
         match self
             .servers
-            .get(host)
+            .get(server_agent.name())
             .is_some_and(|server| server.bind_ifaces.contains_key(&self.iface))
         {
             true => ClientNameVerifyResult::Accept,
@@ -415,8 +438,8 @@ impl AuthClient for ServerAuther {
         }
     }
 
-    fn verify_client_certs(&self, _: &str, _: Option<&str>, _: &[u8]) -> ClientCertsVerifyResult {
-        ClientCertsVerifyResult::Accept
+    fn verify_client_agent(&self, _: &LocalAgent, _: &RemoteAgent) -> ClientAgentVerifyResult {
+        ClientAgentVerifyResult::Accept
     }
 }
 

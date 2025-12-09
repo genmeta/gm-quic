@@ -190,7 +190,7 @@ async fn parse_normal_packet(
         |initial_token: &[u8], path: &Path| {
             if let TokenRegistry::Server(provider) = token_registry.deref() {
                 if let Ok(Some(server_name)) = tls_handshake.server_name() {
-                    if provider.verify_token(server_name, initial_token) {
+                    if provider.verify_token(server_name.as_ref(), initial_token) {
                         path.grant_anti_amplification();
                     }
                 }
