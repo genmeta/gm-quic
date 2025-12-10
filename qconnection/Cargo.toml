@@ -15,7 +15,12 @@ rust-version.workspace = true
 [dependencies]
 bytes = { workspace = true }
 dashmap = { workspace = true }
-derive_more = { workspace = true, features = ["deref", "display", "from"] }
+derive_more = { workspace = true, features = [
+    "as_ref",
+    "deref",
+    "display",
+    "from",
+] }
 enum_dispatch = { workspace = true }
 futures = { workspace = true }
 qbase = { workspace = true }

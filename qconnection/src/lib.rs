@@ -179,6 +179,13 @@ pub enum SpecificComponents {
     },
 }
 
+/// expand Impl_Future![Type] to `impl Future<Output = Type> + Send + use<>`
+macro_rules! Impl_Future {
+    [$ty:ty] => {
+        impl Future<Output = $ty> + Send + use<>
+    };
+}
+
 impl Components {
     pub fn role(&self) -> Role {
         match self.specific {
@@ -195,19 +202,14 @@ impl Components {
     #[allow(clippy::type_complexity)]
     pub fn open_bi_stream(
         &self,
-    ) -> impl Future<Output = Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>> + Send
-    {
-        let is_zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
+    ) -> Impl_Future![Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>] {
+        let zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
         let tls_handshake = self.tls_handshake.clone();
-        let terminated = self.conn_state.terminated();
         let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
         async move {
-            if !is_zero_rtt_avaliable {
-                tokio::select! {
-                    _ = tls_handshake.finished() => {},
-                    _ = terminated => {}
-                }
+            if !zero_rtt_avaliable {
+                tls_handshake.info().await?;
             }
             data_streams.open_bi(&parameters).await
         }
@@ -215,20 +217,14 @@ impl Components {
         .in_current_span()
     }
 
-    pub fn open_uni_stream(
-        &self,
-    ) -> impl Future<Output = Result<Option<(StreamId, StreamWriter)>, Error>> + Send {
-        let is_zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
+    pub fn open_uni_stream(&self) -> Impl_Future![Result<Option<(StreamId, StreamWriter)>, Error>] {
+        let zero_rtt_avaliable = self.spaces.data().is_zero_rtt_avaliable();
         let tls_handshake = self.tls_handshake.clone();
-        let terminated = self.conn_state.terminated();
         let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
         async move {
-            if !is_zero_rtt_avaliable {
-                tokio::select! {
-                    _ = tls_handshake.finished() => {},
-                    _ = terminated => {}
-                }
+            if !zero_rtt_avaliable {
+                tls_handshake.info().await?;
             }
             data_streams.open_uni(&parameters).await
         }
@@ -239,7 +235,7 @@ impl Components {
     #[allow(clippy::type_complexity)]
     pub fn accept_bi_stream(
         &self,
-    ) -> impl Future<Output = Result<(StreamId, (StreamReader, StreamWriter)), Error>> + Send {
+    ) -> Impl_Future![Result<(StreamId, (StreamReader, StreamWriter)), Error>] {
         let data_streams = self.data_streams.clone();
         let parameters = self.parameters.clone();
         async move { data_streams.accept_bi(&parameters).await }
@@ -247,9 +243,7 @@ impl Components {
             .in_current_span()
     }
 
-    pub fn accept_uni_stream(
-        &self,
-    ) -> impl Future<Output = Result<(StreamId, StreamReader), Error>> + Send {
+    pub fn accept_uni_stream(&self) -> Impl_Future![Result<(StreamId, StreamReader), Error>] {
         let data_streams = self.data_streams.clone();
         async move { data_streams.accept_uni().await }
             .instrument_in_current()
@@ -264,7 +258,7 @@ impl Components {
 
     #[cfg(feature = "unreliable")]
     #[deprecated]
-    pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<DatagramWriter>> + Send {
+    pub fn unreliable_writer(&self) -> Impl_Future![io::Result<DatagramWriter>] {
         let params = self.parameters.clone();
         let datagram_flow = self.datagram_flow.clone();
         async move {
@@ -301,7 +295,7 @@ impl Components {
         self.paths.remove(pathway, &PathDeactivated::App);
     }
 
-    pub fn local_agent(&self) -> impl Future<Output = Result<Option<LocalAgent>, Error>> + Send {
+    pub fn local_agent(&self) -> Impl_Future![Result<Option<LocalAgent>, Error>] {
         let tls_handshake = self.tls_handshake.clone();
         async move {
             match tls_handshake.info().await?.as_ref() {
@@ -313,7 +307,7 @@ impl Components {
         .in_current_span()
     }
 
-    pub fn remote_agent(&self) -> impl Future<Output = Result<Option<RemoteAgent>, Error>> + Send {
+    pub fn remote_agent(&self) -> Impl_Future![Result<Option<RemoteAgent>, Error>] {
         let tls_handshake = self.tls_handshake.clone();
         async move {
             match tls_handshake.info().await?.as_ref() {
@@ -479,6 +473,20 @@ impl ConnectionState {
             .map_err(|termination| termination.error())
     }
 
+    fn try_map_components_future<F, M>(
+        &self,
+        op: M,
+    ) -> impl Future<Output = Result<F::Output, Error>> + Send + use<F, M>
+    where
+        F: Future + Send,
+        M: FnOnce(&Components) -> F,
+    {
+        match self.try_map_components(op) {
+            Ok(future) => future.map(Ok).left_future(),
+            Err(error) => std::future::ready(error).map(Err).right_future(),
+        }
+    }
+
     fn validate(&self) -> Result<(), Error> {
         let _span = (self.qlog_span.enter(), self.tracing_span.enter());
         let mut conn = self.state.write().unwrap();
@@ -522,32 +530,34 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.metrics().clone())
     }
 
-    pub async fn open_bi_stream(
+    #[allow(clippy::type_complexity)]
+    pub fn open_bi_stream(
         &self,
-    ) -> Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error> {
+    ) -> Impl_Future![Result<Option<(StreamId, (StreamReader, StreamWriter))>, Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.open_bi_stream())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.open_bi_stream())
+            .map(|result| result?)
     }
 
-    pub async fn open_uni_stream(&self) -> Result<Option<(StreamId, StreamWriter)>, Error> {
+    pub fn open_uni_stream(&self) -> Impl_Future![Result<Option<(StreamId, StreamWriter)>, Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.open_uni_stream())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.open_uni_stream())
+            .map(|result| result?)
     }
 
-    pub async fn accept_bi_stream(
+    #[allow(clippy::type_complexity)]
+    pub fn accept_bi_stream(
         &self,
-    ) -> Result<(StreamId, (StreamReader, StreamWriter)), Error> {
+    ) -> Impl_Future![Result<(StreamId, (StreamReader, StreamWriter)), Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.accept_bi_stream())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.accept_bi_stream())
+            .map(|result| result?)
     }
 
-    pub async fn accept_uni_stream(&self) -> Result<(StreamId, StreamReader), Error> {
+    pub fn accept_uni_stream(&self) -> Impl_Future![Result<(StreamId, StreamReader), Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.accept_uni_stream())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.accept_uni_stream())
+            .map(|result| result?)
     }
 
     #[cfg(feature = "unreliable")]
@@ -589,37 +599,33 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.cid_registry.origin_dcid())
     }
 
-    pub async fn handshaked(&self) -> Result<(), Error> {
+    pub fn handshaked(&self) -> Impl_Future![Result<(), Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.conn_state.handshaked())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.conn_state.handshaked())
+            .map(|result| result?)
     }
 
-    pub async fn terminated(&self) -> Error {
-        match self
-            .0
-            .try_map_components(|core_conn| core_conn.conn_state.terminated())
-        {
-            Ok(f) => f.await,
-            Err(error) => error,
-        }
+    pub fn terminated(&self) -> Impl_Future![Error] {
+        self.0
+            .try_map_components_future(|core_conn| core_conn.conn_state.terminated())
+            .map(|(Ok(error) | Err(error))| error)
     }
 
-    pub async fn local_agent(&self) -> Result<Option<LocalAgent>, Error> {
+    pub fn local_agent(&self) -> Impl_Future![Result<Option<LocalAgent>, Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.local_agent())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.local_agent())
+            .map(|result| result?)
     }
 
-    pub async fn remote_agent(&self) -> Result<Option<RemoteAgent>, Error> {
+    pub fn remote_agent(&self) -> Impl_Future![Result<Option<RemoteAgent>, Error>] {
         self.0
-            .try_map_components(|core_conn| core_conn.remote_agent())?
-            .await
+            .try_map_components_future(|core_conn| core_conn.remote_agent())
+            .map(|result| result?)
     }
 
-    pub async fn server_name(&self) -> Result<String, Error> {
+    pub fn server_name(&self) -> Impl_Future![Result<String, Error>] {
         self.0
-            .try_map_components(|core_conn| match core_conn.role() {
+            .try_map_components_future(|core_conn| match core_conn.role() {
                 Role::Client => core_conn
                     .remote_agent()
                     .map_ok(|agent| agent.unwrap().name().to_owned())
@@ -628,8 +634,8 @@ impl Connection {
                     .local_agent()
                     .map_ok(|agent| agent.unwrap().name().to_owned())
                     .right_future(),
-            })?
-            .await
+            })
+            .map(|result| result?)
     }
 
     pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) -> Result<(), Error> {

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use derive_more::AsRef;
 use rustls::{
     SignatureScheme,
     pki_types::{CertificateDer, SubjectPublicKeyInfoDer},
@@ -8,7 +9,7 @@ use rustls::{
 use thiserror::Error;
 use x509_parser::prelude::FromDer;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, AsRef)]
 pub struct LocalAgent {
     name: Arc<str>,
     certified_key: Arc<CertifiedKey>,
@@ -63,7 +64,7 @@ impl LocalAgent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, AsRef)]
 pub struct RemoteAgent {
     name: Arc<str>,
     cert: Arc<[CertificateDer<'static>]>,
