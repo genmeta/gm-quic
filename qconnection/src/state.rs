@@ -154,7 +154,7 @@ impl ArcConnState {
         None
     }
 
-    pub fn handshaked(&self) -> impl Future<Output = Result<(), Error>> + Send {
+    pub fn handshaked(&self) -> impl Future<Output = Result<(), Error>> + Send + use<> {
         let handshaked = self.handshaked.clone();
         let terminated = self.terminated.clone();
         async move {
@@ -167,7 +167,7 @@ impl ArcConnState {
         .in_current_span()
     }
 
-    pub fn terminated(&self) -> impl Future<Output = Error> + Send {
+    pub fn terminated(&self) -> impl Future<Output = Error> + Send + use<> {
         let terminated = self.terminated.clone();
         async move { terminated.wait().await.clone() }
             .instrument_in_current()

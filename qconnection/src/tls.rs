@@ -2,6 +2,7 @@ mod agent;
 mod client_auth;
 
 use std::{
+    future::Future,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
@@ -548,7 +549,9 @@ impl ArcTlsHandshake {
         }
     }
 
-    pub async fn info(&self) -> Result<Arc<TlsHandshakeInfo>, Error> {
+    pub fn info(
+        &self,
+    ) -> impl Future<Output = Result<Arc<TlsHandshakeInfo>, Error>> + Unpin + use<'_> {
         poll_fn(|cx| {
             let mut tls_handshake = self.state();
             match tls_handshake.as_mut() {
@@ -556,11 +559,6 @@ impl ArcTlsHandshake {
                 Err(e) => Poll::Ready(Err(e.clone())),
             }
         })
-        .await
-    }
-
-    pub async fn finished(&self) -> bool {
-        self.info().await.is_ok()
     }
 
     pub fn is_finished(&self) -> Result<bool, Error> {

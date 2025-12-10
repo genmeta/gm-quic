@@ -124,7 +124,7 @@ impl Components {
                     if !is_probed {
                         path.grant_anti_amplification();
                     }
-                    if !tls_handshake.finished().await {
+                    if tls_handshake.info().await.is_err() {
                         return Ok(());
                     }
 

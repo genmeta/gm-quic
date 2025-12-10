@@ -550,11 +550,13 @@ pub async fn deliver_and_parse_packets(
     };
 
     let normal_deliver_and_parse_loops = async {
-        components.tls_handshake.finished().await;
+        if components.tls_handshake.info().await.is_err() {
+            return;
+        }
         tokio::join!(
             normal_deliver_and_parse_zero_rtt_loop,
             normal_deliver_and_parse_one_rtt_loop,
-        )
+        );
     };
 
     let ccf = tokio::select! {
