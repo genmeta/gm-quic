@@ -13,7 +13,7 @@ use qconnection::prelude::handy::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    iface::{BindInterface, QuicInterfaces},
+    iface::{BindInterface, QuicInterface, QuicInterfaces},
 };
 use rustls::{
     ConfigBuilder, WantsVerifier,
@@ -92,6 +92,17 @@ impl QuicClient {
 }
 
 #[derive(Debug, Error)]
+pub enum ConnectServerError {
+    #[error("DNS lookup failed")]
+    Dns { source: io::Error },
+    #[error("Failed to bind interface for client connection")]
+    BindInterface {
+        #[source]
+        source: BindInterfaceError,
+    },
+}
+
+#[derive(Debug, Error)]
 #[error(
     "Failed to bind interface `{}` for client connection",
     bind_uri.as_ref().map_or(String::from("<no bind uri generated>"), |bind_uri| bind_uri.to_string())
@@ -126,32 +137,22 @@ impl QuicClient {
             .and_then(|interfaces| interfaces.remove(bind_uri).map(|(_, iface)| iface))
     }
 
-    /// Returns the connection to the specified server.
-    ///
-    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
-    ///
-    /// `server_addr` is the address of the server, packets will be sent to this address.
-    ///
-    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you want,
-    /// such as sending data, receiving data... operations will be pending until the connection is connected or failed to connect.
-    ///
-    /// ### Create paths
-    ///
-    /// If the client binds some addresses during construction,
-    /// the client will try to use the available addresses to pair with the addresses of each server to create multiple paths.
-    ///
-    /// If the client does not bind an address during construction,
-    /// the client will try to bind some random addresses based on the type of server address to create paths.
-    ///
-    /// This method returns an error only if binding a new interface fails.
-    ///
-    /// This method may produce a connection without any path
-    pub fn connect(
+    pub fn new_connection(&self, server_name: impl Into<String>) -> Connection {
+        Connection::new_client(server_name.into(), self.token_sink.clone())
+            .with_parameters(self.parameters.clone())
+            .with_tls_config(self.tls_config.clone())
+            .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
+            .with_zero_rtt(self.tls_config.enable_early_data)
+            .with_defer_idle_timeout(self.defer_idle_timeout)
+            .with_cids(ConnectionId::random_gen(8))
+            .with_qlog(self.logger.clone())
+            .run()
+    }
+
+    pub fn probe(
         &self,
-        server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> Result<Arc<Connection>, BindInterfaceError> {
-        let server_name = server_name.into();
+    ) -> Result<Vec<(QuicInterface, Link, Pathway)>, BindInterfaceError> {
         let avaliable_ifaces = self.bind_interfaces.as_ref().map(|map| {
             map.iter()
                 .filter_map(|entry| entry.value().borrow().ok())
@@ -218,24 +219,78 @@ impl QuicClient {
             ));
         }
 
-        let connection = Arc::new(
-            Connection::new_client(server_name.clone(), self.token_sink.clone())
-                .with_parameters(self.parameters.clone())
-                .with_tls_config(self.tls_config.clone())
-                .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_zero_rtt(self.tls_config.enable_early_data)
-                .with_defer_idle_timeout(self.defer_idle_timeout)
-                .with_cids(ConnectionId::random_gen(8))
-                .with_qlog(self.logger.clone())
-                .run(),
-        );
+        Ok(paths)
+    }
 
+    pub fn connected_to(
+        &self,
+        server_name: impl Into<String>,
+        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
+    ) -> Result<Connection, ConnectServerError> {
+        let paths = self
+            .probe(server_eps)
+            .map_err(|source| ConnectServerError::BindInterface { source })?;
+        let connection = self.new_connection(server_name);
         for (iface, link, pathway) in paths {
             _ = connection.add_path(iface.bind_uri(), link, pathway);
         }
-
         Ok(connection)
     }
+
+    pub fn connect<'c>(
+        &'c self,
+        server: &str,
+    ) -> impl std::future::Future<Output = Result<Connection, ConnectServerError>> + use<'c> {
+        let (server_name, port) = match server.split_once(':') {
+            Some((server, port)) => match port.parse::<u16>() {
+                Ok(port) => (server, port),
+                Err(_invalid_port) => (server, 443),
+            },
+            None => (server, 443),
+        };
+
+        tracing::debug!("Connecting to {server_name}:{port}");
+        let server_name = server_name.to_owned();
+        async move {
+            let server_eps = tokio::net::lookup_host((server_name.as_str(), port))
+                .await
+                .map_err(|source| ConnectServerError::Dns { source })?;
+            tracing::debug!(target: "h3x::client", "DNS lookup for {server_name}:{port} returned about {} addresses", server_eps.size_hint().0);
+            self.connected_to(&server_name, server_eps)
+        }
+    }
+
+    // /// Returns the connection to the specified server.
+    // ///
+    // /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
+    // ///
+    // /// `server_addr` is the address of the server, packets will be sent to this address.
+    // ///
+    // /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you want,
+    // /// such as sending data, receiving data... operations will be pending until the connection is connected or failed to connect.
+    // ///
+    // /// ### Create paths
+    // ///
+    // /// If the client binds some addresses during construction,
+    // /// the client will try to use the available addresses to pair with the addresses of each server to create multiple paths.
+    // ///
+    // /// If the client does not bind an address during construction,
+    // /// the client will try to bind some random addresses based on the type of server address to create paths.
+    // ///
+    // /// This method returns an error only if binding a new interface fails.
+    // ///
+    // /// This method may produce a connection without any path
+    // pub fn connect_to(
+    //     &self,
+    //     server_name: impl Into<String>,
+    //     server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
+    // ) -> Result<Connection, BindInterfaceError> {
+    //     let connection = self.new_connection(server_name);
+    //     for (iface, link, pathway) in self.probe(server_eps)? {
+    //         _ = connection.add_path(iface.bind_uri(), link, pathway);
+    //     }
+    //     Ok(connection)
+    // }
 }
 
 /// A builder for [`QuicClient`].
