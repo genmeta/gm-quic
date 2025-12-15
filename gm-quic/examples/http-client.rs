@@ -157,7 +157,7 @@ async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Resu
     let file_path = uri.path().strip_prefix('/');
     let file_path = file_path.ok_or_else(|| format!("invalid path `{}`", uri.path()))?;
 
-    let connection = client.connect(server_name, server_addrs)?;
+    let connection = client.connected_to(server_name, server_addrs)?;
     let (_sid, (mut response, mut request)) = connection
         .open_bi_stream()
         .await?

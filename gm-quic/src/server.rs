@@ -169,10 +169,7 @@ impl Server {
     }
 }
 
-type Incomings = BoundQueue<(
-    (Arc<Connection>, String, Pathway, Link),
-    OwnedSemaphorePermit,
-)>;
+type Incomings = BoundQueue<((Connection, String, Pathway, Link), OwnedSemaphorePermit)>;
 
 /// A QUIC listener that can serve multiple virtual servers, accepting incoming connections.
 ///
@@ -383,9 +380,7 @@ impl QuicListeners {
     ///
     /// The connection queue size is limited by the `backlog` parameter in [`QuicListenersBuilder::listen`].
     /// When the queue is full, new incoming packets may be dropped at the network level.
-    pub async fn accept(
-        &self,
-    ) -> Result<(Arc<Connection>, String, Pathway, Link), ListenersShutdown> {
+    pub async fn accept(&self) -> Result<(Connection, String, Pathway, Link), ListenersShutdown> {
         self.incomings
             .recv()
             .await
@@ -451,13 +446,13 @@ impl QuicListeners {
     }
 
     #[tracing::instrument(
-        target = "quic_server", level = "debug", skip_all, 
+        target = "quic_listeners", level = "debug", skip_all, 
         fields(%bind_uri, %pathway, %link, odcid=tracing::field::Empty, server_name=tracing::field::Empty)
     )]
     pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_uri, pathway, link): Way) {
         // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
         let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
-            tracing::debug!(target: "quic_server", "Backlog full, dropping incoming packet");
+            tracing::debug!(target: "quic_listeners", "Backlog full, dropping incoming packet");
             return;
         };
 
@@ -472,7 +467,7 @@ impl QuicListeners {
         tracing::Span::current().record("odcid", origin_dcid.to_string());
 
         if origin_dcid.is_empty() {
-            tracing::debug!(target: "quic_server", "Received an initial/0rtt packet with empty destination CID, ignoring it");
+            tracing::debug!(target: "quic_listeners", "Received an initial/0rtt packet with empty destination CID, ignoring it");
             return;
         }
 
@@ -482,18 +477,16 @@ impl QuicListeners {
             servers: self.servers.clone(),
         };
 
-        let connection = Arc::new(
-            Connection::new_server(self.token_provider.clone())
-                .with_parameters(self.parameters.clone())
-                .with_client_auther(Box::new((server_auther, self.client_auther.clone())))
-                .with_tls_config(self.tls_config.clone())
-                .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
-                .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
-                .with_defer_idle_timeout(self.defer_idle_timeout)
-                .with_cids(origin_dcid)
-                .with_qlog(self.logger.clone())
-                .run(),
-        );
+        let connection = Connection::new_server(self.token_provider.clone())
+            .with_parameters(self.parameters.clone())
+            .with_client_auther(Box::new((server_auther, self.client_auther.clone())))
+            .with_tls_config(self.tls_config.clone())
+            .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
+            .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
+            .with_defer_idle_timeout(self.defer_idle_timeout)
+            .with_cids(origin_dcid)
+            .with_qlog(self.logger.clone())
+            .run();
 
         let incomings = self.incomings.clone();
 
@@ -505,14 +498,19 @@ impl QuicListeners {
             match connection.server_name().await {
                 Ok(server_name) => {
                     tracing::Span::current().record("server_name", &server_name);
-                    let incoming = (connection.clone(), server_name, pathway, link);
-                    if incomings.send((incoming, premit)).await.is_err() {
-                        _ = connection.close("", 1);
+                    let incoming = (connection, server_name, pathway, link);
+                    match incomings.send((incoming, premit)).await {
+                        Ok(..) => {
+                            tracing::debug!(target: "quic_listeners", "Accepted incoming connection")
+                        }
+                        Err(..) => {
+                            tracing::debug!(target: "quic_listeners", "Listeners is shutdown, closing incoming connection")
+                        }
                     }
                 }
                 Err(error) => {
                     tracing::debug!(
-                        target: "quic_server",
+                        target: "quic_listeners",
                         "Failed to accept connection: {error}",
                     );
                 }

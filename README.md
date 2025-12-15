@@ -120,8 +120,7 @@ async fn client() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     // Connect to the server
-    let server_addresses = tokio::net::lookup_host("localhost:4433").await?;
-    let connection = quic_client.connect("localhost", server_addresses)?;
+    let connection = quic_client.connect("localhost").await?;
 
     // Start using the QUIC connection!
     // For more usage examples, see gm-quic/examples and h3-shim/examples

@@ -5,7 +5,7 @@ pub mod prelude {
     pub use qconnection::prelude::*;
 
     pub use crate::{
-        client::{BindInterfaceError, QuicClient},
+        client::{BindInterfaceError, ConnectServerError, QuicClient},
         server::{BuildListenersError, ListenersShutdown, QuicListeners, Server, ServerError},
     };
 
