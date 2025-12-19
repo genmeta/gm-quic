@@ -145,11 +145,11 @@ impl NewReno {
     ///     sent_time = sent_packets[ack.largest_acked].time_sent
     ///     OnCongestionEvent(sent_time)
     fn process_ecn(&mut self, ack: &AckFrame, sent_time: &Instant, epoch: Epoch) {
-        if let Some(ecn) = ack.ecn() {
-            if ecn.ce() > self.ecn_ce_counters[epoch] {
-                self.ecn_ce_counters[epoch] = ecn.ce();
-                self.on_congestion_event(sent_time);
-            }
+        if let Some(ecn) = ack.ecn()
+            && ecn.ce() > self.ecn_ce_counters[epoch]
+        {
+            self.ecn_ce_counters[epoch] = ecn.ce();
+            self.on_congestion_event(sent_time);
         }
     }
 

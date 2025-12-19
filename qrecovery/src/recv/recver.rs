@@ -211,10 +211,10 @@ impl<TX> Recv<TX> {
         if self.largest < data_end {
             self.largest = data_end;
         }
-        if self.rcvbuf.is_readable() {
-            if let Some(waker) = self.read_waker.take() {
-                waker.wake()
-            }
+        if self.rcvbuf.is_readable()
+            && let Some(waker) = self.read_waker.take()
+        {
+            waker.wake()
         }
         Ok(fresh_data as _)
     }
@@ -310,10 +310,10 @@ impl<TX> SizeKnown<TX> {
             },
             fresh_data
         );
-        if self.rcvbuf.is_readable() {
-            if let Some(waker) = self.read_waker.take() {
-                waker.wake()
-            }
+        if self.rcvbuf.is_readable()
+            && let Some(waker) = self.read_waker.take()
+        {
+            waker.wake()
         }
         Ok(fresh_data as usize)
     }

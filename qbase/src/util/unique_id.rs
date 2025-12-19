@@ -101,11 +101,11 @@ mod tests {
 
         // 启动多个线程同时生成ID
         for _ in 0..10 {
-            let gen = Arc::clone(&generator);
+            let generator = Arc::clone(&generator);
             let handle = thread::spawn(move || {
                 let mut ids = Vec::new();
                 for _ in 0..100 {
-                    ids.push(gen.generate());
+                    ids.push(generator.generate());
                 }
                 ids
             });

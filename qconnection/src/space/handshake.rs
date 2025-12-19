@@ -140,7 +140,7 @@ fn frame_dispathcer(
     space: &HandshakeSpace,
     components: &Components,
     event_broker: &ArcEventBroker,
-) -> impl for<'p> Fn(Frame, &'p Path) {
+) -> impl for<'p> Fn(Frame, &'p Path) + use<> {
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
 

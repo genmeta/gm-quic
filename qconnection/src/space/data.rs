@@ -299,7 +299,7 @@ fn frame_dispathcer(
     space: &DataSpace,
     components: &Components,
     event_broker: &ArcEventBroker,
-) -> impl for<'p> Fn(Frame, Type, &'p Path) {
+) -> impl for<'p> Fn(Frame, Type, &'p Path) + use<> {
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
     // 连接级的
     let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded_channel();

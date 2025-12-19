@@ -245,10 +245,10 @@ impl QuicListeners {
         let mut global_incomings = QuicListeners::global()
             .write()
             .expect("QuicListeners global lock");
-        if let Some(incomings) = global_incomings.upgrade() {
-            if !incomings.is_closed() {
-                return Err(BuildListenersError::AlreadyRunning);
-            }
+        if let Some(incomings) = global_incomings.upgrade()
+            && !incomings.is_closed()
+        {
+            return Err(BuildListenersError::AlreadyRunning);
         }
 
         let incomings = Arc::new(Incomings::new(8));
@@ -396,10 +396,10 @@ impl QuicListeners {
         self.backlog.close();
 
         let global = Self::global().read().unwrap();
-        if let Some(global) = global.upgrade() {
-            if global.same_queue(&self.incomings) {
-                Router::global().on_connectless_packets(|_, _| {});
-            }
+        if let Some(global) = global.upgrade()
+            && global.same_queue(&self.incomings)
+        {
+            Router::global().on_connectless_packets(|_, _| {});
         }
     }
 }

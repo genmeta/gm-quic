@@ -233,7 +233,7 @@ impl PacketSpace {
         loss_delay: Duration,
         packet_threshold: usize,
         algorithm: &mut Box<dyn Control>,
-    ) -> impl Iterator<Item = u64> {
+    ) -> impl Iterator<Item = u64> + use<> {
         // assert!(self.largest_acked_packet.is_some());
         self.loss_time = None;
 

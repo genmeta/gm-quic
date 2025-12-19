@@ -13,7 +13,7 @@ jobs:
   build:
     strategy:
       matrix:
-        target: [ubuntu,macos,windows]
+        target: [ubuntu, macos, windows]
       fail-fast: false
     runs-on: ${{ matrix.target }}-latest
     steps:
@@ -67,7 +67,7 @@ jobs:
   msrv:
     strategy:
       matrix:
-        target: [ubuntu,macos,windows]
+        target: [ubuntu, macos, windows]
       fail-fast: false
     runs-on: ${{ matrix.target }}-latest
     steps:
@@ -75,6 +75,6 @@ jobs:
       - name: Install msrv toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: 1.85.0
+          toolchain: 1.88.0
       - name: Build with msrv
         run: cargo build --workspace --release

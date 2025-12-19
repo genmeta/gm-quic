@@ -141,7 +141,7 @@ fn frame_dispathcer(
     space: &InitialSpace,
     components: &Components,
     event_broker: &ArcEventBroker,
-) -> impl for<'p> Fn(Frame, &'p Path) {
+) -> impl for<'p> Fn(Frame, &'p Path) + use<> {
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
 
@@ -188,12 +188,11 @@ async fn parse_normal_packet(
         let token_registry = &components.token_registry;
         let tls_handshake = &components.tls_handshake;
         |initial_token: &[u8], path: &Path| {
-            if let TokenRegistry::Server(provider) = token_registry.deref() {
-                if let Ok(Some(server_name)) = tls_handshake.server_name() {
-                    if provider.verify_token(server_name.as_ref(), initial_token) {
-                        path.grant_anti_amplification();
-                    }
-                }
+            if let TokenRegistry::Server(provider) = token_registry.deref()
+                && let Ok(Some(server_name)) = tls_handshake.server_name()
+                && provider.verify_token(server_name.as_ref(), initial_token)
+            {
+                path.grant_anti_amplification();
             }
         }
     };

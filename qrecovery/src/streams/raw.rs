@@ -249,10 +249,10 @@ where
         credit.post_sent(fresh_bytes);
 
         // Update metrics when fresh data is sent
-        if fresh_bytes > 0 {
-            if let Some(metrics) = &self.metrics {
-                metrics.on_data_sent(fresh_bytes as u64);
-            }
+        if fresh_bytes > 0
+            && let Some(metrics) = &self.metrics
+        {
+            metrics.on_data_sent(fresh_bytes as u64);
         }
 
         Ok(())
@@ -343,10 +343,10 @@ where
 
                 // Update metrics when data is acknowledged
                 let acked_len = frame.range().end - frame.range().start;
-                if acked_len > 0 {
-                    if let Some(metrics) = &self.metrics {
-                        metrics.on_data_acked(acked_len);
-                    }
+                if acked_len > 0
+                    && let Some(metrics) = &self.metrics
+                {
+                    metrics.on_data_acked(acked_len);
                 }
 
                 if is_all_rcvd {
@@ -382,18 +382,18 @@ where
     ///
     /// Actually calls the [`Outgoing::on_reset_acked`] method of the corresponding stream.
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
-        if let Ok(set) = self.output.streams().as_mut() {
-            if let Some((o, s)) = set.remove(&reset_frame.stream_id()) {
-                o.on_reset_acked(reset_frame.stream_id());
-                s.shutdown_send();
-                if s.is_terminated() {
-                    self.stream_ids
-                        .remote
-                        .on_end_of_stream(reset_frame.stream_id());
-                }
+        if let Ok(set) = self.output.streams().as_mut()
+            && let Some((o, s)) = set.remove(&reset_frame.stream_id())
+        {
+            o.on_reset_acked(reset_frame.stream_id());
+            s.shutdown_send();
+            if s.is_terminated() {
+                self.stream_ids
+                    .remote
+                    .on_end_of_stream(reset_frame.stream_id());
             }
-            // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }
+        // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
     }
 
     /// Called when a stream frame which from peer is received by local.
@@ -422,19 +422,19 @@ where
             }
         }
 
-        if let Ok(set) = self.input.streams().as_mut() {
-            if let Some((incoming, s)) = set.get(&sid) {
-                let (is_into_rcvd, fresh_data) = incoming.recv_data(stream_frame, body.clone())?;
-                if is_into_rcvd {
-                    // 数据被接收完的，忽略后续的ResetStreamFrame
-                    s.shutdown_receive();
-                    if s.is_terminated() {
-                        self.stream_ids.remote.on_end_of_stream(sid);
-                    }
-                    set.remove(&sid);
+        if let Ok(set) = self.input.streams().as_mut()
+            && let Some((incoming, s)) = set.get(&sid)
+        {
+            let (is_into_rcvd, fresh_data) = incoming.recv_data(stream_frame, body.clone())?;
+            if is_into_rcvd {
+                // 数据被接收完的，忽略后续的ResetStreamFrame
+                s.shutdown_receive();
+                if s.is_terminated() {
+                    self.stream_ids.remote.on_end_of_stream(sid);
                 }
-                return Ok(fresh_data);
+                set.remove(&sid);
             }
+            return Ok(fresh_data);
         }
         Ok(0)
     }
@@ -466,13 +466,13 @@ where
                         ));
                     }
                 }
-                if let Ok(set) = self.input.streams().as_mut() {
-                    if let Some((incoming, s)) = set.remove(&sid) {
-                        sync_fresh_data = incoming.recv_reset(reset)?;
-                        s.shutdown_receive();
-                        if s.is_terminated() {
-                            self.stream_ids.remote.on_end_of_stream(reset.stream_id());
-                        }
+                if let Ok(set) = self.input.streams().as_mut()
+                    && let Some((incoming, s)) = set.remove(&sid)
+                {
+                    sync_fresh_data = incoming.recv_reset(reset)?;
+                    s.shutdown_receive();
+                    if s.is_terminated() {
+                        self.stream_ids.remote.on_end_of_stream(reset.stream_id());
                     }
                 }
             }

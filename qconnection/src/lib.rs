@@ -658,13 +658,13 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if let Ok(origin_dcid) = self.origin_dcid() {
-            if self.close("", 0).is_ok() {
-                #[cfg(debug_assertions)]
-                tracing::warn!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
-                #[cfg(not(debug_assertions))]
-                tracing::debug!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
-            }
+        if let Ok(origin_dcid) = self.origin_dcid()
+            && self.close("", 0).is_ok()
+        {
+            #[cfg(debug_assertions)]
+            tracing::warn!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
+            #[cfg(not(debug_assertions))]
+            tracing::debug!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
         }
     }
 }

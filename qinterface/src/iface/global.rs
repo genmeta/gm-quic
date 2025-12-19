@@ -52,10 +52,10 @@ impl QuicInterfaces {
         factory: Arc<dyn ProductQuicIO>,
     ) -> BindInterface {
         let entry = self.interfaces.entry(bind_uri.clone());
-        if let Entry::Occupied(entry) = &entry {
-            if let Some(iface) = entry.get().iface().upgrade() {
-                return iface.binding();
-            }
+        if let Entry::Occupied(entry) = &entry
+            && let Some(iface) = entry.get().iface().upgrade()
+        {
+            return iface.binding();
         }
 
         let iface = Arc::new(RwInterface::new(bind_uri, factory, self.clone()));
@@ -101,12 +101,12 @@ impl QuicInterfaces {
 impl Interface {
     pub(super) fn close(&mut self) {
         self.io = Err(io::ErrorKind::NotConnected.into());
-        if let Entry::Occupied(entry) = self.ifaces.interfaces.entry(self.bind_uri.clone()) {
-            if entry.get().iface().upgrade().is_none() {
-                // NOTE: QuicInterfaces and Locations must be kept in sync.
-                Locations::global().remove_all(&self.bind_uri);
-                entry.remove();
-            }
+        if let Entry::Occupied(entry) = self.ifaces.interfaces.entry(self.bind_uri.clone())
+            && entry.get().iface().upgrade().is_none()
+        {
+            // NOTE: QuicInterfaces and Locations must be kept in sync.
+            Locations::global().remove_all(&self.bind_uri);
+            entry.remove();
         }
     }
 }

@@ -132,10 +132,10 @@ impl<TX> ReadySender<TX> {
                 self.tx_wakers.wake_all_by(Signals::WRITTEN);
             }
             self.sndbuf.extend(max_stream_data);
-            if self.sndbuf.has_remaining_mut() {
-                if let Some(waker) = self.writable_waker.take() {
-                    waker.wake();
-                }
+            if self.sndbuf.has_remaining_mut()
+                && let Some(waker) = self.writable_waker.take()
+            {
+                waker.wake();
             }
         }
     }
@@ -287,10 +287,10 @@ impl<TX> SendingSender<TX> {
                 self.tx_wakers.wake_all_by(Signals::WRITTEN);
             }
             self.sndbuf.extend(max_stream_data);
-            if self.sndbuf.has_remaining_mut() {
-                if let Some(waker) = self.writable_waker.take() {
-                    waker.wake();
-                }
+            if self.sndbuf.has_remaining_mut()
+                && let Some(waker) = self.writable_waker.take()
+            {
+                waker.wake();
             }
         }
     }
@@ -334,10 +334,10 @@ impl<TX> SendingSender<TX> {
 
     pub(super) fn on_data_acked(&mut self, frame: &StreamFrame) {
         self.sndbuf.on_data_acked(&frame.range());
-        if self.sndbuf.is_all_rcvd() {
-            if let Some(waker) = self.flush_waker.take() {
-                waker.wake();
-            }
+        if self.sndbuf.is_all_rcvd()
+            && let Some(waker) = self.flush_waker.take()
+        {
+            waker.wake();
         }
     }
 

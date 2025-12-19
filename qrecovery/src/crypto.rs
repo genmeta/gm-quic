@@ -51,10 +51,10 @@ mod send {
 
         fn on_data_acked(&mut self, crypto_frame: &CryptoFrame) {
             self.sndbuf.on_data_acked(&crypto_frame.range());
-            if self.sndbuf.remaining_mut() > 0 {
-                if let Some(waker) = self.writable_waker.take() {
-                    waker.wake();
-                }
+            if self.sndbuf.remaining_mut() > 0
+                && let Some(waker) = self.writable_waker.take()
+            {
+                waker.wake();
             }
         }
 
@@ -241,10 +241,10 @@ mod recv {
         fn recv(&mut self, offset: u64, data: Bytes) {
             assert!(offset + data.len() as u64 <= VARINT_MAX);
             self.rcvbuf.recv(offset, data);
-            if self.rcvbuf.is_readable() {
-                if let Some(waker) = self.read_waker.take() {
-                    waker.wake()
-                }
+            if self.rcvbuf.is_readable()
+                && let Some(waker) = self.read_waker.take()
+            {
+                waker.wake()
             }
         }
 

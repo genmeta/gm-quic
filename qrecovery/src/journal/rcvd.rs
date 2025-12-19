@@ -127,10 +127,10 @@ impl RcvdJournal {
         self.packet_include_ack.retain(|pn| !acked_pns.contains(pn));
 
         for record in self.queue.iter_mut() {
-            if let State::AckSent(ack_eliciting, recv_time, expire_time, pns) = record {
-                if pns.iter().any(|pn| acked_pns.contains(pn)) {
-                    *record = State::AckConfirmed(*ack_eliciting, *recv_time, *expire_time);
-                }
+            if let State::AckSent(ack_eliciting, recv_time, expire_time, pns) = record
+                && pns.iter().any(|pn| acked_pns.contains(pn))
+            {
+                *record = State::AckConfirmed(*ack_eliciting, *recv_time, *expire_time);
             }
         }
         self.rotate_queue();
@@ -247,10 +247,10 @@ impl RcvdJournal {
             }
         }
         self.packet_include_ack.insert(pn);
-        if let Some((pn, _)) = self.earliest_not_ack_time {
-            if largest >= pn {
-                self.earliest_not_ack_time = None;
-            }
+        if let Some((pn, _)) = self.earliest_not_ack_time
+            && largest >= pn
+        {
+            self.earliest_not_ack_time = None;
         }
         Ok(AckFrame::new(largest, delay, first_range, ranges, None))
     }
