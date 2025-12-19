@@ -1,4 +1,4 @@
-#![doc=include_str!("../../README.md")]
+#![doc=include_str!("../README.md")]
 
 pub mod prelude {
     pub use ::qconnection;
@@ -24,7 +24,7 @@ pub mod builder {
 
 // Hidden modules used to integrate the code examples from the README into the cargo test
 mod doc {
-    #[doc=include_str!("../../README_CN.md")]
+    #[doc=include_str!("../README_CN.md")]
     mod zh {}
 
     // Omitted: Duplicate with crate documentation

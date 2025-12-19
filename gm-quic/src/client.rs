@@ -137,6 +137,14 @@ impl QuicClient {
             .and_then(|interfaces| interfaces.remove(bind_uri).map(|(_, iface)| iface))
     }
 
+    /// Creates a new QUIC connection to the specified server without any initial paths.
+    ///
+    /// This method initializes the connection state but does not start the handshake
+    /// because no network paths are established yet. You must manually add paths
+    /// using [`Connection::add_path`] to initiate communication.
+    ///
+    /// This is useful for advanced scenarios where you need fine-grained control
+    /// over which interfaces and paths are used for the connection.
     pub fn new_connection(&self, server_name: impl Into<String>) -> Connection {
         Connection::new_client(server_name.into(), self.token_sink.clone())
             .with_parameters(self.parameters.clone())
@@ -149,6 +157,34 @@ impl QuicClient {
             .run()
     }
 
+    /// Probes and generates potential network paths to the given server endpoints.
+    ///
+    /// This method determines which local interfaces should be used to reach the
+    /// specified server addresses.
+    ///
+    /// - **With bound interfaces**: If the client was created with specific bound interfaces,
+    ///   it attempts to pair those interfaces with the server's addresses (e.g., IPv4 to IPv4).
+    /// - **Without bound interfaces**: If no interfaces were explicitly bound, the client
+    ///   automatically binds to system-assigned addresses (ephemeral ports) appropriate
+    ///   for the server's address family.
+    ///
+    /// Returns a list of tuples containing the interface, link, and pathway information
+    /// needed to establish a connection path.
+    ///
+    /// ### Example
+    ///
+    /// ```no_run
+    /// # use gm_quic::prelude::{QuicClient, QuicIO};
+    /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let server_addresses = tokio::net::lookup_host("genmeta.net:443").await?;
+    /// let paths = quic_client.probe(server_addresses)?;
+    /// let connection = quic_client.new_connection("genmeta.net");
+    /// for (iface, link, pathway) in paths {
+    ///     connection.add_path(iface.bind_uri(), link, pathway)?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn probe(
         &self,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
@@ -222,6 +258,18 @@ impl QuicClient {
         Ok(paths)
     }
 
+    /// Connects to a server using specific endpoint addresses.
+    ///
+    /// This method combines [`QuicClient::probe`] and [`QuicClient::new_connection`].
+    /// It creates a connection and automatically adds paths for all the provided
+    /// server endpoints.
+    ///
+    /// The returned [`Connection`] may not have completed the handshake yet.
+    /// However, any asynchronous operations on the connection (like opening streams)
+    /// will automatically wait for the handshake to complete.
+    ///
+    /// If `server_eps` is empty, this is equivalent to calling [`QuicClient::new_connection`]
+    /// and the connection will remain idle until paths are added.
     pub fn connected_to(
         &self,
         server_name: impl Into<String>,
@@ -237,6 +285,16 @@ impl QuicClient {
         Ok(connection)
     }
 
+    /// Connects to a server by its hostname and optional port.
+    ///
+    /// This is the most convenient way to establish a connection. It performs the following steps:
+    /// 1. Parses the server string (e.g., "example.com" or "example.com:443").
+    ///    Defaults to port 443 if not specified.
+    /// 2. Performs an asynchronous DNS lookup to resolve the hostname to IP addresses.
+    /// 3. Calls [`QuicClient::connected_to`] with the resolved addresses.
+    ///
+    /// The returned [`Connection`] may not have completed the handshake yet.
+    /// Asynchronous operations on the connection will wait for the handshake.
     pub fn connect<'c>(
         &'c self,
         server: &str,
@@ -259,38 +317,6 @@ impl QuicClient {
             self.connected_to(&server_name, server_eps)
         }
     }
-
-    // /// Returns the connection to the specified server.
-    // ///
-    // /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
-    // ///
-    // /// `server_addr` is the address of the server, packets will be sent to this address.
-    // ///
-    // /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you want,
-    // /// such as sending data, receiving data... operations will be pending until the connection is connected or failed to connect.
-    // ///
-    // /// ### Create paths
-    // ///
-    // /// If the client binds some addresses during construction,
-    // /// the client will try to use the available addresses to pair with the addresses of each server to create multiple paths.
-    // ///
-    // /// If the client does not bind an address during construction,
-    // /// the client will try to bind some random addresses based on the type of server address to create paths.
-    // ///
-    // /// This method returns an error only if binding a new interface fails.
-    // ///
-    // /// This method may produce a connection without any path
-    // pub fn connect_to(
-    //     &self,
-    //     server_name: impl Into<String>,
-    //     server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    // ) -> Result<Connection, BindInterfaceError> {
-    //     let connection = self.new_connection(server_name);
-    //     for (iface, link, pathway) in self.probe(server_eps)? {
-    //         _ = connection.add_path(iface.bind_uri(), link, pathway);
-    //     }
-    //     Ok(connection)
-    // }
 }
 
 /// A builder for [`QuicClient`].
