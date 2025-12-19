@@ -1,6 +1,6 @@
 [package]
 name = "qbase"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 description = "Core structure of the QUIC protocol, a part of gm-quic"
 readme.workspace = true
@@ -36,7 +36,7 @@ rand = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
