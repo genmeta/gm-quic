@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
@@ -28,6 +28,18 @@ impl ToCertificate for &Path {
         }
 
         vec![CertificateDer::from(data)]
+    }
+}
+
+impl ToCertificate for PathBuf {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        self.as_path().to_certificate()
+    }
+}
+
+impl ToCertificate for &PathBuf {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        self.as_path().to_certificate()
     }
 }
 
@@ -68,6 +80,18 @@ impl ToPrivateKey for &Path {
 
         PrivateKeyDer::try_from(data)
             .expect("failed to parse private key file as pem or der format")
+    }
+}
+
+impl ToPrivateKey for PathBuf {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        self.as_path().to_private_key()
+    }
+}
+
+impl ToPrivateKey for &PathBuf {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        self.as_path().to_private_key()
     }
 }
 
