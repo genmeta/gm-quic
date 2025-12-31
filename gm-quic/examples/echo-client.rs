@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -214,8 +213,7 @@ async fn send_and_verify_echo(
     rx_pb: ProgressBar,
     dst: &mut (impl AsyncWrite + Unpin),
 ) -> Result<(), Error> {
-    let (server_name, server_addrs) = lookup(auth).await?;
-    let connection = client.connected_to(server_name, server_addrs)?;
+    let connection = client.connect(auth.host()).await?;
 
     let (sid, (reader, writer)) = connection.open_bi_stream().await?.unwrap();
     tracing::debug!(%sid, "opened stream");
@@ -238,18 +236,4 @@ async fn send_and_verify_echo(
         }
     )
     .map(|_| ())
-}
-
-async fn lookup(auth: &Authority) -> Result<(&str, Vec<SocketAddr>), Error> {
-    let mut addrs = tokio::net::lookup_host((auth.host(), auth.port_u16().unwrap_or(443)))
-        .await?
-        .collect::<Vec<_>>();
-    // Sort addresses to ensure IPv6 addresses are preferred over IPv4.
-    addrs.sort_by(|a, b| match (a, b) {
-        (SocketAddr::V4(_), SocketAddr::V6(_)) => std::cmp::Ordering::Greater,
-        (SocketAddr::V6(_), SocketAddr::V4(_)) => std::cmp::Ordering::Less,
-        (a, b) => a.cmp(b),
-    });
-    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addrs);
-    Ok((auth.host(), addrs))
 }

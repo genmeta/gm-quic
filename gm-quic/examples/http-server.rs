@@ -121,13 +121,15 @@ async fn run(options: Options) -> Result<(), Error> {
         .with_parameters(handy::server_parameters())
         .with_alpns(options.alpns)
         .listen(options.backlog);
-    listeners.add_server(
-        options.certs.server_name.as_str(),
-        options.certs.cert.as_path(),
-        options.certs.key.as_path(),
-        options.listen,
-        None,
-    )?;
+    listeners
+        .add_server(
+            options.certs.server_name.as_str(),
+            options.certs.cert.as_path(),
+            options.certs.key.as_path(),
+            options.listen,
+            None,
+        )
+        .await?;
     tracing::info!(
         "Listening on {}",
         &*listeners

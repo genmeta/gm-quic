@@ -135,13 +135,15 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .with_parameters(handy::server_parameters())
         .with_alpns(options.alpns)
         .listen(options.backlog);
-    listeners.add_server(
-        server_name.as_str(),
-        cert.as_path(),
-        key.as_path(),
-        options.listen,
-        None,
-    )?;
+    listeners
+        .add_server(
+            server_name.as_str(),
+            cert.as_path(),
+            key.as_path(),
+            options.listen,
+            None,
+        )
+        .await?;
     tracing::info!(
         "Listening on {}",
         &*listeners.get_server(server_name.as_str()).unwrap()

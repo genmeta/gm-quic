@@ -1,11 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::prelude::{handy::ToCertificate, *};
-use http::{
-    Uri,
-    uri::{Authority, Parts},
-};
+use http::{Uri, uri::Parts};
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::{
     fs,
@@ -151,13 +148,12 @@ async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> 
 }
 
 async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Result<(), Error> {
-    let (server_name, server_addrs) =
-        lookup(uri.authority().ok_or("authority must be present in uri")?).await?;
+    let authority = uri.authority().ok_or("authority must be present in uri")?;
 
     let file_path = uri.path().strip_prefix('/');
     let file_path = file_path.ok_or_else(|| format!("invalid path `{}`", uri.path()))?;
 
-    let connection = client.connected_to(server_name, server_addrs)?;
+    let connection = client.connect(authority.host()).await?;
     let (_sid, (mut response, mut request)) = connection
         .open_bi_stream()
         .await?
@@ -176,18 +172,4 @@ async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Resu
 
     tracing::info!("Saved to file {file_path}");
     Ok(())
-}
-
-async fn lookup(auth: &Authority) -> Result<(&str, Vec<SocketAddr>), Error> {
-    let mut addrs = tokio::net::lookup_host((auth.host(), auth.port_u16().unwrap_or(443)))
-        .await?
-        .collect::<Vec<_>>();
-    // Sort addresses to ensure IPv6 addresses are preferred over IPv4.
-    addrs.sort_by(|a, b| match (a, b) {
-        (SocketAddr::V4(_), SocketAddr::V6(_)) => std::cmp::Ordering::Greater,
-        (SocketAddr::V6(_), SocketAddr::V4(_)) => std::cmp::Ordering::Less,
-        (a, b) => a.cmp(b),
-    });
-    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addrs);
-    Ok((auth.host(), addrs))
 }

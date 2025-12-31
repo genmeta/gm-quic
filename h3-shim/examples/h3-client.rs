@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use clap::Parser;
 use gm_quic::prelude::{
@@ -226,10 +226,9 @@ async fn download_files_with_progress(
     total_pb: ProgressBar,
     save: Option<PathBuf>,
 ) -> Result<usize, Error> {
-    let (server_name, server_addrs) = lookup(&authority).await?;
-    let quic_connection = Arc::new(client.connected_to(server_name, server_addrs)?);
+    let quic_connection = Arc::new(client.connect(authority.host()).await?);
     let odcid = quic_connection.origin_dcid()?;
-    let span = tracing::info_span!("requests", odcid = format!("{odcid:x}",), %server_name);
+    let span = tracing::info_span!("requests", %odcid, host = authority.host());
 
     let (mut connection, send_request) =
         h3::client::new(h3_shim::QuicConnection::new(quic_connection.clone()))
@@ -307,18 +306,4 @@ async fn download_files_with_progress(
     } else {
         Err(error.unwrap())
     }
-}
-
-async fn lookup(auth: &Authority) -> Result<(&str, Vec<SocketAddr>), Error> {
-    let mut addrs = tokio::net::lookup_host((auth.host(), auth.port_u16().unwrap_or(443)))
-        .await?
-        .collect::<Vec<_>>();
-    // Sort addresses to ensure IPv6 addresses are preferred over IPv4.
-    addrs.sort_by(|a, b| match (a, b) {
-        (SocketAddr::V4(_), SocketAddr::V6(_)) => std::cmp::Ordering::Greater,
-        (SocketAddr::V6(_), SocketAddr::V4(_)) => std::cmp::Ordering::Less,
-        (a, b) => a.cmp(b),
-    });
-    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addrs);
-    Ok((auth.host(), addrs))
 }

@@ -197,7 +197,7 @@ type Incomings = BoundQueue<((Connection, String, Pathway, Link), OwnedSemaphore
 /// - Returns connections that may still be completing their QUIC handshake
 pub struct QuicListeners {
     quic_iface_factory: Arc<dyn ProductQuicIO>,
-    ifaces: Arc<QuicInterfaces>,
+    quic_ifaces: Arc<QuicInterfaces>,
     servers: Arc<DashMap<String, Server>>,
     backlog: Arc<Semaphore>,
     #[allow(clippy::type_complexity)]
@@ -256,6 +256,7 @@ impl QuicListeners {
 
         Ok(QuicListenersBuilder {
             incomings,
+            quic_ifaces: QuicInterfaces::global().clone(),
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
             servers: Arc::default(),
             token_provider: None,
@@ -281,7 +282,7 @@ impl QuicListeners {
     /// server configuration and hot-swapping of network bindings.
     ///
     /// [`add_interface`]: Server::add_interface
-    pub fn add_server(
+    pub async fn add_server(
         &self,
         server_name: impl Into<String>,
         cert_chain: impl handy::ToCertificate,
@@ -319,17 +320,14 @@ impl QuicListeners {
             })?;
         let certified_key = Arc::new(certified_key);
 
-        let bind_ifaces =
-            bind_uris
-                .into_iter()
-                .map(Into::into)
-                .fold(DashMap::new(), |bind_ifaces, bind_uri| {
-                    bind_ifaces.entry(bind_uri.clone()).or_insert_with(|| {
-                        self.ifaces
-                            .bind(bind_uri.clone(), self.quic_iface_factory.clone())
-                    });
-                    bind_ifaces
-                });
+        let bind_ifaces = DashMap::new();
+        for bind_uri in bind_uris.into_iter().map(Into::into) {
+            if !bind_ifaces.contains_key(&bind_uri) {
+                let factory = self.quic_iface_factory.clone();
+                let iface = self.quic_ifaces.bind(bind_uri.clone(), factory).await;
+                bind_ifaces.insert(bind_uri, iface);
+            }
+        }
 
         server_entry.insert(Server {
             bind_ifaces,
@@ -522,6 +520,7 @@ impl QuicListeners {
 
 /// The builder for the quic listeners.
 pub struct QuicListenersBuilder<T> {
+    quic_ifaces: Arc<QuicInterfaces>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
     servers: Arc<DashMap<String, Server>>, // must be empty while building
     incomings: Arc<Incomings>,             // identify the building QuicListeners
@@ -707,6 +706,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicListenersBuilder<TlsServerConfig> {
         QuicListenersBuilder {
+            quic_ifaces: self.quic_ifaces,
             quic_iface_factory: self.quic_iface_factory,
             servers: self.servers.clone(),
             incomings: self.incomings,
@@ -728,6 +728,7 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     /// Disable client authentication.
     pub fn without_client_cert_verifier(self) -> QuicListenersBuilder<TlsServerConfig> {
         QuicListenersBuilder {
+            quic_ifaces: self.quic_ifaces,
             quic_iface_factory: self.quic_iface_factory,
             servers: self.servers.clone(),
             incomings: self.incomings,
@@ -787,7 +788,7 @@ impl QuicListenersBuilder<TlsServerConfig> {
 
         let quic_listeners = Arc::new(QuicListeners {
             quic_iface_factory: self.quic_iface_factory,
-            ifaces: QuicInterfaces::global().clone(),
+            quic_ifaces: QuicInterfaces::global().clone(),
             servers: self.servers,
             backlog: Arc::new(Semaphore::new(backlog)),
             incomings: self.incomings, // size: any number greater than 0

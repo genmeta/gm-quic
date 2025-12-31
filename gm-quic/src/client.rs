@@ -78,10 +78,11 @@ impl QuicClient {
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls<T>(tls_config: T) -> QuicClientBuilder<T> {
         QuicClientBuilder {
-            bind_interfaces: None,
+            bind_ifaces: None,
             prefer_versions: vec![1],
             defer_idle_timeout: Duration::ZERO,
             quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
+            quic_ifaces: QuicInterfaces::global().clone(),
             parameters: handy::client_parameters(),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
@@ -94,10 +95,13 @@ impl QuicClient {
 #[derive(Debug, Error)]
 pub enum ConnectServerError {
     #[error("DNS lookup failed")]
-    Dns { source: io::Error },
+    Dns {
+        #[from]
+        source: io::Error,
+    },
     #[error("Failed to bind interface for client connection")]
     BindInterface {
-        #[source]
+        #[from]
         source: BindInterfaceError,
     },
 }
@@ -177,7 +181,7 @@ impl QuicClient {
     /// # use gm_quic::prelude::{QuicClient, QuicIO};
     /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let server_addresses = tokio::net::lookup_host("genmeta.net:443").await?;
-    /// let paths = quic_client.probe(server_addresses)?;
+    /// let paths = quic_client.probe(server_addresses).await?;
     /// let connection = quic_client.new_connection("genmeta.net");
     /// for (iface, link, pathway) in paths {
     ///     connection.add_path(iface.bind_uri(), link, pathway)?;
@@ -185,7 +189,7 @@ impl QuicClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn probe(
+    pub async fn probe(
         &self,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Vec<(QuicInterface, Link, Pathway)>, BindInterfaceError> {
@@ -196,7 +200,7 @@ impl QuicClient {
                 .collect::<Vec<_>>()
         });
 
-        let select_or_bind_ifaces = |server_ep: &EndpointAddr| match &avaliable_ifaces {
+        let select_or_bind_ifaces = async |server_ep: &EndpointAddr| match &avaliable_ifaces {
             None => {
                 let bind_uri: BindUri = match server_ep.addr_kind() {
                     AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
@@ -217,6 +221,7 @@ impl QuicClient {
                 };
                 let iface = QuicInterfaces::global()
                     .bind(bind_uri.clone(), self.quic_iface_factory.clone())
+                    .await
                     .borrow()
                     .and_then(|iface| Ok((iface.real_addr()?, iface)))
                     .map_err(|source| BindInterfaceError {
@@ -238,7 +243,7 @@ impl QuicClient {
         let mut paths = vec![];
 
         for server_ep in server_eps.into_iter().map(Into::into) {
-            paths.extend(select_or_bind_ifaces(&server_ep)?.into_iter().map(
+            paths.extend(select_or_bind_ifaces(&server_ep).await?.into_iter().map(
                 move |(real_addr, iface)| {
                     let dst = match server_ep {
                         EndpointAddr::Socket(socket_endpoint_addr) => {
@@ -270,14 +275,12 @@ impl QuicClient {
     ///
     /// If `server_eps` is empty, this is equivalent to calling [`QuicClient::new_connection`]
     /// and the connection will remain idle until paths are added.
-    pub fn connected_to(
+    pub async fn connected_to(
         &self,
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Connection, ConnectServerError> {
-        let paths = self
-            .probe(server_eps)
-            .map_err(|source| ConnectServerError::BindInterface { source })?;
+        let paths = self.probe(server_eps).await?;
         let connection = self.new_connection(server_name);
         for (iface, link, pathway) in paths {
             _ = connection.add_path(iface.bind_uri(), link, pathway);
@@ -310,20 +313,19 @@ impl QuicClient {
         tracing::debug!("Connecting to {server_name}:{port}");
         let server_name = server_name.to_owned();
         async move {
-            let server_eps = tokio::net::lookup_host((server_name.as_str(), port))
-                .await
-                .map_err(|source| ConnectServerError::Dns { source })?;
+            let server_eps = tokio::net::lookup_host((server_name.as_str(), port)).await?;
             tracing::debug!(target: "h3x::client", "DNS lookup for {server_name}:{port} returned about {} addresses", server_eps.size_hint().0);
-            self.connected_to(&server_name, server_eps)
+            self.connected_to(&server_name, server_eps).await
         }
     }
 }
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_interfaces: Option<DashMap<BindUri, BindInterface>>,
-    prefer_versions: Vec<u32>,
     quic_iface_factory: Arc<dyn ProductQuicIO>,
+    quic_ifaces: Arc<QuicInterfaces>,
+    bind_ifaces: Option<DashMap<BindUri, BindInterface>>,
+    prefer_versions: Vec<u32>,
     defer_idle_timeout: Duration,
     parameters: ClientParameters,
     tls_config: T,
@@ -367,21 +369,21 @@ impl<T> QuicClientBuilder<T> {
     /// previous bound interface will be freed immediately.
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
-    pub fn bind(mut self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
+    pub async fn bind(mut self, addrs: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
         // clear previously bound interfaces
-        self.bind_interfaces = None;
-        let bind_interfaces = DashMap::new();
+        self.bind_ifaces = None;
+        let bind_ifaces = DashMap::new();
 
         for bind_uri in addrs.into_iter().map(Into::into) {
-            if bind_interfaces.contains_key(&bind_uri) {
+            if bind_ifaces.contains_key(&bind_uri) {
                 continue;
             }
-            let interface =
-                QuicInterfaces::global().bind(bind_uri.clone(), self.quic_iface_factory.clone());
-            bind_interfaces.insert(bind_uri, interface);
+            let factory = self.quic_iface_factory.clone();
+            let iface = self.quic_ifaces.bind(bind_uri.clone(), factory).await;
+            bind_ifaces.insert(bind_uri, iface);
         }
 
-        self.bind_interfaces = Some(bind_interfaces);
+        self.bind_ifaces = Some(bind_ifaces);
         self
     }
 
@@ -488,10 +490,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         root_store: impl Into<Arc<rustls::RootCertStore>>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
             stream_strategy_factory: self.stream_strategy_factory,
@@ -508,10 +511,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
             stream_strategy_factory: self.stream_strategy_factory,
@@ -576,10 +580,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             }
         }
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -603,10 +608,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         key: impl handy::ToPrivateKey,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -621,10 +627,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     /// Do not support client auth.
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
             stream_strategy_factory: self.stream_strategy_factory,
@@ -639,9 +646,10 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_resolver: Arc<dyn ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_interfaces: self.bind_interfaces,
+            bind_ifaces: self.bind_ifaces,
             prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
+            quic_ifaces: self.quic_ifaces,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
@@ -687,7 +695,7 @@ impl QuicClientBuilder<TlsClientConfig> {
     /// Build the QuicClient, ready to initiates connect to the servers.
     pub fn build(self) -> QuicClient {
         QuicClient {
-            bind_interfaces: self.bind_interfaces,
+            bind_interfaces: self.bind_ifaces,
             _prefer_versions: self.prefer_versions,
             quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,

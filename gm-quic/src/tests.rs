@@ -151,13 +151,15 @@ async fn launch_echo_server(
         .with_parameters(parameters)
         .with_qlog(qlogger())
         .listen(128);
-    listeners.add_server(
-        "localhost",
-        SERVER_CERT,
-        SERVER_KEY,
-        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-        None,
-    )?;
+    listeners
+        .add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )
+        .await?;
     Ok((listeners.clone(), serve_echo(listeners)))
 }
 
@@ -179,7 +181,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
 fn single_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -191,7 +193,7 @@ fn single_stream() -> Result<(), BoxError> {
 fn signal_big_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(1024)).await?;
 
         Ok(())
@@ -203,7 +205,7 @@ fn signal_big_stream() -> Result<(), BoxError> {
 fn empty_stream() -> Result<(), BoxError> {
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo(&connection, b"").await?;
 
         Ok(())
@@ -232,18 +234,20 @@ fn shutdown() -> Result<(), BoxError> {
             .with_parameters(server_parameters())
             .with_qlog(qlogger())
             .listen(128);
-        listeners.add_server(
-            "localhost",
-            SERVER_CERT,
-            SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-            None,
-        )?;
+        listeners
+            .add_server(
+                "localhost",
+                SERVER_CERT,
+                SERVER_KEY,
+                [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+                None,
+            )
+            .await?;
         Ok((listeners.clone(), serve_only_one_stream(listeners)))
     };
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         _ = connection.handshaked().await; // 可有可无
 
         assert!(
@@ -271,7 +275,7 @@ fn idle_timeout() {
 
     let launch_client = |server_addr| async move {
         let client = launch_test_client(client_parameters());
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         connection.terminated().await;
         Result::Ok(())
     };
@@ -286,7 +290,7 @@ fn double_connections() -> Result<(), BoxError> {
         let mut connections = JoinSet::new();
 
         for conn_idx in 0..2 {
-            let connection = client.connected_to("localhost", [server_addr])?;
+            let connection = client.connected_to("localhost", [server_addr]).await?;
             connections.spawn(
                 async move { send_and_verify_echo(&connection, TEST_DATA).await }
                     .instrument(tracing::info_span!("stream", conn_idx)),
@@ -315,7 +319,7 @@ fn parallel_stream() -> Result<(), BoxError> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = Arc::new(client.connected_to("localhost", [server_addr])?);
+            let connection = Arc::new(client.connected_to("localhost", [server_addr]).await?);
             for stream_idx in 0..PARALLEL_ECHO_STREAMS {
                 let connection = connection.clone();
                 streams.spawn(
@@ -345,7 +349,7 @@ fn parallel_big_stream() -> Result<(), BoxError> {
         let test_data = Arc::new(TEST_DATA.to_vec().repeat(32));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connected_to("localhost", [server_addr])?;
+            let connection = client.connected_to("localhost", [server_addr]).await?;
             let test_data = test_data.clone();
             big_streams.spawn(
                 async move { send_and_verify_echo(&connection, &test_data).await }
@@ -409,7 +413,7 @@ fn limited_streams() -> Result<(), BoxError> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS / 2 {
-            let connection = Arc::new(client.connected_to("localhost", [server_addr])?);
+            let connection = Arc::new(client.connected_to("localhost", [server_addr]).await?);
             for stream_idx in 0..PARALLEL_ECHO_STREAMS / 2 {
                 let connection = connection.clone();
                 streams.spawn(
@@ -444,7 +448,7 @@ fn client_without_verify() -> Result<(), BoxError> {
                 .build();
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -487,13 +491,15 @@ async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
         .with_parameters(server_parameters)
         .with_qlog(qlogger())
         .listen(128);
-    listeners.add_server(
-        "localhost",
-        SERVER_CERT,
-        SERVER_KEY,
-        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-        None,
-    )?;
+    listeners
+        .add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )
+        .await?;
     Ok((listeners.clone(), serve_echo(listeners)))
 }
 
@@ -519,7 +525,7 @@ fn auth_client_name() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         Ok(())
@@ -552,7 +558,7 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         let error = connection.terminated().await;
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
 
@@ -585,7 +591,7 @@ fn auth_client_refuse() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
 
         let error = connection.terminated().await;
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
@@ -620,7 +626,7 @@ fn auth_client_refuse_silently() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
 
         assert!(
             time::timeout(Duration::from_secs(3), connection.handshaked())
@@ -729,13 +735,15 @@ async fn launch_echo_with_sign_verify_server(
         .with_parameters(parameters)
         .with_qlog(qlogger())
         .listen(128);
-    listeners.add_server(
-        "localhost",
-        SERVER_CERT,
-        SERVER_KEY,
-        [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
-        None,
-    )?;
+    listeners
+        .add_server(
+            "localhost",
+            SERVER_CERT,
+            SERVER_KEY,
+            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            None,
+        )
+        .await?;
     Ok((listeners.clone(), serve_echo_with_sign_verify(listeners)))
 }
 
@@ -760,7 +768,7 @@ fn sign_and_verify() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr])?;
+        let connection = client.connected_to("localhost", [server_addr]).await?;
         send_and_verify_echo_with_sign_verify(&connection, TEST_DATA).await?;
 
         Ok(())
