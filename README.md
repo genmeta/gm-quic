@@ -88,7 +88,7 @@ In addition to bind an IP address + port, `gm-quic` can also bind a network inte
 
 The QUIC client not only provides configuration options specified by the QUIC protocol's Parameters and optional 0-RTT functionality, but also includes some additional advanced options. For example, the QUIC client can set its own certificate for server verification, and can also set its own Token manager to manage Tokens issued by various servers for future connections with these servers.
 
-The QUIC client supports multipath handsahking, it can simultaneously connect to server's IPv4 and IPv6 addresses. Even if some paths are unreachable, as long as one path is reachable, the connection can be established. 
+The QUIC client supports multipath handshaking, it can simultaneously connect to server's IPv4 and IPv6 addresses. Even if some paths are unreachable, as long as one path is reachable, the connection can be established. 
 
 The following is a simple example, please refer to the documentation for more details.
 
