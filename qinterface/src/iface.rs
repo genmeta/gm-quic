@@ -22,7 +22,7 @@ pub mod physical;
 // handy（qudp）是可选的
 pub mod handy;
 
-pub use collection::QuicInterfaces;
+pub use collection::{QuicInterfaces, QuicIoClosing};
 
 struct Interface {
     bind_uri: BindUri,
@@ -30,6 +30,7 @@ struct Interface {
     io: io::Result<Box<dyn QuicIO>>,
     /// Unique ID generator from [`QuicInterfaces`]
     ifaces: Arc<QuicInterfaces>,
+    locations: Arc<Locations>,
     /// Unique identifier for this binding
     bind_id: UniqueId,
 }
@@ -97,7 +98,10 @@ impl RwInterface {
         let Ok(real_addr) = iface.real_addr() else {
             return;
         };
-        Locations::global().upsert(&iface.bind_uri(), real_addr);
+        iface
+            .read()
+            .locations
+            .upsert(iface.bind_uri(), Arc::new(real_addr));
         // });
     }
 }
@@ -189,6 +193,18 @@ pub struct QuicInterface {
     iface: Arc<RwInterface>,
 }
 
+impl QuicInterface {
+    pub(super) fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
+        if self.iface.read().bind_id != self.bind_id {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("Interface {} is not available", self.bind_uri()),
+            ));
+        }
+        self.iface.read().borrow(f)
+    }
+}
+
 impl QuicIO for QuicInterface {
     #[inline]
     fn bind_uri(&self) -> BindUri {
@@ -233,17 +249,5 @@ impl QuicIO for QuicInterface {
     #[inline]
     fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.borrow(|iface| iface.poll_close(cx))?
-    }
-}
-
-impl QuicInterface {
-    pub(super) fn borrow<T>(&self, f: impl FnOnce(&dyn QuicIO) -> T) -> io::Result<T> {
-        if self.iface.read().bind_id != self.bind_id {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                format!("Interface {} is not available", self.bind_uri()),
-            ));
-        }
-        self.iface.read().borrow(f)
     }
 }

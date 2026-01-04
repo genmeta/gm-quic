@@ -11,6 +11,7 @@ use std::{
 use dashmap::{DashMap, Entry};
 use futures::FutureExt;
 use qbase::{net::addr::BindUri, util::UniqueIdGenerator};
+use thiserror::Error;
 use tokio::sync::SetOnce;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -22,6 +23,7 @@ use crate::{
         BindInterface, Interface, QuicInterface,
         physical::{InterfaceEventReceiver, PhysicalInterfaces},
     },
+    local::Locations,
     route::Router,
 };
 
@@ -135,6 +137,16 @@ impl QuicInterfaces {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("QuicIO bound to the interface is closing")]
+pub struct QuicIoClosing;
+
+impl From<QuicIoClosing> for io::Error {
+    fn from(error: QuicIoClosing) -> Self {
+        io::Error::new(io::ErrorKind::NotConnected, error)
+    }
+}
+
 /// Interface lifetime:
 impl Interface {
     fn new(
@@ -157,6 +169,7 @@ impl Interface {
             bind_uri,
             factory,
             ifaces,
+            locations: Locations::global().clone(),
         }
     }
 
@@ -174,9 +187,12 @@ impl Interface {
     }
 
     pub fn close(&mut self) -> Option<impl Future<Output = ()> + Send + use<>> {
-        let io = mem::replace(&mut self.io, Err(io::ErrorKind::NotConnected.into()));
+        let io = mem::replace(&mut self.io, Err(QuicIoClosing.into()));
+        let bind_uri = self.bind_uri.clone();
+        let locations = self.locations.clone();
         io.ok().map(|io| async move {
             _ = io.close().await;
+            locations.close(bind_uri);
         })
     }
 }
@@ -188,41 +204,6 @@ impl RwInterface {
         };
         self.write().rebind();
         self.publish_address();
-    }
-}
-
-struct SpawnOnDrop<F: Future<Output: Send + 'static> + Unpin + Send + 'static> {
-    future: Option<F>,
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> SpawnOnDrop<F> {
-    fn new(future: F) -> Self {
-        Self {
-            future: Some(future),
-        }
-    }
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Future for SpawnOnDrop<F> {
-    type Output = F::Output;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.as_mut().get_mut().future.as_mut() {
-            Some(future) => {
-                let output = ready!(Pin::new(future).poll(cx));
-                self.future = None;
-                Poll::Ready(output)
-            }
-            None => panic!("polled after completion"),
-        }
-    }
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Drop for SpawnOnDrop<F> {
-    fn drop(&mut self) {
-        if let Some(future) = self.future.take() {
-            tokio::spawn(future);
-        }
     }
 }
 
@@ -248,6 +229,15 @@ impl InterfaceContext {
             async move {
                 loop {
                     tokio::select! {
+                        biased;
+                        result = &mut receive_task => {
+                            match result {
+                                Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed due to interface freed"),
+                                Err(e) => tracing::debug!(target: "interface", %bind_uri, "Receive task failed with error: {e}"),
+                            }
+                            // Task completed (likely due to error), mark as stopped and wait for interface change
+                            receive_task = ReceiveTask::Stopped;
+                        }
                         Some(event) = events.recv() => {
                             // skip events not related to this interface
                             if Some(event.device()) != device.as_deref() {
@@ -266,14 +256,6 @@ impl InterfaceContext {
                                 receive_task =
                                     ReceiveTask::Running(Box::pin(receive_and_deliver(Arc::downgrade(&rw_iface))));
                             }
-                        }
-                        result = &mut receive_task => {
-                            match result {
-                                Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed due to interface freed"),
-                                Err(e) => tracing::debug!(target: "interface", %bind_uri, "Receive task failed with error: {e}"),
-                            }
-                            // Task completed (likely due to error), mark as stopped and wait for interface change
-                            receive_task = ReceiveTask::Stopped;
                         }
                     }
                 }
@@ -316,8 +298,8 @@ impl InterfaceContext {
             task.abort();
             _ = (&mut task).await;
 
-            if let Some(close_interface) = { iface.write().close() } {
-                close_interface.await;
+            if let Some(close_quicio) = { iface.write().close() } {
+                close_quicio.await;
             }
 
             _ = closed.set(());
@@ -335,6 +317,7 @@ impl Drop for Interface {
 
         if let Some(mut context) = self.ifaces.interfaces.get_mut(&self.bind_uri)
             && context.iface.upgrade().is_none()
+            // when iface.upgrade().is_none(), rebind will not happen anymore
             && let Some(mut task) = context.task.take()
         {
             let closed = context.closed.clone();
@@ -376,6 +359,41 @@ async fn receive_and_deliver(iface: Weak<RwInterface>) -> io::Result<()> {
         };
         for (pkt, way) in pkts {
             Router::global().deliver(pkt, way).await;
+        }
+    }
+}
+
+struct SpawnOnDrop<F: Future<Output: Send + 'static> + Unpin + Send + 'static> {
+    future: Option<F>,
+}
+
+impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> SpawnOnDrop<F> {
+    fn new(future: F) -> Self {
+        Self {
+            future: Some(future),
+        }
+    }
+}
+
+impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Future for SpawnOnDrop<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.as_mut().get_mut().future.as_mut() {
+            Some(future) => {
+                let output = ready!(Pin::new(future).poll(cx));
+                self.future = None;
+                Poll::Ready(output)
+            }
+            None => panic!("polled after completion"),
+        }
+    }
+}
+
+impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Drop for SpawnOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(future) = self.future.take() {
+            tokio::spawn(future);
         }
     }
 }
