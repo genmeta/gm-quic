@@ -2,8 +2,7 @@ use std::{
     fmt::Debug,
     future::Future,
     io, mem,
-    ops::DerefMut,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{Arc, OnceLock, Weak},
     task::{Context, Poll, ready},
 };
@@ -221,50 +220,46 @@ impl InterfaceContext {
             .as_iface_bind_uri()
             .map(|(_, device, _)| device.to_owned());
         let iface = Arc::downgrade(&rw_iface);
-        let task = AbortOnDropHandle::new(tokio::spawn({
-            let rw_iface = iface.clone();
-            // todo: remove box pin?
-            let mut receive_task =
-                ReceiveTask::Running(Box::pin(receive_and_deliver(rw_iface.clone())));
-            async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        result = &mut receive_task => {
-                            match result {
-                                Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed due to interface freed"),
-                                Err(e) => tracing::debug!(target: "interface", %bind_uri, "Receive task failed with error: {e}"),
-                            }
-                            // Task completed (likely due to error), mark as stopped and wait for interface change
-                            receive_task = ReceiveTask::Stopped;
+
+        let rw_iface = iface.clone();
+        let task = async move {
+            let mut receive_task = pin!(ReceiveTask::new(receive_and_deliver(rw_iface.clone())));
+            loop {
+                tokio::select! {
+                    // Wake-ups from receiving data packets are always far more numerous than those from interface events.
+                    // `biased;` mark can improve performance.
+                    biased;
+                    result = &mut receive_task => {
+                        match result {
+                            Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed, maybe interface closed?"),
+                            // TODO: use snafu::Report for better error reporting
+                            Err(error) => tracing::debug!(target: "interface", %bind_uri, ?error, "Receive task failed with error"),
                         }
-                        Some(event) = events.recv() => {
-                            // skip events not related to this interface
-                            if Some(event.device()) != device.as_deref() {
-                                continue;
-                            }
-                            let Some(rw_iface) = rw_iface.upgrade() else { break };
-                            // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
-                            if matches!(receive_task, ReceiveTask::Stopped)
-                                || rw_iface.is_alive().await.is_err_and(|e| {
-                                    tracing::debug!(target: "interface", %bind_uri, "Interface may not alive: {e}");
-                                    e.is_recoverable()
-                                })
-                            {
-                                tracing::debug!(target: "interface", %bind_uri, "Rebinding interface");
-                                rw_iface.rebind().await;
-                                receive_task =
-                                    ReceiveTask::Running(Box::pin(receive_and_deliver(Arc::downgrade(&rw_iface))));
-                            }
+                    }
+                    Some(event) = events.recv() => {
+                        // skip events not related to this interface
+                        if Some(event.device()) != device.as_deref() {
+                            continue;
+                        }
+                        let Some(rw_iface) = rw_iface.upgrade() else { break };
+                        // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
+                        if !receive_task.is_running() || rw_iface.is_alive().await.is_err_and(|error| {
+                                tracing::debug!(target: "interface", %bind_uri, ?error, "Interface may not alive");
+                                error.is_recoverable()
+                            })
+                        {
+                            tracing::debug!(target: "interface", %bind_uri, "Rebinding interface");
+                            rw_iface.rebind().await;
+                            receive_task.as_mut().restart(receive_and_deliver(Arc::downgrade(&rw_iface)));
                         }
                     }
                 }
             }
-        }));
+        };
 
         Self {
             iface,
-            task: Some(task),
+            task: Some(AbortOnDropHandle::new(tokio::spawn(task))),
             closed: Arc::new(SetOnce::new()),
         }
     }
@@ -333,20 +328,41 @@ impl Drop for Interface {
     }
 }
 
-enum ReceiveTask<F> {
-    Running(F),
-    Stopped,
+pin_project_lite::pin_project! {
+    #[project = ReceiveTaskProj]
+    enum ReceiveTask<F> {
+        Running { #[pin] future: F },
+        Stopped,
+    }
 }
 
-impl<F: Future + Unpin> Future for ReceiveTask<F> {
+impl<F> ReceiveTask<F> {
+    pub fn new(future: F) -> Self {
+        Self::Running { future }
+    }
+
+    pub fn restart(mut self: Pin<&mut Self>, future: F) {
+        self.set(ReceiveTask::Running { future });
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(self, ReceiveTask::Running { .. })
+    }
+}
+
+impl<F: Future> Future for ReceiveTask<F> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let ReceiveTask::Running(future) = self.deref_mut() {
-            return Pin::new(future).poll(cx);
+        match self.as_mut().project() {
+            ReceiveTaskProj::Running { future } => {
+                // Task completed (likely due to error), mark as stopped and wait for interface change
+                let output = ready!(future.poll(cx));
+                self.set(ReceiveTask::Stopped);
+                Poll::Ready(output)
+            }
+            ReceiveTaskProj::Stopped => Poll::Pending,
         }
-
-        Poll::Pending
     }
 }
 

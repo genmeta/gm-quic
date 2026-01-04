@@ -17,6 +17,7 @@ derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
 netdev = { workspace = true }
 netwatcher = { workspace = true }
+pin-project-lite = { workspace = true }
 qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
