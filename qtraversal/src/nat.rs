@@ -7,7 +7,7 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::net::{addr::BindUri, route::SocketEndpointAddr};
-use qinterface::{QuicIO, iface::QuicInterface};
+use qinterface::{QuicIO, logical::QuicInterface};
 
 use crate::{Link, iface::TraversalQuicInterface};
 

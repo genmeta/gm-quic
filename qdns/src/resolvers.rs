@@ -2,7 +2,7 @@ use std::{collections::HashMap, error::Error, fmt::Debug, future, net::SocketAdd
 
 use futures::{Stream, StreamExt, stream};
 use qbase::net::{addr::BindUri, route::SocketEndpointAddr};
-use qinterface::iface::physical::PhysicalInterfaces;
+use qinterface::logical::physical::PhysicalInterfaces;
 use snafu::Report;
 use tokio::io;
 

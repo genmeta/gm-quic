@@ -1,24 +1,29 @@
+mod packet;
+mod queue;
+
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
-pub use qbase::packet::Packet;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::{
-        addr::{BindUri, RealAddr},
+        addr::RealAddr,
         route::{Link, Pathway},
     },
     packet::GetDcid,
 };
 
-use crate::queue::RcvdPacketQueue;
 pub type Way = (BindUri, Pathway, Link);
+pub use packet::{CipherPacket, PlainPacket};
+pub use qbase::packet::Packet;
+pub use queue::RcvdPacketQueue;
 
+use crate::logical::BindUri;
 type ConnectlessPacketHandler = Box<dyn FnMut(Packet, Way) + Send>;
 
 pub struct Router {

@@ -1,22 +1,21 @@
 pub mod factory;
-pub mod iface;
 pub mod local;
-pub mod packet;
-pub mod queue;
+pub mod logical;
+pub mod physical;
 pub mod route;
 
 use std::{
     any::Any,
     future::Future,
-    io::{self},
+    io,
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use qbase::net::{
-    addr::{BindUri, RealAddr},
-    route::PacketHeader,
-};
+use qbase::net::{addr::RealAddr, route::PacketHeader};
+use supply::{Request, Want, prelude::l};
+
+use crate::logical::BindUri;
 
 /// QUIC network I/O trait
 ///
@@ -32,8 +31,6 @@ use qbase::net::{
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
 #[async_trait::async_trait]
 pub trait QuicIO: Send + Sync + Any {
-    fn as_any(&self) -> &dyn Any;
-
     /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
@@ -84,25 +81,24 @@ pub trait QuicIO: Send + Sync + Any {
 
     /// Asynchronously destroy the QuicIO.
     ///
-    /// When it returns [`Poll::Ready`],
-    /// it means that the resource has been completely destroyed,
+    /// When it returns [`Poll::Ready`] (whether with `Ok` or `Err`),
+    /// it must indicate that the resource has been completely destroyed,
     /// and the same [`BindUri`] can be successfully bound again.
     ///
     /// Even if this method is not called,
     /// the implementation should ensure that [`QuicIO`] does not
     /// leak any resources when it is dropped.
-    fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>>;
+    fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
 
-    /// Restart the interface
-    fn restart(&self) -> io::Result<()> {
-        Ok(())
+    fn provide(&self, want: &mut dyn Want<l![]>) {
+        _ = want
     }
 }
 
 pub trait QuicIoExt: QuicIO {
     #[inline]
     fn sendmmsg(
-        &self,
+        &mut self,
         mut bufs: &[io::IoSlice<'_>],
         hdr: PacketHeader,
     ) -> impl Future<Output = io::Result<()>> + Send {
@@ -116,7 +112,7 @@ pub trait QuicIoExt: QuicIO {
     }
 
     fn recvmmsg<'b>(
-        &self,
+        &mut self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
     ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b>>
@@ -139,12 +135,12 @@ pub trait QuicIoExt: QuicIO {
     }
 
     #[inline]
-    fn close(&self) -> impl Future<Output = io::Result<()>> + Send {
+    fn close(&mut self) -> impl Future<Output = io::Result<()>> + Send {
         async { core::future::poll_fn(|cx| self.poll_close(cx)).await }
     }
 
     fn recvmpkt<'b>(
-        &self,
+        &mut self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
     ) -> impl Future<
@@ -169,6 +165,12 @@ pub trait QuicIoExt: QuicIO {
                         .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
                 }))
         }
+    }
+
+    fn request<R: Request<l![]>>(&self) -> R::Output {
+        let mut want = R::Want::default();
+        self.provide(&mut want);
+        R::into_output(want)
     }
 }
 

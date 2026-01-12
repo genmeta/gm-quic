@@ -15,6 +15,7 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
+http = { workspace = true }
 netdev = { workspace = true }
 netwatcher = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -22,6 +23,7 @@ qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+supply = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["rt"] }
 thiserror = { workspace = true }

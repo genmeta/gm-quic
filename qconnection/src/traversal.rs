@@ -11,8 +11,8 @@ use qbase::{
 };
 use qevent::telemetry::Instrument;
 use qinterface::{
-    iface::QuicInterfaces,
     local::{AddressEvent, Locations},
+    logical::QuicInterfaces,
 };
 use qtraversal::{frame::TraversalFrame, nat::StunIO};
 use tracing::Instrument as _;

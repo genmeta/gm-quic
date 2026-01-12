@@ -4,12 +4,11 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use qbase::{
-    net::addr::BindUri,
-    util::{UniqueId, UniqueIdGenerator},
-};
+use qbase::util::{UniqueId, UniqueIdGenerator};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
+
+use crate::logical::BindUri;
 
 #[derive(Debug)]
 pub enum AddressEvent<D: ?Sized = dyn Any + Send + Sync> {

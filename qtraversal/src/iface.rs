@@ -75,7 +75,7 @@ impl TraversalFactory {
 }
 
 impl ProductQuicIO for TraversalFactory {
-    fn bind(&self, bind_uri: BindUri) -> io::Result<Box<dyn QuicIO>> {
+    fn bind(&self, bind_uri: BindUri) -> Box<dyn QuicIO> {
         let socket_addr = SocketAddr::try_from(bind_uri.clone())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
@@ -143,7 +143,7 @@ impl TraversalQuicInterface {
     }
 
     pub fn start_detection(&self) {
-        if self.bind_uri.is_templorary() {
+        if self.bind_uri.is_temporary() {
             return;
         }
 
@@ -246,13 +246,6 @@ impl QuicIO for TraversalQuicInterface {
         self.recv_queue.close();
         Poll::Ready(Ok(()))
     }
-
-    fn restart(&self) -> io::Result<()> {
-        let _ = self.stun_client.restart();
-        // restart stun detection
-        self.start_detection();
-        Ok(())
-    }
 }
 
 impl StunIO for TraversalQuicInterface {
@@ -301,6 +294,12 @@ pub struct Interface {
     task: Mutex<AbortOnDropHandle<()>>,
     outer_addr: Arc<Mutex<Option<SocketAddr>>>,
 }
+
+// udp receiving task
+// 分流数据包到rcvd_stun_packets, rcvd_quic_packets
+
+// interface context收包任务
+// 从rcvd_quic_packets读取
 
 impl Interface {
     pub fn new(local_addr: SocketAddr, bind_uri: BindUri) -> io::Result<Self> {
@@ -478,7 +477,7 @@ impl StunIO for Interface {
 
 #[cfg(test)]
 mod tests {
-    use qinterface::iface::QuicInterfaces;
+    use qinterface::logical::QuicInterfaces;
 
     use super::*;
 

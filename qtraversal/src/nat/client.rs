@@ -70,14 +70,14 @@ impl RunningClient {
                         Some(old_state) => {
                             tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
                             outer_addr.assign(Ok(*new_outer_addr));
-                            if !protocol.bind_uri().is_templorary() {
+                            if !protocol.bind_uri().is_temporary() {
                                 Locations::global().upsert(protocol.bind_uri(), Arc::new(ep));
                             }
                         }
                         None => {
                             tracing::debug!(target: "stun", %new_outer_addr, "Detected outer addr");
                             outer_addr.assign(Ok(*new_outer_addr));
-                            if !protocol.bind_uri().is_templorary() {
+                            if !protocol.bind_uri().is_temporary() {
                                 Locations::global().upsert(protocol.bind_uri(), Arc::new(ep));
                             }
                         }

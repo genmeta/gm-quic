@@ -27,7 +27,7 @@ pub mod prelude {
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
         pub use qevent::telemetry::handy::*;
-        pub use qinterface::{factory::handy::*, iface::handy::*};
+        pub use qinterface::{factory::handy::*, logical::handy::*};
     }
 
     pub use crate::{
@@ -75,7 +75,7 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
-    iface::QuicInterfaces,
+    logical::QuicInterfaces,
     queue::RcvdPacketQueue,
     route::{self, RouterEntry},
 };

@@ -6,7 +6,7 @@ use std::{
 use qbase::net::addr::{BindUri, BindUriSchema};
 use qinterface::{
     QuicIO,
-    iface::{QuicInterface, QuicInterfaces},
+    logical::{QuicInterface, QuicInterfaces},
 };
 
 use crate::{

@@ -13,7 +13,7 @@ use qconnection::prelude::handy::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    iface::{BindInterface, QuicInterface, QuicInterfaces},
+    logical::{BindInterface, QuicInterface, QuicInterfaces},
 };
 use rustls::{
     ConfigBuilder, WantsVerifier,

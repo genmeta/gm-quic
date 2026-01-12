@@ -14,7 +14,7 @@ use gm_quic::{
         handy::{LegacySeqLogger, ToCertificate},
     },
     qbase::param::{ClientParameters, ServerParameters},
-    qinterface::iface::QuicInterfaces,
+    qinterface::logical::QuicInterfaces,
     qtraversal::{
         iface::{Interface, TraversalFactory},
         nat::{

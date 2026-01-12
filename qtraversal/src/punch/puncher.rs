@@ -28,7 +28,7 @@ use qbase::{
 };
 use qinterface::{
     QuicIO, QuicIoExt,
-    iface::{QuicInterface, QuicInterfaces},
+    logical::{QuicInterface, QuicInterfaces},
 };
 use qudp::DEFAULT_TTL;
 use tokio::{task::AbortHandle, time::timeout};

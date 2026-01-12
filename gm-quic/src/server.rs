@@ -18,7 +18,7 @@ use qconnection::{prelude::handy::ConsistentConcurrency, tls::AcceptAllClientAut
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
     factory::ProductQuicIO,
-    iface::{BindInterface, QuicInterfaces},
+    logical::{BindInterface, QuicInterfaces},
     route::{Router, Way},
 };
 use rustls::{
