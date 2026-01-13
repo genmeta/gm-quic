@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     future::Future,
     io, mem,
-    pin::{Pin, pin},
+    pin::pin,
     sync::{Arc, OnceLock, Weak},
     task::{Context, Poll, ready},
 };
@@ -14,7 +14,6 @@ use qbase::{
     net::{addr::RealAddr, route},
     util::{UniqueId, UniqueIdGenerator},
 };
-use thiserror::Error;
 use tokio::sync::SetOnce;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -24,7 +23,6 @@ use crate::{
     local::Locations,
     logical::{BindInterface, BindUri, QuicInterface, rw_iface::RwInterface},
     physical::{InterfaceEventReceiver, PhysicalInterfaces},
-    route::Router,
 };
 
 /// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
@@ -126,12 +124,55 @@ impl QuicInterfaces {
         let this = self.clone();
         let close_future = context.close();
 
-        SpawnOnDrop::new(Box::pin(async move {
+        spawn_on_drop::SpawnOnDrop::new(Box::pin(async move {
             close_future.await;
             this.interfaces
                 .remove_if(&bind_uri, |_, ctx| ctx.is_closed());
         }))
         .left_future()
+    }
+}
+
+mod spawn_on_drop {
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll, ready},
+    };
+
+    pub(crate) struct SpawnOnDrop<F: Future<Output: Send + 'static> + Unpin + Send + 'static> {
+        pub(crate) future: Option<F>,
+    }
+
+    impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> SpawnOnDrop<F> {
+        pub(crate) fn new(future: F) -> Self {
+            Self {
+                future: Some(future),
+            }
+        }
+    }
+
+    impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Future for SpawnOnDrop<F> {
+        type Output = F::Output;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match self.as_mut().get_mut().future.as_mut() {
+                Some(future) => {
+                    let output = ready!(Pin::new(future).poll(cx));
+                    self.future = None;
+                    Poll::Ready(output)
+                }
+                None => panic!("future polled after completion"),
+            }
+        }
+    }
+
+    impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Drop for SpawnOnDrop<F> {
+        fn drop(&mut self) {
+            if let Some(future) = self.future.take() {
+                tokio::spawn(future);
+            }
+        }
     }
 }
 
@@ -236,61 +277,67 @@ impl QuicIO for Interface {
     }
 }
 
-#[derive(Debug, Clone, Error)]
-#[error("QuicIO is dropping and cannot be used anymore, you should never see this error")]
-struct DroppingIO {
-    bind_uri: BindUri,
-}
+mod dropping_io {
+    use thiserror::Error;
 
-impl DroppingIO {
-    fn to_io_error(&self) -> io::Error {
-        io::Error::new(io::ErrorKind::NotConnected, self.clone())
-    }
-}
+    use super::*;
 
-impl From<DroppingIO> for io::Error {
-    fn from(error: DroppingIO) -> Self {
-        error.to_io_error()
-    }
-}
-
-impl QuicIO for DroppingIO {
-    fn bind_uri(&self) -> BindUri {
-        self.bind_uri.clone()
+    #[derive(Debug, Clone, Error)]
+    #[error("QuicIO is dropping and cannot be used anymore, you should never see this error")]
+    pub(crate) struct DroppingIO {
+        pub(crate) bind_uri: BindUri,
     }
 
-    fn real_addr(&self) -> io::Result<RealAddr> {
-        Err(self.to_io_error())
+    impl DroppingIO {
+        pub(crate) fn to_io_error(&self) -> io::Error {
+            io::Error::new(io::ErrorKind::NotConnected, self.clone())
+        }
     }
 
-    fn max_segment_size(&self) -> io::Result<usize> {
-        Err(self.to_io_error())
+    impl From<DroppingIO> for io::Error {
+        fn from(error: DroppingIO) -> Self {
+            error.to_io_error()
+        }
     }
 
-    fn max_segments(&self) -> io::Result<usize> {
-        Err(self.to_io_error())
-    }
+    impl QuicIO for DroppingIO {
+        fn bind_uri(&self) -> BindUri {
+            self.bind_uri.clone()
+        }
 
-    fn poll_send(
-        &self,
-        _: &mut Context,
-        _: &[io::IoSlice],
-        _: route::PacketHeader,
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Err(self.to_io_error()))
-    }
+        fn real_addr(&self) -> io::Result<RealAddr> {
+            Err(self.to_io_error())
+        }
 
-    fn poll_recv(
-        &self,
-        _: &mut Context,
-        _: &mut [BytesMut],
-        _: &mut [route::PacketHeader],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Err(self.to_io_error()))
-    }
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Err(self.to_io_error())
+        }
 
-    fn poll_close(&mut self, _: &mut Context) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+        fn max_segments(&self) -> io::Result<usize> {
+            Err(self.to_io_error())
+        }
+
+        fn poll_send(
+            &self,
+            _: &mut Context,
+            _: &[io::IoSlice],
+            _: route::PacketHeader,
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(self.to_io_error()))
+        }
+
+        fn poll_recv(
+            &self,
+            _: &mut Context,
+            _: &mut [BytesMut],
+            _: &mut [route::PacketHeader],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(self.to_io_error()))
+        }
+
+        fn poll_close(&mut self, _: &mut Context) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 
@@ -301,7 +348,7 @@ impl Drop for Interface {
 
         let mut io = {
             let bind_uri = self.io.bind_uri();
-            mem::replace(&mut self.io, Box::new(DroppingIO { bind_uri }))
+            mem::replace(&mut self.io, Box::new(dropping_io::DroppingIO { bind_uri }))
         };
 
         if let Some(mut context) = self.ifaces.interfaces.get_mut(&self.io.bind_uri())
@@ -316,41 +363,6 @@ impl Drop for Interface {
                 _ = io.close().await;
                 _ = closed.set(());
             });
-        }
-    }
-}
-
-struct SpawnOnDrop<F: Future<Output: Send + 'static> + Unpin + Send + 'static> {
-    future: Option<F>,
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> SpawnOnDrop<F> {
-    fn new(future: F) -> Self {
-        Self {
-            future: Some(future),
-        }
-    }
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Future for SpawnOnDrop<F> {
-    type Output = F::Output;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.as_mut().get_mut().future.as_mut() {
-            Some(future) => {
-                let output = ready!(Pin::new(future).poll(cx));
-                self.future = None;
-                Poll::Ready(output)
-            }
-            None => panic!("polled after completion"),
-        }
-    }
-}
-
-impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Drop for SpawnOnDrop<F> {
-    fn drop(&mut self) {
-        if let Some(future) = self.future.take() {
-            tokio::spawn(future);
         }
     }
 }
@@ -372,7 +384,7 @@ impl InterfaceContext {
 
         let rw_iface = iface.clone();
         let task = async move {
-            let mut receive_task = pin!(ReceiveTask::new(receive_and_deliver(rw_iface.clone())));
+            let mut receive_task = pin!(receive::Task::new(rw_iface.clone()));
             loop {
                 tokio::select! {
                     // Wake-ups from receiving data packets are always far more numerous than those from interface events.
@@ -399,7 +411,7 @@ impl InterfaceContext {
                         {
                             tracing::debug!(target: "interface", %bind_uri, "Rebinding interface");
                             rw_iface.rebind().await;
-                            receive_task.as_mut().restart(receive_and_deliver(Arc::downgrade(&rw_iface)));
+                            receive_task.as_mut().set(receive::Task::new(Arc::downgrade(&rw_iface)));
                         }
                     }
                 }
@@ -448,53 +460,65 @@ impl InterfaceContext {
     }
 }
 
-pin_project_lite::pin_project! {
-    #[project = ReceiveTaskProj]
-    enum ReceiveTask<F> {
-        Running { #[pin] future: F },
-        Stopped,
-    }
-}
+mod receive {
+    use std::{
+        future::Future,
+        io,
+        pin::Pin,
+        sync::Weak,
+        task::{Context, Poll, ready},
+    };
 
-impl<F> ReceiveTask<F> {
-    pub fn new(future: F) -> Self {
-        Self::Running { future }
-    }
+    use crate::{QuicIoExt, logical::rw_iface::RwInterface, route::Router};
 
-    pub fn restart(mut self: Pin<&mut Self>, future: F) {
-        self.set(ReceiveTask::Running { future });
-    }
-
-    pub fn is_running(&self) -> bool {
-        matches!(self, ReceiveTask::Running { .. })
-    }
-}
-
-impl<F: Future> Future for ReceiveTask<F> {
-    type Output = F::Output;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.as_mut().project() {
-            ReceiveTaskProj::Running { future } => {
-                // Task completed (likely due to error), mark as stopped and wait for interface change
-                let output = ready!(future.poll(cx));
-                self.set(ReceiveTask::Stopped);
-                Poll::Ready(output)
-            }
-            ReceiveTaskProj::Stopped => Poll::Pending,
+    pin_project_lite::pin_project! {
+        #[project = TaskProj]
+        pub enum Task<F> {
+            Running { #[pin] future: F },
+            Stopped,
         }
     }
-}
 
-async fn receive_and_deliver(iface: Weak<RwInterface>) -> io::Result<()> {
-    let (mut bufs, mut hdrs) = (vec![], vec![]);
-    loop {
-        let pkts = match iface.upgrade().map(|iface| iface.borrow()) {
-            Some(mut iface) => iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await?,
-            None => return Ok(()),
-        };
-        for (pkt, way) in pkts {
-            Router::global().deliver(pkt, way).await;
+    async fn receive_and_deliver(iface: Weak<RwInterface>) -> io::Result<()> {
+        let (mut bufs, mut hdrs) = (vec![], vec![]);
+        loop {
+            let pkts = match iface.upgrade().map(|iface| iface.borrow()) {
+                Some(mut iface) => iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await?,
+                None => return Ok(()),
+            };
+            for (pkt, way) in pkts {
+                Router::global().deliver(pkt, way).await;
+            }
+        }
+    }
+
+    impl Task<()> {
+        pub fn new(iface: Weak<RwInterface>) -> Task<impl Future<Output = io::Result<()>> + Send> {
+            Task::Running {
+                future: receive_and_deliver(iface),
+            }
+        }
+    }
+
+    impl<F> Task<F> {
+        pub fn is_running(&self) -> bool {
+            matches!(self, Task::Running { .. })
+        }
+    }
+
+    impl<F: Future> Future for Task<F> {
+        type Output = F::Output;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match self.as_mut().project() {
+                TaskProj::Running { future } => {
+                    // Task completed (likely due to error), mark as stopped and wait for interface change
+                    let output = ready!(future.poll(cx));
+                    self.set(Task::Stopped);
+                    Poll::Ready(output)
+                }
+                TaskProj::Stopped => Poll::Pending,
+            }
         }
     }
 }
