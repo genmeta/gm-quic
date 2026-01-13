@@ -176,9 +176,68 @@ mod spawn_on_drop {
     }
 }
 
+mod wakers {
+    use std::{
+        mem,
+        sync::{Arc, Mutex, MutexGuard},
+        task::{Wake, Waker},
+    };
+
+    use smallvec::SmallVec;
+
+    #[derive(Debug)]
+    pub struct Wakers {
+        wakers: Mutex<SmallVec<[Waker; 4]>>,
+    }
+
+    impl Wake for Wakers {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            for waker in { mem::replace(&mut *self.lock(), SmallVec::new_const()) }.drain(..) {
+                waker.wake();
+            }
+        }
+    }
+
+    impl Wakers {
+        pub const fn new() -> Self {
+            Self {
+                wakers: Mutex::new(SmallVec::new_const()),
+            }
+        }
+
+        fn lock(&self) -> MutexGuard<'_, SmallVec<[Waker; 4]>> {
+            self.wakers.lock().expect("Wakers mutex poisoned")
+        }
+
+        pub fn register(&self, waker: &Waker) {
+            let mut wakers = self.lock();
+            if !wakers.iter().any(|w| w.will_wake(waker)) {
+                wakers.push(waker.clone());
+            }
+        }
+
+        pub fn to_waker(self: &Arc<Self>) -> Waker {
+            Waker::from(self.clone())
+        }
+
+        pub fn combine(self: &Arc<Self>, other: &Waker) -> Waker {
+            self.register(other);
+            self.to_waker()
+        }
+    }
+}
+
 pub struct Interface {
     factory: Arc<dyn ProductQuicIO>,
     io: Box<dyn QuicIO>,
+    send_wakers: Arc<wakers::Wakers>,
+    recv_wakers: Arc<wakers::Wakers>,
+    close_wakers: Arc<wakers::Wakers>,
+    rebind_wakers: Arc<wakers::Wakers>,
     /// Unique ID generator from [`QuicInterfaces`]
     ifaces: Arc<QuicInterfaces>,
     locations: Arc<Locations>,
@@ -202,6 +261,10 @@ impl Interface {
     ) -> Self {
         let iface = Self {
             io: factory.bind(bind_uri.clone()),
+            send_wakers: Arc::new(wakers::Wakers::new()),
+            recv_wakers: Arc::new(wakers::Wakers::new()),
+            close_wakers: Arc::new(wakers::Wakers::new()),
+            rebind_wakers: Arc::new(wakers::Wakers::new()),
             bind_id: ifaces.bind_id_generator.generate(),
             factory,
             ifaces,
@@ -223,6 +286,8 @@ impl Interface {
     }
 
     pub fn poll_rebind(&mut self, cx: &mut Context) -> Poll<()> {
+        let waker = self.rebind_wakers.combine(cx.waker());
+        let cx = &mut Context::from_waker(&waker);
         ready!(self.factory.poll_rebind(cx, &mut self.io));
         self.bind_id = self.ifaces.bind_id_generator.generate();
         self.locations.close(self.io.bind_uri());
@@ -258,7 +323,9 @@ impl QuicIO for Interface {
         pkts: &[io::IoSlice],
         hdr: route::PacketHeader,
     ) -> Poll<io::Result<usize>> {
-        self.io.poll_send(cx, pkts, hdr)
+        let waker = self.send_wakers.combine(cx.waker());
+        self.io
+            .poll_send(&mut Context::from_waker(&waker), pkts, hdr)
     }
 
     fn poll_recv(
@@ -267,11 +334,14 @@ impl QuicIO for Interface {
         pkts: &mut [BytesMut],
         hdrs: &mut [route::PacketHeader],
     ) -> Poll<io::Result<usize>> {
-        self.io.poll_recv(cx, pkts, hdrs)
+        let waker = self.recv_wakers.combine(cx.waker());
+        self.io
+            .poll_recv(&mut Context::from_waker(&waker), pkts, hdrs)
     }
 
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
-        let result = ready!(self.io.poll_close(cx));
+        let waker = self.close_wakers.combine(cx.waker());
+        let result = ready!(self.io.poll_close(&mut Context::from_waker(&waker)));
         self.locations.close(self.io.bind_uri());
         Poll::Ready(result)
     }

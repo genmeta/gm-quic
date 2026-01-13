@@ -1,11 +1,10 @@
 use std::{
-    collections::VecDeque,
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex, atomic::AtomicI32},
-    task::{Context, Poll, Wake, Waker, ready},
+    sync::atomic::AtomicI32,
+    task::{Context, Poll, ready},
 };
 
 use bytes::BytesMut;
@@ -63,8 +62,6 @@ impl Default for DatagramHeader {
 #[derive(Debug)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
-    read: Arc<Wakers>,
-    write: Arc<Wakers>,
     ttl: AtomicI32,
 }
 
@@ -82,8 +79,6 @@ impl UdpSocketController {
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
         let usc = Self {
             io,
-            read: Default::default(),
-            write: Default::default(),
             ttl: AtomicI32::new(DEFAULT_TTL),
         };
         Ok(usc)
@@ -94,15 +89,11 @@ impl UdpSocketController {
     }
 
     pub fn poll_send_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.write.register(cx.waker());
-        self.io
-            .poll_send_ready(&mut Context::from_waker(&self.write.clone().into()))
+        self.io.poll_send_ready(cx)
     }
 
     pub fn poll_recv_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.read.register(cx.waker());
-        self.io
-            .poll_recv_ready(&mut Context::from_waker(&self.read.clone().into()))
+        self.io.poll_recv_ready(cx)
     }
 
     pub fn poll_send(
@@ -175,34 +166,6 @@ impl UdpSocketController {
             return Ok(());
         }
         Ok(())
-    }
-}
-
-#[derive(Default, Debug)]
-struct Wakers(Mutex<VecDeque<Waker>>);
-
-impl Wakers {
-    fn register(&self, waker: &Waker) {
-        self.0.lock().unwrap().push_back(waker.clone());
-    }
-}
-
-impl Wake for Wakers {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        for waker in self.0.lock().unwrap().drain(..) {
-            waker.wake_by_ref();
-        }
-    }
-}
-
-impl Drop for UdpSocketController {
-    fn drop(&mut self) {
-        self.read.wake_by_ref();
-        self.write.wake_by_ref();
     }
 }
 

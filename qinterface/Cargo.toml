@@ -23,6 +23,7 @@ qbase = { workspace = true }
 qevent = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+smallvec = { workspace = true }
 supply = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["rt"] }
