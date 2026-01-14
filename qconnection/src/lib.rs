@@ -430,6 +430,7 @@ struct ConnectionState {
     tracing_span: tracing::Span,
 }
 
+#[derive(Clone)]
 pub struct Connection(Arc<ConnectionState>);
 
 impl ConnectionState {
