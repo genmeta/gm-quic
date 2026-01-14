@@ -80,18 +80,11 @@ pub mod qudp {
             UdpSocketController { bind_uri, io }
         }
 
-        fn borrow(&self) -> io::Result<&qudp::UdpSocketController> {
+        fn usc(&self) -> io::Result<&qudp::UdpSocketController> {
             self.io
                 .as_ref()
                 .map_err(|e| io::Error::from(e.clone()))
                 .and_then(|result| result.as_ref().map_err(|e| (*e).into()))
-        }
-
-        fn borrow_mut(&mut self) -> io::Result<&mut qudp::UdpSocketController> {
-            self.io
-                .as_mut()
-                .map_err(|e| io::Error::from(e.clone()))
-                .and_then(|result| result.as_mut().map_err(|e| (*e).into()))
         }
     }
 
@@ -101,7 +94,7 @@ pub mod qudp {
         }
 
         fn real_addr(&self) -> io::Result<RealAddr> {
-            self.borrow()?.local_addr().map(RealAddr::Internet)
+            self.usc()?.local_addr().map(RealAddr::Internet)
         }
 
         fn max_segments(&self) -> io::Result<usize> {
@@ -118,7 +111,7 @@ pub mod qudp {
             pkts: &[io::IoSlice],
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
-            let io = self.borrow()?;
+            let io = self.usc()?;
             debug_assert_eq!(hdr.ecn(), None);
             // TODO: (qinterface/qconnection) Better adaptability to interface rebinding
             // debug_assert_eq!(
@@ -143,7 +136,7 @@ pub mod qudp {
             pkts: &mut [BytesMut],
             qbase_hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
-            let io = self.borrow()?;
+            let io = self.usc()?;
             let dst = RealAddr::Internet(io.local_addr()?);
             let len = qbase_hdrs.len().min(pkts.len());
             let mut hdrs = Vec::with_capacity(len);
@@ -171,7 +164,7 @@ pub mod qudp {
         }
 
         fn poll_close(&mut self, _cx: &mut Context) -> Poll<io::Result<()>> {
-            self.borrow_mut()?;
+            self.usc()?;
             self.io = Ok(Err(Closed(())));
             Poll::Ready(Ok(()))
         }

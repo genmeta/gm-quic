@@ -1,12 +1,15 @@
+mod handler;
 mod packet;
 mod queue;
 
 use std::{
+    convert::Infallible,
     net::SocketAddr,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
+use futures::{Sink, SinkExt};
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
@@ -18,17 +21,17 @@ use qbase::{
     packet::GetDcid,
 };
 
+use crate::logical::BindUri;
 pub type Way = (BindUri, Pathway, Link);
+
+pub use handler::PacketHandler;
 pub use packet::{CipherPacket, PlainPacket};
 pub use qbase::packet::Packet;
 pub use queue::RcvdPacketQueue;
 
-use crate::logical::BindUri;
-type ConnectlessPacketHandler = Box<dyn FnMut(Packet, Way) + Send>;
-
 pub struct Router {
     table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    on_unrouted: Mutex<ConnectlessPacketHandler>,
+    on_unrouted: handler::PacketHandler<Packet>,
 }
 
 impl Router {
@@ -37,7 +40,7 @@ impl Router {
         GLOBAL_ROUTER.get_or_init(|| {
             Arc::new(Router {
                 table: DashMap::new(),
-                on_unrouted: Mutex::new(Box::new(|_, _| {})),
+                on_unrouted: handler::PacketHandler::drain(),
             })
         })
     }
@@ -88,13 +91,17 @@ impl Router {
                 // For packets that cannot be routed, this likely indicates a new connection.
                 // In some cases, multiple threads (e.g., A and B) may be waiting for the lock,
                 // and both would cause the server to create separate new connections.
-                let mut on_unrouted = self.on_unrouted.lock().unwrap();
+                let mut on_unrouted = self.on_unrouted.lock().await;
+                let Some(on_unrouted) = on_unrouted.as_mut() else {
+                    // Drain mode, just drop the packet
+                    return;
+                };
                 // Therefore, we retry routing here to allow thread B to route its packet
                 // to the connection created by thread A, instead of creating another new connection.
                 match self.find_entry(&packet, &way.2) {
                     Some(rcvd_pkt_q) => rcvd_pkt_q,
                     None => {
-                        (on_unrouted)(packet.clone(), way.clone());
+                        on_unrouted.send((packet.clone(), way.clone())).await.ok();
                         return;
                     }
                 }
@@ -103,11 +110,11 @@ impl Router {
         rcvd_pkt_q.deliver(packet, way).await;
     }
 
-    pub fn on_connectless_packets<H>(&self, handler: H)
+    pub async fn on_connectless_packets<S>(&self, sink: S)
     where
-        H: FnMut(Packet, Way) + Send + 'static,
+        S: Sink<(Packet, Way), Error = Infallible> + Send + 'static,
     {
-        *self.on_unrouted.lock().unwrap() = Box::new(handler);
+        self.on_unrouted.update(Box::pin(sink)).await;
     }
 
     pub fn registry_on_issuing_scid<T>(

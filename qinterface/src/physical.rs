@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     sync::{Arc, Mutex, OnceLock, RwLock},
     time::Duration,
 };
@@ -274,6 +275,12 @@ pub struct PhysicalInterfaces {
     _timer: AbortOnDropHandle<()>,
 }
 
+impl Debug for PhysicalInterfaces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhysicalInterfaces").field("state", &self.state).field("watcher", &"...").field("_timer", &self._timer).finish()
+    }
+}
+
 impl PhysicalInterfaces {
     pub fn global() -> &'static PhysicalInterfaces {
         static MONITOR: OnceLock<PhysicalInterfaces> = OnceLock::new();
@@ -315,7 +322,7 @@ impl PhysicalInterfaces {
     }
 
     #[inline]
-    pub fn restart_watcher(&mut self) -> Result<(), WatcherError> {
+    pub fn restart_watcher(&self) -> Result<(), WatcherError> {
         let new_watcher = netwatcher::watch_interfaces({
             let state = self.state.clone();
             move |_update| {

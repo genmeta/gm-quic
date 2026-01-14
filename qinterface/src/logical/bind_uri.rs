@@ -327,6 +327,16 @@ pub enum BindUriSchema {
     Ble,
 }
 
+impl BindUriSchema {
+    pub const fn to_str(&self) -> &'static str {
+        match self {
+            BindUriSchema::Iface => "iface",
+            BindUriSchema::Inet => "inet",
+            BindUriSchema::Ble => "ble",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("Expect one of: iface, inet, ble")]
 pub struct ParseBindUriSchemeError;

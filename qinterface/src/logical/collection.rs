@@ -1,9 +1,10 @@
 use std::{
+    any::{Any, TypeId},
     fmt::Debug,
     future::Future,
     io, mem,
-    pin::pin,
-    sync::{Arc, OnceLock, Weak},
+    ops::DerefMut,
+    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
     task::{Context, Poll, ready},
 };
 
@@ -15,14 +16,14 @@ use qbase::{
     util::{UniqueId, UniqueIdGenerator},
 };
 use tokio::sync::SetOnce;
-use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     QuicIO, QuicIoExt,
     factory::ProductQuicIO,
-    local::Locations,
-    logical::{BindInterface, BindUri, QuicInterface, rw_iface::RwInterface},
-    physical::{InterfaceEventReceiver, PhysicalInterfaces},
+    logical::{
+        BindInterface, BindUri, QuicInterface, WeakInterface,
+        component::{Component, ComponentsMap},
+    },
 };
 
 /// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
@@ -39,9 +40,27 @@ use crate::{
 /// [`io::ErrorKind::NotConnected`]: std::io::ErrorKind::NotConnected
 #[derive(Default, Debug)]
 pub struct QuicInterfaces {
-    interfaces: DashMap<BindUri, InterfaceContext>,
-    // mdns_queue
+    interfaces: DashMap<BindUri, InterfaceEntry>,
     bind_id_generator: UniqueIdGenerator,
+}
+
+#[derive(Debug)]
+struct InterfaceEntry {
+    weak_iface: WeakInterface,
+    dropped: Arc<SetOnce<()>>,
+}
+
+impl InterfaceEntry {
+    fn is_dropped(&self) -> bool {
+        self.dropped.get().is_some()
+    }
+
+    fn dropped(&self) -> impl Future<Output = ()> + use<> {
+        let dropped = self.dropped.clone();
+        async move {
+            dropped.wait().await;
+        }
+    }
 }
 
 impl QuicInterfaces {
@@ -58,17 +77,29 @@ impl QuicInterfaces {
 
     fn new_binding(
         self: &Arc<Self>,
-        entry: Entry<BindUri, InterfaceContext>,
-        bind_uri: BindUri,
+        entry: Entry<BindUri, InterfaceEntry>,
         factory: Arc<dyn ProductQuicIO>,
     ) -> BindInterface {
-        let iface = Interface::new(bind_uri.clone(), factory, self.clone());
-        let iface = Arc::new(RwInterface::from(iface));
+        let context = InterfaceContext {
+            factory: factory.clone(),
+            binding: RwLock::new(Binding {
+                io: factory.bind(entry.key().clone()),
+                id: self.bind_id_generator.generate(),
+            }),
+            dropped: Arc::new(SetOnce::new()),
+            ifaces: self.clone(),
+            components: Mutex::new(ComponentsMap::default()),
+        };
+        let dropped = context.dropped.clone();
+        let iface = BindInterface::new(context);
+        let weak_iface = iface.downgrade();
 
-        let events = PhysicalInterfaces::global().event_receiver();
-        entry.insert(InterfaceContext::new(iface.clone(), events));
+        entry.insert(InterfaceEntry {
+            weak_iface,
+            dropped,
+        });
 
-        iface.binding()
+        iface
     }
 
     pub async fn bind(
@@ -79,22 +110,22 @@ impl QuicInterfaces {
         loop {
             match self.interfaces.entry(bind_uri.clone()) {
                 // (1) new binding: context closed but not yet removed
-                Entry::Occupied(entry) if entry.get().is_closed() => {
-                    return self.new_binding(Entry::Occupied(entry), bind_uri, factory);
+                Entry::Occupied(entry) if entry.get().is_dropped() => {
+                    return self.new_binding(Entry::Occupied(entry), factory);
                 }
                 // (2) new binding: no existing context
                 Entry::Vacant(entry) => {
-                    return self.new_binding(Entry::Vacant(entry), bind_uri, factory);
+                    return self.new_binding(Entry::Vacant(entry), factory);
                 }
                 // try reuse existing binding
-                Entry::Occupied(mut entry) => match entry.get().reuse() {
+                Entry::Occupied(entry) => match entry.get().weak_iface.upgrade() {
                     // (3) reuse existing binding
-                    Some(iface) => return iface.binding(),
+                    Ok(iface) => return iface.clone(),
                     // (4) no existing binding: close context and retry
-                    None => {
-                        let close_future = entry.get_mut().close();
+                    Err(..) => {
+                        let dropped_future = entry.get().dropped();
                         drop(entry);
-                        close_future.await;
+                        dropped_future.await;
                     }
                 },
             }
@@ -105,30 +136,30 @@ impl QuicInterfaces {
     pub fn borrow(&self, bind_uri: &BindUri) -> Option<QuicInterface> {
         self.interfaces
             .get(bind_uri)
-            .and_then(|ctx| Some(ctx.reuse()?.borrow()))
+            .and_then(|entry| Some(entry.weak_iface.upgrade().ok()?.borrow()))
     }
 
     #[inline]
     pub fn get(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.interfaces
             .get(bind_uri)
-            .and_then(|ctx| Some(ctx.reuse()?.binding()))
+            .and_then(|entry| entry.weak_iface.upgrade().ok())
     }
 
     #[inline]
     pub fn unbind(self: &Arc<Self>, bind_uri: BindUri) -> impl Future<Output = ()> + Send + use<> {
-        let Some(mut context) = self.interfaces.get_mut(&bind_uri) else {
+        let Entry::Occupied(entry) = self.interfaces.entry(bind_uri) else {
             return std::future::ready(()).right_future();
         };
 
-        let this = self.clone();
-        let close_future = context.close();
-
-        spawn_on_drop::SpawnOnDrop::new(Box::pin(async move {
-            close_future.await;
-            this.interfaces
-                .remove_if(&bind_uri, |_, ctx| ctx.is_closed());
-        }))
+        match entry.get().weak_iface.upgrade() {
+            Ok(bind_iface) => {
+                let drop_future = bind_iface.context.as_ref().drop();
+                spawn_on_drop::SpawnOnDrop::new(Box::pin(drop_future)).left_future()
+            }
+            // Dropping by InterfaceContext::Drop
+            Err(..) => entry.get().dropped().right_future(),
+        }
         .left_future()
     }
 }
@@ -176,145 +207,109 @@ mod spawn_on_drop {
     }
 }
 
-mod wakers {
-    use std::{
-        mem,
-        sync::{Arc, Mutex, MutexGuard},
-        task::{Wake, Waker},
-    };
-
-    use smallvec::SmallVec;
-
-    #[derive(Debug)]
-    pub struct Wakers {
-        wakers: Mutex<SmallVec<[Waker; 4]>>,
-    }
-
-    impl Wake for Wakers {
-        fn wake(self: Arc<Self>) {
-            self.wake_by_ref();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            for waker in { mem::replace(&mut *self.lock(), SmallVec::new_const()) }.drain(..) {
-                waker.wake();
-            }
-        }
-    }
-
-    impl Wakers {
-        pub const fn new() -> Self {
-            Self {
-                wakers: Mutex::new(SmallVec::new_const()),
-            }
-        }
-
-        fn lock(&self) -> MutexGuard<'_, SmallVec<[Waker; 4]>> {
-            self.wakers.lock().expect("Wakers mutex poisoned")
-        }
-
-        pub fn register(&self, waker: &Waker) {
-            let mut wakers = self.lock();
-            if !wakers.iter().any(|w| w.will_wake(waker)) {
-                wakers.push(waker.clone());
-            }
-        }
-
-        pub fn to_waker(self: &Arc<Self>) -> Waker {
-            Waker::from(self.clone())
-        }
-
-        pub fn combine(self: &Arc<Self>, other: &Waker) -> Waker {
-            self.register(other);
-            self.to_waker()
-        }
-    }
-}
-
-pub struct Interface {
-    factory: Arc<dyn ProductQuicIO>,
+struct Binding {
     io: Box<dyn QuicIO>,
-    send_wakers: Arc<wakers::Wakers>,
-    recv_wakers: Arc<wakers::Wakers>,
-    close_wakers: Arc<wakers::Wakers>,
-    rebind_wakers: Arc<wakers::Wakers>,
-    /// Unique ID generator from [`QuicInterfaces`]
-    ifaces: Arc<QuicInterfaces>,
-    locations: Arc<Locations>,
-    /// Unique identifier for this binding
-    bind_id: UniqueId,
+    id: UniqueId,
 }
 
-impl Debug for Interface {
+pub struct InterfaceContext {
+    factory: Arc<dyn ProductQuicIO>,
+    binding: RwLock<Binding>,
+    // shared with [InterfaceEntry]
+    dropped: Arc<SetOnce<()>>,
+    ifaces: Arc<QuicInterfaces>,
+    components: Mutex<ComponentsMap>,
+}
+
+impl InterfaceContext {
+    fn binding(&self) -> RwLockReadGuard<'_, Binding> {
+        self.binding.read().expect("QuicIO operation poisoned")
+    }
+
+    fn binding_mut(&self) -> RwLockWriteGuard<'_, Binding> {
+        self.binding.write().expect("QuicIO operation poisoned")
+    }
+
+    pub fn bind_id(&self) -> UniqueId {
+        self.binding().id
+    }
+
+    fn components(&self) -> MutexGuard<'_, ComponentsMap> {
+        self.components
+            .lock()
+            .expect("Components operation poisoned")
+    }
+
+    pub fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
+        let (mut binding, mut components) = (self.binding_mut(), self.components());
+        for (.., component) in components.deref_mut() {
+            ready!(component.poll_shutdown(cx));
+        }
+        binding.io.poll_close(cx)
+    }
+}
+
+impl Debug for InterfaceContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Interface")
-            .field("bind_uri", &self.io.bind_uri())
+            .field("bind_uri", &self.binding().io.bind_uri())
             .finish()
     }
 }
 
-impl Interface {
-    fn new(
-        bind_uri: BindUri,
-        factory: Arc<dyn ProductQuicIO>,
-        ifaces: Arc<QuicInterfaces>,
-    ) -> Self {
-        let iface = Self {
-            io: factory.bind(bind_uri.clone()),
-            send_wakers: Arc::new(wakers::Wakers::new()),
-            recv_wakers: Arc::new(wakers::Wakers::new()),
-            close_wakers: Arc::new(wakers::Wakers::new()),
-            rebind_wakers: Arc::new(wakers::Wakers::new()),
-            bind_id: ifaces.bind_id_generator.generate(),
-            factory,
-            ifaces,
-            locations: Locations::global().clone(),
-        };
-        iface.publish_address();
-        iface
-    }
+impl BindInterface {
+    pub fn poll_rebind(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let context = self.context.as_ref();
 
-    fn publish_address(&self) {
-        let bind_uri = self.io.bind_uri();
-        if bind_uri.is_temporary() {
-            return;
+        let new_bind_id = {
+            let mut binding = context.binding_mut();
+            ready!(context.factory.poll_rebind(cx, &mut binding.io));
+            binding.id = context.ifaces.bind_id_generator.generate();
+            binding.id
+        };
+
+        let quic_iface = QuicInterface {
+            bind_id: new_bind_id,
+            bind_iface: self.clone(),
+        };
+        for (.., component) in context.components().deref_mut() {
+            ready!(component.poll_reinit(cx, &quic_iface));
         }
-        let Ok(real_addr) = self.io.real_addr() else {
-            return;
-        };
-        self.locations.upsert(bind_uri, Arc::new(real_addr));
-    }
-
-    pub fn poll_rebind(&mut self, cx: &mut Context) -> Poll<()> {
-        let waker = self.rebind_wakers.combine(cx.waker());
-        let cx = &mut Context::from_waker(&waker);
-        ready!(self.factory.poll_rebind(cx, &mut self.io));
-        self.bind_id = self.ifaces.bind_id_generator.generate();
-        self.locations.close(self.io.bind_uri());
-        self.publish_address();
         Poll::Ready(())
     }
 
-    pub fn bind_id(&self) -> UniqueId {
-        self.bind_id
+    pub fn insert_component_with<C: Component>(&self, with: impl FnOnce() -> C) {
+        let context = self.context.as_ref();
+
+        let bind_id = context.bind_id();
+        let id = TypeId::of::<C>();
+        context.components().entry(id).or_insert_with(|| {
+            let mut component = with();
+            let quic_iface = QuicInterface {
+                bind_id,
+                bind_iface: self.clone(),
+            };
+            component.init(&quic_iface);
+            Box::new(component)
+        });
     }
 }
 
-impl QuicIO for Interface {
+impl QuicIO for InterfaceContext {
     fn bind_uri(&self) -> BindUri {
-        self.io.bind_uri()
+        self.binding().io.bind_uri()
     }
 
     fn real_addr(&self) -> io::Result<RealAddr> {
-        self.io.real_addr()
+        self.binding().io.real_addr()
     }
 
     fn max_segment_size(&self) -> io::Result<usize> {
-        self.io.max_segment_size()
+        self.binding().io.max_segment_size()
     }
 
     fn max_segments(&self) -> io::Result<usize> {
-        self.io.max_segments()
+        self.binding().io.max_segments()
     }
 
     fn poll_send(
@@ -323,9 +318,7 @@ impl QuicIO for Interface {
         pkts: &[io::IoSlice],
         hdr: route::PacketHeader,
     ) -> Poll<io::Result<usize>> {
-        let waker = self.send_wakers.combine(cx.waker());
-        self.io
-            .poll_send(&mut Context::from_waker(&waker), pkts, hdr)
+        self.binding().io.poll_send(cx, pkts, hdr)
     }
 
     fn poll_recv(
@@ -334,16 +327,11 @@ impl QuicIO for Interface {
         pkts: &mut [BytesMut],
         hdrs: &mut [route::PacketHeader],
     ) -> Poll<io::Result<usize>> {
-        let waker = self.recv_wakers.combine(cx.waker());
-        self.io
-            .poll_recv(&mut Context::from_waker(&waker), pkts, hdrs)
+        self.binding().io.poll_recv(cx, pkts, hdrs)
     }
 
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
-        let waker = self.close_wakers.combine(cx.waker());
-        let result = ready!(self.io.poll_close(&mut Context::from_waker(&waker)));
-        self.locations.close(self.io.bind_uri());
-        Poll::Ready(result)
+        InterfaceContext::poll_close(self, cx)
     }
 }
 
@@ -411,184 +399,53 @@ mod dropping_io {
     }
 }
 
-impl Drop for Interface {
-    fn drop(&mut self) {
-        // drop order: Arc<RwInterface>::drop -> RwInterface::drop -> Interface::drop
-        // when Interface is dropped: original Arc<RwInterface> strong count is 0
-
-        let mut io = {
-            let bind_uri = self.io.bind_uri();
-            mem::replace(&mut self.io, Box::new(dropping_io::DroppingIO { bind_uri }))
-        };
-
-        if let Some(mut context) = self.ifaces.interfaces.get_mut(&self.io.bind_uri())
-            && context.iface.upgrade().is_none()
-            // when iface.upgrade().is_none(), rebind will not happen anymore
-            && let Some(mut task) = context.task.take()
-        {
-            let closed = context.closed.clone();
-            tokio::spawn(async move {
-                task.abort();
-                _ = (&mut task).await;
-                _ = io.close().await;
-                _ = closed.set(());
-            });
-        }
+impl Binding {
+    pub fn is_dropping(&self) -> bool {
+        (self.io.as_ref() as &dyn Any).is::<dropping_io::DroppingIO>()
     }
-}
 
-#[derive(Debug)]
-pub struct InterfaceContext {
-    iface: Weak<RwInterface>,
-    task: Option<AbortOnDropHandle<()>>,
-    closed: Arc<SetOnce<()>>,
+    pub fn take_io(&mut self) -> Option<Box<dyn QuicIO>> {
+        if self.is_dropping() {
+            return None;
+        }
+        let bind_uri = self.io.bind_uri();
+        let dropping_io = Box::new(dropping_io::DroppingIO { bind_uri });
+        Some(mem::replace(&mut self.io, dropping_io))
+    }
 }
 
 impl InterfaceContext {
-    pub fn new(rw_iface: Arc<RwInterface>, mut events: InterfaceEventReceiver) -> Self {
-        let bind_uri = rw_iface.bind_uri();
-        let device = bind_uri
-            .as_iface_bind_uri()
-            .map(|(_, device, _)| device.to_owned());
-        let iface = Arc::downgrade(&rw_iface);
-
-        let rw_iface = iface.clone();
-        let task = async move {
-            let mut receive_task = pin!(receive::Task::new(rw_iface.clone()));
-            loop {
-                tokio::select! {
-                    // Wake-ups from receiving data packets are always far more numerous than those from interface events.
-                    // `biased;` mark can improve performance.
-                    biased;
-                    result = &mut receive_task => {
-                        match result {
-                            Ok(()) => tracing::debug!(target: "interface", %bind_uri, "Receive task completed, maybe interface closed?"),
-                            // TODO: use snafu::Report for better error reporting
-                            Err(error) => tracing::debug!(target: "interface", %bind_uri, ?error, "Receive task failed with error"),
-                        }
-                    }
-                    Some(event) = events.recv() => {
-                        // skip events not related to this interface
-                        if Some(event.device()) != device.as_deref() {
-                            continue;
-                        }
-                        let Some(rw_iface) = rw_iface.upgrade() else { break };
-                        // If the task is stopped, or the interface is not alive: rebind it, and restart receive task
-                        if !receive_task.is_running() || rw_iface.borrow().is_alive().await.is_err_and(|error| {
-                                tracing::debug!(target: "interface", %bind_uri, ?error, "Interface may not alive");
-                                error.is_recoverable()
-                            })
-                        {
-                            tracing::debug!(target: "interface", %bind_uri, "Rebinding interface");
-                            rw_iface.rebind().await;
-                            receive_task.as_mut().set(receive::Task::new(Arc::downgrade(&rw_iface)));
-                        }
-                    }
-                }
-            }
+    fn drop(&self) -> impl Future<Output = ()> + Send + use<> {
+        let dropped = self.dropped.clone();
+        let Some(mut io) = self.binding_mut().take_io() else {
+            return std::future::ready(()).right_future();
         };
 
-        Self {
-            iface,
-            task: Some(AbortOnDropHandle::new(tokio::spawn(task))),
-            closed: Arc::new(SetOnce::new()),
-        }
-    }
+        let ifaces = self.ifaces.clone();
+        let bind_uri = io.bind_uri();
+        let components = mem::take(self.components().deref_mut());
 
-    // closed                <: cannot be reused
-    // automatically closing <: cannot be reused
-    pub fn reuse(&self) -> Option<Arc<RwInterface>> {
-        (!self.is_closed()).then(|| self.iface.upgrade())?
-    }
-
-    pub fn closed(&self) -> impl Future<Output = ()> + Send + use<> {
-        let closed = self.closed.clone();
-        async move { _ = closed.wait().await }
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.closed.get().is_some()
-    }
-
-    /// Close the interface context and underlying interface
-    pub fn close(&mut self) -> impl Future<Output = ()> + Send + use<> {
-        let Some(iface) = self.iface.upgrade() else {
-            return self.closed().right_future();
-        };
-        let Some(mut task) = self.task.take() else {
-            return self.closed().right_future();
-        };
-
-        let closed = self.closed.clone();
         async move {
-            task.abort();
-            _ = (&mut task).await;
-            _ = iface.close().await;
-            _ = closed.set(());
+            for (_, mut component) in components {
+                _ = core::future::poll_fn(|cx| component.poll_shutdown(cx)).await;
+            }
+            _ = io.close().await;
+
+            dropped.set(()).expect("duplicated drop, this is a bug");
+            tokio::task::spawn_blocking(move || {
+                ifaces
+                    .interfaces
+                    .remove_if(&bind_uri, |_, entry| entry.is_dropped());
+            });
         }
         .left_future()
     }
 }
 
-mod receive {
-    use std::{
-        future::Future,
-        io,
-        pin::Pin,
-        sync::Weak,
-        task::{Context, Poll, ready},
-    };
-
-    use crate::{QuicIoExt, logical::rw_iface::RwInterface, route::Router};
-
-    pin_project_lite::pin_project! {
-        #[project = TaskProj]
-        pub enum Task<F> {
-            Running { #[pin] future: F },
-            Stopped,
-        }
-    }
-
-    async fn receive_and_deliver(iface: Weak<RwInterface>) -> io::Result<()> {
-        let (mut bufs, mut hdrs) = (vec![], vec![]);
-        loop {
-            let pkts = match iface.upgrade().map(|iface| iface.borrow()) {
-                Some(mut iface) => iface.recvmpkt(bufs.as_mut(), hdrs.as_mut()).await?,
-                None => return Ok(()),
-            };
-            for (pkt, way) in pkts {
-                Router::global().deliver(pkt, way).await;
-            }
-        }
-    }
-
-    impl Task<()> {
-        pub fn new(iface: Weak<RwInterface>) -> Task<impl Future<Output = io::Result<()>> + Send> {
-            Task::Running {
-                future: receive_and_deliver(iface),
-            }
-        }
-    }
-
-    impl<F> Task<F> {
-        pub fn is_running(&self) -> bool {
-            matches!(self, Task::Running { .. })
-        }
-    }
-
-    impl<F: Future> Future for Task<F> {
-        type Output = F::Output;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            match self.as_mut().project() {
-                TaskProj::Running { future } => {
-                    // Task completed (likely due to error), mark as stopped and wait for interface change
-                    let output = ready!(future.poll(cx));
-                    self.set(Task::Stopped);
-                    Poll::Ready(output)
-                }
-                TaskProj::Stopped => Poll::Pending,
-            }
+impl Drop for InterfaceContext {
+    fn drop(&mut self) {
+        if !{ self.binding().is_dropping() } {
+            tokio::spawn(InterfaceContext::drop(self));
         }
     }
 }

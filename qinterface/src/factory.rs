@@ -1,6 +1,9 @@
 use std::task::{Context, Poll, ready};
 
-use crate::{QuicIO, logical::BindUri};
+use crate::{
+    QuicIO,
+    logical::{BindUri, WeakInterface},
+};
 
 pub trait ProductQuicIO: Send + Sync {
     fn bind(&self, bind_uri: BindUri) -> Box<dyn QuicIO>;
@@ -9,6 +12,15 @@ pub trait ProductQuicIO: Send + Sync {
         _ = ready!(quic_io.poll_close(cx));
         *quic_io = self.bind(quic_io.bind_uri());
         Poll::Ready(())
+    }
+
+    /// Setup necessary tasks for the interface
+    ///
+    /// For example:
+    /// - Monitoring network changes and trigger rebinds
+    /// - Receiving quic packets and route them
+    fn init(&self, weak_iface: &WeakInterface) {
+        _ = weak_iface;
     }
 }
 

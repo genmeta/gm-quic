@@ -13,7 +13,6 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::net::{addr::RealAddr, route::PacketHeader};
-use supply::{Request, Want, prelude::l};
 
 use crate::logical::BindUri;
 
@@ -89,16 +88,12 @@ pub trait QuicIO: Send + Sync + Any {
     /// the implementation should ensure that [`QuicIO`] does not
     /// leak any resources when it is dropped.
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
-
-    fn provide(&self, want: &mut dyn Want<l![]>) {
-        _ = want
-    }
 }
 
 pub trait QuicIoExt: QuicIO {
     #[inline]
     fn sendmmsg(
-        &mut self,
+        &self,
         mut bufs: &[io::IoSlice<'_>],
         hdr: PacketHeader,
     ) -> impl Future<Output = io::Result<()>> + Send {
@@ -112,7 +107,7 @@ pub trait QuicIoExt: QuicIO {
     }
 
     fn recvmmsg<'b>(
-        &mut self,
+        &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
     ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b>>
@@ -140,7 +135,7 @@ pub trait QuicIoExt: QuicIO {
     }
 
     fn recvmpkt<'b>(
-        &mut self,
+        &self,
         bufs: &'b mut Vec<BytesMut>,
         hdrs: &'b mut Vec<PacketHeader>,
     ) -> impl Future<
@@ -167,11 +162,6 @@ pub trait QuicIoExt: QuicIO {
         }
     }
 
-    fn request<R: Request<l![]>>(&self) -> R::Output {
-        let mut want = R::Want::default();
-        self.provide(&mut want);
-        R::into_output(want)
-    }
 }
 
 impl<IO: QuicIO + ?Sized> QuicIoExt for IO {}

@@ -65,7 +65,6 @@ smallvec = { version = "1", features = [
     "const_new",
 ] }
 socket2 = { version = "0.6", features = ["all"] }
-supply = "0.3"
 snafu = "0.8"
 thiserror = "2"
 tokio = { version = "1" }
