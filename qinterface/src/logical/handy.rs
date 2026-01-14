@@ -10,9 +10,12 @@ pub mod qudp {
     };
 
     use bytes::BytesMut;
-    use qbase::net::{
-        addr::RealAddr,
-        route::{Link, Pathway},
+    use qbase::{
+        net::{
+            addr::RealAddr,
+            route::{Link, Pathway},
+        },
+        util::Wakers,
     };
     use qudp::BATCH_SIZE;
     use thiserror::Error;
@@ -24,6 +27,8 @@ pub mod qudp {
 
     pub struct UdpSocketController {
         bind_uri: BindUri,
+        send_wakers: Arc<Wakers<64>>,
+        recv_wakers: Arc<Wakers>,
         io: Result<Result<qudp::UdpSocketController, Closed>, BindFailed>,
     }
 
@@ -76,8 +81,12 @@ pub mod qudp {
                     )),
                 },
             };
-            let io = io.map(Ok).map_err(|e| BindFailed(Arc::new(e)));
-            UdpSocketController { bind_uri, io }
+            UdpSocketController {
+                bind_uri,
+                send_wakers: Arc::new(Wakers::new()),
+                recv_wakers: Arc::new(Wakers::new()),
+                io: io.map(Ok).map_err(|e| BindFailed(Arc::new(e))),
+            }
         }
 
         fn usc(&self) -> io::Result<&qudp::UdpSocketController> {
@@ -112,22 +121,17 @@ pub mod qudp {
             hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
-            debug_assert_eq!(hdr.ecn(), None);
-            // TODO: (qinterface/qconnection) Better adaptability to interface rebinding
-            // debug_assert_eq!(
-            //     hdr.link().src(),
-            //     self.real_addr()?,
-            //     "Interface changed? bind_uri={}",
-            //     self.bind_uri
-            // );
-            let hdr = qudp::DatagramHeader::new(
-                hdr.link().src().try_into().expect("Must be SocketAddr"),
-                hdr.link().dst().try_into().expect("Must be SocketAddr"),
-                hdr.ttl(),
-                hdr.ecn(),
-                hdr.seg_size(),
-            );
-            io.poll_send(cx, pkts, &hdr)
+            self.send_wakers.combine_with(cx, |cx| {
+                debug_assert_eq!(hdr.ecn(), None);
+                let hdr = qudp::DatagramHeader::new(
+                    hdr.link().src().try_into().expect("Must be SocketAddr"),
+                    hdr.link().dst().try_into().expect("Must be SocketAddr"),
+                    hdr.ttl(),
+                    hdr.ecn(),
+                    hdr.seg_size(),
+                );
+                io.poll_send(cx, pkts, &hdr)
+            })
         }
 
         fn poll_recv(
@@ -137,34 +141,38 @@ pub mod qudp {
             qbase_hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
-            let dst = RealAddr::Internet(io.local_addr()?);
-            let len = qbase_hdrs.len().min(pkts.len());
-            let mut hdrs = Vec::with_capacity(len);
-            hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
-            let mut bufs = pkts[..len]
-                .iter_mut()
-                .map(|p| IoSliceMut::new(p.as_mut()))
-                .collect::<Vec<_>>();
-            debug_assert_eq!(hdrs.len(), bufs.len());
-            let rcvd = ready!(io.poll_recv(cx, &mut bufs, &mut hdrs))?;
+            self.recv_wakers.combine_with(cx, |cx| {
+                let dst = RealAddr::Internet(io.local_addr()?);
+                let len = qbase_hdrs.len().min(pkts.len());
+                let mut hdrs = Vec::with_capacity(len);
+                hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
+                let mut bufs = pkts[..len]
+                    .iter_mut()
+                    .map(|p| IoSliceMut::new(p.as_mut()))
+                    .collect::<Vec<_>>();
+                debug_assert_eq!(hdrs.len(), bufs.len());
+                let rcvd = ready!(io.poll_recv(cx, &mut bufs, &mut hdrs))?;
 
-            for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
-                let way = Pathway::new(qudp_hdr.src.into(), dst.into());
-                let link = Link::new(qudp_hdr.src.into(), io.local_addr()?.into());
-                qbase_hdrs[idx] = PacketHeader::new(
-                    way.flip(),
-                    link.flip(),
-                    qudp_hdr.ttl,
-                    qudp_hdr.ecn,
-                    qudp_hdr.seg_size,
-                );
-            }
+                for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
+                    let way = Pathway::new(qudp_hdr.src.into(), dst.into());
+                    let link = Link::new(qudp_hdr.src.into(), io.local_addr()?.into());
+                    qbase_hdrs[idx] = PacketHeader::new(
+                        way.flip(),
+                        link.flip(),
+                        qudp_hdr.ttl,
+                        qudp_hdr.ecn,
+                        qudp_hdr.seg_size,
+                    );
+                }
 
-            Poll::Ready(Ok(rcvd))
+                Poll::Ready(Ok(rcvd))
+            })
         }
 
         fn poll_close(&mut self, _cx: &mut Context) -> Poll<io::Result<()>> {
             self.usc()?;
+            self.send_wakers.wake_all();
+            self.recv_wakers.wake_all();
             self.io = Ok(Err(Closed(())));
             Poll::Ready(Ok(()))
         }
