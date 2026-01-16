@@ -11,6 +11,7 @@ use crate::route::{CipherPacket, Way};
 type PacketQueue<P> = BoundQueue<(CipherPacket<P>, Way)>;
 
 // 需要一个四元组，pathway + src + dst
+#[derive(Debug)]
 pub struct RcvdPacketQueue {
     initial: PacketQueue<long::InitialHeader>,
     handshake: PacketQueue<long::HandshakeHeader>,

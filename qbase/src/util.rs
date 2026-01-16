@@ -14,4 +14,4 @@ mod unique_id;
 pub use unique_id::{UniqueId, UniqueIdGenerator};
 
 mod wakers;
-pub use wakers::Wakers;
+pub use wakers::{WakerVec, Wakers};

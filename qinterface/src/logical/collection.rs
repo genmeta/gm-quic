@@ -1,10 +1,10 @@
 use std::{
-    any::{Any, TypeId},
+    any::Any,
     fmt::Debug,
     future::Future,
     io, mem,
-    ops::DerefMut,
-    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    ops::{Deref, DerefMut},
+    sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
     task::{Context, Poll, ready},
 };
 
@@ -18,11 +18,11 @@ use qbase::{
 use tokio::sync::SetOnce;
 
 use crate::{
-    QuicIO, QuicIoExt,
+    Interface, InterfaceExt,
     factory::ProductQuicIO,
     logical::{
-        BindInterface, BindUri, QuicInterface, WeakInterface,
-        component::{Component, ComponentsMap},
+        BindInterface, BindUri, QuicInterface, RebindedError, WeakInterface,
+        component::{Component, Components},
     },
 };
 
@@ -88,7 +88,7 @@ impl QuicInterfaces {
             }),
             dropped: Arc::new(SetOnce::new()),
             ifaces: self.clone(),
-            components: Mutex::new(ComponentsMap::default()),
+            components: RwLock::new(Components::default()),
         };
         let dropped = context.dropped.clone();
         let iface = BindInterface::new(context);
@@ -208,7 +208,7 @@ mod spawn_on_drop {
 }
 
 struct Binding {
-    io: Box<dyn QuicIO>,
+    io: Box<dyn Interface>,
     id: UniqueId,
 }
 
@@ -218,31 +218,33 @@ pub struct InterfaceContext {
     // shared with [InterfaceEntry]
     dropped: Arc<SetOnce<()>>,
     ifaces: Arc<QuicInterfaces>,
-    components: Mutex<ComponentsMap>,
+    components: RwLock<Components>,
 }
 
 impl InterfaceContext {
     fn binding(&self) -> RwLockReadGuard<'_, Binding> {
-        self.binding.read().expect("QuicIO operation poisoned")
+        self.binding.read().expect("QuicIO binding poisoned")
     }
 
     fn binding_mut(&self) -> RwLockWriteGuard<'_, Binding> {
-        self.binding.write().expect("QuicIO operation poisoned")
+        self.binding.write().expect("QuicIO binding poisoned")
     }
 
     pub fn bind_id(&self) -> UniqueId {
         self.binding().id
     }
 
-    fn components(&self) -> MutexGuard<'_, ComponentsMap> {
-        self.components
-            .lock()
-            .expect("Components operation poisoned")
+    fn components(&self) -> RwLockReadGuard<'_, Components> {
+        self.components.read().expect("Components poisoned")
+    }
+
+    fn components_mut(&self) -> RwLockWriteGuard<'_, Components> {
+        self.components.write().expect("Components poisoned")
     }
 
     pub fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
-        let (mut binding, mut components) = (self.binding_mut(), self.components());
-        for (.., component) in components.deref_mut() {
+        let (mut binding, components) = (self.binding_mut(), self.components());
+        for (.., component) in &components.map {
             ready!(component.poll_shutdown(cx));
         }
         binding.io.poll_close(cx)
@@ -261,41 +263,89 @@ impl BindInterface {
     pub fn poll_rebind(&self, cx: &mut Context<'_>) -> Poll<()> {
         let context = self.context.as_ref();
 
-        let new_bind_id = {
+        // 降级binding锁
+        // A: rebind, reinit
+        // B:                rebind, reinit
+
+        // 释放binding锁
+        // A: lock(B), lock(C), rebind, release(B), reinit, release(C)
+        // B:                                      lock(B),             lock(C), rebind, reinit
+
+        // hold read lock to prevent subsequent rebind, avoid compoents seeing inconsistent state
+        let (new_bind_id, components) = {
             let mut binding = context.binding_mut();
+            let components = context.components();
+
             ready!(context.factory.poll_rebind(cx, &mut binding.io));
             binding.id = context.ifaces.bind_id_generator.generate();
-            binding.id
+            (binding.id, components)
         };
 
         let quic_iface = QuicInterface {
             bind_id: new_bind_id,
             bind_iface: self.clone(),
         };
-        for (.., component) in context.components().deref_mut() {
-            ready!(component.poll_reinit(cx, &quic_iface));
+        for (.., component) in &components.map {
+            component.reinit(&quic_iface);
         }
         Poll::Ready(())
     }
 
-    pub fn insert_component_with<C: Component>(&self, with: impl FnOnce() -> C) {
-        let context = self.context.as_ref();
+    pub async fn rebind2(&self) {}
 
-        let bind_id = context.bind_id();
-        let id = TypeId::of::<C>();
-        context.components().entry(id).or_insert_with(|| {
-            let mut component = with();
-            let quic_iface = QuicInterface {
-                bind_id,
-                bind_iface: self.clone(),
-            };
-            component.init(&quic_iface);
-            Box::new(component)
+    pub fn insert_component_with<C: Component>(&self, init: impl FnOnce(&QuicInterface) -> C) {
+        self.with_components_mut(|components, quic_iface| {
+            components.insert_with(|| init(quic_iface));
         });
+    }
+
+    pub fn with_components<T>(&self, f: impl FnOnce(&Components, &QuicInterface) -> T) -> T {
+        let context = self.context.as_ref();
+        let (binding, components) = (context.binding(), context.components());
+
+        let quic_iface = QuicInterface {
+            bind_id: binding.id,
+            bind_iface: self.clone(),
+        };
+        f(components.deref(), &quic_iface)
+    }
+
+    pub fn with_components_mut<T>(
+        &self,
+        f: impl FnOnce(&mut Components, &QuicInterface) -> T,
+    ) -> T {
+        let context = self.context.as_ref();
+        let (binding, mut components) = (context.binding(), context.components_mut());
+
+        let quic_iface = QuicInterface {
+            bind_id: binding.id,
+            bind_iface: self.clone(),
+        };
+        f(components.deref_mut(), &quic_iface)
     }
 }
 
-impl QuicIO for InterfaceContext {
+impl QuicInterface {
+    pub fn with_component<C: Component, T>(
+        &self,
+        f: impl FnOnce(&C) -> T,
+    ) -> Result<Option<T>, RebindedError> {
+        let context = self.bind_iface.context.as_ref();
+        let (binding, components) = (context.binding(), context.components());
+
+        if self.bind_id != binding.id {
+            return Err(RebindedError);
+        }
+
+        Ok(components.with(f))
+    }
+
+    pub fn get_component<C: Component + Clone>(&self) -> Result<Option<C>, RebindedError> {
+        self.with_component(C::clone)
+    }
+}
+
+impl Interface for InterfaceContext {
     fn bind_uri(&self) -> BindUri {
         self.binding().io.bind_uri()
     }
@@ -358,7 +408,7 @@ mod dropping_io {
         }
     }
 
-    impl QuicIO for DroppingIO {
+    impl Interface for DroppingIO {
         fn bind_uri(&self) -> BindUri {
             self.bind_uri.clone()
         }
@@ -404,7 +454,7 @@ impl Binding {
         (self.io.as_ref() as &dyn Any).is::<dropping_io::DroppingIO>()
     }
 
-    pub fn take_io(&mut self) -> Option<Box<dyn QuicIO>> {
+    pub fn take_io(&mut self) -> Option<Box<dyn Interface>> {
         if self.is_dropping() {
             return None;
         }
@@ -423,10 +473,10 @@ impl InterfaceContext {
 
         let ifaces = self.ifaces.clone();
         let bind_uri = io.bind_uri();
-        let components = mem::take(self.components().deref_mut());
+        let components = mem::take(self.components_mut().deref_mut());
 
         async move {
-            for (_, mut component) in components {
+            for (_, component) in components.map {
                 _ = core::future::poll_fn(|cx| component.poll_shutdown(cx)).await;
             }
             _ = io.close().await;

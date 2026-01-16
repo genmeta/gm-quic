@@ -2,12 +2,37 @@ use std::{
     future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, ready},
 };
 
+#[derive(Debug, Clone)]
+pub struct RouterComponent {
+    router: Arc<Router>,
+}
+
+impl RouterComponent {
+    pub fn new(router: Arc<Router>) -> Self {
+        Self { router }
+    }
+
+    pub fn router(&self) -> Arc<Router> {
+        self.router.clone()
+    }
+}
+
+impl Component for RouterComponent {
+    fn reinit(&self, _quic_iface: &QuicInterface) {}
+
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        _ = cx;
+        Poll::Ready(())
+    }
+}
+
 use crate::{
-    QuicIoExt,
-    logical::{RebindedError, UnbondedError, WeakInterface},
+    InterfaceExt,
+    logical::{QuicInterface, RebindedError, UnbondedError, WeakInterface, component::Component},
     route::Router,
 };
 

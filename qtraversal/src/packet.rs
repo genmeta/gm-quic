@@ -4,7 +4,7 @@ use qbase::net::{
     route::{SocketEndpointAddr, WriteSocketEndpointAddr, be_socket_endpoint_addr},
 };
 
-use crate::Pathway;
+use crate::PathWay;
 
 const STUN_HEADER_MASK: u8 = 0b1111_1110;
 const STUN_HEADER_BITS: u8 = 0b1100_0010;
@@ -85,22 +85,22 @@ impl<T: BufMut> WriteStunHeader for T {
 pub struct ForwardHeader {
     remian: u8,  // 后 5bits
     version: u8, // 前 4bits
-    pathway: Pathway,
+    pathway: PathWay,
 }
 
 impl ForwardHeader {
-    pub fn encoding_size(pathway: &Pathway) -> usize {
+    pub fn encoding_size(pathway: &PathWay) -> usize {
         if matches!(pathway.remote(), SocketEndpointAddr::Direct { .. }) {
             return 0;
         }
         1 + 1 + pathway.local().encoding_size() + pathway.remote().encoding_size()
     }
 
-    pub fn pathway(&self) -> Pathway {
+    pub fn pathway(&self) -> PathWay {
         self.pathway
     }
 
-    pub fn new(version: u8, pathway: &Pathway, buffer: &[u8]) -> Self {
+    pub fn new(version: u8, pathway: &PathWay, buffer: &[u8]) -> Self {
         let remian = buffer[0] & 0b0001_1111;
         Self {
             remian,
@@ -153,7 +153,7 @@ pub fn be_forward_header(input: &[u8]) -> nom::IResult<&[u8], ForwardHeader> {
     let dst_ep_typ = flag & FORWARD_DST_TYPE_BIT;
     let (remain, src) = be_socket_endpoint_addr(remain, src_ep_typ, family)?;
     let (remain, dst) = be_socket_endpoint_addr(remain, dst_ep_typ, family)?;
-    let pathway = Pathway::new(dst, src);
+    let pathway = PathWay::new(src, dst);
     Ok((
         remain,
         ForwardHeader {

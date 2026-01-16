@@ -1,9 +1,13 @@
 use std::{io::Result, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
+use qinterface::{
+    Interface,
+    factory::{ProductQuicIO, handy::DEFAULT_QUIC_IO_FACTORY},
+};
 use qtraversal::{
-    iface::Interface,
-    nat::{protocol, server::Server},
+    nat::{router::StunRouter, server::StunServer},
+    route::{Forwarder, ReceiveAndDeliverPacket},
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser, Debug)]
@@ -25,22 +29,35 @@ pub struct Arguments {
 async fn main() -> Result<()> {
     let args = Arguments::parse();
     init_logger(&args)?;
-    let iface1 = Interface::new(
-        args.bind_addr1,
-        format!("inet://{}", args.bind_addr1).into(),
-    )?;
-    let iface2 = Interface::new(
-        args.bind_addr2,
-        format!("inet://{}", args.bind_addr2).into(),
-    )?;
-    iface1.set_outer_addr(args.outer_addr1);
-    iface2.set_outer_addr(args.outer_addr2);
 
-    let iface1 = Arc::new(iface1);
-    let iface2 = Arc::new(iface2);
-    let protocol1 = protocol::StunProtocol::new(iface1.clone());
-    let protocol2 = protocol::StunProtocol::new(iface2.clone());
-    let mut server = Server::new((Arc::new(protocol1), Arc::new(protocol2)), args.change_addr);
+    let bind_uri = format!("inet://{}", args.bind_addr1).into();
+    let iface1: Arc<dyn Interface> = Arc::from(DEFAULT_QUIC_IO_FACTORY.bind(bind_uri));
+    let stun_router1 = StunRouter::new();
+    let forwarder1 = Forwarder::Server {
+        outer_addr: args.outer_addr1,
+    };
+    let _iface1_recv_task = ReceiveAndDeliverPacket::task()
+        .stun_router(stun_router1.clone())
+        .forwarder(forwarder1)
+        .iface_ref(iface1.clone())
+        .spawn();
+
+    let bind_uri = format!("inet://{}", args.bind_addr2).into();
+    let iface2: Arc<dyn Interface> = Arc::from(DEFAULT_QUIC_IO_FACTORY.bind(bind_uri));
+    let stun_router2 = StunRouter::new();
+    let forwarder2 = Forwarder::Server {
+        outer_addr: args.outer_addr2,
+    };
+    let _iface2_recv_task = ReceiveAndDeliverPacket::task()
+        .stun_router(stun_router2.clone())
+        .forwarder(forwarder2)
+        .iface_ref(iface2.clone())
+        .spawn();
+
+    let mut server = StunServer::new(
+        [(iface1, stun_router1), (iface2, stun_router2)],
+        args.change_addr,
+    );
     server.run().await?;
     Ok(())
 }

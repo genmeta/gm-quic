@@ -2,7 +2,6 @@ use std::{
     cmp::Ordering,
     collections::HashSet,
     convert::TryInto,
-    future::poll_fn,
     io::{self, ErrorKind},
     net::SocketAddr,
     ops::Deref,
@@ -16,7 +15,6 @@ use qbase::{
     frame::{ReceiveFrame, SendFrame},
     net::{
         AddrFamily,
-        addr::{BindUri, TEMPORARY},
         route::{PacketHeader, SocketEndpointAddr},
         tx::Signals,
     },
@@ -27,27 +25,33 @@ use qbase::{
     },
 };
 use qinterface::{
-    QuicIO, QuicIoExt,
-    logical::{QuicInterface, QuicInterfaces},
+    Interface, InterfaceExt,
+    factory::ProductQuicIO,
+    logical::{BindUri, QuicInterface, QuicInterfaces, WeakQuicInterface},
 };
 use qudp::DEFAULT_TTL;
 use tokio::{task::AbortHandle, time::timeout};
 
 use crate::{
-    Link, Pathway,
+    Link, PathWay,
     addr::AddressBook,
     frame::{
         PunchPair, TraversalFrame, add_address::AddAddressFrame, collision::CollisionFrame,
         konck::KonckFrame, punch_done::PunchDoneFrame, punch_me_now::PunchMeNowFrame,
         remove_address::RemoveAddressFrame,
     },
-    iface::TraversalFactory,
-    nat::{StunIO, client::NatType},
+    nat::{
+        client::{NatType, StunClientComponent},
+        router::StunRouterComponent,
+    },
     punch::{
         predictor::{PacketSendFn, PortPredictor},
         tx::Transaction,
     },
 };
+
+type StunClient<IO = WeakQuicInterface> = crate::nat::client::StunClient<IO>;
+// type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<IO>;
 
 const COLLISION_TTL: u8 = 5;
 const KONCK_TIMEOUT_MS: u64 = 100;
@@ -77,12 +81,16 @@ where
         product_header: PH,
         packet_space: Arc<S>,
         ifaces: Arc<QuicInterfaces>,
+        iface_factory: Arc<dyn ProductQuicIO>,
+        stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self(Arc::new(Puncher::new(
             broker,
             product_header,
             packet_space,
             ifaces,
+            iface_factory,
+            stun_servers,
         )))
     }
 }
@@ -93,6 +101,8 @@ pub struct Puncher<TX, PH, S> {
     product_header: PH,
     packet_space: Arc<S>,
     ifaces: Arc<QuicInterfaces>,
+    iface_factory: Arc<dyn ProductQuicIO>,
+    stun_servers: Arc<[SocketAddr]>,
     address_book: Mutex<AddressBook>,
     punch_ifaces: DashMap<BindUri, QuicInterface>,
     broker: TX,
@@ -109,6 +119,8 @@ where
         product_header: PH,
         packet_space: Arc<S>,
         ifaces: Arc<QuicInterfaces>,
+        iface_factory: Arc<dyn ProductQuicIO>,
+        stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self {
             transaction: DashMap::new(),
@@ -116,6 +128,8 @@ where
             product_header,
             packet_space,
             ifaces,
+            iface_factory,
+            stun_servers,
             address_book: Mutex::new(AddressBook::default()),
             punch_ifaces: DashMap::new(),
             broker,
@@ -124,7 +138,7 @@ where
 
     pub async fn send_packet<P>(
         &self,
-        iface: &(impl QuicIO + ?Sized),
+        iface: &(impl Interface + ?Sized),
         link: Link,
         ttl: u8,
         packages: P,
@@ -218,10 +232,15 @@ where
         if nat_type == NatType::Dynamic {
             let puncher = self.clone();
             let ifaces = self.0.ifaces.clone();
+            let iface_factory = self.0.iface_factory.clone();
+            let stun_servers = self.0.stun_servers.clone();
+
             let bind = bind_uri.clone();
             tokio::spawn(async move {
-                let iface = dynamic_iface(&bind_uri, ifaces).await?;
-                let outer = poll_fn(|cx| iface.poll_endpoint_addr(cx)).await?.addr();
+                let (_iface, stun_client) =
+                    dynamic_iface(&bind_uri, &ifaces, &iface_factory, &stun_servers).await?;
+                let outer = stun_client.outer_addr().await?;
+
                 let mut address_book = puncher.0.address_book.lock().unwrap();
                 let frame = address_book.add_local_address(bind.clone(), outer, tire, nat_type)?;
                 tracing::debug!(target: "punch", bind_uri = %bind, %outer, nat_type = ?nat_type, "Sending AddAddress frame for dynamic");
@@ -246,7 +265,7 @@ where
         &self,
         bind: BindUri,
         addr: SocketEndpointAddr,
-    ) -> io::Result<Vec<(BindUri, Link, Pathway)>> {
+    ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.add_local_endpoint(bind.clone(), addr)?;
         let mut ways = Vec::new();
@@ -261,7 +280,7 @@ where
     pub fn add_peer_endpoint(
         &self,
         endpoint: SocketEndpointAddr,
-    ) -> io::Result<Vec<(BindUri, Link, Pathway)>> {
+    ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.add_peer_endpoint(endpoint)?;
         let mut ways = Vec::new();
@@ -324,7 +343,7 @@ where
 
     fn recv_punch_me_now(
         &self,
-        pathway: Pathway,
+        pathway: PathWay,
         punch_me_now_frame: PunchMeNowFrame,
     ) -> io::Result<()> {
         let punch_pair = punch_me_now_frame.punch_pair().unwrap().flip();
@@ -406,6 +425,14 @@ where
             local_nat,
         );
         let ifaces = self.0.ifaces.clone();
+        let dynamic_iface = {
+            let ifaces = self.0.ifaces.clone();
+            let iface_factory = self.0.iface_factory.clone();
+            let stun_servers = self.0.stun_servers.clone();
+            async move |bind_uri: &BindUri| {
+                dynamic_iface(bind_uri, &ifaces, &iface_factory, &stun_servers).await
+            }
+        };
 
         let broker = self.0.broker.clone();
         let punch_ifaces = &self.0.punch_ifaces;
@@ -477,10 +504,11 @@ where
             (Dynamic, Symmetric) => {
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Strategy: Local Dynamic, Remote Symmetric, new interface & birthday attack");
                 // TODO: Creating a new iface is not strictly necessary; could reuse an available temporary address.
-                let iface = dynamic_iface(&bind_uri, ifaces.clone()).await?;
+                let (iface, stun_client) = dynamic_iface(&bind_uri).await?;
+
                 let bind_uri = iface.bind_uri();
                 punch_ifaces.insert(bind_uri.clone(), iface.clone());
-                let outer_addr = poll_fn(|cx| iface.poll_endpoint_addr(cx)).await?.addr();
+                let outer_addr = stun_client.outer_addr().await?;
                 punch_me_now.set_addr(outer_addr);
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting PunchMeNow then collision");
                 broker.send_frame([punch_me_now.into()]);
@@ -524,6 +552,7 @@ where
                     // Use new consolidated PortPredictor birthday attack
                     let mut predictor = PortPredictor::new(
                         ifaces.clone(),
+                        self.0.iface_factory.clone(),
                         bind_uri.clone(),
                         link.dst(),
                         BIRTHDAY_ATTACK_PORTS,
@@ -600,8 +629,8 @@ where
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Strategy: Local Dynamic, new interface & send PunchMeNow + Konck");
                 // Use new iface, update PunchMeNow address.
                 // TODO: Creating a new iface is not strictly necessary; could reuse an available temporary address.
-                let iface = dynamic_iface(&bind_uri, ifaces.clone()).await?;
-                let outer_addr = poll_fn(|cx| iface.poll_endpoint_addr(cx)).await?.addr();
+                let (iface, stun_client) = dynamic_iface(&bind_uri).await?;
+                let outer_addr = stun_client.outer_addr().await?;
                 let bind_uri = iface.bind_uri();
                 punch_ifaces.insert(bind_uri.clone(), iface.clone());
                 punch_me_now.set_addr(outer_addr);
@@ -701,11 +730,11 @@ where
                 // Use new consolidated PortPredictor birthday attack
                 let mut predictor = PortPredictor::new(
                     ifaces.clone(),
+                    self.0.iface_factory.clone(),
                     bind_uri.clone(),
                     link.dst(),
                     BIRTHDAY_ATTACK_PORTS,
                 )?;
-
                 // Create packet send function
                 let puncher_ref = self.0.clone();
                 let packet_send_fn: PacketSendFn = Arc::new(move |iface, link, ttl, frame| {
@@ -859,7 +888,7 @@ where
         bind: &BindUri,
         local: &SocketEndpointAddr,
         remote: &SocketEndpointAddr,
-    ) -> io::Result<(BindUri, Link, Pathway)> {
+    ) -> io::Result<(BindUri, Link, PathWay)> {
         if local == remote {
             return Err(io::Error::other("Local and remote endpoints are identical"));
         }
@@ -882,7 +911,7 @@ where
         ) {
             link.into()
         } else {
-            Pathway::new(*local, *remote)
+            PathWay::new(*local, *remote)
         };
 
         Ok((bind.clone(), link, pathway))
@@ -924,7 +953,7 @@ where
     }
 }
 
-impl<TX, PH, S> ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for ArcPuncher<TX, PH, S>
+impl<TX, PH, S> ReceiveFrame<(BindUri, PathWay, Link, TraversalFrame)> for ArcPuncher<TX, PH, S>
 where
     TX: SendFrame<TraversalFrame> + Send + Sync + Clone + 'static,
     PH: ProductHeader<OneRttHeader> + Send + Sync + 'static,
@@ -936,7 +965,7 @@ where
 
     fn recv_frame(
         &self,
-        (bind, pathway, link, frame): &(BindUri, Pathway, Link, TraversalFrame),
+        (bind, pathway, link, frame): &(BindUri, PathWay, Link, TraversalFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "Received traversal frame");
         match frame {
@@ -999,23 +1028,45 @@ where
 #[inline]
 async fn dynamic_iface(
     bind_uri: &BindUri,
-    ifaces: Arc<QuicInterfaces>,
-) -> io::Result<QuicInterface> {
+    ifaces: &Arc<QuicInterfaces>,
+    iface_factory: &Arc<dyn ProductQuicIO>,
+    stun_servers: &[SocketAddr],
+) -> io::Result<(QuicInterface, StunClient)> {
     const MIN_PORT: u16 = 1024;
     const MAX_PORT: u16 = u16::MAX;
-    let factory = TraversalFactory::global();
     let (ip_family, device, _port) = bind_uri.as_iface_bind_uri().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Invalid bind uri, expected bind uri with iface schema",
-        )
+        let error = "Invalid bind uri, expected bind uri with iface schema";
+        io::Error::new(io::ErrorKind::InvalidInput, error)
     })?;
     let port = rand::random::<u16>() % (MAX_PORT - MIN_PORT) + MIN_PORT;
-    let bind_addr =
-        BindUri::from_str(format!("iface://{ip_family}.{device}:{port}?{TEMPORARY}=true").as_str())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let iface = ifaces.bind(bind_addr, factory.clone()).await;
-    iface.borrow()
+    let bind_uri = format!(
+        "iface://{ip_family}.{device}:{port}?{}=true",
+        BindUri::TEMPORARY_PROP
+    );
+    let bind_uri = BindUri::from_str(bind_uri.as_str())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+    ifaces
+        .bind(bind_uri, iface_factory.clone())
+        .await
+        .with_components_mut(|components, quic_iface| {
+            let local_addr =
+                SocketAddr::try_from(quic_iface.real_addr()?).map_err(io::Error::other)?;
+            let stun_server = *stun_servers
+                .iter()
+                .find(|addr| addr.is_ipv4() == local_addr.is_ipv4())
+                .ok_or_else(|| io::Error::other("No STUN server matches local address family"))?;
+
+            let stun_router = components
+                .insert_with(|| StunRouterComponent::new(quic_iface.downgrade()))
+                .router();
+            let stun_client = components
+                .insert_with(|| {
+                    StunClientComponent::new(quic_iface.downgrade(), stun_router, stun_server)
+                })
+                .client();
+            Ok((quic_iface.to_owned(), stun_client))
+        })
 }
 
 fn compare_endpoints(

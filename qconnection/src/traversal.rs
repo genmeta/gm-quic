@@ -108,7 +108,7 @@ impl Components {
                 let ways: Vec<(
                     qbase::net::addr::BindUri,
                     qtraversal::Link,
-                    qtraversal::Pathway,
+                    qtraversal::PathWay,
                 )> = ways;
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());
@@ -132,7 +132,7 @@ impl Components {
                 let ways: Vec<(
                     qbase::net::addr::BindUri,
                     qtraversal::Link,
-                    qtraversal::Pathway,
+                    qtraversal::PathWay,
                 )> = ways;
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());

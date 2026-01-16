@@ -5,7 +5,8 @@ use std::{
 };
 
 use futures::io;
-use qbase::net::{addr::BindUri, route::SocketEndpointAddr};
+use qbase::net::route::SocketEndpointAddr;
+use qinterface::logical::BindUri;
 
 use crate::{
     frame::{add_address::AddAddressFrame, remove_address::RemoveAddressFrame},

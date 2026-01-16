@@ -13,7 +13,7 @@ use qbase::{
 };
 use thiserror::Error;
 
-use crate::{QuicIO, logical::collection::InterfaceContext};
+use crate::{Interface, RefInterface, logical::collection::InterfaceContext};
 
 mod bind_uri;
 mod collection;
@@ -79,7 +79,7 @@ pub struct QuicInterface {
 
 #[derive(Debug, Error)]
 #[error("Interface has been rebinded")]
-pub struct RebindedError(());
+pub struct RebindedError;
 
 impl RebindedError {
     pub fn is_source_of(mut error: &(dyn Error + 'static)) -> bool {
@@ -105,7 +105,7 @@ impl QuicInterface {
     #[inline]
     fn borrow<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> io::Result<T> {
         if self.bind_iface.context.bind_id() != self.bind_id {
-            return Err(RebindedError(()).into());
+            return Err(RebindedError.into());
         }
         Ok(f(self.bind_iface.context.as_ref()))
     }
@@ -123,9 +123,46 @@ impl QuicInterface {
             weak_iface: self.bind_iface.downgrade(),
         }
     }
+
+    pub fn same_io(&self, other: &QuicInterface) -> bool {
+        self.bind_id == other.bind_id
+            && Arc::ptr_eq(&self.bind_iface.context, &other.bind_iface.context)
+    }
+
+    // quic_iface(bind_id=1)
+    // rebind
+    // quic_iface(bind_id=1).get_component::<StunProtocolComponent>()
+    // quic_iface(bind_id=2).get_component::<StunProtocolComponent>()
+
+    pub fn with_components<T>(
+        &self,
+        f: impl FnOnce(&component::Components, &QuicInterface) -> T,
+    ) -> T {
+        self.bind_iface.with_components(f)
+    }
+
+    pub fn with_components_mut<T>(
+        &self,
+        f: impl FnOnce(&mut component::Components, &QuicInterface) -> T,
+    ) -> T {
+        self.bind_iface.with_components_mut(f)
+    }
 }
 
-impl QuicIO for QuicInterface {
+impl RefInterface for QuicInterface {
+    type Interface = Self;
+
+    #[inline]
+    fn iface(&self) -> &Self::Interface {
+        self
+    }
+
+    fn same_io(&self, other: &Self) -> bool {
+        self.same_io(other)
+    }
+}
+
+impl Interface for QuicInterface {
     #[inline]
     fn bind_uri(&self) -> BindUri {
         self.bind_iface.bind_uri()
@@ -174,7 +211,7 @@ impl QuicIO for QuicInterface {
 
 #[derive(Debug, Error)]
 #[error("Interface has been unbound")]
-pub struct UnbondedError(());
+pub struct UnbondedError;
 
 impl UnbondedError {
     pub fn is_source_of(mut error: &(dyn Error + 'static)) -> bool {
@@ -204,15 +241,20 @@ pub struct WeakInterface {
 impl WeakInterface {
     pub fn upgrade(&self) -> Result<BindInterface, UnbondedError> {
         Ok(BindInterface {
-            context: self.context.upgrade().ok_or(UnbondedError(()))?,
+            context: self.context.upgrade().ok_or(UnbondedError)?,
         })
     }
 
     pub fn borrow(&self) -> Result<WeakQuicInterface, UnbondedError> {
         Ok(self.upgrade()?.borrow_weak())
     }
+
+    pub fn same_io(&self, other: &WeakInterface) -> bool {
+        Weak::ptr_eq(&self.context, &other.context)
+    }
 }
 
+#[derive(Debug, Clone)]
 pub struct WeakQuicInterface {
     bind_uri: BindUri,
     bind_id: UniqueId,
@@ -232,9 +274,25 @@ impl WeakQuicInterface {
             bind_id: self.bind_id,
         })
     }
+
+    pub fn same_io(&self, other: &WeakQuicInterface) -> bool {
+        self.bind_id == other.bind_id && self.weak_iface.same_io(&other.weak_iface)
+    }
 }
 
-impl QuicIO for WeakQuicInterface {
+impl RefInterface for WeakQuicInterface {
+    type Interface = WeakQuicInterface;
+
+    fn iface(&self) -> &Self::Interface {
+        self
+    }
+
+    fn same_io(&self, other: &Self) -> bool {
+        self.same_io(other)
+    }
+}
+
+impl Interface for WeakQuicInterface {
     fn bind_uri(&self) -> BindUri {
         self.bind_uri.clone()
     }

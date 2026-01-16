@@ -3,6 +3,7 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
+    sync::{Mutex, MutexGuard},
     task::{Context, Poll, ready},
 };
 
@@ -15,7 +16,7 @@ use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    QuicIO, QuicIoExt,
+    Interface, InterfaceExt,
     logical::{
         BindUriSchema, QuicInterface, RebindedError, TryIntoSocketAddrError, component::Component,
     },
@@ -55,7 +56,7 @@ impl InterfaceFailure {
     }
 }
 
-pub async fn is_alive(iface: &(impl QuicIO + ?Sized)) -> Result<(), InterfaceFailure> {
+pub async fn is_alive(iface: &(impl Interface + ?Sized)) -> Result<(), InterfaceFailure> {
     if iface.bind_uri().scheme() == BindUriSchema::Ble {
         return Err(InterfaceFailure::BleProtocol);
     }
@@ -107,25 +108,33 @@ pub async fn is_alive(iface: &(impl QuicIO + ?Sized)) -> Result<(), InterfaceFai
 #[derive(Debug)]
 pub struct RebindOnNetworkChanged {
     physical_interfaces: &'static PhysicalInterfaces,
-    task: Option<AbortOnDropHandle<()>>,
+    task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl RebindOnNetworkChanged {
     pub fn new(physical_interfaces: &'static PhysicalInterfaces) -> Self {
         Self {
             physical_interfaces,
-            task: None,
+            task: Mutex::new(None),
         }
     }
-}
 
-impl Component for RebindOnNetworkChanged {
-    fn init(&mut self, iface: &QuicInterface) {
-        if !self.task.as_ref().is_none_or(|t| t.is_finished()) {
+    fn lock_task(&self) -> MutexGuard<'_, Option<AbortOnDropHandle<()>>> {
+        self.task
+            .lock()
+            .expect("RebindOnNetworkChanged task mutex poisoned")
+    }
+
+    fn init(&self, iface: &QuicInterface) {
+        let mut task = self.lock_task();
+        if !task.as_ref().is_none_or(|t| t.is_finished()) {
             return;
         }
 
         let bind_uri = iface.bind_uri();
+        if bind_uri.is_temporary() {
+            return;
+        }
         let Some((_, device, ..)) = bind_uri.as_iface_bind_uri() else {
             return;
         };
@@ -133,7 +142,7 @@ impl Component for RebindOnNetworkChanged {
         let device = device.to_owned();
         let weak_iface = iface.bind_interface().downgrade();
         let mut event_receiver = self.physical_interfaces.event_receiver();
-        let task = async move {
+        *task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
             let try_rebind = async move || {
                 if let Ok(iface) = weak_iface.upgrade()
                     && let Err(error) = is_alive(&iface.borrow()).await
@@ -151,21 +160,22 @@ impl Component for RebindOnNetworkChanged {
                 }
                 try_rebind().await;
             }
-        };
-        self.task = Some(AbortOnDropHandle::new(tokio::spawn(task)));
+        })));
     }
+}
 
-    fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if let Some(task) = self.task.as_mut() {
+impl Component for RebindOnNetworkChanged {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut task_guard = self.lock_task();
+        if let Some(task) = task_guard.as_mut() {
             task.abort();
             _ = ready!(Pin::new(task).poll(cx));
-            self.task = None;
+            *task_guard = None;
         }
         Poll::Ready(())
     }
 
-    fn poll_reinit(&mut self, _cx: &mut Context<'_>, quic_iface: &QuicInterface) -> Poll<()> {
+    fn reinit(&self, quic_iface: &QuicInterface) {
         self.init(quic_iface);
-        Poll::Ready(())
     }
 }

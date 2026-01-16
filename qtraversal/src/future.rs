@@ -2,33 +2,14 @@ use std::{
     mem,
     ops::{Deref, DerefMut},
     sync::{Mutex, MutexGuard},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
-#[derive(Default, Debug, Clone)]
-struct Wakers(Vec<Waker>);
+use qbase::util::WakerVec;
 
-impl Wakers {
-    pub fn push(&mut self, waker: Waker) {
-        self.0.push(waker);
-    }
-
-    pub fn wake_all(&mut self) {
-        for waker in self.0.drain(..) {
-            waker.wake();
-        }
-    }
-}
-
-impl Drop for Wakers {
-    fn drop(&mut self) {
-        self.wake_all();
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum FutureState<T> {
-    Demand(Wakers),
+    Demand(WakerVec),
     Ready(T),
 }
 
@@ -140,7 +121,7 @@ impl<T> Future<T> {
     pub fn assign(&self, item: T) -> Option<T> {
         match std::mem::replace(self.state().deref_mut(), FutureState::Ready(item)) {
             FutureState::Demand(mut wakers) => {
-                wakers.wake_all();
+                mem::take(&mut wakers).wake_all();
                 None
             }
             FutureState::Ready(old) => Some(old),
@@ -156,7 +137,7 @@ impl<T> Future<T> {
         let mut state = self.state();
         match state.deref_mut() {
             FutureState::Demand(wakers) => {
-                wakers.push(cx.waker().clone());
+                wakers.register(cx.waker());
                 Poll::Pending
             }
             FutureState::Ready(..) => Poll::Ready(ReadyFuture(state)),
@@ -185,7 +166,7 @@ impl<T> Future<T> {
         let mut state = self.state();
         *state = match state.deref_mut() {
             FutureState::Demand(wakers) => FutureState::Demand(mem::take(wakers)),
-            FutureState::Ready(_) => FutureState::Demand(Wakers::default()),
+            FutureState::Ready(_) => FutureState::Demand(WakerVec::default()),
         };
     }
 }

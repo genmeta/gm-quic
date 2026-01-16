@@ -1,8 +1,7 @@
-use std::{collections::HashMap, error::Error, fmt::Debug, future, net::SocketAddr, sync::Arc};
+use std::{error::Error, fmt::Debug, future, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
-use qbase::net::{addr::BindUri, route::SocketEndpointAddr};
-use qinterface::logical::physical::PhysicalInterfaces;
+use qbase::net::route::SocketEndpointAddr;
 use snafu::Report;
 use tokio::io;
 
@@ -55,30 +54,30 @@ impl Resolvers {
         self
     }
 
-    pub fn with_mdns(mut self, service: &str) -> (Self, HashMap<String, io::Error>) {
-        let mut errors = HashMap::new();
-        for (device, interface) in PhysicalInterfaces::global().interfaces() {
-            let socket_addr =
-                match BindUri::from(format!("iface://v4.{device}:5353")).resolve([&interface]) {
-                    Ok(addr) => addr,
-                    Err(error) => {
-                        errors.insert(device, io::Error::other(error));
-                        continue;
-                    }
-                };
-            let SocketAddr::V4(socket_addr) = socket_addr else {
-                unreachable!()
-            };
-            match MdnsResolver::new(service, *socket_addr.ip(), &device) {
-                Ok(resolver) => self = self.with(Arc::new(resolver)),
-                Err(error) => {
-                    errors.insert(device, error);
-                    continue;
-                }
-            };
-        }
-        (self, errors)
-    }
+    // pub fn with_mdns(mut self, service: &str) -> (Self, HashMap<String, io::Error>) {
+    //     let mut errors = HashMap::new();
+    //     for (device, interface) in PhysicalInterfaces::global().interfaces() {
+    //         let socket_addr =
+    //             match BindUri::from(format!("iface://v4.{device}:5353")).resolve([&interface]) {
+    //                 Ok(addr) => addr,
+    //                 Err(error) => {
+    //                     errors.insert(device, io::Error::other(error));
+    //                     continue;
+    //                 }
+    //             };
+    //         let SocketAddr::V4(socket_addr) = socket_addr else {
+    //             unreachable!()
+    //         };
+    //         match MdnsResolver::new(service, *socket_addr.ip(), &device) {
+    //             Ok(resolver) => self = self.with(Arc::new(resolver)),
+    //             Err(error) => {
+    //                 errors.insert(device, error);
+    //                 continue;
+    //             }
+    //         };
+    //     }
+    //     (self, errors)
+    // }
 
     pub async fn lookup(
         &self,

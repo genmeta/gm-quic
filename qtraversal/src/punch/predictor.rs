@@ -3,10 +3,10 @@ use std::{
     time::Duration,
 };
 
-use qbase::net::addr::{BindUri, BindUriSchema};
 use qinterface::{
-    QuicIO,
-    logical::{QuicInterface, QuicInterfaces},
+    Interface,
+    factory::ProductQuicIO,
+    logical::{BindUri, BindUriSchema, QuicInterface, QuicInterfaces},
 };
 
 use crate::{
@@ -33,6 +33,7 @@ pub type PacketSendFn = Arc<
 
 pub struct PortPredictor {
     ifaces: Arc<QuicInterfaces>,
+    factory: Arc<dyn ProductQuicIO>,
     ports: VecDeque<(u16, BindUri, QuicInterface, tokio::time::Instant)>,
     bind_uri: BindUri,
     dst: SocketAddr,
@@ -45,6 +46,7 @@ pub struct PortPredictor {
 impl PortPredictor {
     pub fn new(
         ifaces: Arc<QuicInterfaces>,
+        factory: Arc<dyn ProductQuicIO>,
         bind_uri: BindUri,
         dst: SocketAddr,
         max_total: u32,
@@ -52,11 +54,12 @@ impl PortPredictor {
         let interface_name = match bind_uri.scheme() {
             BindUriSchema::Iface => bind_uri.as_iface_bind_uri().unwrap().1.to_string(),
             BindUriSchema::Inet => bind_uri.as_inet_bind_uri().unwrap().ip().to_string(),
-            _ => "default".to_string(),
+            _ => return Err(io::ErrorKind::Unsupported.into()),
         };
         tracing::debug!(target: "punch", %bind_uri, %dst, max_total, %interface_name, "Created port predictor");
         Ok(Self {
             ifaces,
+            factory,
             ports: VecDeque::new(),
             bind_uri,
             dst,
@@ -68,22 +71,26 @@ impl PortPredictor {
     }
 
     fn port_to_bind_uri(&self, port: u16) -> BindUri {
-        use qbase::net::addr::TEMPORARY;
         match self.bind_uri.scheme() {
             BindUriSchema::Iface => {
                 let (ip_family, device, _) = self.bind_uri.as_iface_bind_uri().unwrap();
-                BindUri::from_str(
-                    format!("iface://{ip_family}.{device}:{port}?{TEMPORARY}=true").as_str(),
-                )
-                .unwrap()
+                let bind_uri = format!(
+                    "iface://{ip_family}.{device}:{port}?{}=true",
+                    BindUri::TEMPORARY_PROP
+                );
+                BindUri::from_str(bind_uri.as_str()).unwrap_or_else(|e| {
+                    panic!("Constructed invalid iface bind URI {bind_uri}: {e}",)
+                })
             }
             BindUriSchema::Inet => {
                 let socket_addr = self.bind_uri.as_inet_bind_uri().unwrap();
                 let ip = socket_addr.ip();
-                BindUri::from_str(format!("inet://{}:{port}?{TEMPORARY}=true", ip).as_str())
-                    .unwrap()
+                let bind_uri = format!("inet://{ip}:{port}?{}=true", BindUri::TEMPORARY_PROP);
+                BindUri::from_str(bind_uri.as_str()).unwrap_or_else(|e| {
+                    panic!("Constructed invalid inet bind URI {bind_uri}: {e}",)
+                })
             }
-            _ => panic!("Unsupported bind uri scheme"),
+            _ => unreachable!("Unsupported bind URI schema for port prediction"),
         }
     }
 
@@ -246,8 +253,6 @@ impl PortPredictor {
     }
 
     async fn create_single_interface(&mut self) -> io::Result<(BindUri, QuicInterface)> {
-        use qinterface::factory::handy::DEFAULT_QUIC_IO_FACTORY;
-
         self.recycle_expired_interfaces().await?;
         self.recycle_if_full().await?;
 
@@ -260,11 +265,15 @@ impl PortPredictor {
                 continue;
             }
             let bind_addr = self.port_to_bind_uri(port);
-            let factory = Arc::new(DEFAULT_QUIC_IO_FACTORY);
-            let iface = self.ifaces.bind(bind_addr.clone(), factory).await;
+            let iface = self
+                .ifaces
+                .bind(bind_addr.clone(), self.factory.clone())
+                .await
+                .borrow();
 
-            match iface.borrow() {
-                Ok(iface) => {
+            match iface.real_addr() {
+                Ok(real_addr) => {
+                    tracing::debug!(target: "punch", %bind_addr, %real_addr, "Created new interface");
                     self.total_created += 1;
                     return Ok((bind_addr, iface));
                 }

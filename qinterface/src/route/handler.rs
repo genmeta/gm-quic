@@ -10,6 +10,12 @@ pub type PacketSink<P = Packet> = Pin<Box<dyn Sink<(P, Way), Error = Infallible>
 
 pub struct PacketHandler<P = Packet>(Mutex<Option<PacketSink<P>>>);
 
+impl<P> std::fmt::Debug for PacketHandler<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PacketHandler").finish()
+    }
+}
+
 impl<P> Default for PacketHandler<P> {
     fn default() -> Self {
         Self::drain()

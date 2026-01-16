@@ -29,6 +29,7 @@ pub use packet::{CipherPacket, PlainPacket};
 pub use qbase::packet::Packet;
 pub use queue::RcvdPacketQueue;
 
+#[derive(Debug)]
 pub struct Router {
     table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
     on_unrouted: handler::PacketHandler<Packet>,

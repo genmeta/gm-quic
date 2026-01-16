@@ -16,10 +16,10 @@ use gm_quic::{
     qbase::param::{ClientParameters, ServerParameters},
     qinterface::logical::QuicInterfaces,
     qtraversal::{
-        iface::{Interface, TraversalFactory},
+        iface::{StunInterface, TraversalFactory},
         nat::{
             StunIO,
-            client::{Client, NatType},
+            client::{NatType, StunClient},
         },
     },
 };
@@ -145,8 +145,8 @@ async fn test_detect_case(case: usize) {
     let case = CASES[case];
     let socket_addr: SocketAddr = case.bind_addr.parse::<SocketAddr>().unwrap();
     let bind_uri = format!("inet://{}", case.bind_addr);
-    let iface = Arc::new(Interface::new(socket_addr, bind_uri.into()).unwrap());
-    let client = Client::new(iface.stun_protocol().unwrap(), stun);
+    let iface = Arc::new(StunInterface::new(socket_addr, bind_uri.into()).unwrap());
+    let client = StunClient::new(iface.stun_protocol().unwrap(), stun);
     let outer_addr = client.outer_addr().await.expect("failed to get outer addr");
     info!("Outer addr: {} Agent addr {}", outer_addr, stun);
     let nat_type = client.nat_type().await.expect("failed to get nat type");

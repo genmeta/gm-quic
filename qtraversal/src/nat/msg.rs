@@ -281,28 +281,28 @@ impl Response {
         Response(attrs)
     }
 
-    pub fn map_addr(&self) -> io::Result<&SocketAddr> {
+    pub fn map_addr(&self) -> io::Result<SocketAddr> {
         for attr in &self.0 {
             if let Attr::MappedAddress(addr) = attr {
-                return Ok(addr);
+                return Ok(*addr);
             };
         }
         Err(io::Error::other("No mapped address found in response"))
     }
 
-    pub fn changed_addr(&self) -> io::Result<&SocketAddr> {
+    pub fn changed_addr(&self) -> io::Result<SocketAddr> {
         for attr in &self.0 {
             if let Attr::ChangedAddress(addr) = attr {
-                return Ok(addr);
+                return Ok(*addr);
             };
         }
         Err(io::Error::other("No changed address found in response"))
     }
 
-    pub fn source_addr(&self) -> io::Result<&SocketAddr> {
+    pub fn source_addr(&self) -> io::Result<SocketAddr> {
         for attr in &self.0 {
             if let Attr::SourceAddress(addr) = attr {
-                return Ok(addr);
+                return Ok(*addr);
             };
         }
         Err(io::Error::other("No source address found in response"))

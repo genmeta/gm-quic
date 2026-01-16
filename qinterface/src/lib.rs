@@ -8,6 +8,7 @@ use std::{
     any::Any,
     future::Future,
     io,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -29,7 +30,7 @@ use crate::logical::BindUri;
 ///
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
 #[async_trait::async_trait]
-pub trait QuicIO: Send + Sync + Any {
+pub trait Interface: Send + Sync + Any {
     /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
@@ -90,7 +91,7 @@ pub trait QuicIO: Send + Sync + Any {
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
 }
 
-pub trait QuicIoExt: QuicIO {
+pub trait InterfaceExt: Interface {
     #[inline]
     fn sendmmsg(
         &self,
@@ -161,7 +162,27 @@ pub trait QuicIoExt: QuicIO {
                 }))
         }
     }
-
 }
 
-impl<IO: QuicIO + ?Sized> QuicIoExt for IO {}
+impl<IO: Interface + ?Sized> InterfaceExt for IO {}
+
+pub trait RefInterface: Clone + Send + Sync {
+    type Interface: Interface + ?Sized;
+
+    fn iface(&self) -> &Self::Interface;
+
+    fn same_io(&self, other: &Self) -> bool;
+}
+
+impl<IO: Interface + ?Sized> RefInterface for Arc<IO> {
+    type Interface = IO;
+
+    #[inline]
+    fn iface(&self) -> &Self::Interface {
+        self.as_ref()
+    }
+
+    fn same_io(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self, other)
+    }
+}

@@ -6,11 +6,13 @@ use std::{
 
 use futures::{SinkExt, StreamExt, channel::mpsc};
 
+#[derive(Debug)]
 struct BoundQueueInner<T> {
     tx: mpsc::Sender<T>,
     rx: Mutex<mpsc::Receiver<T>>,
 }
 
+#[derive(Debug)]
 pub struct BoundQueue<T>(Arc<BoundQueueInner<T>>);
 
 impl<T> Clone for BoundQueue<T> {

@@ -18,7 +18,7 @@ use qevent::quic::{
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 use tracing::{info, warn};
 
-#[derive(Deref)]
+#[derive(Debug, Deref)]
 pub struct CipherPacket<H> {
     #[deref]
     header: H,

@@ -1,27 +1,22 @@
 use std::{
     any::{Any, TypeId},
-    collections::HashMap,
+    collections::{HashMap, hash_map},
     fmt::Debug,
     hash::{BuildHasherDefault, Hasher},
-    task::{Context, Poll},
+    task::{Context, Poll, ready},
 };
-
-use futures::ready;
 
 mod rebind_on_network_changed;
 pub use rebind_on_network_changed::RebindOnNetworkChanged;
 // TODO: rewrite to component
 mod receive_and_deliver_quic;
-pub use receive_and_deliver_quic::Task;
+pub use receive_and_deliver_quic::{RouterComponent, Task};
 
 use crate::logical::QuicInterface;
 
 pub trait Component: Any + Debug + Send + Sync {
-    /// Initialize the component when the QuicIO is bound.
-    fn init(&mut self, quic_iface: &QuicInterface);
-
     /// Gracefully shutdown the component when QuicIO is closing.
-    fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<()>;
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()>;
 
     /// Re-initialize the component after the QuicIO has been rebound
     ///
@@ -29,11 +24,7 @@ pub trait Component: Any + Debug + Send + Sync {
     /// then re-initializes it with the new QuicIO.
     ///
     /// Implementation may override this method for optimization.
-    fn poll_reinit(&mut self, cx: &mut Context<'_>, quic_iface: &QuicInterface) -> Poll<()> {
-        ready!(self.poll_shutdown(cx));
-        self.init(quic_iface);
-        Poll::Ready(())
-    }
+    fn reinit(&self, quic_iface: &QuicInterface);
 }
 
 // With TypeIds as keys, there's no need to hash them. They are already hashes
@@ -58,4 +49,45 @@ impl Hasher for IdHasher {
     }
 }
 
-pub(super) type ComponentsMap = HashMap<TypeId, Box<dyn Component>, BuildHasherDefault<IdHasher>>;
+#[derive(Default)]
+pub struct Components {
+    pub(super) map: HashMap<TypeId, Box<dyn Component>, BuildHasherDefault<IdHasher>>,
+}
+
+impl Components {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get<C: Component>(&self) -> Option<&C> {
+        self.map
+            .get(&TypeId::of::<C>())
+            .and_then(|c| (c.as_ref() as &dyn Any).downcast_ref())
+    }
+
+    pub fn with<C: Component, T>(&self, f: impl FnOnce(&C) -> T) -> Option<T> {
+        self.get::<C>().map(f)
+    }
+
+    pub fn insert_with<C: Component>(&mut self, init: impl FnOnce() -> C) -> &mut C {
+        let ref_mut = self
+            .map
+            .entry(TypeId::of::<C>())
+            .or_insert_with(|| Box::new(init()));
+        (ref_mut.as_mut() as &mut dyn Any).downcast_mut().unwrap()
+    }
+
+    pub fn poll_remove<C>(&mut self, cx: &mut Context<'_>) -> Poll<()>
+    where
+        C: Component,
+    {
+        let hash_map::Entry::Occupied(entry) = self.map.entry(TypeId::of::<C>()) else {
+            return Poll::Ready(());
+        };
+
+        ready!(entry.get().poll_shutdown(cx));
+        entry.remove();
+
+        Poll::Ready(())
+    }
+}

@@ -2,13 +2,53 @@ use std::{
     mem,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Wake, Waker},
+    usize,
 };
 
 use smallvec::SmallVec;
 
+#[derive(Debug, Clone)]
+pub struct WakerVec<const N: usize = 4> {
+    wakers: SmallVec<[Waker; N]>,
+}
+
+impl<const N: usize> Default for WakerVec<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> WakerVec<N> {
+    pub const fn new() -> Self {
+        Self {
+            wakers: SmallVec::new_const(),
+        }
+    }
+
+    pub fn register(&mut self, waker: &Waker) -> bool {
+        if !self.wakers.iter().any(|w| w.will_wake(waker)) {
+            self.wakers.push(waker.clone());
+            return self.wakers.len() == 1;
+        }
+        true
+    }
+
+    pub fn wake_all(&mut self) {
+        for waker in self.wakers.drain(..) {
+            waker.wake();
+        }
+    }
+}
+
+impl<const N: usize> Drop for WakerVec<N> {
+    fn drop(&mut self) {
+        self.wake_all();
+    }
+}
+
 #[derive(Debug)]
 pub struct Wakers<const N: usize = 4> {
-    wakers: Mutex<SmallVec<[Waker; N]>>,
+    wakers: Mutex<WakerVec<N>>,
 }
 
 impl<const N: usize> Wake for Wakers<N> {
@@ -30,26 +70,20 @@ impl<const N: usize> Default for Wakers<N> {
 impl<const N: usize> Wakers<N> {
     pub const fn new() -> Self {
         Self {
-            wakers: Mutex::new(SmallVec::new_const()),
+            wakers: Mutex::new(WakerVec::new()),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, SmallVec<[Waker; N]>> {
+    fn lock(&self) -> MutexGuard<'_, WakerVec<N>> {
         self.wakers.lock().expect("Wakers mutex poisoned")
     }
 
     pub fn register(&self, waker: &Waker) -> bool {
-        let mut wakers = self.lock();
-        if !wakers.iter().any(|w| w.will_wake(waker)) {
-            wakers.push(waker.clone());
-        };
-        wakers.len() == 1
+        self.lock().register(waker)
     }
 
     pub fn wake_all(&self) {
-        for waker in { mem::replace(&mut *self.lock(), SmallVec::new_const()) }.drain(..) {
-            waker.wake();
-        }
+        { mem::replace(&mut *self.lock(), WakerVec::new()) }.wake_all()
     }
 
     pub fn to_waker(self: &Arc<Self>) -> Waker {
@@ -65,11 +99,5 @@ impl<const N: usize> Wakers<N> {
             return Poll::Pending;
         }
         poll(&mut Context::from_waker(&self.to_waker()))
-    }
-}
-
-impl<const N: usize> Drop for Wakers<N> {
-    fn drop(&mut self) {
-        self.wake_all();
     }
 }

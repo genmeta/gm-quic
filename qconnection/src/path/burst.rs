@@ -24,7 +24,7 @@ use qbase::{
     token::TokenRegistry,
 };
 use qcongestion::{ArcCC, Transport};
-use qinterface::QuicIO;
+use qinterface::Interface;
 use qrecovery::journal::{AckPackege, ArcRcvdJournal, Journal};
 use qtraversal::packet::{ForwardHeader, WriteForwardHeader};
 
@@ -562,6 +562,7 @@ impl Burst {
                             let (mut header, payload) = segment.split_at_mut(reversed_size);
                             let forward_hdr = ForwardHeader::new(
                                 0,
+                                // FIXME: unwrap
                                 &self.path.pathway.try_into().unwrap(),
                                 payload,
                             );
