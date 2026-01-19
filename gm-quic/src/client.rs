@@ -12,7 +12,7 @@ use qbase::{
 use qconnection::prelude::handy::*;
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{BindInterface, QuicInterface, QuicInterfaces},
 };
 use rustls::{
@@ -47,7 +47,7 @@ pub struct QuicClient {
     defer_idle_timeout: Duration,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
-    quic_iface_factory: Arc<dyn ProductQuicIO>,
+    quic_iface_factory: Arc<dyn ProductInterface>,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     tls_config: TlsClientConfig,
@@ -339,7 +339,7 @@ impl QuicClient {
 
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    quic_iface_factory: Arc<dyn ProductQuicIO>,
+    quic_iface_factory: Arc<dyn ProductInterface>,
     quic_ifaces: Arc<QuicInterfaces>,
     bind_ifaces: Option<DashMap<BindUri, BindInterface>>,
     prefer_versions: Vec<u32>,
@@ -360,7 +360,7 @@ impl<T> QuicClientBuilder<T> {
     /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
-    pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
+    pub fn with_iface_factory(self, factory: impl ProductInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),
             ..self

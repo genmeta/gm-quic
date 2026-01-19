@@ -26,7 +26,7 @@ use qbase::{
 };
 use qinterface::{
     Interface, InterfaceExt,
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{BindUri, QuicInterface, QuicInterfaces, WeakQuicInterface},
 };
 use qudp::DEFAULT_TTL;
@@ -48,6 +48,7 @@ use crate::{
         predictor::{PacketSendFn, PortPredictor},
         tx::Transaction,
     },
+    route::ReceiveAndDeliverPacket,
 };
 
 type StunClient<IO = WeakQuicInterface> = crate::nat::client::StunClient<IO>;
@@ -81,7 +82,7 @@ where
         product_header: PH,
         packet_space: Arc<S>,
         ifaces: Arc<QuicInterfaces>,
-        iface_factory: Arc<dyn ProductQuicIO>,
+        iface_factory: Arc<dyn ProductInterface>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self(Arc::new(Puncher::new(
@@ -101,7 +102,7 @@ pub struct Puncher<TX, PH, S> {
     product_header: PH,
     packet_space: Arc<S>,
     ifaces: Arc<QuicInterfaces>,
-    iface_factory: Arc<dyn ProductQuicIO>,
+    iface_factory: Arc<dyn ProductInterface>,
     stun_servers: Arc<[SocketAddr]>,
     address_book: Mutex<AddressBook>,
     punch_ifaces: DashMap<BindUri, QuicInterface>,
@@ -119,7 +120,7 @@ where
         product_header: PH,
         packet_space: Arc<S>,
         ifaces: Arc<QuicInterfaces>,
-        iface_factory: Arc<dyn ProductQuicIO>,
+        iface_factory: Arc<dyn ProductInterface>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self {
@@ -1029,7 +1030,7 @@ where
 async fn dynamic_iface(
     bind_uri: &BindUri,
     ifaces: &Arc<QuicInterfaces>,
-    iface_factory: &Arc<dyn ProductQuicIO>,
+    iface_factory: &Arc<dyn ProductInterface>,
     stun_servers: &[SocketAddr],
 ) -> io::Result<(QuicInterface, StunClient)> {
     const MIN_PORT: u16 = 1024;
@@ -1056,15 +1057,23 @@ async fn dynamic_iface(
                 .iter()
                 .find(|addr| addr.is_ipv4() == local_addr.is_ipv4())
                 .ok_or_else(|| io::Error::other("No STUN server matches local address family"))?;
-
             let stun_router = components
-                .insert_with(|| StunRouterComponent::new(quic_iface.downgrade()))
+                .init_with(|| {
+                    let ref_iface = quic_iface.downgrade();
+                    StunRouterComponent::new(ref_iface)
+                })
                 .router();
             let stun_client = components
-                .insert_with(|| {
-                    StunClientComponent::new(quic_iface.downgrade(), stun_router, stun_server)
+                .init_with(|| {
+                    let client = StunClient::new(quic_iface.downgrade(), stun_router, stun_server);
+                    StunClientComponent::new(client)
                 })
                 .client();
+            components.init_with(|| {
+                ReceiveAndDeliverPacket::builder(quic_iface)
+                    .forward(false)
+                    .init()
+            });
             Ok((quic_iface.to_owned(), stun_client))
         })
 }

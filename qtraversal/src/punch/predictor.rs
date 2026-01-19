@@ -5,7 +5,7 @@ use std::{
 
 use qinterface::{
     Interface,
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{BindUri, BindUriSchema, QuicInterface, QuicInterfaces},
 };
 
@@ -33,7 +33,7 @@ pub type PacketSendFn = Arc<
 
 pub struct PortPredictor {
     ifaces: Arc<QuicInterfaces>,
-    factory: Arc<dyn ProductQuicIO>,
+    factory: Arc<dyn ProductInterface>,
     ports: VecDeque<(u16, BindUri, QuicInterface, tokio::time::Instant)>,
     bind_uri: BindUri,
     dst: SocketAddr,
@@ -46,7 +46,7 @@ pub struct PortPredictor {
 impl PortPredictor {
     pub fn new(
         ifaces: Arc<QuicInterfaces>,
-        factory: Arc<dyn ProductQuicIO>,
+        factory: Arc<dyn ProductInterface>,
         bind_uri: BindUri,
         dst: SocketAddr,
         max_total: u32,

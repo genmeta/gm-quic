@@ -3,7 +3,7 @@ use std::{future::poll_fn, io, net::SocketAddr};
 use qbase::{
     frame::ReceiveFrame,
     net::{
-        addr::{BindUri, RealAddr},
+        addr::RealAddr,
         route::{BleEndpontAddr, EndpointAddr, Link, Pathway, SocketEndpointAddr},
         tx::Signals,
     },
@@ -12,9 +12,9 @@ use qbase::{
 use qevent::telemetry::Instrument;
 use qinterface::{
     local::{AddressEvent, Locations},
-    logical::QuicInterfaces,
+    logical::{BindUri, QuicInterfaces},
 };
-use qtraversal::{frame::TraversalFrame, nat::StunIO};
+use qtraversal::frame::TraversalFrame;
 use tracing::Instrument as _;
 
 use super::Components;
@@ -105,11 +105,7 @@ impl Components {
         tracing::debug!(target: "quic", bind_uri = %bind, %addr,"Add local endpoint");
         match self.puncher.add_local_endpoint(bind, addr) {
             Ok(ways) => {
-                let ways: Vec<(
-                    qbase::net::addr::BindUri,
-                    qtraversal::Link,
-                    qtraversal::PathWay,
-                )> = ways;
+                let ways: Vec<(BindUri, qtraversal::Link, qtraversal::PathWay)> = ways;
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());
                 });
@@ -129,11 +125,7 @@ impl Components {
         tracing::debug!(target: "quic", %addr, "Add peer endpoint");
         match self.puncher.add_peer_endpoint(addr) {
             Ok(ways) => {
-                let ways: Vec<(
-                    qbase::net::addr::BindUri,
-                    qtraversal::Link,
-                    qtraversal::PathWay,
-                )> = ways;
+                let ways: Vec<(BindUri, qtraversal::Link, qtraversal::PathWay)> = ways;
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());
                 });
@@ -150,7 +142,8 @@ impl Components {
         bind_uri: BindUri,
         endpoint_addr: EndpointAddr,
     ) -> io::Result<()> {
-        let iface = QuicInterfaces::global()
+        let iface = self
+            .interfaces
             .borrow(&bind_uri)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
 

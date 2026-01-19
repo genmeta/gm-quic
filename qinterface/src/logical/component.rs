@@ -69,7 +69,7 @@ impl Components {
         self.get::<C>().map(f)
     }
 
-    pub fn insert_with<C: Component>(&mut self, init: impl FnOnce() -> C) -> &mut C {
+    pub fn init_with<C: Component>(&mut self, init: impl FnOnce() -> C) -> &mut C {
         let ref_mut = self
             .map
             .entry(TypeId::of::<C>())

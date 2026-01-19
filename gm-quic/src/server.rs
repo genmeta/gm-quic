@@ -17,7 +17,7 @@ use qbase::{
 use qconnection::{prelude::handy::ConsistentConcurrency, tls::AcceptAllClientAuther};
 use qevent::telemetry::{Log, handy::NoopLogger};
 use qinterface::{
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{BindInterface, QuicInterfaces},
     route::{Router, Way},
 };
@@ -196,7 +196,7 @@ type Incomings = BoundQueue<((Connection, String, Pathway, Link), OwnedSemaphore
 /// - Rejects connections if the target server isn't listening on the receiving interface
 /// - Returns connections that may still be completing their QUIC handshake
 pub struct QuicListeners {
-    quic_iface_factory: Arc<dyn ProductQuicIO>,
+    quic_iface_factory: Arc<dyn ProductInterface>,
     quic_ifaces: Arc<QuicInterfaces>,
     servers: Arc<DashMap<String, Server>>,
     backlog: Arc<Semaphore>,
@@ -522,7 +522,7 @@ impl QuicListeners {
 /// The builder for the quic listeners.
 pub struct QuicListenersBuilder<T> {
     quic_ifaces: Arc<QuicInterfaces>,
-    quic_iface_factory: Arc<dyn ProductQuicIO>,
+    quic_iface_factory: Arc<dyn ProductInterface>,
     servers: Arc<DashMap<String, Server>>, // must be empty while building
     incomings: Arc<Incomings>,             // identify the building QuicListeners
 
@@ -604,7 +604,7 @@ impl<T> QuicListenersBuilder<T> {
     /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
-    pub fn with_iface_factory(self, factory: impl ProductQuicIO + 'static) -> Self {
+    pub fn with_iface_factory(self, factory: impl ProductInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Arc::new(factory),
             ..self

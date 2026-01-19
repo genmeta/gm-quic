@@ -25,7 +25,10 @@ use qevent::{
     },
     telemetry::{Instrument, Log, handy::NoopLogger},
 };
-use qinterface::{logical::QuicInterfaces, queue::RcvdPacketQueue, route::Router};
+use qinterface::{
+    logical::QuicInterfaces,
+    route::{RcvdPacketQueue, Router},
+};
 use qrecovery::crypto::CryptoStream;
 use qtraversal::punch::puncher::ArcPuncher;
 use qunreliable::DatagramFlow;

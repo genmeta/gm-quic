@@ -60,10 +60,7 @@ use qbase::{
     error::{AppError, Error, ErrorKind, QuicError},
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
-    net::{
-        addr::BindUri,
-        route::{EndpointAddr, Link, Pathway},
-    },
+    net::route::{EndpointAddr, Link, Pathway},
     param::{ArcParameters, ParameterId},
     role::Role,
     sid::StreamId,
@@ -75,9 +72,8 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
-    logical::QuicInterfaces,
-    queue::RcvdPacketQueue,
-    route::{self, RouterEntry},
+    logical::{BindUri, QuicInterfaces},
+    route::{self, RcvdPacketQueue, RouterEntry},
 };
 use qrecovery::{
     crypto::CryptoStream,

@@ -11,7 +11,6 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
-        addr::BindUri,
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
@@ -21,7 +20,10 @@ use qbase::{
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
-use qinterface::{Interface, InterfaceExt, logical::QuicInterface};
+use qinterface::{
+    Interface, InterfaceExt,
+    logical::{BindUri, QuicInterface},
+};
 use tokio::time::Duration;
 
 mod aa;

@@ -1,20 +1,27 @@
 use std::{
-    future::poll_fn,
+    collections::HashMap,
     io::{self},
     net::SocketAddr,
-    pin::Pin,
-    sync::{Arc, Mutex, MutexGuard, atomic::AtomicBool},
+    ops::{ControlFlow, Deref},
+    pin::pin,
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU8, Ordering::SeqCst},
+    },
     task::{Context, Poll, ready},
     time::Duration,
 };
 
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
+use qdns::Resolve;
 use qinterface::{
     Interface, RefInterface,
     local::Locations,
     logical::{QuicInterface, RebindedError, WeakQuicInterface, component::Component},
 };
 use thiserror::Error;
+use tokio::{sync::Notify, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 
@@ -40,49 +47,134 @@ impl From<ArcIoError> for io::Error {
     }
 }
 
-#[derive(Debug)]
-struct RunningClient<IO: RefInterface + 'static> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientState {
+    Active = 0,
+    Inactive = 1,
+    Closing = 2,
+}
+
+#[derive(Debug, Clone)]
+struct ArcClientState {
+    state: Arc<AtomicU8>,
+    observers: [Arc<Notify>; 3],
+}
+
+impl ArcClientState {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(ClientState::Active as u8)),
+            observers: <[_; 3]>::default(),
+        }
+    }
+
+    pub fn try_update(&self, old_state: ClientState, new_state: ClientState) -> bool {
+        match self
+            .state
+            .compare_exchange(old_state as u8, new_state as u8, SeqCst, SeqCst)
+        {
+            Ok(_old) => {
+                self.observers[new_state as usize].notify_waiters();
+                true
+            }
+            Err(_current) => false,
+        }
+    }
+
+    pub fn get(&self) -> ClientState {
+        match self.state.load(SeqCst) {
+            0 => ClientState::Active,
+            1 => ClientState::Inactive,
+            2 => ClientState::Closing,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn set(&self, new_state: ClientState) -> ClientState {
+        let old_state = self.state.swap(new_state as u8, SeqCst);
+        if old_state != new_state as u8 {
+            self.observers[new_state as usize].notify_waiters();
+        }
+        match old_state {
+            0 => ClientState::Active,
+            1 => ClientState::Inactive,
+            2 => ClientState::Closing,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn wait(&self, expect: ClientState) -> impl futures::Future<Output = ()> + use<> {
+        let notify = self.observers[expect as usize].clone();
+        let state = self.state.clone();
+        async move {
+            let mut notified = pin!(notify.notified());
+            loop {
+                notified.as_mut().enable();
+                if state.load(SeqCst) == expect as u8 {
+                    return;
+                }
+                notified.as_mut().await;
+                notified.set(notify.notified());
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StunClient<IO: RefInterface + 'static> {
     #[allow(clippy::type_complexity)]
-    keep_alive_task: Option<(AbortOnDropHandle<()>, SocketAddr)>,
     outer_addr: Arc<Future<Result<SocketAddr, ArcIoError>>>,
-    nat_detect_task: Option<AbortOnDropHandle<()>>,
     nat_type: Arc<Future<Result<NatType, ArcIoError>>>,
     ref_iface: IO,
     // 可能被复制进keep_alive_task
     stun_router: StunRouter,
-    stun_server: SocketAddr,
+    stun_agent: SocketAddr,
+
+    state: ArcClientState,
+    tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
-impl<IO: RefInterface + 'static> RunningClient<IO> {
-    fn new(ref_iface: IO, stun_router: StunRouter, stun_server: SocketAddr) -> Self {
-        Self {
+impl<IO: RefInterface + 'static> StunClient<IO> {
+    pub fn new(ref_iface: IO, stun_router: StunRouter, stun_agent: SocketAddr) -> Self {
+        let client = Self {
             nat_type: Default::default(),
             outer_addr: Default::default(),
-            stun_server,
+            stun_agent,
             ref_iface,
             stun_router,
-            keep_alive_task: Default::default(),
-            nat_detect_task: Default::default(),
+            state: ArcClientState::new(),
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
+        };
+
+        {
+            let mut tasks = client.lock_tasks();
+            tasks.spawn(client.nat_detect_task());
+            tasks.spawn(client.keep_alive_task());
         }
+
+        client
     }
 
-    fn keep_alive_task(
-        &self,
-    ) -> io::Result<(impl futures::Future<Output = ()> + use<IO>, SocketAddr)> {
+    fn lock_tasks(&self) -> MutexGuard<'_, JoinSet<()>> {
+        self.tasks.lock().expect("StunClient tasks lock poisoned")
+    }
+
+    fn keep_alive_task(&self) -> impl futures::Future<Output = ()> + use<IO> {
         let outer_addr = self.outer_addr.clone();
-        let stun_server = self.stun_server;
+        let stun_agent = self.stun_agent;
         let stun_router = self.stun_router.clone();
 
         let ref_iface = self.ref_iface.clone();
         let bind_uri = ref_iface.iface().bind_uri();
-        let real_addr = ref_iface.iface().local_addr()?;
+
+        let client_state = self.state.clone();
 
         let keep_alive_task = async move {
             let handle_detect_result = |detect_result: &io::Result<SocketAddr>| match &detect_result
             {
                 Ok(new_outer_addr) => {
                     let ep = SocketEndpointAddr::Agent {
-                        agent: stun_server,
+                        agent: stun_agent,
                         outer: (*new_outer_addr),
                     };
 
@@ -117,11 +209,16 @@ impl<IO: RefInterface + 'static> RunningClient<IO> {
                 let detect_result = detect_outer_addr(
                     ref_iface.clone(),
                     stun_router.clone(),
-                    stun_server,
+                    stun_agent,
                     3,
                     Duration::from_millis(300),
                 )
                 .await;
+
+                match &detect_result {
+                    Ok(_) => client_state.try_update(ClientState::Inactive, ClientState::Active),
+                    Err(_) => client_state.try_update(ClientState::Active, ClientState::Inactive),
+                };
 
                 handle_detect_result(&detect_result);
 
@@ -134,36 +231,30 @@ impl<IO: RefInterface + 'static> RunningClient<IO> {
             }
         };
         let bind_uri = self.ref_iface.iface().bind_uri();
-        let keep_alive_task = keep_alive_task.instrument(tracing::debug_span!(
+        keep_alive_task.instrument(tracing::debug_span!(
             target: "stun",
             "keep_alive_task",
             %bind_uri,
-            %stun_server,
-        ));
-
-        Ok((keep_alive_task, real_addr))
+            %stun_agent,
+        ))
     }
 
-    fn respawn_keep_alive_task(&mut self) -> io::Result<()> {
-        let (task, real_addr) = self.keep_alive_task()?;
-        self.keep_alive_task = Some((AbortOnDropHandle::new(tokio::spawn(task)), real_addr));
-        Ok(())
-    }
-
-    fn poll_outer_addr(&mut self, cx: &mut Context) -> Poll<io::Result<SocketAddr>> {
-        if self.keep_alive_task.is_none() {
-            self.respawn_keep_alive_task()?;
+    pub fn poll_outer_addr(&self, cx: &mut Context) -> Poll<io::Result<SocketAddr>> {
+        if self.state.get() == ClientState::Closing {
+            return Poll::Ready(Err(RebindedError.into()));
         }
         self.outer_addr
             .poll_get(cx)
             .map(|result| result.clone().map_err(io::Error::from))
     }
 
-    fn get_outer_addr(&mut self) -> Option<io::Result<SocketAddr>> {
-        if self.keep_alive_task.is_none()
-            && let Err(error) = self.respawn_keep_alive_task()
-        {
-            return Some(Err(error));
+    pub async fn outer_addr(&self) -> io::Result<SocketAddr> {
+        core::future::poll_fn(|cx| self.poll_outer_addr(cx)).await
+    }
+
+    pub fn get_outer_addr(&self) -> Option<io::Result<SocketAddr>> {
+        if self.state.get() == ClientState::Closing {
+            return Some(Err(RebindedError.into()));
         }
 
         self.outer_addr
@@ -171,11 +262,11 @@ impl<IO: RefInterface + 'static> RunningClient<IO> {
             .map(|result| result.clone().map_err(io::Error::from))
     }
 
-    fn nat_detect_task(&self) -> io::Result<impl futures::Future<Output = ()> + use<IO>> {
+    fn nat_detect_task(&self) -> impl futures::Future<Output = ()> + use<IO> {
         let nat_type = self.nat_type.clone();
         let ref_iface = self.ref_iface.clone();
         let stun_router = self.stun_router.clone();
-        let stun_server = self.stun_server;
+        let stun_agent = self.stun_agent;
         let bind_uri = ref_iface.iface().bind_uri();
         // Note: 原来的逻辑是 nat 探测会新建 iface，但是有的服务器只能开放指定端口，所以还是用监听的端口进行探测
         // 又因为Dynamic 总是会新建 iface 进行打洞，所以这里污染了影响不会很大
@@ -183,267 +274,303 @@ impl<IO: RefInterface + 'static> RunningClient<IO> {
             tracing::debug!(target: "stun", "Starting NAT type detection");
             let timeout = Duration::from_millis(100);
             _ = nat_type.assign(
-                detect_nat_type(ref_iface, stun_router, stun_server, 30, timeout)
+                detect_nat_type(ref_iface, stun_router, stun_agent, 30, timeout)
                     .await
                     .map_err(ArcIoError::from),
             );
         };
 
-        Ok(task.instrument(tracing::debug_span!(
+        task.instrument(tracing::debug_span!(
             target: "stun",
             "nat_type_task",
-            bind_uri=%bind_uri,
-            %stun_server,
-        )))
+            %bind_uri,
+            %stun_agent,
+        ))
     }
 
-    fn respawn_nat_detect_task(&mut self) -> io::Result<()> {
-        let task = self.nat_detect_task()?;
-        self.nat_detect_task = Some(AbortOnDropHandle::new(tokio::spawn(task)));
-        Ok(())
-    }
-
-    fn poll_nat_type(&mut self, cx: &mut Context) -> Poll<io::Result<NatType>> {
-        if self.nat_detect_task.is_none() {
-            self.respawn_nat_detect_task()?;
+    pub fn poll_nat_type(&self, cx: &mut Context) -> Poll<io::Result<NatType>> {
+        if self.state.get() == ClientState::Closing {
+            return Poll::Ready(Err(RebindedError.into()));
         }
         self.nat_type
             .poll_get(cx)
             .map(|result| result.clone().map_err(io::Error::from))
     }
 
-    pub fn get_nat_type(&mut self) -> Option<io::Result<NatType>> {
-        if self.nat_detect_task.is_none()
-            && let Err(error) = self.respawn_nat_detect_task()
-        {
-            return Some(Err(error));
+    pub async fn nat_type(&self) -> io::Result<NatType> {
+        core::future::poll_fn(|cx| self.poll_nat_type(cx)).await
+    }
+
+    pub fn get_nat_type(&self) -> Option<io::Result<NatType>> {
+        if self.state.get() == ClientState::Closing {
+            return Some(Err(RebindedError.into()));
         }
         self.nat_type
             .try_get()
             .map(|result| result.clone().map_err(io::Error::from))
     }
 
-    fn restart(&mut self) -> io::Result<()> {
-        self.stun_router.clear();
-        *self = RunningClient::new(
-            self.ref_iface.clone(),
-            self.stun_router.clone(),
-            self.stun_server,
-        );
-        self.respawn_nat_detect_task()?;
-        self.respawn_keep_alive_task()?;
-        Ok(())
-    }
+    // fn restart(&mut self) -> io::Result<()> {
+    //     self.stun_router.clear();
+    //     *self = RunningClient::new(
+    //         self.ref_iface.clone(),
+    //         self.stun_router.clone(),
+    //         self.stun_agent,
+    //     );
+    //     Ok(())
+    // }
 
-    fn close(&mut self) -> ClosingClient {
-        let keep_alive_task = self.keep_alive_task.take().map(|(task, _)| task);
-        let nat_detect_task = self.nat_detect_task.take();
-        ClosingClient {
-            keep_alive_task,
-            nat_detect_task,
+    pub fn poll_close(&self, cx: &mut Context) -> Poll<()> {
+        if self.state.set(ClientState::Closing) == ClientState::Closing {
+            return Poll::Ready(());
         }
-    }
-}
-
-impl<IO: RefInterface + 'static> Drop for RunningClient<IO> {
-    fn drop(&mut self) {
-        tracing::debug!(target: "stun", bind_uri = %self.ref_iface.iface().bind_uri(), "Drop stun client");
-        // Locations::global().remove::<SocketEndpointAddr>(&self.protocol.bind_uri());
-        // all addresses removed by qinterface::Interface::drop
-    }
-}
-
-#[derive(Debug)]
-struct ClosingClient {
-    keep_alive_task: Option<AbortOnDropHandle<()>>,
-    nat_detect_task: Option<AbortOnDropHandle<()>>,
-}
-
-impl ClosingClient {
-    pub fn poll_close(&mut self, cx: &mut Context) -> Poll<()> {
-        if let Some(task) = self.keep_alive_task.as_mut() {
-            task.abort();
-            _ = ready!(Pin::new(task).poll(cx));
-            // avoid poll after completion
-            self.keep_alive_task = None;
-        }
-        if let Some(task) = self.nat_detect_task.as_mut() {
-            task.abort();
-            _ = ready!(Pin::new(task).poll(cx));
-            // avoid poll after completion
-            self.nat_detect_task = None;
-        }
+        while ready!(self.lock_tasks().poll_join_next(cx)).is_some() {}
+        self.nat_type.clear();
+        self.outer_addr.clear();
         Poll::Ready(())
     }
 }
 
-#[derive(Debug)]
-enum State<IO: RefInterface + 'static> {
-    Running(RunningClient<IO>),
-    Closing(ClosingClient),
-}
-
-impl<IO: RefInterface + 'static> Default for State<IO> {
-    fn default() -> Self {
-        Self::Closing(ClosingClient {
-            keep_alive_task: None,
-            nat_detect_task: None,
-        })
+impl<IO: RefInterface + 'static> Drop for StunClient<IO> {
+    fn drop(&mut self) {
+        tracing::debug!(target: "stun", bind_uri = %self.ref_iface.iface().bind_uri(), "Drop stun client");
     }
 }
-
-impl<IO: RefInterface + 'static> State<IO> {
-    pub fn poll_close(&mut self, cx: &mut Context) -> Poll<()> {
-        loop {
-            match self {
-                State::Running(client) => *self = Self::Closing(client.close()),
-                State::Closing(client) => return client.poll_close(cx),
-            }
-        }
-    }
-
-    fn map<T>(&mut self, f: impl FnOnce(&mut RunningClient<IO>) -> T) -> io::Result<T> {
-        match self {
-            State::Running(client) => Ok(f(client)),
-            State::Closing(..) => Err(RebindedError.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StunClient<IO: RefInterface + 'static> {
-    state: Arc<Mutex<State<IO>>>,
-}
-
-impl<IO: RefInterface + 'static> Default for StunClient<IO> {
-    fn default() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(Default::default())),
-        }
-    }
-}
-
-impl<IO: RefInterface + 'static> StunClient<IO> {
-    pub fn new(ref_iface: IO, stun_router: StunRouter, stun_server: SocketAddr) -> Self {
-        let state = State::Running(RunningClient::new(ref_iface, stun_router, stun_server));
-        Self {
-            state: Arc::new(Mutex::new(state)),
-        }
-    }
-
-    fn lock_state(&self) -> MutexGuard<'_, State<IO>> {
-        self.state.lock().unwrap()
-    }
-
-    pub fn poll_outer_addr(&self, cx: &mut Context) -> Poll<io::Result<SocketAddr>> {
-        self.lock_state().map(|client| client.poll_outer_addr(cx))?
-    }
-
-    pub fn get_outer_addr(&self) -> Option<io::Result<SocketAddr>> {
-        match self.lock_state().map(|client| client.get_outer_addr()) {
-            Ok(option) => option,
-            Err(error) => Some(Err(error)),
-        }
-    }
-
-    pub async fn outer_addr(&self) -> io::Result<SocketAddr> {
-        poll_fn(|cx| self.poll_outer_addr(cx)).await
-    }
-
-    pub fn get_nat_type(&self) -> Option<io::Result<NatType>> {
-        match self.lock_state().map(|client| client.get_nat_type()) {
-            Ok(option) => option,
-            Err(error) => Some(Err(error)),
-        }
-    }
-
-    pub fn poll_nat_type(&self, cx: &mut Context) -> Poll<io::Result<NatType>> {
-        self.lock_state().map(|client| client.poll_nat_type(cx))?
-    }
-
-    pub async fn nat_type(&self) -> io::Result<NatType> {
-        poll_fn(|cx| self.poll_nat_type(cx)).await
-    }
-
-    pub fn agent(&self) -> io::Result<SocketAddr> {
-        self.lock_state().map(|client| client.stun_server)
-    }
-
-    pub fn restart(&self) -> io::Result<()> {
-        self.lock_state().map(|client| client.restart())?
-    }
-
-    pub fn poll_close(&self, cx: &mut Context) -> Poll<()> {
-        self.lock_state().poll_close(cx)
-    }
-
-    pub fn io(&self) -> io::Result<IO> {
-        self.lock_state().map(|client| client.ref_iface.clone())
-    }
-}
-
-// impl Component for StunClient {
-//     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-//         self.lock_state().poll_close(cx)
-//     }
-
-//     fn reinit(&self, quic_iface: &QuicInterface) {
-//         match StunProtocol::try_from(quic_iface) {
-//             Ok(protocol) => {
-//                 *self.lock_state() = State::Running(RunningClient::new(protocol, self.stun_server))
-//             }
-//             Err(error) => {
-//                 tracing::warn!(target: "stun", %error, "StunClient reinit skipped")
-//             }
-//         }
-//     }
-// }
 
 #[derive(Debug)]
 pub struct StunClientComponent {
-    stun_server: SocketAddr,
     client: Mutex<StunClient<WeakQuicInterface>>,
 }
 
 impl StunClientComponent {
-    pub fn new(
-        weak_iface: WeakQuicInterface,
-        stun_router: StunRouter,
-        stun_server: SocketAddr,
-    ) -> Self {
-        let client = StunClient::new(weak_iface, stun_router, stun_server);
+    pub fn new(client: StunClient<WeakQuicInterface>) -> Self {
         Self {
-            stun_server,
             client: Mutex::new(client),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, StunClient<WeakQuicInterface>> {
-        self.client
-            .lock()
-            .expect("StunClientComponent mutex poisoned")
+    fn lock_client(&self) -> MutexGuard<'_, StunClient<WeakQuicInterface>> {
+        self.client.lock().expect("StunClient lock poisoned")
     }
 
     pub fn client(&self) -> StunClient<WeakQuicInterface> {
-        self.lock().clone()
+        self.lock_client().clone()
     }
 }
 
 impl Component for StunClientComponent {
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        self.lock().poll_close(cx)
+        self.lock_client().poll_close(cx)
     }
 
     fn reinit(&self, quic_iface: &QuicInterface) {
-        let mut client = self.lock();
-        match quic_iface.with_component(|spc: &StunRouterComponent| {
-            spc.reinit(quic_iface);
-            (spc.router(), spc.iface())
-        }) {
-            Ok(Some((.., iface))) if client.io().is_ok_and(|exist| exist.same_io(&iface)) => {}
-            Ok(Some((router, iface))) => *client = StunClient::new(iface, router, self.stun_server),
-            Ok(None) | Err(..) => *client = StunClient::default(),
+        let mut client = self.lock_client();
+        if client.ref_iface.same_io(&quic_iface.downgrade()) {
+            return;
         }
+
+        let new_client = StunClient::new(
+            quic_iface.downgrade(),
+            client.stun_router.clone(),
+            client.stun_agent,
+        );
+        *client = new_client;
+    }
+}
+
+type StunClientsMap<IO> = HashMap<SocketAddr, StunClient<IO>>;
+
+#[derive(Debug)]
+struct StunClientsInner<IO: RefInterface + 'static> {
+    ref_iface: IO,
+    clients: Arc<Mutex<StunClientsMap<IO>>>,
+    resolver: Arc<dyn Resolve + Send + Sync>,
+    task: Option<AbortOnDropHandle<()>>,
+}
+
+impl<IO: RefInterface + 'static> StunClientsInner<IO> {
+    pub const MIN_AGENTS: usize = 3;
+
+    pub fn new(
+        ref_iface: IO,
+        router: StunRouter,
+        resolver: Arc<dyn Resolve + Send + Sync>,
+        agents: impl IntoIterator<Item = SocketAddr>,
+    ) -> Self {
+        let new_stun_client = {
+            let ref_iface = ref_iface.clone();
+            move |agent_addr: SocketAddr| {
+                let stun_router = router.clone();
+                StunClient::new(ref_iface.clone(), stun_router, agent_addr)
+            }
+        };
+
+        let clients: Arc<Mutex<StunClientsMap<IO>>> = Arc::new(Mutex::new(
+            agents
+                .into_iter()
+                .map(|agent| (agent, new_stun_client(agent)))
+                .collect(),
+        ));
+        let task = AbortOnDropHandle::new(tokio::spawn({
+            let clients = clients.clone();
+            let resolver = resolver.clone();
+            async move {
+                let lock_clients = || clients.lock().expect("StunClients mutex poisoned");
+
+                let should_lookup_agents = |clients: &StunClientsMap<IO>| match clients
+                    .values()
+                    .try_fold((0, 0), |(active, inactive), client| {
+                        match client.state.get() {
+                            ClientState::Active => ControlFlow::Continue((active + 1, inactive)),
+                            ClientState::Inactive => ControlFlow::Continue((active, inactive + 1)),
+                            ClientState::Closing => ControlFlow::Break(()),
+                        }
+                    }) {
+                    ControlFlow::Continue((active, _inactive)) => active < Self::MIN_AGENTS,
+                    ControlFlow::Break(_) => false,
+                };
+
+                let wait_too_few_agents = |clients: &StunClientsMap<IO>| {
+                    let clients_len = clients.len();
+                    debug_assert!(clients_len >= Self::MIN_AGENTS);
+                    let mut stream = clients
+                        .iter()
+                        .map(|(.., client)| client.state.wait(ClientState::Inactive))
+                        .collect::<FuturesUnordered<_>>()
+                        .skip(clients_len.saturating_sub(Self::MIN_AGENTS));
+                    async move { _ = stream.next().await }
+                };
+
+                let lookup_new_agents = async || {
+                    // TODO: rename to stun.genmeta.net
+                    let agents = resolver.lookup("nat.genmeta.net").await.ok()?;
+
+                    let clients = lock_clients();
+                    let new_agents = agents
+                        .into_iter()
+                        .filter_map(move |agent_addr| match agent_addr {
+                            SocketEndpointAddr::Direct { addr } if clients.contains_key(&addr) => {
+                                None
+                            }
+                            SocketEndpointAddr::Agent { .. } => None,
+                            SocketEndpointAddr::Direct { addr } => Some(addr),
+                        })
+                        .peekable()
+                        .collect::<Vec<_>>();
+
+                    (!new_agents.is_empty()).then_some(new_agents)
+                };
+
+                let insert_stun_clients = |new_agents: Vec<SocketAddr>| {
+                    let mut clients = lock_clients();
+                    for agent_addr in new_agents {
+                        tracing::debug!(target: "stun", %agent_addr, "Discovered new STUN agent");
+                        clients.insert(agent_addr, new_stun_client(agent_addr));
+                    }
+                };
+
+                loop {
+                    while !{ should_lookup_agents(&lock_clients()) } {
+                        { wait_too_few_agents(&lock_clients()) }.await;
+                    }
+
+                    let Some(new_agents) = lookup_new_agents().await else {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    };
+
+                    insert_stun_clients(new_agents);
+                }
+            }
+        }));
+
+        Self {
+            ref_iface,
+            clients,
+            resolver,
+            task: Some(task),
+        }
+    }
+
+    fn lock_clients(&self) -> MutexGuard<'_, StunClientsMap<IO>> {
+        self.clients
+            .lock()
+            .expect("StunClientsComponentInner lock poisoned")
+    }
+
+    pub fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(task) = self.task.as_mut() {
+            _ = ready!(task.poll_unpin(cx));
+            self.task.take();
+        }
+
+        for (.., client) in self.lock_clients().iter() {
+            ready!(client.poll_close(cx))
+        }
+
+        Poll::Ready(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StunClients<IO: RefInterface + 'static> {
+    clients: Arc<Mutex<StunClientsInner<IO>>>,
+}
+
+impl<IO: RefInterface + 'static> StunClients<IO> {
+    pub fn new(
+        ref_iface: IO,
+        router: StunRouter,
+        resolver: Arc<dyn Resolve + Send + Sync>,
+        agents: impl IntoIterator<Item = SocketAddr>,
+    ) -> Self {
+        Self {
+            clients: Arc::new(Mutex::new(StunClientsInner::new(
+                ref_iface, router, resolver, agents,
+            ))),
+        }
+    }
+
+    fn lock_clients(&self) -> MutexGuard<'_, StunClientsInner<IO>> {
+        self.clients
+            .lock()
+            .expect("StunClientsComponent lock poisoned")
+    }
+
+    pub fn with_clients<T>(&self, f: impl FnOnce(&StunClientsMap<IO>) -> T) -> T {
+        f(self.lock_clients().lock_clients().deref())
+    }
+
+    pub fn poll_close(&self, cx: &mut Context<'_>) -> Poll<()> {
+        self.lock_clients().poll_close(cx)
+    }
+}
+
+pub type StunClientsComponent = StunClients<WeakQuicInterface>;
+
+impl Component for StunClientsComponent {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        self.lock_clients().poll_close(cx)
+    }
+
+    fn reinit(&self, quic_iface: &QuicInterface) {
+        _ = quic_iface.with_component(|router: &StunRouterComponent| {
+            router.reinit(quic_iface);
+            let router_ref_iface = router.ref_iface();
+
+            let mut clients = self.lock_clients();
+            if clients.ref_iface.same_io(&router_ref_iface) {
+                return;
+            }
+
+            let new_clinets = StunClientsInner::new(
+                router_ref_iface,
+                router.router(),
+                clients.resolver.clone(),
+                clients.lock_clients().keys().copied(),
+            );
+            *clients = new_clinets;
+        });
     }
 }
 
@@ -454,13 +581,13 @@ fn no_response_error() -> io::Error {
 async fn detect_outer_addr<IO: RefInterface>(
     ref_iface: IO,
     stun_router: StunRouter,
-    stun_server: SocketAddr,
+    stun_agent: SocketAddr,
     retry_times: u8,
     timeout: Duration,
 ) -> io::Result<SocketAddr> {
     let request = Request::default();
     let response = Transaction::begin(ref_iface, stun_router, retry_times, timeout)
-        .send_request(request, stun_server)
+        .send_request(request, stun_agent)
         .await?
         .ok_or_else(no_response_error)?;
     response.map_addr()
@@ -483,18 +610,18 @@ pub const RESTRICTED_RETRY_TIMES: u8 = 3;
 async fn detect_nat_type<IO: RefInterface>(
     ref_iface: IO,
     stun_router: StunRouter,
-    stun_server: SocketAddr,
+    stun_agent: SocketAddr,
     retry_times: u8,
     timeout: Duration,
 ) -> io::Result<NatType> {
     let local_addr = ref_iface.iface().local_addr()?;
     visualize_nat_detection!("Starting NAT detection with local address: {local_addr}");
-    let stun_server1 = stun_server;
+    let stun_agent1 = stun_agent;
 
-    visualize_nat_detection!("Access Test: probing server {stun_server1}");
+    visualize_nat_detection!("Access Test: probing server {stun_agent1}");
     let request = Request::default();
     let response = Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-        .send_request(request, stun_server1)
+        .send_request(request, stun_agent1)
         .await?;
 
     let Some(response) = response else {
@@ -510,21 +637,21 @@ async fn detect_nat_type<IO: RefInterface>(
     let mut net_features = NetFeature::empty();
 
     let mapped_addr1 = response.map_addr()?;
-    let stun_server2 = response.changed_addr()?;
-    visualize_nat_detection!("Result: Received from {stun_server1}, external addr: {mapped_addr1}");
+    let stun_agent2 = response.changed_addr()?;
+    visualize_nat_detection!("Result: Received from {stun_agent1}, external addr: {mapped_addr1}");
     if mapped_addr1 == local_addr {
         // Public IP
         visualize_nat_detection!(
             "Conclusion: Address {local_addr} has public IP, Proceeding to filtering behavior test.\n"
         );
         visualize_nat_detection!(
-            "Filtering Test: probing server {stun_server2}. Request server to respond from a changed IP:port",
+            "Filtering Test: probing server {stun_agent2}. Request server to respond from a changed IP:port",
         );
         net_features |= NetFeature::Public;
         let request = Request::change_ip_and_port();
         let response =
             Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-                .send_request(request, stun_server2)
+                .send_request(request, stun_agent2)
                 .await?;
         if let Some(response) = response {
             let mapped_addr2 = response.map_addr()?;
@@ -539,12 +666,12 @@ async fn detect_nat_type<IO: RefInterface>(
             visualize_nat_detection!("Conclusion: Filters packets based on destination IP\n");
         }
         visualize_nat_detection!(
-            "Filtering Test: probing server {stun_server2}. Request server to respond from a changed port",
+            "Filtering Test: probing server {stun_agent2}. Request server to respond from a changed port",
         );
         let request = Request::change_port();
         let response =
             Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-                .send_request(request, stun_server2)
+                .send_request(request, stun_agent2)
                 .await?;
         if let Some(response) = response {
             let mapped_addr2 = response.map_addr()?;
@@ -568,31 +695,31 @@ async fn detect_nat_type<IO: RefInterface>(
     } else {
         // Private IP
         visualize_nat_detection!("Conclusion: Address {local_addr} has private IP.\n");
-        visualize_nat_detection!("Mapping Test1: probing server {stun_server2}");
+        visualize_nat_detection!("Mapping Test1: probing server {stun_agent2}");
         let request = Request::default();
         let response =
             Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-                .send_request(request, stun_server2)
+                .send_request(request, stun_agent2)
                 .await?
                 .ok_or_else(no_response_error)?;
 
-        let stun_server3 = response.changed_addr()?;
+        let stun_agent3 = response.changed_addr()?;
         let mapped_addr2 = response.map_addr()?;
         if mapped_addr1 != mapped_addr2 {
             net_features |= NetFeature::Symmetric;
             visualize_nat_detection!(
-                "Result: Received from {stun_server2}, external addr: {mapped_addr2}"
+                "Result: Received from {stun_agent2}, external addr: {mapped_addr2}"
             );
             visualize_nat_detection!(
                 "Conclusion: The mapped address is different and destination-dependent.\n"
             );
 
             // 判断规律
-            visualize_nat_detection!("Mapping Test2: probing server {stun_server3}");
+            visualize_nat_detection!("Mapping Test2: probing server {stun_agent3}");
             let request = Request::default();
             let response =
                 Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-                    .send_request(request, stun_server3)
+                    .send_request(request, stun_agent3)
                     .await?;
 
             let Some(response) = response else {
@@ -607,7 +734,7 @@ async fn detect_nat_type<IO: RefInterface>(
             let step1 = mapped_addr2.port() as i32 - mapped_addr1.port() as i32;
             let step2 = mapped_addr3.port() as i32 - mapped_addr2.port() as i32;
             visualize_nat_detection!(
-                "Result: Received from {stun_server3}, external addr: {mapped_addr3}"
+                "Result: Received from {stun_agent3}, external addr: {mapped_addr3}"
             );
             if step1 == step2 {
                 visualize_nat_detection!(
@@ -628,7 +755,7 @@ async fn detect_nat_type<IO: RefInterface>(
             // server5: ip2:port1
             // server6: ip3:port2
             visualize_nat_detection!(
-                "Filtering Test: probing server {stun_server2}. Request server to respond from a changed IP and port",
+                "Filtering Test: probing server {stun_agent2}. Request server to respond from a changed IP and port",
             );
             let request = Request::change_ip_and_port();
             // 可能会不响应，超时太久会导致探测很久
@@ -638,7 +765,7 @@ async fn detect_nat_type<IO: RefInterface>(
                 RESTRICTED_RETRY_TIMES,
                 timeout,
             )
-            .send_request(request, stun_server2)
+            .send_request(request, stun_agent2)
             .await?;
             if let Some(response) = response {
                 let mapped_addr2 = response.map_addr()?;
@@ -655,7 +782,7 @@ async fn detect_nat_type<IO: RefInterface>(
                 visualize_nat_detection!("Conclusion: Filters packets based on destination IP\n");
             }
             visualize_nat_detection!(
-                "Filtering Test: probing server {stun_server2}. Request server to respond from a changed port",
+                "Filtering Test: probing server {stun_agent2}. Request server to respond from a changed port",
             );
             // Restricted test
             // server2 换 port 即 server5 回，可能不响应
@@ -667,7 +794,7 @@ async fn detect_nat_type<IO: RefInterface>(
                 RESTRICTED_RETRY_TIMES,
                 timeout,
             )
-            .send_request(request, stun_server2)
+            .send_request(request, stun_agent2)
             .await?;
             if let Some(response) = response {
                 let mapped_addr2 = response.map_addr()?;
@@ -684,11 +811,11 @@ async fn detect_nat_type<IO: RefInterface>(
                 visualize_nat_detection!("Conclusion: Filters packets based on destination port\n");
             }
             // dynamic test， 请求 server3
-            visualize_nat_detection!("Dynamic Test: probing server {stun_server3}",);
+            visualize_nat_detection!("Dynamic Test: probing server {stun_agent3}",);
             let request = Request::default();
             let response =
                 Transaction::begin(ref_iface.clone(), stun_router.clone(), retry_times, timeout)
-                    .send_request(request, stun_server3)
+                    .send_request(request, stun_agent3)
                     .await?;
 
             if let Some(response) = response {

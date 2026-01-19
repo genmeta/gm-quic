@@ -5,7 +5,6 @@ use qbase::{
     error::{Error, QuicError},
     frame::{ConnectionCloseFrame, Frame as V1Frame, ReceiveFrame, SendFrame},
     net::{
-        addr::BindUri,
         route::{Link, Pathway},
         tx::Signals,
     },
@@ -26,7 +25,10 @@ use qevent::{
     },
     telemetry::Instrument,
 };
-use qinterface::packet::{CipherPacket, PlainPacket};
+use qinterface::{
+    logical::BindUri,
+    route::{CipherPacket, PlainPacket},
+};
 use qrecovery::{crypto::CryptoStream, reliable};
 use qtraversal::frame::TraversalFrame;
 use tokio::sync::mpsc;

@@ -1,5 +1,5 @@
 use crate::{
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{BindUri, handy},
 };
 
@@ -12,6 +12,6 @@ pub static DEFAULT_QUIC_IO_FACTORY: fn(BindUri) -> handy::unsupported::Unsupport
     |bind_uri| handy::unsupported::bind(bind_uri);
 
 const _: () = {
-    const fn assert_product_quic_io_factory<F: ProductQuicIO + Copy>(_: &F) {}
-    assert_product_quic_io_factory(&DEFAULT_QUIC_IO_FACTORY);
+    const fn assert_product_interface_factory<F: ProductInterface + Copy>(_: &F) {}
+    assert_product_interface_factory(&DEFAULT_QUIC_IO_FACTORY);
 };

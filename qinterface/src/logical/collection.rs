@@ -19,7 +19,7 @@ use tokio::sync::SetOnce;
 
 use crate::{
     Interface, InterfaceExt,
-    factory::ProductQuicIO,
+    factory::ProductInterface,
     logical::{
         BindInterface, BindUri, QuicInterface, RebindedError, WeakInterface,
         component::{Component, Components},
@@ -78,7 +78,7 @@ impl QuicInterfaces {
     fn new_binding(
         self: &Arc<Self>,
         entry: Entry<BindUri, InterfaceEntry>,
-        factory: Arc<dyn ProductQuicIO>,
+        factory: Arc<dyn ProductInterface>,
     ) -> BindInterface {
         let context = InterfaceContext {
             factory: factory.clone(),
@@ -105,7 +105,7 @@ impl QuicInterfaces {
     pub async fn bind(
         self: &Arc<Self>,
         bind_uri: BindUri,
-        factory: Arc<dyn ProductQuicIO>,
+        factory: Arc<dyn ProductInterface>,
     ) -> BindInterface {
         loop {
             match self.interfaces.entry(bind_uri.clone()) {
@@ -213,7 +213,7 @@ struct Binding {
 }
 
 pub struct InterfaceContext {
-    factory: Arc<dyn ProductQuicIO>,
+    factory: Arc<dyn ProductInterface>,
     binding: RwLock<Binding>,
     // shared with [InterfaceEntry]
     dropped: Arc<SetOnce<()>>,
@@ -295,7 +295,7 @@ impl BindInterface {
 
     pub fn insert_component_with<C: Component>(&self, init: impl FnOnce(&QuicInterface) -> C) {
         self.with_components_mut(|components, quic_iface| {
-            components.insert_with(|| init(quic_iface));
+            components.init_with(|| init(quic_iface));
         });
     }
 

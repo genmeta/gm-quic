@@ -3,7 +3,7 @@ use std::{io::Result, net::SocketAddr, sync::Arc};
 use clap::Parser;
 use qinterface::{
     Interface,
-    factory::{ProductQuicIO, handy::DEFAULT_QUIC_IO_FACTORY},
+    factory::{ProductInterface, handy::DEFAULT_QUIC_IO_FACTORY},
     local::Locations,
 };
 use qtraversal::{
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_server);
 
     let _task = ReceiveAndDeliverPacket::task()
-        .stun_router(stun_router)
+        .stun_routers(stun_router)
         .iface_ref(iface.clone())
         .spawn();
 
