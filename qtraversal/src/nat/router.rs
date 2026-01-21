@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 use qbase::util::ArcAsyncDeque;
-use qinterface::logical::{QuicInterface, WeakQuicInterface, component::Component};
+use qinterface::logical::{Interface, WeakInterface, component::Component};
 use tokio::sync::SetOnce;
 use tracing::debug;
 
@@ -67,34 +67,10 @@ impl StunRouter {
     }
 }
 
-// #[derive(Default, Debug, Clone)]
-// pub struct StunRouters<IO: RefInterface> {
-//     // agent -> router
-//     routers: DashMap<SocketAddr, StunRouter>,
-//     ref_iface: IO,
-// }
-
-// impl<IO: RefInterface> StunRouters<IO> {
-//     pub fn new(ref_iface: IO, routers: impl IntoIterator<Item = (SocketAddr, StunRouter)>) -> Self {
-//         Self {
-//             ref_iface,
-//             routers: routers.into_iter().collect(),
-//         }
-//     }
-
-//     pub fn ref_iface(&self) -> &IO {
-//         &self.ref_iface
-//     }
-
-//     pub fn router(&self, agent_addr: SocketAddr) -> StunRouter {
-//         self.routers.entry(agent_addr).or_default().clone()
-//     }
-// }
-
 #[derive(Debug)]
 struct StunRouterComponentInner {
     router: StunRouter,
-    ref_iface: WeakQuicInterface,
+    ref_iface: WeakInterface,
 }
 
 #[derive(Debug)]
@@ -103,7 +79,7 @@ pub struct StunRouterComponent {
 }
 
 impl StunRouterComponent {
-    pub fn new(ref_iface: WeakQuicInterface) -> Self {
+    pub fn new(ref_iface: WeakInterface) -> Self {
         Self {
             inner: Mutex::new(StunRouterComponentInner {
                 router: StunRouter::new(),
@@ -116,7 +92,7 @@ impl StunRouterComponent {
         self.inner.lock().expect("StunRouter lock poisoned")
     }
 
-    pub fn ref_iface(&self) -> WeakQuicInterface {
+    pub fn ref_iface(&self) -> WeakInterface {
         self.lock_inner().ref_iface.clone()
     }
 
@@ -126,14 +102,14 @@ impl StunRouterComponent {
 }
 
 impl Component for StunRouterComponent {
-    fn reinit(&self, quic_iface: &QuicInterface) {
+    fn reinit(&self, iface: &Interface) {
         let mut inner = self.lock_inner();
-        if inner.ref_iface.same_io(&quic_iface.downgrade()) {
+        if inner.ref_iface.same_io(&iface.downgrade()) {
             return;
         }
         *inner = StunRouterComponentInner {
             router: StunRouter::new(),
-            ref_iface: quic_iface.downgrade(),
+            ref_iface: iface.downgrade(),
         };
     }
 

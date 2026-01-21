@@ -131,8 +131,11 @@ impl ArcPathContexts {
         self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Arc<Path>> + '_ {
-        self.paths.iter().map(|p| p.path.clone())
+    pub fn paths<C: FromIterator<(Pathway, Arc<Path>)>>(&self) -> C {
+        self.paths
+            .iter()
+            .map(|p| (*p.key(), p.path.clone()))
+            .collect()
     }
 
     pub fn discard_initial_and_handshake_space(&self) {

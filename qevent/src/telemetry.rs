@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::{Event, GroupID, VantagePointType};
 
-pub trait Log {
+pub trait QLog {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span;
 }
 

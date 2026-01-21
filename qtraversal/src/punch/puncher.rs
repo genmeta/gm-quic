@@ -25,9 +25,9 @@ use qbase::{
     },
 };
 use qinterface::{
-    Interface, InterfaceExt,
+    IO, InterfaceExt,
     factory::ProductInterface,
-    logical::{BindUri, QuicInterface, QuicInterfaces, WeakQuicInterface},
+    logical::{BindUri, Interface, QuicInterfaces, WeakInterface, component::QuicRouterComponent},
 };
 use qudp::DEFAULT_TTL;
 use tokio::{task::AbortHandle, time::timeout};
@@ -51,8 +51,8 @@ use crate::{
     route::ReceiveAndDeliverPacket,
 };
 
-type StunClient<IO = WeakQuicInterface> = crate::nat::client::StunClient<IO>;
-// type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<IO>;
+type StunClient<I = WeakInterface> = crate::nat::client::StunClient<I>;
+// type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<I>;
 
 const COLLISION_TTL: u8 = 5;
 const KONCK_TIMEOUT_MS: u64 = 100;
@@ -105,7 +105,7 @@ pub struct Puncher<TX, PH, S> {
     iface_factory: Arc<dyn ProductInterface>,
     stun_servers: Arc<[SocketAddr]>,
     address_book: Mutex<AddressBook>,
-    punch_ifaces: DashMap<BindUri, QuicInterface>,
+    punch_ifaces: DashMap<BindUri, Interface>,
     broker: TX,
 }
 
@@ -139,7 +139,7 @@ where
 
     pub async fn send_packet<P>(
         &self,
-        iface: &(impl Interface + ?Sized),
+        iface: &(impl IO + ?Sized),
         link: Link,
         ttl: u8,
         packages: P,
@@ -167,7 +167,7 @@ where
 
     async fn collision(
         &self,
-        iface: &QuicInterface,
+        iface: &Interface,
         link: Link,
         punch_pair: Link,
         ttl: u8,
@@ -1032,7 +1032,7 @@ async fn dynamic_iface(
     ifaces: &Arc<QuicInterfaces>,
     iface_factory: &Arc<dyn ProductInterface>,
     stun_servers: &[SocketAddr],
-) -> io::Result<(QuicInterface, StunClient)> {
+) -> io::Result<(Interface, StunClient)> {
     const MIN_PORT: u16 = 1024;
     const MAX_PORT: u16 = u16::MAX;
     let (ip_family, device, _port) = bind_uri.as_iface_bind_uri().ok_or_else(|| {
@@ -1050,31 +1050,33 @@ async fn dynamic_iface(
     ifaces
         .bind(bind_uri, iface_factory.clone())
         .await
-        .with_components_mut(|components, quic_iface| {
-            let local_addr =
-                SocketAddr::try_from(quic_iface.real_addr()?).map_err(io::Error::other)?;
+        .with_components_mut(|components, iface| {
+            let local_addr = SocketAddr::try_from(iface.real_addr()?).map_err(io::Error::other)?;
             let stun_server = *stun_servers
                 .iter()
                 .find(|addr| addr.is_ipv4() == local_addr.is_ipv4())
                 .ok_or_else(|| io::Error::other("No STUN server matches local address family"))?;
             let stun_router = components
                 .init_with(|| {
-                    let ref_iface = quic_iface.downgrade();
+                    let ref_iface = iface.downgrade();
                     StunRouterComponent::new(ref_iface)
                 })
                 .router();
             let stun_client = components
                 .init_with(|| {
-                    let client = StunClient::new(quic_iface.downgrade(), stun_router, stun_server);
+                    let client =
+                        StunClient::new(iface.downgrade(), stun_router.clone(), stun_server);
                     StunClientComponent::new(client)
                 })
                 .client();
+            let quic_router = components.with(QuicRouterComponent::router);
             components.init_with(|| {
-                ReceiveAndDeliverPacket::builder(quic_iface)
-                    .forward(false)
+                ReceiveAndDeliverPacket::builder(iface.downgrade())
+                    .maybe_quic_router(quic_router)
+                    .stun_router(stun_router)
                     .init()
             });
-            Ok((quic_iface.to_owned(), stun_client))
+            Ok((iface.to_owned(), stun_client))
         })
 }
 

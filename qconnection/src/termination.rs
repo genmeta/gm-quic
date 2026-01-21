@@ -103,7 +103,7 @@ impl Terminator {
     where
         W: FnMut(&mut [u8], &ConnectionCloseFrame) -> Option<usize>,
     {
-        for path in self.paths.iter() {
+        for (_pathway, path) in self.paths.paths::<Vec<_>>() {
             let mut datagram = vec![0; path.mtu() as _];
             match write(&mut datagram, &self.ccf) {
                 Some(written) if written > 0 => {

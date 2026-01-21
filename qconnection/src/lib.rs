@@ -19,7 +19,7 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::{Interface, InterfaceExt};
+    pub use qinterface::{IO, InterfaceExt, logical::BindUri};
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
@@ -49,7 +49,7 @@ use std::{
     sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
-pub use ::{qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
+pub use ::{qbase, qdns, qevent, qinterface, qrecovery, qtraversal, qunreliable};
 use derive_more::From;
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
@@ -72,6 +72,7 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
+    local::Locations,
     logical::{BindUri, QuicInterfaces},
     route::{self, RcvdPacketQueue, RouterEntry},
 };
@@ -161,6 +162,7 @@ pub type ArcPuncher =
 pub struct Components {
     // TODO: delete this
     interfaces: Arc<QuicInterfaces>,
+    locations: Arc<Locations>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
     defer_idle_timer: ArcDeferIdleTimer,
@@ -679,13 +681,12 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if let Ok(origin_dcid) = self.origin_dcid()
-            && self.close("", 0).is_ok()
-        {
+        let _span = self.0.tracing_span.enter();
+        if self.validate().is_ok() && self.close("", 0).is_ok() {
             #[cfg(debug_assertions)]
-            tracing::warn!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
+            tracing::warn!(target: "quic", "Connection is still active when dropped, close it automatically.");
             #[cfg(not(debug_assertions))]
-            tracing::debug!(target: "quic", "Connection {origin_dcid:x} is still active when dropped, close it automatically.");
+            tracing::debug!(target: "quic", "Connection is still active when dropped, close it automatically.");
         }
     }
 }

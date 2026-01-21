@@ -30,7 +30,7 @@ use crate::logical::BindUri;
 ///
 /// [`ProductQuicIO`]: crate::factory::ProductQuicIO
 #[async_trait::async_trait]
-pub trait Interface: Send + Sync + Any {
+pub trait IO: Send + Sync + Any {
     /// Get the bind address that this interface is bound to
     ///
     /// This value cannot change after the interface is bound,
@@ -91,7 +91,7 @@ pub trait Interface: Send + Sync + Any {
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
 }
 
-pub trait InterfaceExt: Interface {
+pub trait InterfaceExt: IO {
     #[inline]
     fn sendmmsg(
         &self,
@@ -164,18 +164,18 @@ pub trait InterfaceExt: Interface {
     }
 }
 
-impl<IO: Interface + ?Sized> InterfaceExt for IO {}
+impl<I: IO + ?Sized> InterfaceExt for I {}
 
-pub trait RefInterface: Clone + Send + Sync {
-    type Interface: Interface + ?Sized;
+pub trait RefIO: Clone + Send + Sync {
+    type Interface: IO + ?Sized;
 
     fn iface(&self) -> &Self::Interface;
 
     fn same_io(&self, other: &Self) -> bool;
 }
 
-impl<IO: Interface + ?Sized> RefInterface for Arc<IO> {
-    type Interface = IO;
+impl<I: IO + ?Sized> RefIO for Arc<I> {
+    type Interface = I;
 
     #[inline]
     fn iface(&self) -> &Self::Interface {

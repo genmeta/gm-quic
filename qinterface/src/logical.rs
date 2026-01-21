@@ -13,7 +13,7 @@ use qbase::{
 };
 use thiserror::Error;
 
-use crate::{Interface, RefInterface, logical::collection::InterfaceContext};
+use crate::{IO, RefIO, logical::collection::InterfaceContext};
 
 mod bind_uri;
 mod collection;
@@ -51,28 +51,28 @@ impl BindInterface {
     }
 
     #[inline]
-    pub fn borrow(&self) -> QuicInterface {
-        QuicInterface {
+    pub fn borrow(&self) -> Interface {
+        Interface {
             bind_id: self.context.bind_id(),
             bind_iface: self.clone(),
         }
     }
 
     #[inline]
-    pub fn downgrade(&self) -> WeakInterface {
-        WeakInterface {
+    pub fn downgrade(&self) -> WeakBindInterface {
+        WeakBindInterface {
             context: Arc::downgrade(&self.context),
         }
     }
 
     #[inline]
-    pub fn borrow_weak(&self) -> WeakQuicInterface {
+    pub fn borrow_weak(&self) -> WeakInterface {
         self.borrow().downgrade()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct QuicInterface {
+pub struct Interface {
     bind_id: UniqueId,
     bind_iface: BindInterface,
 }
@@ -101,7 +101,7 @@ impl From<RebindedError> for io::Error {
     }
 }
 
-impl QuicInterface {
+impl Interface {
     #[inline]
     fn borrow<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> io::Result<T> {
         if self.bind_iface.context.bind_id() != self.bind_id {
@@ -116,40 +116,37 @@ impl QuicInterface {
     }
 
     #[inline]
-    pub fn downgrade(&self) -> WeakQuicInterface {
-        WeakQuicInterface {
+    pub fn downgrade(&self) -> WeakInterface {
+        WeakInterface {
             bind_uri: self.bind_iface.bind_uri(),
             bind_id: self.bind_id,
             weak_iface: self.bind_iface.downgrade(),
         }
     }
 
-    pub fn same_io(&self, other: &QuicInterface) -> bool {
+    pub fn same_io(&self, other: &Interface) -> bool {
         self.bind_id == other.bind_id
             && Arc::ptr_eq(&self.bind_iface.context, &other.bind_iface.context)
     }
 
-    // quic_iface(bind_id=1)
+    // iface(bind_id=1)
     // rebind
-    // quic_iface(bind_id=1).get_component::<StunProtocolComponent>()
-    // quic_iface(bind_id=2).get_component::<StunProtocolComponent>()
+    // iface(bind_id=1).get_component::<StunProtocolComponent>()
+    // iface(bind_id=2).get_component::<StunProtocolComponent>()
 
-    pub fn with_components<T>(
-        &self,
-        f: impl FnOnce(&component::Components, &QuicInterface) -> T,
-    ) -> T {
+    pub fn with_components<T>(&self, f: impl FnOnce(&component::Components, &Interface) -> T) -> T {
         self.bind_iface.with_components(f)
     }
 
     pub fn with_components_mut<T>(
         &self,
-        f: impl FnOnce(&mut component::Components, &QuicInterface) -> T,
+        f: impl FnOnce(&mut component::Components, &Interface) -> T,
     ) -> T {
         self.bind_iface.with_components_mut(f)
     }
 }
 
-impl RefInterface for QuicInterface {
+impl RefIO for Interface {
     type Interface = Self;
 
     #[inline]
@@ -162,7 +159,7 @@ impl RefInterface for QuicInterface {
     }
 }
 
-impl Interface for QuicInterface {
+impl IO for Interface {
     #[inline]
     fn bind_uri(&self) -> BindUri {
         self.bind_iface.bind_uri()
@@ -234,54 +231,54 @@ impl From<UnbondedError> for io::Error {
 }
 
 #[derive(Debug, Clone)]
-pub struct WeakInterface {
+pub struct WeakBindInterface {
     context: Weak<InterfaceContext>,
 }
 
-impl WeakInterface {
+impl WeakBindInterface {
     pub fn upgrade(&self) -> Result<BindInterface, UnbondedError> {
         Ok(BindInterface {
             context: self.context.upgrade().ok_or(UnbondedError)?,
         })
     }
 
-    pub fn borrow(&self) -> Result<WeakQuicInterface, UnbondedError> {
+    pub fn borrow(&self) -> Result<WeakInterface, UnbondedError> {
         Ok(self.upgrade()?.borrow_weak())
     }
 
-    pub fn same_io(&self, other: &WeakInterface) -> bool {
+    pub fn same_io(&self, other: &WeakBindInterface) -> bool {
         Weak::ptr_eq(&self.context, &other.context)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct WeakQuicInterface {
+pub struct WeakInterface {
     bind_uri: BindUri,
     bind_id: UniqueId,
-    weak_iface: WeakInterface,
+    weak_iface: WeakBindInterface,
 }
 
-impl From<QuicInterface> for WeakQuicInterface {
-    fn from(iface: QuicInterface) -> Self {
+impl From<Interface> for WeakInterface {
+    fn from(iface: Interface) -> Self {
         iface.downgrade()
     }
 }
 
-impl WeakQuicInterface {
-    pub fn upgrade(&self) -> Result<QuicInterface, UnbondedError> {
-        Ok(QuicInterface {
+impl WeakInterface {
+    pub fn upgrade(&self) -> Result<Interface, UnbondedError> {
+        Ok(Interface {
             bind_iface: self.weak_iface.upgrade()?,
             bind_id: self.bind_id,
         })
     }
 
-    pub fn same_io(&self, other: &WeakQuicInterface) -> bool {
+    pub fn same_io(&self, other: &WeakInterface) -> bool {
         self.bind_id == other.bind_id && self.weak_iface.same_io(&other.weak_iface)
     }
 }
 
-impl RefInterface for WeakQuicInterface {
-    type Interface = WeakQuicInterface;
+impl RefIO for WeakInterface {
+    type Interface = WeakInterface;
 
     fn iface(&self) -> &Self::Interface {
         self
@@ -292,7 +289,7 @@ impl RefInterface for WeakQuicInterface {
     }
 }
 
-impl Interface for WeakQuicInterface {
+impl IO for WeakInterface {
     fn bind_uri(&self) -> BindUri {
         self.bind_uri.clone()
     }

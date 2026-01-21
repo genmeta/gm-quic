@@ -16,9 +16,9 @@ use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
 use qdns::Resolve;
 use qinterface::{
-    Interface, RefInterface,
+    IO, RefIO,
     local::Locations,
-    logical::{QuicInterface, RebindedError, WeakQuicInterface, component::Component},
+    logical::{Interface, RebindedError, WeakInterface, component::Component},
 };
 use thiserror::Error;
 use tokio::{sync::Notify, task::JoinSet};
@@ -121,11 +121,11 @@ impl ArcClientState {
 }
 
 #[derive(Debug, Clone)]
-pub struct StunClient<IO: RefInterface + 'static> {
+pub struct StunClient<I: RefIO + 'static> {
     #[allow(clippy::type_complexity)]
     outer_addr: Arc<Future<Result<SocketAddr, ArcIoError>>>,
     nat_type: Arc<Future<Result<NatType, ArcIoError>>>,
-    ref_iface: IO,
+    ref_iface: I,
     // 可能被复制进keep_alive_task
     stun_router: StunRouter,
     stun_agent: SocketAddr,
@@ -134,8 +134,8 @@ pub struct StunClient<IO: RefInterface + 'static> {
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
-impl<IO: RefInterface + 'static> StunClient<IO> {
-    pub fn new(ref_iface: IO, stun_router: StunRouter, stun_agent: SocketAddr) -> Self {
+impl<I: RefIO + 'static> StunClient<I> {
+    pub fn new(ref_iface: I, stun_router: StunRouter, stun_agent: SocketAddr) -> Self {
         let client = Self {
             nat_type: Default::default(),
             outer_addr: Default::default(),
@@ -159,7 +159,7 @@ impl<IO: RefInterface + 'static> StunClient<IO> {
         self.tasks.lock().expect("StunClient tasks lock poisoned")
     }
 
-    fn keep_alive_task(&self) -> impl futures::Future<Output = ()> + use<IO> {
+    fn keep_alive_task(&self) -> impl futures::Future<Output = ()> + use<I> {
         let outer_addr = self.outer_addr.clone();
         let stun_agent = self.stun_agent;
         let stun_router = self.stun_router.clone();
@@ -186,7 +186,7 @@ impl<IO: RefInterface + 'static> StunClient<IO> {
                             tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
                             outer_addr.assign(Ok(*new_outer_addr));
                             if !bind_uri.is_temporary() {
-                                // todo: get location from interface component
+                                // todo:  impl location component, get location from interface component
                                 Locations::global().upsert(bind_uri.clone(), Arc::new(ep));
                             }
                         }
@@ -262,7 +262,7 @@ impl<IO: RefInterface + 'static> StunClient<IO> {
             .map(|result| result.clone().map_err(io::Error::from))
     }
 
-    fn nat_detect_task(&self) -> impl futures::Future<Output = ()> + use<IO> {
+    fn nat_detect_task(&self) -> impl futures::Future<Output = ()> + use<I> {
         let nat_type = self.nat_type.clone();
         let ref_iface = self.ref_iface.clone();
         let stun_router = self.stun_router.clone();
@@ -331,7 +331,7 @@ impl<IO: RefInterface + 'static> StunClient<IO> {
     }
 }
 
-impl<IO: RefInterface + 'static> Drop for StunClient<IO> {
+impl<I: RefIO + 'static> Drop for StunClient<I> {
     fn drop(&mut self) {
         tracing::debug!(target: "stun", bind_uri = %self.ref_iface.iface().bind_uri(), "Drop stun client");
     }
@@ -339,21 +339,21 @@ impl<IO: RefInterface + 'static> Drop for StunClient<IO> {
 
 #[derive(Debug)]
 pub struct StunClientComponent {
-    client: Mutex<StunClient<WeakQuicInterface>>,
+    client: Mutex<StunClient<WeakInterface>>,
 }
 
 impl StunClientComponent {
-    pub fn new(client: StunClient<WeakQuicInterface>) -> Self {
+    pub fn new(client: StunClient<WeakInterface>) -> Self {
         Self {
             client: Mutex::new(client),
         }
     }
 
-    fn lock_client(&self) -> MutexGuard<'_, StunClient<WeakQuicInterface>> {
+    fn lock_client(&self) -> MutexGuard<'_, StunClient<WeakInterface>> {
         self.client.lock().expect("StunClient lock poisoned")
     }
 
-    pub fn client(&self) -> StunClient<WeakQuicInterface> {
+    pub fn client(&self) -> StunClient<WeakInterface> {
         self.lock_client().clone()
     }
 }
@@ -363,14 +363,14 @@ impl Component for StunClientComponent {
         self.lock_client().poll_close(cx)
     }
 
-    fn reinit(&self, quic_iface: &QuicInterface) {
+    fn reinit(&self, iface: &Interface) {
         let mut client = self.lock_client();
-        if client.ref_iface.same_io(&quic_iface.downgrade()) {
+        if client.ref_iface.same_io(&iface.downgrade()) {
             return;
         }
 
         let new_client = StunClient::new(
-            quic_iface.downgrade(),
+            iface.downgrade(),
             client.stun_router.clone(),
             client.stun_agent,
         );
@@ -378,23 +378,27 @@ impl Component for StunClientComponent {
     }
 }
 
-type StunClientsMap<IO> = HashMap<SocketAddr, StunClient<IO>>;
+type StunClientsMap<I> = HashMap<SocketAddr, StunClient<I>>;
 
 #[derive(Debug)]
-struct StunClientsInner<IO: RefInterface + 'static> {
-    ref_iface: IO,
-    clients: Arc<Mutex<StunClientsMap<IO>>>,
+struct StunClientsInner<I: RefIO + 'static> {
+    ref_iface: I,
+    clients: Arc<Mutex<StunClientsMap<I>>>,
     resolver: Arc<dyn Resolve + Send + Sync>,
+    server: Arc<str>,
     task: Option<AbortOnDropHandle<()>>,
 }
 
-impl<IO: RefInterface + 'static> StunClientsInner<IO> {
+pub const DEFAULT_STUN_SERVER: &str = "nat.genmeta.net";
+
+impl<I: RefIO + 'static> StunClientsInner<I> {
     pub const MIN_AGENTS: usize = 3;
 
     pub fn new(
-        ref_iface: IO,
+        ref_iface: I,
         router: StunRouter,
         resolver: Arc<dyn Resolve + Send + Sync>,
+        server: Arc<str>,
         agents: impl IntoIterator<Item = SocketAddr>,
     ) -> Self {
         let new_stun_client = {
@@ -405,7 +409,7 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
             }
         };
 
-        let clients: Arc<Mutex<StunClientsMap<IO>>> = Arc::new(Mutex::new(
+        let clients: Arc<Mutex<StunClientsMap<I>>> = Arc::new(Mutex::new(
             agents
                 .into_iter()
                 .map(|agent| (agent, new_stun_client(agent)))
@@ -414,10 +418,11 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
         let task = AbortOnDropHandle::new(tokio::spawn({
             let clients = clients.clone();
             let resolver = resolver.clone();
+            let server = server.clone();
             async move {
                 let lock_clients = || clients.lock().expect("StunClients mutex poisoned");
 
-                let should_lookup_agents = |clients: &StunClientsMap<IO>| match clients
+                let should_lookup_agents = |clients: &StunClientsMap<I>| match clients
                     .values()
                     .try_fold((0, 0), |(active, inactive), client| {
                         match client.state.get() {
@@ -430,7 +435,7 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
                     ControlFlow::Break(_) => false,
                 };
 
-                let wait_too_few_agents = |clients: &StunClientsMap<IO>| {
+                let wait_too_few_agents = |clients: &StunClientsMap<I>| {
                     let clients_len = clients.len();
                     debug_assert!(clients_len >= Self::MIN_AGENTS);
                     let mut stream = clients
@@ -443,7 +448,7 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
 
                 let lookup_new_agents = async || {
                     // TODO: rename to stun.genmeta.net
-                    let agents = resolver.lookup("nat.genmeta.net").await.ok()?;
+                    let agents = resolver.lookup(server.as_ref()).await.ok()?;
 
                     let clients = lock_clients();
                     let new_agents = agents
@@ -488,11 +493,12 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
             ref_iface,
             clients,
             resolver,
+            server,
             task: Some(task),
         }
     }
 
-    fn lock_clients(&self) -> MutexGuard<'_, StunClientsMap<IO>> {
+    fn lock_clients(&self) -> MutexGuard<'_, StunClientsMap<I>> {
         self.clients
             .lock()
             .expect("StunClientsComponentInner lock poisoned")
@@ -513,31 +519,36 @@ impl<IO: RefInterface + 'static> StunClientsInner<IO> {
 }
 
 #[derive(Debug, Clone)]
-pub struct StunClients<IO: RefInterface + 'static> {
-    clients: Arc<Mutex<StunClientsInner<IO>>>,
+pub struct StunClients<I: RefIO + 'static> {
+    clients: Arc<Mutex<StunClientsInner<I>>>,
 }
 
-impl<IO: RefInterface + 'static> StunClients<IO> {
+impl<I: RefIO + 'static> StunClients<I> {
     pub fn new(
-        ref_iface: IO,
+        ref_iface: I,
         router: StunRouter,
         resolver: Arc<dyn Resolve + Send + Sync>,
+        server: impl Into<Arc<str>>,
         agents: impl IntoIterator<Item = SocketAddr>,
     ) -> Self {
         Self {
             clients: Arc::new(Mutex::new(StunClientsInner::new(
-                ref_iface, router, resolver, agents,
+                ref_iface,
+                router,
+                resolver,
+                server.into(),
+                agents,
             ))),
         }
     }
 
-    fn lock_clients(&self) -> MutexGuard<'_, StunClientsInner<IO>> {
+    fn lock_clients(&self) -> MutexGuard<'_, StunClientsInner<I>> {
         self.clients
             .lock()
             .expect("StunClientsComponent lock poisoned")
     }
 
-    pub fn with_clients<T>(&self, f: impl FnOnce(&StunClientsMap<IO>) -> T) -> T {
+    pub fn with_clients<T>(&self, f: impl FnOnce(&StunClientsMap<I>) -> T) -> T {
         f(self.lock_clients().lock_clients().deref())
     }
 
@@ -546,16 +557,16 @@ impl<IO: RefInterface + 'static> StunClients<IO> {
     }
 }
 
-pub type StunClientsComponent = StunClients<WeakQuicInterface>;
+pub type StunClientsComponent = StunClients<WeakInterface>;
 
 impl Component for StunClientsComponent {
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         self.lock_clients().poll_close(cx)
     }
 
-    fn reinit(&self, quic_iface: &QuicInterface) {
-        _ = quic_iface.with_component(|router: &StunRouterComponent| {
-            router.reinit(quic_iface);
+    fn reinit(&self, iface: &Interface) {
+        _ = iface.with_component(|router: &StunRouterComponent| {
+            router.reinit(iface);
             let router_ref_iface = router.ref_iface();
 
             let mut clients = self.lock_clients();
@@ -567,6 +578,7 @@ impl Component for StunClientsComponent {
                 router_ref_iface,
                 router.router(),
                 clients.resolver.clone(),
+                clients.server.clone(),
                 clients.lock_clients().keys().copied(),
             );
             *clients = new_clinets;
@@ -578,8 +590,8 @@ fn no_response_error() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "No response from STUN server")
 }
 
-async fn detect_outer_addr<IO: RefInterface>(
-    ref_iface: IO,
+async fn detect_outer_addr<I: RefIO>(
+    ref_iface: I,
     stun_router: StunRouter,
     stun_agent: SocketAddr,
     retry_times: u8,
@@ -607,8 +619,8 @@ macro_rules! visualize_nat_detection {
 
 pub const RESTRICTED_RETRY_TIMES: u8 = 3;
 
-async fn detect_nat_type<IO: RefInterface>(
-    ref_iface: IO,
+async fn detect_nat_type<I: RefIO>(
+    ref_iface: I,
     stun_router: StunRouter,
     stun_agent: SocketAddr,
     retry_times: u8,

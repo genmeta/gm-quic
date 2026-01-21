@@ -4,9 +4,9 @@ use std::{
 };
 
 use qinterface::{
-    Interface,
+    IO,
     factory::ProductInterface,
-    logical::{BindUri, BindUriSchema, QuicInterface, QuicInterfaces},
+    logical::{BindUri, BindUriSchema, Interface, QuicInterfaces},
 };
 
 use crate::{
@@ -21,7 +21,7 @@ const MAX_CONCURRENT_SOCKETS: usize = 60;
 
 pub type PacketSendFn = Arc<
     dyn Fn(
-            &QuicInterface,
+            &Interface,
             Link,
             u8,
             TraversalFrame,
@@ -34,7 +34,7 @@ pub type PacketSendFn = Arc<
 pub struct PortPredictor {
     ifaces: Arc<QuicInterfaces>,
     factory: Arc<dyn ProductInterface>,
-    ports: VecDeque<(u16, BindUri, QuicInterface, tokio::time::Instant)>,
+    ports: VecDeque<(u16, BindUri, Interface, tokio::time::Instant)>,
     bind_uri: BindUri,
     dst: SocketAddr,
     estimated_rtt: Duration,
@@ -132,7 +132,7 @@ impl PortPredictor {
         Ok(())
     }
 
-    async fn handle_punch_done(&mut self, src_port: u16) -> Option<(BindUri, QuicInterface)> {
+    async fn handle_punch_done(&mut self, src_port: u16) -> Option<(BindUri, Interface)> {
         let mut i = 0;
         while i < self.ports.len() {
             if self.ports[i].0 == src_port {
@@ -149,7 +149,7 @@ impl PortPredictor {
         punch_pair: Link,
         tx: Arc<Transaction>,
         packet_send_fn: PacketSendFn,
-    ) -> io::Result<Option<(BindUri, QuicInterface)>> {
+    ) -> io::Result<Option<(BindUri, Interface)>> {
         tracing::debug!(target: "punch", %punch_pair, "Starting port prediction");
         let interfaces_per_round = 30;
         let max_rounds = 10;
@@ -200,7 +200,7 @@ impl PortPredictor {
         punch_pair: Link,
         packet_send_fn: &PacketSendFn,
         interfaces_count: usize,
-    ) -> io::Result<Vec<QuicInterface>> {
+    ) -> io::Result<Vec<Interface>> {
         let interfaces_count = interfaces_count.min(self.max_total as usize - self.total_created);
         tracing::debug!(target: "punch", %punch_pair, interfaces_count, "Allocating interfaces");
 
@@ -252,7 +252,7 @@ impl PortPredictor {
         Ok(interfaces)
     }
 
-    async fn create_single_interface(&mut self) -> io::Result<(BindUri, QuicInterface)> {
+    async fn create_single_interface(&mut self) -> io::Result<(BindUri, Interface)> {
         self.recycle_expired_interfaces().await?;
         self.recycle_if_full().await?;
 
@@ -289,7 +289,7 @@ impl PortPredictor {
 
     async fn send_batch_packets(
         &self,
-        interfaces: &[QuicInterface],
+        interfaces: &[Interface],
         punch_pair: Link,
         packet_send_fn: &PacketSendFn,
     ) -> io::Result<()> {

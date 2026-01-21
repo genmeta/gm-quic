@@ -7,12 +7,12 @@ use std::{
 };
 
 mod rebind_on_network_changed;
-pub use rebind_on_network_changed::RebindOnNetworkChanged;
+pub use rebind_on_network_changed::RebindOnNetworkChangedComponent;
 // TODO: rewrite to component
 mod receive_and_deliver_quic;
-pub use receive_and_deliver_quic::{RouterComponent, Task};
+pub use receive_and_deliver_quic::{QuicRouterComponent, Task};
 
-use crate::logical::QuicInterface;
+use crate::logical::Interface;
 
 pub trait Component: Any + Debug + Send + Sync {
     /// Gracefully shutdown the component when QuicIO is closing.
@@ -24,7 +24,7 @@ pub trait Component: Any + Debug + Send + Sync {
     /// then re-initializes it with the new QuicIO.
     ///
     /// Implementation may override this method for optimization.
-    fn reinit(&self, quic_iface: &QuicInterface);
+    fn reinit(&self, iface: &Interface);
 }
 
 // With TypeIds as keys, there's no need to hash them. They are already hashes

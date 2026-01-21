@@ -7,11 +7,11 @@ use std::{
 };
 
 #[derive(Debug, Clone)]
-pub struct RouterComponent {
+pub struct QuicRouterComponent {
     router: Arc<Router>,
 }
 
-impl RouterComponent {
+impl QuicRouterComponent {
     pub fn new(router: Arc<Router>) -> Self {
         Self { router }
     }
@@ -21,8 +21,8 @@ impl RouterComponent {
     }
 }
 
-impl Component for RouterComponent {
-    fn reinit(&self, _quic_iface: &QuicInterface) {}
+impl Component for QuicRouterComponent {
+    fn reinit(&self, _quic_iface: &Interface) {}
 
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         _ = cx;
@@ -32,7 +32,7 @@ impl Component for RouterComponent {
 
 use crate::{
     InterfaceExt,
-    logical::{QuicInterface, RebindedError, UnbondedError, WeakInterface, component::Component},
+    logical::{Interface, RebindedError, UnbondedError, WeakBindInterface, component::Component},
     route::Router,
 };
 
@@ -44,7 +44,7 @@ pin_project_lite::pin_project! {
     }
 }
 
-async fn receive_and_deliver(weak_iface: WeakInterface) -> io::Result<()> {
+async fn receive_and_deliver(weak_iface: WeakBindInterface) -> io::Result<()> {
     let (mut bufs, mut hdrs) = (vec![], vec![]);
     loop {
         let pkts = match weak_iface.borrow() {
@@ -62,7 +62,7 @@ async fn receive_and_deliver(weak_iface: WeakInterface) -> io::Result<()> {
 }
 
 impl Task<()> {
-    pub fn new(iface: WeakInterface) -> Task<impl Future<Output = io::Result<()>> + Send> {
+    pub fn new(iface: WeakBindInterface) -> Task<impl Future<Output = io::Result<()>> + Send> {
         Task::Running {
             future: receive_and_deliver(iface),
         }

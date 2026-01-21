@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
-use qinterface::RefInterface;
+use qinterface::RefIO;
 use tokio::{sync::SetOnce, time::timeout};
 
 use super::{
@@ -10,18 +10,18 @@ use super::{
 use crate::nat::iface::StunIO;
 
 #[derive(Clone)]
-pub struct Transaction<IO> {
+pub struct Transaction<I> {
     stun_router: StunRouter,
-    ref_iface: IO,
+    ref_iface: I,
     transaction_id: TransactionId,
     pending_response: Arc<SetOnce<(Response, SocketAddr)>>,
     retry_times: u8,
     timeout: Duration,
 }
 
-impl<IO: RefInterface> Transaction<IO> {
+impl<I: RefIO> Transaction<I> {
     pub fn begin(
-        ref_iface: IO,
+        ref_iface: I,
         stun_router: StunRouter,
         retry_times: u8,
         timeout: Duration,
@@ -63,7 +63,7 @@ impl<IO: RefInterface> Transaction<IO> {
     }
 }
 
-impl<IO> Drop for Transaction<IO> {
+impl<I> Drop for Transaction<I> {
     fn drop(&mut self) {
         self.stun_router.remove(&self.transaction_id);
     }

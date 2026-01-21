@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr};
 
-use qinterface::RefInterface;
+use qinterface::RefIO;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
@@ -13,13 +13,13 @@ use crate::nat::{
     msg::{CHANGE_IP, CHANGE_PORT, Packet},
 };
 
-pub struct StunServer<IO> {
-    ifaces: [(IO, StunRouter); 2],
+pub struct StunServer<I> {
+    ifaces: [(I, StunRouter); 2],
     change: SocketAddr,
 }
 
-impl<IO: RefInterface + 'static> StunServer<IO> {
-    pub fn new(ifaces: [(IO, StunRouter); 2], change: SocketAddr) -> Self {
+impl<I: RefIO + 'static> StunServer<I> {
+    pub fn new(ifaces: [(I, StunRouter); 2], change: SocketAddr) -> Self {
         info!(
             "new stun io0 {:?}, io1 {:?}",
             ifaces[0].0.iface().local_addr(),
@@ -54,7 +54,7 @@ impl<IO: RefInterface + 'static> StunServer<IO> {
 
     fn spawn_recv_request_task(
         &self,
-        ref_iface: IO,
+        ref_iface: I,
         stun_router: StunRouter,
     ) -> io::Result<JoinHandle<io::Result<()>>> {
         let local_addr = ref_iface.iface().local_addr()?;

@@ -8,10 +8,11 @@ use tokio::io;
 use crate::Resolve;
 
 mod http;
-mod mdns;
-
 pub use http::HttpResolver;
+mod mdns;
 pub use mdns::MdnsResolver;
+mod stand;
+pub use stand::StandResolver;
 
 type ArcResolver = Arc<dyn Resolve + Send + Sync + 'static>;
 

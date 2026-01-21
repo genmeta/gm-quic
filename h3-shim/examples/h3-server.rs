@@ -2,7 +2,7 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::prelude::*;
+use gm_quic::{prelude::*, qinterface::logical::BindUri};
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};
@@ -118,7 +118,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         return Err(format!("{}: is not a readable directory", root.display()).into());
     }
 
-    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::QLog + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(handy::LegacySeqLogger::new(dir)),
         None => Arc::new(handy::NoopLogger),
     };
@@ -129,12 +129,12 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         key,
     } = options.certs;
 
-    let listeners = QuicListeners::builder()?
+    let listeners = QuicListeners::builder()
         .with_qlog(qlogger)
         .without_client_cert_verifier()
         .with_parameters(handy::server_parameters())
         .with_alpns(options.alpns)
-        .listen(options.backlog);
+        .listen(options.backlog)?;
     listeners
         .add_server(
             server_name.as_str(),
@@ -146,7 +146,16 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
         .await?;
     tracing::info!(
         "Listening on {}",
-        &*listeners.get_server(server_name.as_str()).unwrap()
+        listeners
+            .get_server(server_name.as_str())
+            .unwrap()
+            .bind_interfaces()
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .borrow()
+            .real_addr()?
     );
 
     // handle incoming connections and requests

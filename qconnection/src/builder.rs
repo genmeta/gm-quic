@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -23,9 +24,11 @@ use qevent::{
         Owner,
         transport::{ParametersRestored, ParametersSet},
     },
-    telemetry::{Instrument, Log, handy::NoopLogger},
+    telemetry::{Instrument, QLog, handy::NoopLogger},
 };
 use qinterface::{
+    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
+    local::Locations,
     logical::QuicInterfaces,
     route::{RcvdPacketQueue, Router},
 };
@@ -113,7 +116,10 @@ pub struct ConnectionFoundation<Foundation, TlsConfig> {
     tls_config: TlsConfig,
 
     ifaces: Arc<QuicInterfaces>,
+    iface_factory: Arc<dyn ProductInterface>,
     router: Arc<Router>,
+    locations: Arc<Locations>,
+    stun_servers: Arc<[SocketAddr]>,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
     defer_idle_timeout: Duration,
 }
@@ -130,7 +136,10 @@ impl ClientFoundation {
             foundation: self,
             tls_config,
             ifaces: QuicInterfaces::global().clone(),
+            iface_factory: Arc::new(DEFAULT_INTERFACE_FACTORY),
             router: Router::global().clone(),
+            locations: Locations::global().clone(),
+            stun_servers: Arc::new([]),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
             defer_idle_timeout: Duration::ZERO,
         }
@@ -170,7 +179,10 @@ impl ServerFoundation {
             foundation: self,
             tls_config,
             ifaces: QuicInterfaces::global().clone(),
+            iface_factory: Arc::new(DEFAULT_INTERFACE_FACTORY),
             router: Router::global().clone(),
+            locations: Locations::global().clone(),
+            stun_servers: Arc::new([]),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
             defer_idle_timeout: Duration::ZERO,
         }
@@ -205,6 +217,31 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 }
 
 impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
+    pub fn with_iface_manager(mut self, ifaces: Arc<QuicInterfaces>) -> Self {
+        self.ifaces = ifaces;
+        self
+    }
+
+    pub fn with_router(mut self, router: Arc<Router>) -> Self {
+        self.router = router;
+        self
+    }
+
+    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
+        self.locations = locations;
+        self
+    }
+
+    pub fn with_iface_factory(mut self, factory: Arc<dyn ProductInterface>) -> Self {
+        self.iface_factory = factory;
+        self
+    }
+
+    pub fn with_stun_servers(mut self, stun_servers: Arc<[SocketAddr]>) -> Self {
+        self.stun_servers = stun_servers;
+        self
+    }
+
     pub fn with_defer_idle_timeout(mut self, timeout: Duration) -> Self {
         self.defer_idle_timeout = timeout;
         self
@@ -277,6 +314,9 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
 
         PendingConnection {
             interfaces: self.ifaces,
+            iface_factory: self.iface_factory,
+            locations: self.locations,
+            stun_servers: self.stun_servers,
             rcvd_pkt_q,
             defer_idle_timeout: self.defer_idle_timeout,
             role: Role::Client,
@@ -333,6 +373,9 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
         PendingConnection {
             interfaces: self.ifaces,
+            iface_factory: self.iface_factory,
+            locations: self.locations,
+            stun_servers: self.stun_servers,
             rcvd_pkt_q,
             defer_idle_timeout: self.defer_idle_timeout,
             role: Role::Server,
@@ -360,6 +403,9 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
 pub struct PendingConnection {
     interfaces: Arc<QuicInterfaces>,
+    iface_factory: Arc<dyn ProductInterface>,
+    locations: Arc<Locations>,
+    stun_servers: Arc<[SocketAddr]>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: Duration,
     role: Role,
@@ -376,7 +422,7 @@ pub struct PendingConnection {
     zero_rtt_keys: ArcZeroRttKeys,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
     specific: SpecificComponents,
-    qlogger: Arc<dyn Log>,
+    qlogger: Arc<dyn QLog>,
     traversal_frames: ArcTraversalFrameDeque,
 }
 
@@ -418,7 +464,7 @@ fn init_stream_and_datagram<LR: IntoRole, RR: IntoRole>(
 }
 
 impl PendingConnection {
-    pub fn with_qlog(mut self, qlogger: Arc<dyn Log>) -> Self {
+    pub fn with_qlog(mut self, qlogger: Arc<dyn QLog>) -> Self {
         self.qlogger = qlogger;
         self
     }
@@ -428,7 +474,8 @@ impl PendingConnection {
 
         let group_id = GroupID::from(self.origin_dcid);
         let qlog_span = self.qlogger.new_trace(self.role.into(), group_id.clone());
-        let tracing_span = tracing::info_span!("connection", role = %self.role, odcid = %group_id);
+        let tracing_span =
+            tracing::info_span!(parent: None,"connection", role = %self.role, odcid = %group_id);
         let _span = (qlog_span.enter(), tracing_span.clone().entered());
         tracing::debug!(target: "quic", "Starting a new connection");
 
@@ -490,10 +537,13 @@ impl PendingConnection {
             PunchTransaction::new(cid_registry.clone()),
             spaces.data().clone(),
             self.interfaces.clone(),
+            self.iface_factory,
+            self.stun_servers.clone(),
         );
 
         let components = Components {
             interfaces: self.interfaces,
+            locations: self.locations,
             rcvd_pkt_q: self.rcvd_pkt_q,
             conn_state,
             defer_idle_timer: ArcDeferIdleTimer::new(self.defer_idle_timeout),

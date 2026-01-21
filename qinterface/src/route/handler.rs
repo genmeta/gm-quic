@@ -1,12 +1,10 @@
-use std::{convert::Infallible, pin::Pin};
+use std::sync::{Mutex, MutexGuard};
 
-use futures::{Sink, SinkExt, StreamExt};
 use qbase::packet::Packet;
-use tokio::sync::{Mutex, MutexGuard};
 
 use super::Way;
 
-pub type PacketSink<P = Packet> = Pin<Box<dyn Sink<(P, Way), Error = Infallible> + Send>>;
+pub type PacketSink<P = Packet> = Box<dyn Fn(P, Way) + Send>;
 
 pub struct PacketHandler<P = Packet>(Mutex<Option<PacketSink<P>>>);
 
@@ -27,36 +25,37 @@ impl<P> PacketHandler<P> {
         Self(Mutex::new(Some(sink)))
     }
 
-    pub(crate) async fn lock(&self) -> MutexGuard<'_, Option<PacketSink<P>>> {
-        self.0.lock().await
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Option<PacketSink<P>>> {
+        self.0.lock().expect("PacketHandler mutex poisoned")
     }
 
     pub fn drain() -> PacketHandler<P> {
         PacketHandler(Mutex::new(None))
     }
 
-    pub async fn update(&self, handler: PacketSink<P>) {
-        *self.lock().await = Some(handler);
+    pub fn update(&self, handler: PacketSink<P>) {
+        *self.lock() = Some(handler);
     }
 
-    pub async fn is_drain(&self) -> bool {
-        self.lock().await.is_none()
+    pub fn is_drain(&self) -> bool {
+        self.lock().is_none()
     }
 
-    pub async fn take(&self) -> Option<PacketSink<P>> {
-        self.lock().await.take()
+    pub fn take(&self) -> Option<PacketSink<P>> {
+        self.lock().take()
     }
 
-    pub async fn deliver(&self, packet: P, way: Way) {
-        if let Some(sink) = self.lock().await.as_mut() {
-            sink.send((packet, way)).await.ok();
+    pub fn deliver(&self, packet: P, way: Way) {
+        if let Some(sink) = self.lock().as_mut() {
+            sink(packet, way);
         }
     }
 
-    pub async fn deliver_packets(&self, packets: impl IntoIterator<Item = (P, Way)>) {
-        if let Some(sink) = self.lock().await.as_mut() {
-            let mut stream = futures::stream::iter(packets).map(Ok);
-            sink.send_all(&mut stream).await.ok();
+    pub fn deliver_packets(&self, packets: impl IntoIterator<Item = (P, Way)>) {
+        if let Some(sink) = self.lock().as_mut() {
+            for (packet, way) in packets {
+                sink(packet, way);
+            }
         }
     }
 }

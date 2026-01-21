@@ -277,7 +277,11 @@ pub struct PhysicalInterfaces {
 
 impl Debug for PhysicalInterfaces {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PhysicalInterfaces").field("state", &self.state).field("watcher", &"...").field("_timer", &self._timer).finish()
+        f.debug_struct("PhysicalInterfaces")
+            .field("state", &self.state)
+            .field("watcher", &"...")
+            .field("_timer", &self._timer)
+            .finish()
     }
 }
 
@@ -367,18 +371,5 @@ impl Default for PhysicalInterfaces {
     #[inline]
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn scan() {
-        let global = PhysicalInterfaces::global();
-        for interface in global.interfaces().values() {
-            eprintln!("{:?}", interface);
-        }
     }
 }

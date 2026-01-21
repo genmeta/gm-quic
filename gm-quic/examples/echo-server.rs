@@ -84,18 +84,18 @@ async fn main() {
 }
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::QLog + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };
 
-    let listeners = QuicListeners::builder()?
+    let listeners = QuicListeners::builder()
         .without_client_cert_verifier()
         .with_parameters(handy::server_parameters())
         .with_qlog(qlogger)
         .defer_idle_timeout(Duration::from_secs(0))
         .enable_0rtt()
-        .listen(options.backlog);
+        .listen(options.backlog)?;
     listeners
         .add_server(
             options.certs.server_name.as_str(),
@@ -108,9 +108,16 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
 
     tracing::info!(
         "Listening on {}",
-        &*listeners
+        listeners
             .get_server(options.certs.server_name.as_str())
             .unwrap()
+            .bind_interfaces()
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .borrow()
+            .real_addr()?
     );
 
     serve_echo(listeners).await?;

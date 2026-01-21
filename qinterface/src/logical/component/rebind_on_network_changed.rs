@@ -16,9 +16,9 @@ use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    Interface, InterfaceExt,
+    IO, InterfaceExt,
     logical::{
-        BindUriSchema, QuicInterface, RebindedError, TryIntoSocketAddrError, component::Component,
+        BindUriSchema, Interface, RebindedError, TryIntoSocketAddrError, component::Component,
     },
     physical::PhysicalInterfaces,
 };
@@ -56,7 +56,7 @@ impl InterfaceFailure {
     }
 }
 
-pub async fn is_alive(iface: &(impl Interface + ?Sized)) -> Result<(), InterfaceFailure> {
+pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure> {
     if iface.bind_uri().scheme() == BindUriSchema::Ble {
         return Err(InterfaceFailure::BleProtocol);
     }
@@ -106,17 +106,19 @@ pub async fn is_alive(iface: &(impl Interface + ?Sized)) -> Result<(), Interface
 }
 
 #[derive(Debug)]
-pub struct RebindOnNetworkChanged {
+pub struct RebindOnNetworkChangedComponent {
     physical_interfaces: &'static PhysicalInterfaces,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
-impl RebindOnNetworkChanged {
-    pub fn new(physical_interfaces: &'static PhysicalInterfaces) -> Self {
-        Self {
+impl RebindOnNetworkChangedComponent {
+    pub fn new(iface: &Interface, physical_interfaces: &'static PhysicalInterfaces) -> Self {
+        let component = Self {
             physical_interfaces,
             task: Mutex::new(None),
-        }
+        };
+        component.init(iface);
+        component
     }
 
     fn lock_task(&self) -> MutexGuard<'_, Option<AbortOnDropHandle<()>>> {
@@ -125,7 +127,7 @@ impl RebindOnNetworkChanged {
             .expect("RebindOnNetworkChanged task mutex poisoned")
     }
 
-    fn init(&self, iface: &QuicInterface) {
+    fn init(&self, iface: &Interface) {
         let mut task = self.lock_task();
         if !task.as_ref().is_none_or(|t| t.is_finished()) {
             return;
@@ -164,7 +166,7 @@ impl RebindOnNetworkChanged {
     }
 }
 
-impl Component for RebindOnNetworkChanged {
+impl Component for RebindOnNetworkChangedComponent {
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut task_guard = self.lock_task();
         if let Some(task) = task_guard.as_mut() {
@@ -175,7 +177,7 @@ impl Component for RebindOnNetworkChanged {
         Poll::Ready(())
     }
 
-    fn reinit(&self, quic_iface: &QuicInterface) {
-        self.init(quic_iface);
+    fn reinit(&self, iface: &Interface) {
+        self.init(iface);
     }
 }

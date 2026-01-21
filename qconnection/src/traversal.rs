@@ -1,5 +1,6 @@
-use std::{future::poll_fn, io, net::SocketAddr};
+use std::{io, net::SocketAddr};
 
+use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::ReceiveFrame,
     net::{
@@ -10,11 +11,8 @@ use qbase::{
     packet::{ProductHeader, header::short::OneRttHeader},
 };
 use qevent::telemetry::Instrument;
-use qinterface::{
-    local::{AddressEvent, Locations},
-    logical::{BindUri, QuicInterfaces},
-};
-use qtraversal::frame::TraversalFrame;
+use qinterface::{local::AddressEvent, logical::BindUri};
+use qtraversal::{frame::TraversalFrame, nat::client::StunClientsComponent};
 use tracing::Instrument as _;
 
 use super::Components;
@@ -41,7 +39,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for Components {
 
 impl Components {
     pub fn subscribe_local_address(&self) {
-        let location = Locations::global();
+        let location = &self.locations;
         let mut observer = location.subscribe();
         let conn = self.clone();
 
@@ -71,7 +69,8 @@ impl Components {
                         let endpoint_addr = data.as_ref();
                         conn.add_local_endpoint(bind_uri.clone(), (*endpoint_addr).into());
                         if matches!(*endpoint_addr, SocketEndpointAddr::Agent { .. }) {
-                            _ = conn.add_local_punch_address(bind_uri, (*endpoint_addr).into());
+                            _ = conn
+                                .add_local_punch_address(bind_uri.clone(), (*endpoint_addr).into());
                         }
                         return;
                     }
@@ -147,18 +146,35 @@ impl Components {
             .borrow(&bind_uri)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
 
-        let socket_addr = match endpoint_addr {
+        let local_addr = match endpoint_addr {
             EndpointAddr::Socket(socket_endpoint_addr) => socket_endpoint_addr.addr(),
-            EndpointAddr::Ble(_) => {
-                return Err(std::io::Error::other("ble address not supported"));
-            }
+            EndpointAddr::Ble(_) => return Err(std::io::ErrorKind::Unsupported.into()),
         };
         let conn = self.clone();
+
+        let tasks = iface.with_component(|clinets: &StunClientsComponent| {
+            clinets.with_clients(|map| {
+                // workaround. clippy issue: https://github.com/rust-lang/rust-clippy/issues/16428
+                #[allow(clippy::redundant_iter_cloned)]
+                map.values()
+                    .cloned()
+                    .map(|client| async move { client.nat_type().await })
+                    .collect::<FuturesUnordered<_>>()
+            })
+        })?;
+
+        let Some(mut tasks) = tasks else {
+            return Ok(());
+        };
+
         tokio::spawn(async move {
-            let nat_type = poll_fn(|cx| iface.poll_nat_type(cx)).await?.try_into()?;
-            // TODO: 后续使用 traceRoute 探测 NAT 层级
-            conn.puncher
-                .add_local_address(bind_uri, socket_addr, nat_type, 0)
+            while let Some(result) = tasks.next().await {
+                if let Ok(nat_type) = result {
+                    _ = conn
+                        .puncher
+                        .add_local_address(bind_uri.clone(), local_addr, nat_type, 0);
+                }
+            }
         });
         Ok(())
     }

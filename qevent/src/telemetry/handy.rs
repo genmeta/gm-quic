@@ -9,7 +9,7 @@ use tokio::{
     sync::mpsc,
 };
 
-use super::{ExportEvent, Log, Span};
+use super::{ExportEvent, QLog, Span};
 use crate::{Event, GroupID, VantagePoint, VantagePointType, span};
 
 pub struct NoopExporter;
@@ -36,14 +36,14 @@ impl ExportEvent for mpsc::UnboundedSender<Event> {
 
 pub struct NoopLogger;
 
-impl Log for NoopLogger {
+impl QLog for NoopLogger {
     #[inline]
     fn new_trace(&self, _: VantagePointType, _: GroupID) -> Span {
         span!(Arc::new(NoopExporter))
     }
 }
 
-impl<L: Log + ?Sized> Log for Arc<L> {
+impl<L: QLog + ?Sized> QLog for Arc<L> {
     #[inline]
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         self.as_ref().new_trace(vantage_point, group_id)
@@ -118,7 +118,7 @@ impl<S> LegacySeqLogger<S> {
     }
 }
 
-impl<S: TelemetryStorage> Log for LegacySeqLogger<S> {
+impl<S: TelemetryStorage> QLog for LegacySeqLogger<S> {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
@@ -165,7 +165,7 @@ impl<S: TelemetryStorage> Log for LegacySeqLogger<S> {
 
 pub struct TracingLogger;
 
-impl Log for TracingLogger {
+impl QLog for TracingLogger {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
@@ -203,7 +203,7 @@ impl Log for TracingLogger {
 mod tests {
     use crate::{
         quic::connectivity::ServerListening,
-        telemetry::{Instrument, Log, Span, handy::LegacySeqLogger},
+        telemetry::{Instrument, QLog, Span, handy::LegacySeqLogger},
     };
 
     #[tokio::test]

@@ -21,7 +21,7 @@ pub mod qudp {
     use thiserror::Error;
 
     use crate::{
-        Interface, PacketHeader,
+        IO, PacketHeader,
         logical::{BindUri, TryIntoSocketAddrError},
     };
 
@@ -97,7 +97,7 @@ pub mod qudp {
         }
     }
 
-    impl Interface for UdpSocketController {
+    impl IO for UdpSocketController {
         fn bind_uri(&self) -> BindUri {
             self.bind_uri.clone()
         }
@@ -189,7 +189,7 @@ pub mod unsupported {
     use qbase::net::{addr::RealAddr, route::PacketHeader};
     use thiserror::Error;
 
-    use crate::{Interface, logical::BindUri};
+    use crate::{IO, logical::BindUri};
 
     #[derive(Debug, Clone)]
     pub struct Unsupported {
@@ -214,7 +214,7 @@ pub mod unsupported {
         }
     }
 
-    impl Interface for Unsupported {
+    impl IO for Unsupported {
         fn bind_uri(&self) -> BindUri {
             self.bind_uri.clone()
         }

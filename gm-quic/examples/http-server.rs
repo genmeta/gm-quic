@@ -110,17 +110,17 @@ fn main() {
 }
 
 async fn run(options: Options) -> Result<(), Error> {
-    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::QLog + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(handy::LegacySeqLogger::new(dir)),
         None => Arc::new(handy::NoopLogger),
     };
 
-    let listeners = QuicListeners::builder()?
+    let listeners = QuicListeners::builder()
         .with_qlog(qlogger)
         .without_client_cert_verifier()
         .with_parameters(handy::server_parameters())
         .with_alpns(options.alpns)
-        .listen(options.backlog);
+        .listen(options.backlog)?;
     listeners
         .add_server(
             options.certs.server_name.as_str(),
@@ -130,11 +130,19 @@ async fn run(options: Options) -> Result<(), Error> {
             None,
         )
         .await?;
+
     tracing::info!(
         "Listening on {}",
-        &*listeners
+        listeners
             .get_server(options.certs.server_name.as_str())
             .unwrap()
+            .bind_interfaces()
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .borrow()
+            .real_addr()?
     );
 
     loop {

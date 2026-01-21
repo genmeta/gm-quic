@@ -18,10 +18,10 @@ use qbase::{
 use tokio::sync::SetOnce;
 
 use crate::{
-    Interface, InterfaceExt,
+    IO, InterfaceExt,
     factory::ProductInterface,
     logical::{
-        BindInterface, BindUri, QuicInterface, RebindedError, WeakInterface,
+        BindInterface, BindUri, Interface, RebindedError, WeakBindInterface,
         component::{Component, Components},
     },
 };
@@ -46,7 +46,7 @@ pub struct QuicInterfaces {
 
 #[derive(Debug)]
 struct InterfaceEntry {
-    weak_iface: WeakInterface,
+    weak_iface: WeakBindInterface,
     dropped: Arc<SetOnce<()>>,
 }
 
@@ -107,6 +107,7 @@ impl QuicInterfaces {
         bind_uri: BindUri,
         factory: Arc<dyn ProductInterface>,
     ) -> BindInterface {
+        // TODO: error: rebind with difference factory
         loop {
             match self.interfaces.entry(bind_uri.clone()) {
                 // (1) new binding: context closed but not yet removed
@@ -133,7 +134,7 @@ impl QuicInterfaces {
     }
 
     #[inline]
-    pub fn borrow(&self, bind_uri: &BindUri) -> Option<QuicInterface> {
+    pub fn borrow(&self, bind_uri: &BindUri) -> Option<Interface> {
         self.interfaces
             .get(bind_uri)
             .and_then(|entry| Some(entry.weak_iface.upgrade().ok()?.borrow()))
@@ -208,7 +209,7 @@ mod spawn_on_drop {
 }
 
 struct Binding {
-    io: Box<dyn Interface>,
+    io: Box<dyn IO>,
     id: UniqueId,
 }
 
@@ -281,51 +282,46 @@ impl BindInterface {
             (binding.id, components)
         };
 
-        let quic_iface = QuicInterface {
+        let iface = Interface {
             bind_id: new_bind_id,
             bind_iface: self.clone(),
         };
         for (.., component) in &components.map {
-            component.reinit(&quic_iface);
+            component.reinit(&iface);
         }
         Poll::Ready(())
     }
 
-    pub async fn rebind2(&self) {}
-
-    pub fn insert_component_with<C: Component>(&self, init: impl FnOnce(&QuicInterface) -> C) {
-        self.with_components_mut(|components, quic_iface| {
-            components.init_with(|| init(quic_iface));
+    pub fn insert_component_with<C: Component>(&self, init: impl FnOnce(&Interface) -> C) {
+        self.with_components_mut(|components, iface| {
+            components.init_with(|| init(iface));
         });
     }
 
-    pub fn with_components<T>(&self, f: impl FnOnce(&Components, &QuicInterface) -> T) -> T {
+    pub fn with_components<T>(&self, f: impl FnOnce(&Components, &Interface) -> T) -> T {
         let context = self.context.as_ref();
         let (binding, components) = (context.binding(), context.components());
 
-        let quic_iface = QuicInterface {
+        let iface = Interface {
             bind_id: binding.id,
             bind_iface: self.clone(),
         };
-        f(components.deref(), &quic_iface)
+        f(components.deref(), &iface)
     }
 
-    pub fn with_components_mut<T>(
-        &self,
-        f: impl FnOnce(&mut Components, &QuicInterface) -> T,
-    ) -> T {
+    pub fn with_components_mut<T>(&self, f: impl FnOnce(&mut Components, &Interface) -> T) -> T {
         let context = self.context.as_ref();
         let (binding, mut components) = (context.binding(), context.components_mut());
 
-        let quic_iface = QuicInterface {
+        let iface = Interface {
             bind_id: binding.id,
             bind_iface: self.clone(),
         };
-        f(components.deref_mut(), &quic_iface)
+        f(components.deref_mut(), &iface)
     }
 }
 
-impl QuicInterface {
+impl Interface {
     pub fn with_component<C: Component, T>(
         &self,
         f: impl FnOnce(&C) -> T,
@@ -345,7 +341,7 @@ impl QuicInterface {
     }
 }
 
-impl Interface for InterfaceContext {
+impl IO for InterfaceContext {
     fn bind_uri(&self) -> BindUri {
         self.binding().io.bind_uri()
     }
@@ -408,7 +404,7 @@ mod dropping_io {
         }
     }
 
-    impl Interface for DroppingIO {
+    impl IO for DroppingIO {
         fn bind_uri(&self) -> BindUri {
             self.bind_uri.clone()
         }
@@ -454,7 +450,7 @@ impl Binding {
         (self.io.as_ref() as &dyn Any).is::<dropping_io::DroppingIO>()
     }
 
-    pub fn take_io(&mut self) -> Option<Box<dyn Interface>> {
+    pub fn take_io(&mut self) -> Option<Box<dyn IO>> {
         if self.is_dropping() {
             return None;
         }

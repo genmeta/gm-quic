@@ -1,21 +1,20 @@
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-    io,
-    ops::Deref,
-    sync::{Arc, OnceLock, RwLock, Weak},
-    time::Duration,
-};
+use std::{collections::HashMap, fmt::Debug, io, ops::Deref, pin::pin, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
+use futures::StreamExt;
 use qbase::{
     packet::{DataHeader, GetDcid, Packet, long::DataHeader as LongHeader},
     param::ServerParameters,
     token::TokenProvider,
     util::BoundQueue,
 };
-use qconnection::{prelude::handy::ConsistentConcurrency, tls::AcceptAllClientAuther};
-use qevent::telemetry::{Log, handy::NoopLogger};
+use qconnection::{
+    self,
+    qdns::Resolve,
+    qinterface::{self, logical::BindUri, physical::PhysicalInterfaces},
+    tls::AcceptAllClientAuther,
+};
+use qevent::telemetry::QLog;
 use qinterface::{
     factory::ProductInterface,
     logical::{BindInterface, QuicInterfaces},
@@ -66,28 +65,16 @@ impl From<ServerError> for io::Error {
 
 /// Errors that can occur during QuicListeners builder creation.
 #[derive(Debug, thiserror::Error)]
-pub enum BuildListenersError {
+pub enum ListenError {
     /// A QuicListeners instance is already running globally.
-    #[error("A QuicListeners is already running, please shutdown it first")]
+    #[error("A QuicListeners is already running on the router")]
     AlreadyRunning,
-
-    /// Failed to create TLS configuration with the crypto provider.
-    #[error("Failed to create TLS configuration with crypto provider: {source}")]
-    CryptoProviderConfigError {
-        #[source]
-        source: rustls::Error,
-    },
 }
 
-impl From<BuildListenersError> for io::Error {
-    fn from(err: BuildListenersError) -> Self {
-        match err {
-            BuildListenersError::AlreadyRunning => {
-                io::Error::new(io::ErrorKind::AlreadyExists, err)
-            }
-            BuildListenersError::CryptoProviderConfigError { .. } => {
-                io::Error::new(io::ErrorKind::InvalidInput, err)
-            }
+impl From<ListenError> for io::Error {
+    fn from(error: ListenError) -> Self {
+        match error {
+            ListenError::AlreadyRunning => io::Error::new(io::ErrorKind::AlreadyExists, error),
         }
     }
 }
@@ -105,26 +92,19 @@ impl ResolvesServerCert for VirtualHosts {
     }
 }
 
-#[derive(Debug)]
 pub struct Server {
+    network: common::Network,
     bind_ifaces: DashMap<BindUri, BindInterface>,
+    // todo: [update] change to LocalAgent
     certified_key: Arc<CertifiedKey>,
 }
 
-impl Display for Server {
+impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bind_ifaces = self
-            .bind_ifaces
-            .iter()
-            .map(
-                |entry| match entry.value().borrow().and_then(|iface| iface.real_addr()) {
-                    Ok(real_addr) => format!("{}: {}", entry.key(), real_addr),
-                    Err(e) => format!("{}: <unknown address: {e}>", entry.key()),
-                },
-            )
-            .collect::<Vec<_>>()
-            .join(", ");
-        write!(f, "[{bind_ifaces}]")
+        f.debug_struct("Server")
+            .field("bind_ifaces", &self.bind_ifaces)
+            .field("certified_key", &self.certified_key)
+            .finish()
     }
 }
 
@@ -136,19 +116,20 @@ impl Server {
             .collect()
     }
 
-    pub fn add_interface(&self, interface: BindInterface) {
-        self.bind_ifaces
-            .entry(interface.bind_uri())
-            .or_insert(interface);
+    pub async fn bind(&self, bind_uris: impl IntoIterator<Item = impl Into<BindUri>>) {
+        let mut bind_ifaces = pin!(self.network.bind_many(bind_uris).await);
+        while let Some(bind_iface) = bind_ifaces.next().await {
+            self.bind_ifaces.insert(bind_iface.bind_uri(), bind_iface);
+        }
     }
 
-    pub fn get_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+    pub fn get_iface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.bind_ifaces
             .get(bind_uri)
             .map(|iface| iface.value().clone())
     }
 
-    pub fn remove_interface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+    pub fn remove_iface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
         self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
     }
 
@@ -195,82 +176,27 @@ type Incomings = BoundQueue<((Connection, String, Pathway, Link), OwnedSemaphore
 /// - Routes connections to the appropriate server based on SNI (Server Name Indication)
 /// - Rejects connections if the target server isn't listening on the receiving interface
 /// - Returns connections that may still be completing their QUIC handshake
+#[derive(Clone)]
 pub struct QuicListeners {
-    quic_iface_factory: Arc<dyn ProductInterface>,
-    quic_ifaces: Arc<QuicInterfaces>,
-    servers: Arc<DashMap<String, Server>>,
-    backlog: Arc<Semaphore>,
-    #[allow(clippy::type_complexity)]
-    incomings: Arc<Incomings>,
+    network: common::Network,
 
+    // server
+    servers: Arc<DashMap<String, Server>>, // must be empty while building
+    incomings: Arc<Incomings>,             // identify the building QuicListeners
+    backlog: Arc<Semaphore>,               // limit the number of concurrent connections
+    // server: quic config(in initialize order)
+    _supported_versions: Vec<u32>,
     token_provider: Arc<dyn TokenProvider>,
     parameters: ServerParameters,
     anti_port_scan: bool,
     client_auther: Arc<dyn AuthClient>,
     tls_config: TlsServerConfig,
-    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
+    stream_strategy_factory: Arc<dyn ProductStreamsConcurrencyController>,
     defer_idle_timeout: Duration,
-    logger: Arc<dyn Log + Send + Sync>,
-    _supported_versions: Vec<u32>,
+    qlogger: Arc<dyn QLog + Send + Sync>,
 }
 
 impl QuicListeners {
-    /// Start to build a [`QuicListeners`].
-    pub fn builder()
-    -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildListenersError>
-    {
-        Self::builder_with_tls(TlsServerConfig::builder_with_protocol_versions(&[
-            &rustls::version::TLS13,
-        ]))
-    }
-
-    /// Start to build a QuicServer with the given tls crypto provider.
-    pub fn builder_with_crypto_provider(
-        provider: Arc<rustls::crypto::CryptoProvider>,
-    ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, BuildListenersError>
-    {
-        Self::builder_with_tls(
-            TlsServerConfig::builder_with_provider(provider)
-                .with_protocol_versions(&[&rustls::version::TLS13])
-                .map_err(|e| BuildListenersError::CryptoProviderConfigError { source: e })?,
-        )
-    }
-
-    /// Start to build a [`QuicListeners`] with the given TLS configuration.
-    ///
-    /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
-    pub fn builder_with_tls<T>(
-        tls_config: T,
-    ) -> Result<QuicListenersBuilder<T>, BuildListenersError> {
-        let mut global_incomings = QuicListeners::global()
-            .write()
-            .expect("QuicListeners global lock");
-        if let Some(incomings) = global_incomings.upgrade()
-            && !incomings.is_closed()
-        {
-            return Err(BuildListenersError::AlreadyRunning);
-        }
-
-        let incomings = Arc::new(Incomings::new(8));
-        *global_incomings = Arc::downgrade(&incomings);
-
-        Ok(QuicListenersBuilder {
-            incomings,
-            quic_ifaces: QuicInterfaces::global().clone(),
-            quic_iface_factory: Arc::new(handy::DEFAULT_QUIC_IO_FACTORY),
-            servers: Arc::default(),
-            token_provider: None,
-            parameters: handy::server_parameters(),
-            anti_port_scan: false,
-            client_auther: Arc::new(AcceptAllClientAuther),
-            tls_config,
-            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
-            defer_idle_timeout: Duration::ZERO,
-            logger: None,
-            _supported_versions: vec![],
-        })
-    }
-
     /// Add a virtual server with its certificate chain and private key.
     ///
     /// Creates a new virtual host identified by its server name (SNI). The server will use the
@@ -320,19 +246,15 @@ impl QuicListeners {
             })?;
         let certified_key = Arc::new(certified_key);
 
-        let bind_ifaces = DashMap::new();
-        for bind_uri in bind_uris.into_iter().map(Into::into) {
-            if !bind_ifaces.contains_key(&bind_uri) {
-                let factory = self.quic_iface_factory.clone();
-                let iface = self.quic_ifaces.bind(bind_uri.clone(), factory).await;
-                bind_ifaces.insert(bind_uri, iface);
-            }
-        }
+        let bind_uris = bind_uris.into_iter();
 
-        server_entry.insert(Server {
-            bind_ifaces,
+        let server = Server {
+            network: self.network.clone(),
+            bind_ifaces: DashMap::with_capacity(bind_uris.size_hint().0),
             certified_key,
-        });
+        };
+        server.bind(bind_uris).await;
+        server_entry.insert(server);
 
         Ok(())
     }
@@ -392,13 +314,6 @@ impl QuicListeners {
     pub fn shutdown(&self) {
         self.incomings.close();
         self.backlog.close();
-
-        let global = Self::global().read().unwrap();
-        if let Some(global) = global.upgrade()
-            && global.same_queue(&self.incomings)
-        {
-            Router::global().on_connectless_packets(|_, _| {});
-        }
     }
 }
 
@@ -438,22 +353,11 @@ impl AuthClient for ServerAuther {
 
 // internal methods
 impl QuicListeners {
-    fn global() -> &'static RwLock<Weak<Incomings>> {
-        static INCOMINGS: OnceLock<RwLock<Weak<Incomings>>> = OnceLock::new();
-        INCOMINGS.get_or_init(Default::default)
-    }
-
     #[tracing::instrument(
         target = "quic_listeners", level = "debug", skip_all, 
         fields(%bind_uri, %pathway, %link, odcid=tracing::field::Empty, server_name=tracing::field::Empty)
     )]
     pub(crate) fn try_accept_connection(&self, packet: Packet, (bind_uri, pathway, link): Way) {
-        // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
-        let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
-            tracing::debug!(target: "quic_listeners", "Backlog full, dropping incoming packet");
-            return;
-        };
-
         let origin_dcid = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
                 DataHeader::Long(LongHeader::Initial(hdr)) => *hdr.dcid(),
@@ -469,6 +373,12 @@ impl QuicListeners {
             return;
         }
 
+        // Acquire a permit from the backlog semaphore to limit the number of concurrent connections.
+        let Ok(premit) = self.backlog.clone().try_acquire_owned() else {
+            tracing::debug!(target: "quic_listeners", "Backlog full, dropping incoming packet");
+            return;
+        };
+
         let server_auther = ServerAuther {
             anti_port_scan: self.anti_port_scan,
             iface: bind_uri.clone(),
@@ -482,14 +392,18 @@ impl QuicListeners {
             .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
             .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
             .with_defer_idle_timeout(self.defer_idle_timeout)
+            .with_iface_manager(self.network.iface_manager.clone())
+            .with_router(self.network.quic_router.clone())
+            .with_iface_factory(self.network.iface_factory.clone())
             .with_cids(origin_dcid)
-            .with_qlog(self.logger.clone())
+            .with_qlog(self.qlogger.clone())
             .run();
 
         let incomings = self.incomings.clone();
+        let quic_router = self.network.quic_router.clone();
 
         let try_accept_connection = async move {
-            Router::global()
+            quic_router
                 .deliver(packet, (bind_uri.clone(), pathway, link))
                 .await;
 
@@ -520,30 +434,123 @@ impl QuicListeners {
 }
 
 /// The builder for the quic listeners.
+#[derive(Clone)]
 pub struct QuicListenersBuilder<T> {
-    quic_ifaces: Arc<QuicInterfaces>,
-    quic_iface_factory: Arc<dyn ProductInterface>,
+    // network
+    network: common::Network,
+
+    // server
     servers: Arc<DashMap<String, Server>>, // must be empty while building
     incomings: Arc<Incomings>,             // identify the building QuicListeners
-
-    token_provider: Option<Arc<dyn TokenProvider>>,
+    // server: quic config(in initialize order)
+    supported_versions: Vec<u32>,
+    token_provider: Arc<dyn TokenProvider>,
     parameters: ServerParameters,
     anti_port_scan: bool,
     client_auther: Arc<dyn AuthClient>,
     tls_config: T,
-    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
+    stream_strategy_factory: Arc<dyn ProductStreamsConcurrencyController>,
     defer_idle_timeout: Duration,
-    logger: Option<Arc<dyn Log + Send + Sync>>,
-    _supported_versions: Vec<u32>,
+    qlogger: Arc<dyn QLog + Send + Sync>,
+}
+
+impl QuicListeners {
+    /// Start to build a [`QuicListeners`].
+    pub fn builder() -> QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
+        Self::builder_with_tls(TlsServerConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ]))
+    }
+
+    /// Start to build a QuicServer with the given tls crypto provider.
+    pub fn builder_with_crypto_provider(
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> Result<QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>>, rustls::Error> {
+        Ok(Self::builder_with_tls(
+            TlsServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS13])?,
+        ))
+    }
+
+    /// Start to build a [`QuicListeners`] with the given TLS configuration.
+    ///
+    /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
+    pub fn builder_with_tls<T>(tls_config: T) -> QuicListenersBuilder<T> {
+        QuicListenersBuilder {
+            // network
+            network: common::Network::default(),
+
+            // server
+            servers: Arc::new(DashMap::new()), // must be empty while building
+            incomings: Arc::new(BoundQueue::new(8)), // identify the building QuicListeners
+            // server: quic config(in initialize order)
+            supported_versions: vec![1],
+            token_provider: Arc::new(handy::NoopTokenRegistry),
+            parameters: handy::server_parameters(),
+            anti_port_scan: false,
+            client_auther: Arc::new(AcceptAllClientAuther),
+            tls_config,
+            stream_strategy_factory: Arc::new(handy::ConsistentConcurrency::new),
+            defer_idle_timeout: Duration::ZERO,
+            qlogger: Arc::new(handy::NoopLogger),
+        }
+    }
 }
 
 impl<T> QuicListenersBuilder<T> {
+    pub fn with_resolver(mut self, resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
+        self.network.resolver = resolver;
+        self
+    }
+
+    pub fn with_physical_ifaces(mut self, physical_ifaces: &'static PhysicalInterfaces) -> Self {
+        self.network.physical_ifaces = physical_ifaces;
+        self
+    }
+
+    /// Specify how hosts bind to the interface.
+    ///
+    /// If you call this multiple times, only the last `factory` will be used.
+    ///
+    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
+    /// provided by `qudp` crate. For other platforms, please specify you own factory.
+    pub fn with_iface_factory(
+        mut self,
+        iface_factory: Arc<dyn ProductInterface + 'static>,
+    ) -> Self {
+        self.network.iface_factory = iface_factory;
+        self
+    }
+
+    pub fn with_iface_manager(mut self, iface_manager: Arc<QuicInterfaces>) -> Self {
+        self.network.iface_manager = iface_manager;
+        self
+    }
+
+    /// Specify the router to use for the listeners.
+    ///
+    /// Packets received from the interface bound to the server will be deliver this router,
+    /// connectless packets (maybe incoming client connection) will be delivered to QuicListeners.
+    ///
+    /// A router can only be listened to by one QuicListener,
+    /// or the [`QuicListenersBuilder::listen`] will fail.
+    pub fn with_router(mut self, router: Arc<Router>) -> Self {
+        self.network.quic_router = router;
+        self
+    }
+
+    pub fn with_stun(mut self, stun_server: impl Into<Arc<str>>) -> Self {
+        self.network.stun_server = Some(stun_server.into());
+        self
+    }
+
     /// (WIP)Specify the supported quic versions.
     ///
     /// If you call this multiple times, only the last call will take effect.
     pub fn with_supported_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
-        self._supported_versions.clear();
-        self._supported_versions.extend(versions);
+        self.supported_versions.clear();
+        self.supported_versions.extend(versions);
         self
     }
 
@@ -552,37 +559,11 @@ impl<T> QuicListenersBuilder<T> {
     /// If you call this multiple times, only the last `token_provider` will be used.
     ///
     /// [address verification](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation)
-    pub fn with_token_provider(mut self, token_provider: Arc<dyn TokenProvider>) -> Self {
-        self.token_provider = Some(token_provider);
-        self
-    }
-
-    /// Specify the factory which product the streams concurrency strategy controller for the server.
-    ///
-    /// The streams controller is used to control the concurrency of data streams.
-    /// Take a look of [`ControlStreamsConcurrency`] for more information.
-    ///
-    /// If you call this multiple times, only the last `controller` will be used.
-    pub fn with_streams_concurrency_strategy(
-        mut self,
-        strategy_factory: impl ProductStreamsConcurrencyController + 'static,
-    ) -> Self {
-        self.stream_strategy_factory = Box::new(strategy_factory);
-        self
-    }
-
-    /// Provide an option to defer an idle timeout.
-    ///
-    /// This facility could be used when the application wishes to avoid losing
-    /// state that has been associated with an open connection but does not expect
-    /// to exchange application data for some time.
-    ///
-    /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
-    /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
-    /// for more information.
-    pub fn defer_idle_timeout(mut self, duration: Duration) -> Self {
-        self.defer_idle_timeout = duration;
-        self
+    pub fn with_token_provider(self, token_provider: Arc<dyn TokenProvider>) -> Self {
+        Self {
+            token_provider,
+            ..self
+        }
     }
 
     /// Specify the [transport parameters] for the server connections.
@@ -594,42 +575,6 @@ impl<T> QuicListenersBuilder<T> {
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
         self.parameters = parameters;
-        self
-    }
-
-    /// Specify how hosts bind to the interface.
-    ///
-    /// If you call this multiple times, only the last `factory` will be used.
-    ///
-    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
-    /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
-    /// provided by `qudp` crate. For other platforms, please specify you own factory.
-    pub fn with_iface_factory(self, factory: impl ProductInterface + 'static) -> Self {
-        Self {
-            quic_iface_factory: Arc::new(factory),
-            ..self
-        }
-    }
-
-    /// Specify qlog collector for server connections.
-    ///
-    /// If you call this multiple times, only the last `logger` will be used.
-    ///
-    /// Pre-implemented loggers:
-    /// - [`LegacySeqLogger`]: Generates qlog files compatible with [qvis] visualization.
-    ///   - `LegacySeqLogger::new(PathBuf::from("/dir"))`: Write to files `{connection_id}_{role}.sqlog` in `dir`
-    ///   - `LegacySeqLogger::new(tokio::io::stdout())`: Stream to stdout
-    ///   - `LegacySeqLogger::new(tokio::io::stderr())`: Stream to stderr
-    ///
-    ///   Output format: JSON-SEQ ([RFC7464]), one JSON event per line.
-    ///
-    /// - [`NoopLogger`]: Ignores all qlog events (default, recommended for production).
-    ///
-    /// [qvis]: https://qvis.quictools.info/
-    /// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464
-    /// [`LegacySeqLogger`]: qevent::telemetry::handy::LegacySeqLogger
-    pub fn with_qlog(mut self, logger: Arc<dyn Log + Send + Sync>) -> Self {
-        self.logger = Some(logger);
         self
     }
 
@@ -698,6 +643,74 @@ impl<T> QuicListenersBuilder<T> {
         self.client_auther = Arc::new(client_auther);
         self
     }
+
+    fn map_tls<T1>(self, f: impl FnOnce(T) -> T1) -> QuicListenersBuilder<T1> {
+        QuicListenersBuilder {
+            network: self.network,
+            servers: self.servers,
+            incomings: self.incomings,
+            supported_versions: self.supported_versions,
+            token_provider: self.token_provider,
+            parameters: self.parameters,
+            anti_port_scan: self.anti_port_scan,
+            client_auther: self.client_auther,
+            tls_config: f(self.tls_config),
+            stream_strategy_factory: self.stream_strategy_factory,
+            defer_idle_timeout: self.defer_idle_timeout,
+            qlogger: self.qlogger,
+        }
+    }
+
+    /// Specify the factory which product the streams concurrency strategy controller for the server.
+    ///
+    /// The streams controller is used to control the concurrency of data streams.
+    /// Take a look of [`ControlStreamsConcurrency`] for more information.
+    ///
+    /// If you call this multiple times, only the last `controller` will be used.
+    pub fn with_streams_concurrency_strategy(
+        self,
+        stream_strategy_factory: Arc<dyn ProductStreamsConcurrencyController>,
+    ) -> Self {
+        Self {
+            stream_strategy_factory,
+            ..self
+        }
+    }
+
+    /// Provide an option to defer an idle timeout.
+    ///
+    /// This facility could be used when the application wishes to avoid losing
+    /// state that has been associated with an open connection but does not expect
+    /// to exchange application data for some time.
+    ///
+    /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
+    /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
+    /// for more information.
+    pub fn defer_idle_timeout(mut self, duration: Duration) -> Self {
+        self.defer_idle_timeout = duration;
+        self
+    }
+
+    /// Specify qlog collector for server connections.
+    ///
+    /// If you call this multiple times, only the last `logger` will be used.
+    ///
+    /// Pre-implemented loggers:
+    /// - [`LegacySeqLogger`]: Generates qlog files compatible with [qvis] visualization.
+    ///   - `LegacySeqLogger::new(PathBuf::from("/dir"))`: Write to files `{connection_id}_{role}.sqlog` in `dir`
+    ///   - `LegacySeqLogger::new(tokio::io::stdout())`: Stream to stdout
+    ///   - `LegacySeqLogger::new(tokio::io::stderr())`: Stream to stderr
+    ///
+    ///   Output format: JSON-SEQ ([RFC7464]), one JSON event per line.
+    ///
+    /// - [`NoopLogger`]: Ignores all qlog events (default, recommended for production).
+    ///
+    /// [qvis]: https://qvis.quictools.info/
+    /// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464
+    /// [`LegacySeqLogger`]: qevent::telemetry::handy::LegacySeqLogger
+    pub fn with_qlog(self, qlogger: Arc<dyn QLog + Send + Sync>) -> Self {
+        Self { qlogger, ..self }
+    }
 }
 
 impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
@@ -706,46 +719,22 @@ impl QuicListenersBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         self,
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicListenersBuilder<TlsServerConfig> {
-        QuicListenersBuilder {
-            quic_ifaces: self.quic_ifaces,
-            quic_iface_factory: self.quic_iface_factory,
-            servers: self.servers.clone(),
-            incomings: self.incomings,
-            token_provider: self.token_provider,
-            parameters: self.parameters,
-            anti_port_scan: self.anti_port_scan,
-            client_auther: self.client_auther,
-            tls_config: self
-                .tls_config
+        let virtual_servers = Arc::new(VirtualHosts(self.servers.clone()));
+        self.map_tls(|tls_config_builder| {
+            tls_config_builder
                 .with_client_cert_verifier(client_cert_verifier)
-                .with_cert_resolver(Arc::new(VirtualHosts(self.servers))),
-            stream_strategy_factory: self.stream_strategy_factory,
-            defer_idle_timeout: self.defer_idle_timeout,
-            logger: self.logger,
-            _supported_versions: self._supported_versions,
-        }
+                .with_cert_resolver(virtual_servers)
+        })
     }
 
     /// Disable client authentication.
     pub fn without_client_cert_verifier(self) -> QuicListenersBuilder<TlsServerConfig> {
-        QuicListenersBuilder {
-            quic_ifaces: self.quic_ifaces,
-            quic_iface_factory: self.quic_iface_factory,
-            servers: self.servers.clone(),
-            incomings: self.incomings,
-            token_provider: self.token_provider,
-            parameters: self.parameters,
-            anti_port_scan: self.anti_port_scan,
-            client_auther: self.client_auther,
-            tls_config: self
-                .tls_config
+        let virtual_servers = Arc::new(VirtualHosts(self.servers.clone()));
+        self.map_tls(|tls_config_builder| {
+            tls_config_builder
                 .with_client_cert_verifier(Arc::new(NoClientAuth))
-                .with_cert_resolver(Arc::new(VirtualHosts(self.servers))),
-            stream_strategy_factory: self.stream_strategy_factory,
-            defer_idle_timeout: self.defer_idle_timeout,
-            logger: self.logger,
-            _supported_versions: self._supported_versions,
-        }
+                .with_cert_resolver(virtual_servers)
+        })
     }
 }
 
@@ -783,34 +772,36 @@ impl QuicListenersBuilder<TlsServerConfig> {
     /// If the queue is full, new initial packets may be dropped.
     ///
     /// Panic if `backlog` is 0.
-    pub fn listen(self, backlog: usize) -> Arc<QuicListeners> {
+    pub fn listen(self, backlog: usize) -> Result<Arc<QuicListeners>, ListenError> {
         assert!(backlog > 0, "backlog must be greater than 0");
         debug_assert!(self.servers.is_empty());
 
+        let quic_router = self.network.quic_router.clone();
+
         let quic_listeners = Arc::new(QuicListeners {
-            quic_iface_factory: self.quic_iface_factory,
-            quic_ifaces: QuicInterfaces::global().clone(),
+            network: self.network,
             servers: self.servers,
+            incomings: self.incomings,
             backlog: Arc::new(Semaphore::new(backlog)),
-            incomings: self.incomings, // size: any number greater than 0
-            token_provider: self
-                .token_provider
-                .unwrap_or_else(|| Arc::new(handy::NoopTokenRegistry)),
+            _supported_versions: self.supported_versions,
+            token_provider: self.token_provider,
             parameters: self.parameters,
             anti_port_scan: self.anti_port_scan,
             client_auther: self.client_auther,
             tls_config: self.tls_config,
             stream_strategy_factory: self.stream_strategy_factory,
             defer_idle_timeout: self.defer_idle_timeout,
-            logger: self.logger.unwrap_or_else(|| Arc::new(NoopLogger)),
-            _supported_versions: self._supported_versions,
+            qlogger: self.qlogger,
         });
 
-        Router::global().on_connectless_packets({
-            let quic_listeners = quic_listeners.clone();
-            move |packet, way| quic_listeners.try_accept_connection(packet, way)
-        });
+        // TODO: optimize init order
+        let listeners = quic_listeners.clone();
+        if !quic_router.on_connectless_packets(move |packet, way| {
+            listeners.try_accept_connection(packet, way);
+        }) {
+            return Err(ListenError::AlreadyRunning);
+        }
 
-        quic_listeners
+        Ok(quic_listeners)
     }
 }

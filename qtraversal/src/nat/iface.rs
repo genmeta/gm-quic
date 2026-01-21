@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, BytesMut};
 use qbase::net::addr::RealAddr;
-use qinterface::{Interface, InterfaceExt};
+use qinterface::{IO, InterfaceExt};
 
 use crate::{
     Link,
@@ -10,7 +10,7 @@ use crate::{
     packet::{StunHeader, WriteStunHeader},
 };
 
-pub trait StunIO: Interface {
+pub trait StunIO: IO {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         let real_addr = self.real_addr()?;
         real_addr.try_into().map_err(io::Error::other)
@@ -48,4 +48,4 @@ pub trait StunIO: Interface {
     }
 }
 
-impl<IO: Interface + ?Sized> StunIO for IO {}
+impl<I: IO + ?Sized> StunIO for I {}

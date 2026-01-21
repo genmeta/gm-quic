@@ -321,8 +321,9 @@ pub fn spawn_deliver_and_parse(components: &Components) {
         components.clone(),
         components.event_broker.clone(),
     );
+
     tokio::spawn(
-        async move { tokio::join!(initial, handshake, data) }
+        async move { tokio::join!(biased; data, handshake, initial) }
             .instrument_in_current()
             .in_current_span(),
     );

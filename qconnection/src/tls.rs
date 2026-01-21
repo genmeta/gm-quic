@@ -343,7 +343,7 @@ impl ServerTlsSession {
         {
             ClientNameVerifyResult::Accept => {
                 self.send_lock.grant_permit();
-                tracing::info!(?client_name);
+                tracing::debug!(?client_name);
                 self.client_name = client_name.map(Arc::from);
                 parameters.lock_guard()?.recv_remote_params(client_params)?;
 

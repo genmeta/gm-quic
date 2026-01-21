@@ -85,7 +85,7 @@ async fn run(options: Options) -> Result<(), Error> {
         return Err("no uri specified".into());
     }
 
-    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::QLog + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(LegacySeqLogger::new(dir)),
         None => Arc::new(NoopLogger),
     };

@@ -2,8 +2,8 @@ use std::{io::Result, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
 use qinterface::{
-    Interface,
-    factory::{ProductInterface, handy::DEFAULT_QUIC_IO_FACTORY},
+    IO,
+    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
 };
 use qtraversal::{
     nat::{router::StunRouter, server::StunServer},
@@ -31,25 +31,25 @@ async fn main() -> Result<()> {
     init_logger(&args)?;
 
     let bind_uri = format!("inet://{}", args.bind_addr1).into();
-    let iface1: Arc<dyn Interface> = Arc::from(DEFAULT_QUIC_IO_FACTORY.bind(bind_uri));
+    let iface1: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri));
     let stun_router1 = StunRouter::new();
     let forwarder1 = Forwarder::Server {
         outer_addr: args.outer_addr1,
     };
     let _iface1_recv_task = ReceiveAndDeliverPacket::task()
-        .stun_routers(stun_router1.clone())
+        .stun_router(stun_router1.clone())
         .forwarder(forwarder1)
         .iface_ref(iface1.clone())
         .spawn();
 
     let bind_uri = format!("inet://{}", args.bind_addr2).into();
-    let iface2: Arc<dyn Interface> = Arc::from(DEFAULT_QUIC_IO_FACTORY.bind(bind_uri));
+    let iface2: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri));
     let stun_router2 = StunRouter::new();
     let forwarder2 = Forwarder::Server {
         outer_addr: args.outer_addr2,
     };
     let _iface2_recv_task = ReceiveAndDeliverPacket::task()
-        .stun_routers(stun_router2.clone())
+        .stun_router(stun_router2.clone())
         .forwarder(forwarder2)
         .iface_ref(iface2.clone())
         .spawn();

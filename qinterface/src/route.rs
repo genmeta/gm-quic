@@ -3,13 +3,11 @@ mod packet;
 mod queue;
 
 use std::{
-    convert::Infallible,
     net::SocketAddr,
     sync::{Arc, OnceLock, Weak},
 };
 
 use dashmap::DashMap;
-use futures::{Sink, SinkExt};
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
@@ -44,6 +42,13 @@ impl Router {
                 on_unrouted: handler::PacketHandler::drain(),
             })
         })
+    }
+
+    pub fn new() -> Self {
+        Router {
+            table: DashMap::new(),
+            on_unrouted: handler::PacketHandler::drain(),
+        }
     }
 
     // for origin_dcid
@@ -85,6 +90,16 @@ impl Router {
         }
     }
 
+    pub async fn try_deliver(&self, packet: Packet, way: Way) -> Result<(), (Packet, Way)> {
+        match self.find_entry(&packet, &way.2) {
+            Some(rcvd_pkt_q) => {
+                rcvd_pkt_q.deliver(packet, way).await;
+                Ok(())
+            }
+            None => Err((packet, way)),
+        }
+    }
+
     pub async fn deliver(&self, packet: Packet, way: Way) {
         let rcvd_pkt_q = match self.find_entry(&packet, &way.2) {
             Some(rcvd_pkt_q) => rcvd_pkt_q,
@@ -92,7 +107,7 @@ impl Router {
                 // For packets that cannot be routed, this likely indicates a new connection.
                 // In some cases, multiple threads (e.g., A and B) may be waiting for the lock,
                 // and both would cause the server to create separate new connections.
-                let mut on_unrouted = self.on_unrouted.lock().await;
+                let mut on_unrouted = self.on_unrouted.lock();
                 let Some(on_unrouted) = on_unrouted.as_mut() else {
                     // Drain mode, just drop the packet
                     return;
@@ -102,7 +117,7 @@ impl Router {
                 match self.find_entry(&packet, &way.2) {
                     Some(rcvd_pkt_q) => rcvd_pkt_q,
                     None => {
-                        on_unrouted.send((packet.clone(), way.clone())).await.ok();
+                        (on_unrouted)(packet, way);
                         return;
                     }
                 }
@@ -111,11 +126,24 @@ impl Router {
         rcvd_pkt_q.deliver(packet, way).await;
     }
 
-    pub async fn on_connectless_packets<S>(&self, sink: S)
+    pub fn on_connectless_packets<S>(&self, sink: S) -> bool
     where
-        S: Sink<(Packet, Way), Error = Infallible> + Send + 'static,
+        S: Fn(Packet, Way) + Send + 'static,
     {
-        self.on_unrouted.update(Box::pin(sink)).await;
+        let mut on_unrouted = self.on_unrouted.lock();
+        if on_unrouted.is_some() {
+            return false;
+        }
+        *on_unrouted = Some(Box::new(sink));
+        true
+    }
+
+    pub fn is_connectless_draining(&self) -> bool {
+        self.on_unrouted.is_drain()
+    }
+
+    pub fn drain_connectless(&self) {
+        self.on_unrouted.take();
     }
 
     pub fn registry_on_issuing_scid<T>(
@@ -128,6 +156,12 @@ impl Router {
             rcvd_pkts_q,
             issued_cids,
         }
+    }
+}
+
+impl Default for Router {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

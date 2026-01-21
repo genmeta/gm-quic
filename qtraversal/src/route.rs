@@ -17,10 +17,10 @@ use qbase::{
     util::ArcAsyncDeque,
 };
 use qinterface::{
-    Interface, InterfaceExt, RefInterface,
+    IO, InterfaceExt, RefIO,
     logical::{
-        QuicInterface, WeakQuicInterface,
-        component::{Component, RouterComponent},
+        Interface, WeakInterface,
+        component::{Component, QuicRouterComponent},
     },
     route::Router,
 };
@@ -39,12 +39,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub enum Forwarder<IO: RefInterface + 'static> {
-    Clients { stun_clients: StunClients<IO> },
+pub enum Forwarder<I: RefIO + 'static> {
+    Clients { stun_clients: StunClients<I> },
     Server { outer_addr: SocketAddr },
 }
 
-impl<IO: RefInterface> Forwarder<IO> {
+impl<I: RefIO> Forwarder<I> {
     pub fn my_outers(&self) -> SmallVec<[SocketAddr; 8]> {
         match self {
             Forwarder::Clients { stun_clients } => stun_clients.with_clients(|clients| {
@@ -84,21 +84,29 @@ impl<IO: RefInterface> Forwarder<IO> {
 
 #[derive(Debug)]
 pub struct ForwardersComponent {
-    forward: Mutex<Forwarder<WeakQuicInterface>>,
+    forward: Mutex<Forwarder<WeakInterface>>,
 }
 
 impl ForwardersComponent {
-    pub fn new(forwarder: Forwarder<WeakQuicInterface>) -> Self {
+    pub fn new(forwarder: Forwarder<WeakInterface>) -> Self {
         Self {
             forward: Mutex::new(forwarder),
         }
     }
 
-    fn lock_forwarders(&self) -> MutexGuard<'_, Forwarder<WeakQuicInterface>> {
+    pub fn new_client(stun_clients: StunClients<WeakInterface>) -> Self {
+        Self::new(Forwarder::Clients { stun_clients })
+    }
+
+    pub fn new_server(outer_addr: SocketAddr) -> Self {
+        Self::new(Forwarder::Server { outer_addr })
+    }
+
+    fn lock_forwarders(&self) -> MutexGuard<'_, Forwarder<WeakInterface>> {
         self.forward.lock().expect("Forwarder lock poisoned")
     }
 
-    pub fn forwarder(&self) -> Forwarder<WeakQuicInterface> {
+    pub fn forwarder(&self) -> Forwarder<WeakInterface> {
         self.lock_forwarders().clone()
     }
 }
@@ -108,9 +116,9 @@ impl Component for ForwardersComponent {
         Poll::Ready(())
     }
 
-    fn reinit(&self, quic_iface: &QuicInterface) {
-        _ = quic_iface.with_component(|clients: &StunClientsComponent| {
-            clients.reinit(quic_iface);
+    fn reinit(&self, iface: &Interface) {
+        _ = iface.with_component(|clients: &StunClientsComponent| {
+            clients.reinit(iface);
             *self.lock_forwarders() = Forwarder::Clients {
                 stun_clients: clients.clone(),
             };
@@ -126,32 +134,41 @@ pub struct ReceiveAndDeliverPacket {
     forward: bool,
 }
 
+pub type ReceiveAndDeliverPacketComponent = ReceiveAndDeliverPacket;
+
 #[bon::bon]
 impl ReceiveAndDeliverPacket {
     #[builder(finish_fn = init)]
     pub fn new(
-        #[builder(start_fn)] quic_iface: &QuicInterface,
-
-        #[builder(default = true)] quic: bool,
-        #[builder(default = true)] stun: bool,
-        #[builder(default = true)] forward: bool,
+        #[builder(start_fn)] weak_iface: WeakInterface,
+        quic_router: Option<Arc<Router>>,
+        stun_router: Option<StunRouter>,
+        forwarder: Option<Forwarder<WeakInterface>>,
     ) -> Self {
-        let this = Self {
-            task: Mutex::new(None),
-            quic,
-            stun,
-            forward,
-        };
-        this.init(quic_iface);
-        this
+        let enable_quic = quic_router.is_some();
+        let enable_stun = stun_router.is_some();
+        let enable_forward = forwarder.is_some();
+
+        let task = Self::task()
+            .maybe_quic_router(quic_router)
+            .maybe_stun_router(stun_router)
+            .maybe_forwarder(forwarder)
+            .iface_ref(weak_iface)
+            .spawn();
+        Self {
+            task: Mutex::new(Some(task)),
+            quic: enable_quic,
+            stun: enable_stun,
+            forward: enable_forward,
+        }
     }
 
     #[builder(finish_fn = spawn)]
-    pub fn task<IO: RefInterface + 'static>(
+    pub fn task<I: RefIO + 'static>(
         quic_router: Option<Arc<Router>>,
-        stun_routers: Option<StunRouter>,
-        forwarder: Option<Forwarder<IO>>,
-        iface_ref: IO,
+        stun_router: Option<StunRouter>,
+        forwarder: Option<Forwarder<I>>,
+        iface_ref: I,
     ) -> AbortOnDropHandle<io::Result<()>> {
         AbortOnDropHandle::new(tokio::spawn(async move {
             let iface = iface_ref.iface();
@@ -179,7 +196,7 @@ impl ReceiveAndDeliverPacket {
             };
 
             let deliver_stun_packet = async |mut pkt: BytesMut, hdr: PacketHeader| {
-                let Some(stun_router) = stun_routers.as_ref() else {
+                let Some(stun_router) = stun_router.as_ref() else {
                     return;
                 };
 
@@ -241,10 +258,10 @@ impl ReceiveAndDeliverPacket {
         self.task.lock().unwrap()
     }
 
-    pub fn init(&self, quic_iface: &QuicInterface) {
-        let (quic_router, stun_router, forwarder) = quic_iface.with_components(|components, _| {
+    pub fn reinit(&self, iface: &Interface) {
+        let (quic_router, stun_router, forwarder) = iface.with_components(|components, _| {
             let quic_router = (self.quic)
-                .then(|| components.with(RouterComponent::router))
+                .then(|| components.with(QuicRouterComponent::router))
                 .and_then(identity);
             let stun_router = self
                 .stun
@@ -259,9 +276,9 @@ impl ReceiveAndDeliverPacket {
         *self.lock_task() = Some(
             Self::task()
                 .maybe_quic_router(quic_router)
-                .maybe_stun_routers(stun_router)
+                .maybe_stun_router(stun_router)
                 .maybe_forwarder(forwarder)
-                .iface_ref(quic_iface.downgrade())
+                .iface_ref(iface.downgrade())
                 .spawn(),
         );
     }
@@ -278,7 +295,7 @@ impl Component for ReceiveAndDeliverPacket {
         Ready(())
     }
 
-    fn reinit(&self, quic_iface: &QuicInterface) {
-        self.init(quic_iface);
+    fn reinit(&self, iface: &Interface) {
+        self.reinit(iface);
     }
 }

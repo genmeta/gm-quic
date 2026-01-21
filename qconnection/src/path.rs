@@ -21,8 +21,8 @@ use qbase::{
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
 use qinterface::{
-    Interface, InterfaceExt,
-    logical::{BindUri, QuicInterface},
+    IO, InterfaceExt,
+    logical::{BindUri, Interface},
 };
 use tokio::time::Duration;
 
@@ -45,7 +45,7 @@ use crate::{ArcDcidCell, Components, path::burst::BurstError};
 // pub mod burst;
 
 pub struct Path {
-    interface: QuicInterface,
+    interface: Interface,
     validated: AtomicBool,
     active: AtomicBool,
     link: Link,
@@ -192,7 +192,7 @@ impl Components {
 impl Path {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        interface: QuicInterface,
+        interface: Interface,
         link: Link,
         pathway: Pathway,
         dcid_cell: ArcDcidCell,

@@ -4,8 +4,8 @@ use std::{
 };
 
 use qinterface::{
-    Interface,
-    factory::{ProductInterface, handy::DEFAULT_QUIC_IO_FACTORY},
+    IO,
+    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
 };
 use qtraversal::{
     nat::{
@@ -125,12 +125,12 @@ async fn test_detect_case(case: usize) {
     let stun_agent = STUN_AGENT.parse().unwrap();
     let case = CASES[case];
     let bind_uri = format!("inet://{}", case.bind_addr);
-    let iface: Arc<dyn Interface> = Arc::from(DEFAULT_QUIC_IO_FACTORY.bind(bind_uri.into()));
+    let iface: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri.into()));
     let stun_router = StunRouter::new();
     let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_agent);
 
     let _route_task = ReceiveAndDeliverPacket::task()
-        .stun_routers(stun_router)
+        .stun_router(stun_router)
         .iface_ref(iface.clone())
         .spawn();
 

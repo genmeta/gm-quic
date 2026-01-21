@@ -117,7 +117,7 @@ async fn main() {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 async fn run(options: Options) -> Result<(), Error> {
-    let qlogger: Arc<dyn qevent::telemetry::Log + Send + Sync> = match options.qlog {
+    let qlogger: Arc<dyn qevent::telemetry::QLog + Send + Sync> = match options.qlog {
         Some(dir) => Arc::new(handy::LegacySeqLogger::new(dir)),
         None => Arc::new(handy::NoopLogger),
     };

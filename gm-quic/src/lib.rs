@@ -6,7 +6,7 @@ pub mod prelude {
 
     pub use crate::{
         client::{BindInterfaceError, ConnectServerError, QuicClient},
-        server::{BuildListenersError, ListenersShutdown, QuicListeners, Server, ServerError},
+        server::{ListenError, ListenersShutdown, QuicListeners, Server, ServerError},
     };
 
     pub mod handy {
@@ -36,6 +36,5 @@ pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qtraversal, 
 
 mod cert;
 mod client;
+mod common;
 mod server;
-#[cfg(test)]
-mod tests;

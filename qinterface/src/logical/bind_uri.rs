@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
     net::{AddrParseError, IpAddr, SocketAddr},
     str::FromStr,
+    sync::Arc,
 };
 
 use derive_more::{Display, Into};
@@ -14,7 +15,7 @@ use qbase::{
 use thiserror::Error;
 
 #[derive(Debug, Display, Clone, Into, PartialEq, Eq, Hash)]
-pub struct BindUri(Uri);
+pub struct BindUri(Arc<Uri>);
 
 #[derive(Debug, Error)]
 pub enum ParseBindUriError {
@@ -100,7 +101,7 @@ impl FromStr for BindUri {
             }
         }
 
-        Ok(Self(uri))
+        Ok(Self(Arc::new(uri)))
     }
 }
 
@@ -196,8 +197,13 @@ impl BindUri {
         parse_ble_bind_uri(&self.0)
     }
 
+    fn uri_mut(&mut self) -> &mut Uri {
+        Arc::make_mut(&mut self.0)
+    }
+
     pub fn add_prop(&mut self, key: &str, value: &str) {
-        let mut uri_parts = self.0.clone().into_parts();
+        let uri = self.uri_mut();
+        let mut uri_parts = uri.clone().into_parts();
         uri_parts.path_and_query = uri_parts.path_and_query.map(|pq| {
             let query = match pq.query() {
                 Some(exist_query) => format!("{exist_query}&{key}={value}"),
@@ -207,7 +213,7 @@ impl BindUri {
                 .parse()
                 .expect("Path and query should be valid")
         });
-        self.0 = Uri::from_parts(uri_parts).expect("BindUri should be valid");
+        *uri = Uri::from_parts(uri_parts).expect("BindUri should be valid");
     }
 
     pub const ALLOC_PORT_ID: &'static str = "alloc_port_id";
