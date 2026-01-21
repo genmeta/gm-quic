@@ -1,10 +1,7 @@
 use std::{io::Result, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
-use qinterface::{
-    IO,
-    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
-};
+use qinterface::io::{IO, ProductIO, handy::DEFAULT_IO_FACTORY};
 use qtraversal::{
     nat::{router::StunRouter, server::StunServer},
     route::{Forwarder, ReceiveAndDeliverPacket},
@@ -31,7 +28,7 @@ async fn main() -> Result<()> {
     init_logger(&args)?;
 
     let bind_uri = format!("inet://{}", args.bind_addr1).into();
-    let iface1: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri));
+    let iface1: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
     let stun_router1 = StunRouter::new();
     let forwarder1 = Forwarder::Server {
         outer_addr: args.outer_addr1,
@@ -43,7 +40,7 @@ async fn main() -> Result<()> {
         .spawn();
 
     let bind_uri = format!("inet://{}", args.bind_addr2).into();
-    let iface2: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri));
+    let iface2: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
     let stun_router2 = StunRouter::new();
     let forwarder2 = Forwarder::Server {
         outer_addr: args.outer_addr2,

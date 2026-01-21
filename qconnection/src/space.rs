@@ -24,7 +24,7 @@ use qevent::{
     },
     telemetry::Instrument,
 };
-use qinterface::route::PlainPacket;
+use qinterface::component::route::PlainPacket;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},

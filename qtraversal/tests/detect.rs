@@ -3,10 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use qinterface::{
-    IO,
-    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
-};
+use qinterface::io::{IO, ProductIO, handy::DEFAULT_IO_FACTORY};
 use qtraversal::{
     nat::{
         client::{NatType, StunClient},
@@ -125,7 +122,7 @@ async fn test_detect_case(case: usize) {
     let stun_agent = STUN_AGENT.parse().unwrap();
     let case = CASES[case];
     let bind_uri = format!("inet://{}", case.bind_addr);
-    let iface: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri.into()));
+    let iface: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri.into()));
     let stun_router = StunRouter::new();
     let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_agent);
 

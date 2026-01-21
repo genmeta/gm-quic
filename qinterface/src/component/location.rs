@@ -8,7 +8,7 @@ use qbase::util::{UniqueId, UniqueIdGenerator};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::logical::BindUri;
+use crate::BindUri;
 
 #[derive(Debug)]
 pub enum AddressEvent<D: ?Sized = dyn Any + Send + Sync> {

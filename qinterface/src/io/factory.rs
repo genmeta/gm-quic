@@ -1,10 +1,8 @@
-pub mod handy;
-
 use std::task::{Context, Poll, ready};
 
-use crate::{IO, logical::BindUri};
+use crate::{BindUri, IO};
 
-pub trait ProductInterface: Send + Sync {
+pub trait ProductIO: Send + Sync {
     fn bind(&self, bind_uri: BindUri) -> Box<dyn IO>;
 
     fn poll_rebind(&self, cx: &mut Context<'_>, quic_io: &mut Box<dyn IO>) -> Poll<()> {
@@ -14,13 +12,13 @@ pub trait ProductInterface: Send + Sync {
     }
 }
 
-pub trait ProductInterfaceExt: ProductInterface {
+pub trait ProductIoExt: ProductIO {
     fn rebind(&self, quic_io: &mut Box<dyn IO>) -> impl Future<Output = ()> {
         async { core::future::poll_fn(|cx| self.poll_rebind(cx, quic_io)).await }
     }
 }
 
-impl<F, Q> ProductInterface for F
+impl<F, Q> ProductIO for F
 where
     F: Fn(BindUri) -> Q + Send + Sync,
     Q: IO + 'static,

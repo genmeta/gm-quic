@@ -7,15 +7,11 @@ use qbase::{
     param::ClientParameters,
     token::TokenSink,
 };
-use qconnection::{
-    self,
-    qdns::Resolve,
-    qinterface::{physical::PhysicalInterfaces, route::Router},
-};
+use qconnection::{self, qdns::Resolve, qinterface::io::IO};
 use qevent::telemetry::QLog;
 use qinterface::{
-    factory::ProductInterface,
-    logical::{BindInterface, BindUri, Interface, QuicInterfaces},
+    BindInterface, Interface, bind_uri::BindUri, component::route::QuicRouter, device::Devices,
+    io::ProductIO, manager::InterfaceManager,
 };
 use rustls::{
     ConfigBuilder, WantsVerifier,
@@ -122,7 +118,7 @@ impl QuicClient {
             .with_tls_config(self.tls_config.clone())
             .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
             .with_zero_rtt(self.tls_config.enable_early_data)
-            .with_router(self.network.quic_router.clone())
+            .with_quic_router(self.network.quic_router.clone())
             .with_iface_factory(self.network.iface_factory.clone())
             .with_iface_manager(self.network.iface_manager.clone())
             .with_defer_idle_timeout(self.defer_idle_timeout)
@@ -351,8 +347,8 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
-    pub fn physical_ifaces(mut self, physical_ifaces: &'static PhysicalInterfaces) -> Self {
-        self.network.physical_ifaces = physical_ifaces;
+    pub fn physical_ifaces(mut self, physical_ifaces: &'static Devices) -> Self {
+        self.network.devices = physical_ifaces;
         self
     }
 
@@ -364,18 +360,18 @@ impl<T> QuicClientBuilder<T> {
     /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
-    pub fn with_iface_factory(mut self, iface_factory: Arc<dyn ProductInterface>) -> Self {
+    pub fn with_iface_factory(mut self, iface_factory: Arc<dyn ProductIO>) -> Self {
         self.network.iface_factory = iface_factory;
         self
     }
 
     /// Specify the interfaces manager for the client.
-    pub fn with_iface_manager(mut self, iface_manager: Arc<QuicInterfaces>) -> Self {
+    pub fn with_iface_manager(mut self, iface_manager: Arc<InterfaceManager>) -> Self {
         self.network.iface_manager = iface_manager;
         self
     }
 
-    pub fn with_router(mut self, router: Arc<Router>) -> Self {
+    pub fn with_router(mut self, router: Arc<QuicRouter>) -> Self {
         self.network.quic_router = router;
         self
     }

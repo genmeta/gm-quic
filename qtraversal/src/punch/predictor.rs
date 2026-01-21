@@ -4,9 +4,10 @@ use std::{
 };
 
 use qinterface::{
-    IO,
-    factory::ProductInterface,
-    logical::{BindUri, BindUriSchema, Interface, QuicInterfaces},
+    Interface,
+    bind_uri::{BindUri, BindUriSchema},
+    io::{IO, ProductIO},
+    manager::InterfaceManager,
 };
 
 use crate::{
@@ -32,8 +33,8 @@ pub type PacketSendFn = Arc<
 >;
 
 pub struct PortPredictor {
-    ifaces: Arc<QuicInterfaces>,
-    factory: Arc<dyn ProductInterface>,
+    ifaces: Arc<InterfaceManager>,
+    factory: Arc<dyn ProductIO>,
     ports: VecDeque<(u16, BindUri, Interface, tokio::time::Instant)>,
     bind_uri: BindUri,
     dst: SocketAddr,
@@ -45,8 +46,8 @@ pub struct PortPredictor {
 
 impl PortPredictor {
     pub fn new(
-        ifaces: Arc<QuicInterfaces>,
-        factory: Arc<dyn ProductInterface>,
+        ifaces: Arc<InterfaceManager>,
+        factory: Arc<dyn ProductIO>,
         bind_uri: BindUri,
         dst: SocketAddr,
         max_total: u32,

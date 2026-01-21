@@ -20,7 +20,7 @@ use qbase::{
         io::ProductHeader,
     },
 };
-use qinterface::route::RcvdPacketQueue;
+use qinterface::component::route::RcvdPacketQueue;
 use tokio::time::Instant;
 
 use crate::{ArcLocalCids, Components, path::ArcPathContexts};

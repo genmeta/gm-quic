@@ -1,4 +1,7 @@
 #[cfg(all(feature = "qudp", any(unix, windows)))]
+use crate::BindUri;
+
+#[cfg(all(feature = "qudp", any(unix, windows)))]
 pub mod qudp {
     use std::{
         error::{Error, Error as StdError},
@@ -20,10 +23,7 @@ pub mod qudp {
     use qudp::BATCH_SIZE;
     use thiserror::Error;
 
-    use crate::{
-        IO, PacketHeader,
-        logical::{BindUri, TryIntoSocketAddrError},
-    };
+    use crate::{BindUri, IO, PacketHeader, bind_uri::TryIntoSocketAddrError};
 
     pub struct UdpSocketController {
         bind_uri: BindUri,
@@ -189,7 +189,7 @@ pub mod unsupported {
     use qbase::net::{addr::RealAddr, route::PacketHeader};
     use thiserror::Error;
 
-    use crate::{IO, logical::BindUri};
+    use crate::{BindUri, IO};
 
     #[derive(Debug, Clone)]
     pub struct Unsupported {
@@ -254,3 +254,17 @@ pub mod unsupported {
         }
     }
 }
+
+#[cfg(all(feature = "qudp", any(unix, windows)))]
+pub static DEFAULT_IO_FACTORY: fn(BindUri) -> qudp::UdpSocketController =
+    |bind_uri| qudp::UdpSocketController::bind(bind_uri);
+
+#[cfg(not(all(feature = "qudp", any(unix, windows))))]
+pub static DEFAULT_IO_FACTORY: fn(BindUri) -> handy::unsupported::Unsupported =
+    |bind_uri| unsupported::bind(bind_uri);
+
+const _: () = {
+    use super::ProductIO;
+    const fn assert_product_interface_factory<F: ProductIO + Copy>(_: &F) {}
+    assert_product_interface_factory(&DEFAULT_IO_FACTORY);
+};

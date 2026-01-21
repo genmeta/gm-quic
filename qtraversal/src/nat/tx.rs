@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
-use qinterface::RefIO;
+use qinterface::io::RefIO;
 use tokio::{sync::SetOnce, time::timeout};
 
 use super::{

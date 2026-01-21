@@ -6,7 +6,7 @@ use qbase::{
     util::BoundQueue,
 };
 
-use crate::route::{CipherPacket, Way};
+use crate::component::route::{CipherPacket, Way};
 
 type PacketQueue<P> = BoundQueue<(CipherPacket<P>, Way)>;
 

@@ -18,20 +18,18 @@ use qbase::{
 use tokio::sync::SetOnce;
 
 use crate::{
-    IO, InterfaceExt,
-    factory::ProductInterface,
-    logical::{
-        BindInterface, BindUri, Interface, RebindedError, WeakBindInterface,
-        component::{Component, Components},
-    },
+    BindInterface, Interface, RebindedError, WeakBindInterface,
+    bind_uri::BindUri,
+    component::{Component, Components},
+    io::{IO, IoExt, ProductIO},
 };
 
 /// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
 ///
-/// Calling the [`QuicInterfaces::bind`] method with a [`BindUri`] returns a [`BindInterface`], primarily used for listening on addresses.
+/// Calling the [`InterfaceManager::bind`] method with a [`BindUri`] returns a [`BindInterface`], primarily used for listening on addresses.
 /// As long as [`BindInterface`] instances exist, the corresponding [`QuicIO`] for that [`BindUri`] won't be automatically released.
 ///
-/// For actual data transmission, you need [`QuicInterface`], which can be obtained via [`QuicInterfaces::get`] or [`BindInterface::borrow`].
+/// For actual data transmission, you need [`QuicInterface`], which can be obtained via [`InterfaceManager::get`] or [`BindInterface::borrow`].
 /// Like [`BindInterface`], it keeps the [`QuicIO`] alive, but with one key difference: once a rebind occurs,
 /// any previous [`QuicInterface`] for that [`BindUri`] becomes invalid, and attempting to send or receive packets
 /// will result in [`io::ErrorKind::NotConnected`] errors.
@@ -39,7 +37,7 @@ use crate::{
 /// [`QuicIO`]: crate::QuicIO
 /// [`io::ErrorKind::NotConnected`]: std::io::ErrorKind::NotConnected
 #[derive(Default, Debug)]
-pub struct QuicInterfaces {
+pub struct InterfaceManager {
     interfaces: DashMap<BindUri, InterfaceEntry>,
     bind_id_generator: UniqueIdGenerator,
 }
@@ -63,11 +61,11 @@ impl InterfaceEntry {
     }
 }
 
-impl QuicInterfaces {
+impl InterfaceManager {
     #[inline]
     pub fn global() -> &'static Arc<Self> {
-        static GLOBAL: OnceLock<Arc<QuicInterfaces>> = OnceLock::new();
-        GLOBAL.get_or_init(QuicInterfaces::new)
+        static GLOBAL: OnceLock<Arc<InterfaceManager>> = OnceLock::new();
+        GLOBAL.get_or_init(InterfaceManager::new)
     }
 
     #[inline]
@@ -78,7 +76,7 @@ impl QuicInterfaces {
     fn new_binding(
         self: &Arc<Self>,
         entry: Entry<BindUri, InterfaceEntry>,
-        factory: Arc<dyn ProductInterface>,
+        factory: Arc<dyn ProductIO>,
     ) -> BindInterface {
         let context = InterfaceContext {
             factory: factory.clone(),
@@ -105,7 +103,7 @@ impl QuicInterfaces {
     pub async fn bind(
         self: &Arc<Self>,
         bind_uri: BindUri,
-        factory: Arc<dyn ProductInterface>,
+        factory: Arc<dyn ProductIO>,
     ) -> BindInterface {
         // TODO: error: rebind with difference factory
         loop {
@@ -214,11 +212,11 @@ struct Binding {
 }
 
 pub struct InterfaceContext {
-    factory: Arc<dyn ProductInterface>,
+    factory: Arc<dyn ProductIO>,
     binding: RwLock<Binding>,
     // shared with [InterfaceEntry]
     dropped: Arc<SetOnce<()>>,
-    ifaces: Arc<QuicInterfaces>,
+    ifaces: Arc<InterfaceManager>,
     components: RwLock<Components>,
 }
 

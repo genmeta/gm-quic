@@ -2,9 +2,8 @@ use std::{io::Result, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
 use qinterface::{
-    IO,
-    factory::{ProductInterface, handy::DEFAULT_INTERFACE_FACTORY},
-    local::Locations,
+    component::location::Locations,
+    io::{IO, ProductIO, handy::DEFAULT_IO_FACTORY},
 };
 use qtraversal::{
     nat::{client::StunClient, router::StunRouter},
@@ -31,7 +30,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| std::io::Error::other("failed to resolve stun server"))?;
 
     let bind_uri = format!("inet://{}", args.bind).into();
-    let iface: Arc<dyn IO> = Arc::from(DEFAULT_INTERFACE_FACTORY.bind(bind_uri));
+    let iface: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
 
     let stun_router = StunRouter::new();
     let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_server);

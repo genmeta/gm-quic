@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 use qbase::util::ArcAsyncDeque;
-use qinterface::logical::{Interface, WeakInterface, component::Component};
+use qinterface::{Interface, WeakInterface, component::Component};
 use tokio::sync::SetOnce;
 use tracing::debug;
 

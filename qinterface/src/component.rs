@@ -6,13 +6,11 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-mod rebind_on_network_changed;
-pub use rebind_on_network_changed::RebindOnNetworkChangedComponent;
-// TODO: rewrite to component
-mod receive_and_deliver_quic;
-pub use receive_and_deliver_quic::{QuicRouterComponent, Task};
+use crate::Interface;
 
-use crate::logical::Interface;
+pub mod alive;
+pub mod location;
+pub mod route;
 
 pub trait Component: Any + Debug + Send + Sync {
     /// Gracefully shutdown the component when QuicIO is closing.

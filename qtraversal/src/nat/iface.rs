@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, BytesMut};
 use qbase::net::addr::RealAddr;
-use qinterface::{IO, InterfaceExt};
+use qinterface::io::{IO, IoExt};
 
 use crate::{
     Link,

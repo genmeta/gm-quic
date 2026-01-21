@@ -11,14 +11,15 @@ use qbase::{
 use qconnection::{
     self,
     qdns::Resolve,
-    qinterface::{self, logical::BindUri, physical::PhysicalInterfaces},
+    qinterface::{self, bind_uri::BindUri, device::Devices},
     tls::AcceptAllClientAuther,
 };
 use qevent::telemetry::QLog;
 use qinterface::{
-    factory::ProductInterface,
-    logical::{BindInterface, QuicInterfaces},
-    route::{Router, Way},
+    BindInterface,
+    component::route::{QuicRouter, Way},
+    io::ProductIO,
+    manager::InterfaceManager,
 };
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
@@ -393,7 +394,7 @@ impl QuicListeners {
             .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
             .with_defer_idle_timeout(self.defer_idle_timeout)
             .with_iface_manager(self.network.iface_manager.clone())
-            .with_router(self.network.quic_router.clone())
+            .with_quic_router(self.network.quic_router.clone())
             .with_iface_factory(self.network.iface_factory.clone())
             .with_cids(origin_dcid)
             .with_qlog(self.qlogger.clone())
@@ -503,8 +504,8 @@ impl<T> QuicListenersBuilder<T> {
         self
     }
 
-    pub fn with_physical_ifaces(mut self, physical_ifaces: &'static PhysicalInterfaces) -> Self {
-        self.network.physical_ifaces = physical_ifaces;
+    pub fn with_physical_ifaces(mut self, physical_ifaces: &'static Devices) -> Self {
+        self.network.devices = physical_ifaces;
         self
     }
 
@@ -515,15 +516,12 @@ impl<T> QuicListenersBuilder<T> {
     /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
-    pub fn with_iface_factory(
-        mut self,
-        iface_factory: Arc<dyn ProductInterface + 'static>,
-    ) -> Self {
+    pub fn with_iface_factory(mut self, iface_factory: Arc<dyn ProductIO + 'static>) -> Self {
         self.network.iface_factory = iface_factory;
         self
     }
 
-    pub fn with_iface_manager(mut self, iface_manager: Arc<QuicInterfaces>) -> Self {
+    pub fn with_iface_manager(mut self, iface_manager: Arc<InterfaceManager>) -> Self {
         self.network.iface_manager = iface_manager;
         self
     }
@@ -535,7 +533,7 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// A router can only be listened to by one QuicListener,
     /// or the [`QuicListenersBuilder::listen`] will fail.
-    pub fn with_router(mut self, router: Arc<Router>) -> Self {
+    pub fn with_router(mut self, router: Arc<QuicRouter>) -> Self {
         self.network.quic_router = router;
         self
     }

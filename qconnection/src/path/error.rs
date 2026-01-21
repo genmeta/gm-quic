@@ -1,7 +1,7 @@
 use derive_more::From;
 use qbase::{error::Error as QuicError, time::IdleTimedOut};
 use qcongestion::TooManyPtos;
-use qinterface::logical::BindUri;
+use qinterface::bind_uri::BindUri;
 use thiserror::Error;
 
 use crate::path::validate::ValidateFailure;

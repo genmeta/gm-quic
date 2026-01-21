@@ -271,7 +271,7 @@ impl BindUri {
                     .as_iface_bind_uri()
                     .expect("Already checked BindUriSchema is iface");
 
-                let interface = crate::physical::PhysicalInterfaces::global()
+                let interface = crate::device::Devices::global()
                     .get(interface)
                     .ok_or(TryIntoSocketAddrError::InterfaceNotFound)?;
                 let ip_addr = match ip_family {

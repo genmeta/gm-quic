@@ -17,12 +17,12 @@ use qbase::{
     util::ArcAsyncDeque,
 };
 use qinterface::{
-    IO, InterfaceExt, RefIO,
-    logical::{
-        Interface, WeakInterface,
-        component::{Component, QuicRouterComponent},
+    Interface, WeakInterface,
+    component::{
+        Component,
+        route::{QuicRouter, QuicRouterComponent},
     },
-    route::Router,
+    io::{IO, IoExt, RefIO},
 };
 use smallvec::SmallVec;
 use tokio_util::task::AbortOnDropHandle;
@@ -141,7 +141,7 @@ impl ReceiveAndDeliverPacket {
     #[builder(finish_fn = init)]
     pub fn new(
         #[builder(start_fn)] weak_iface: WeakInterface,
-        quic_router: Option<Arc<Router>>,
+        quic_router: Option<Arc<QuicRouter>>,
         stun_router: Option<StunRouter>,
         forwarder: Option<Forwarder<WeakInterface>>,
     ) -> Self {
@@ -165,7 +165,7 @@ impl ReceiveAndDeliverPacket {
 
     #[builder(finish_fn = spawn)]
     pub fn task<I: RefIO + 'static>(
-        quic_router: Option<Arc<Router>>,
+        quic_router: Option<Arc<QuicRouter>>,
         stun_router: Option<StunRouter>,
         forwarder: Option<Forwarder<I>>,
         iface_ref: I,

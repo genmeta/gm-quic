@@ -21,7 +21,7 @@ use qevent::{
     },
     telemetry::Instrument,
 };
-use qinterface::route::{CipherPacket, PlainPacket, Way};
+use qinterface::component::route::{CipherPacket, PlainPacket, Way};
 use qrecovery::crypto::CryptoStream;
 use tokio::sync::mpsc;
 

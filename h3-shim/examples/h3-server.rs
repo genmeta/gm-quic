@@ -2,7 +2,7 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::{prelude::*, qinterface::logical::BindUri};
+use gm_quic::{prelude::*, qinterface::{bind_uri::BindUri, io::IO}};
 use h3::{quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};

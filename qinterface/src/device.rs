@@ -269,13 +269,13 @@ impl State {
     }
 }
 
-pub struct PhysicalInterfaces {
+pub struct Devices {
     state: Arc<State>,
     watcher: Mutex<Result<WatchHandle, WatcherError>>,
     _timer: AbortOnDropHandle<()>,
 }
 
-impl Debug for PhysicalInterfaces {
+impl Debug for Devices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PhysicalInterfaces")
             .field("state", &self.state)
@@ -285,10 +285,10 @@ impl Debug for PhysicalInterfaces {
     }
 }
 
-impl PhysicalInterfaces {
-    pub fn global() -> &'static PhysicalInterfaces {
-        static MONITOR: OnceLock<PhysicalInterfaces> = OnceLock::new();
-        MONITOR.get_or_init(Self::new)
+impl Devices {
+    pub fn global() -> &'static Devices {
+        static DEVICES: OnceLock<Devices> = OnceLock::new();
+        DEVICES.get_or_init(Self::new)
     }
 
     pub fn new() -> Self {
@@ -367,7 +367,7 @@ impl PhysicalInterfaces {
     }
 }
 
-impl Default for PhysicalInterfaces {
+impl Default for Devices {
     #[inline]
     fn default() -> Self {
         Self::new()

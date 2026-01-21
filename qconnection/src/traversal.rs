@@ -11,7 +11,7 @@ use qbase::{
     packet::{ProductHeader, header::short::OneRttHeader},
 };
 use qevent::telemetry::Instrument;
-use qinterface::{local::AddressEvent, logical::BindUri};
+use qinterface::{bind_uri::BindUri, component::location::AddressEvent};
 use qtraversal::{frame::TraversalFrame, nat::client::StunClientsComponent};
 use tracing::Instrument as _;
 

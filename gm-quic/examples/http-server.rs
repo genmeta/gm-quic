@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gm_quic::prelude::*;
+use gm_quic::{prelude::*, qinterface::io::IO};
 use tokio::{
     fs,
     io::{self, AsyncReadExt, AsyncWriteExt},

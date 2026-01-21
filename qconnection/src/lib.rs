@@ -19,7 +19,7 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::{IO, InterfaceExt, logical::BindUri};
+    pub use qinterface::bind_uri::BindUri;
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
@@ -27,7 +27,7 @@ pub mod prelude {
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
         pub use qevent::telemetry::handy::*;
-        pub use qinterface::{factory::handy::*, logical::handy::*};
+        pub use qinterface::io::handy::*;
     }
 
     pub use crate::{
@@ -72,9 +72,12 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
-    local::Locations,
-    logical::{BindUri, QuicInterfaces},
-    route::{self, RcvdPacketQueue, RouterEntry},
+    bind_uri::BindUri,
+    component::{
+        location::Locations,
+        route::{self, QuicRouterEntry, RcvdPacketQueue},
+    },
+    manager::InterfaceManager,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -140,8 +143,8 @@ pub type HandshakeJournal = journal::Journal<CryptoFrame>;
 pub type DataJournal = journal::Journal<GuaranteedFrame>;
 
 pub type ArcReliableFrameDeque = reliable::ArcReliableFrameDeque<ReliableFrame>;
-pub type RouterRegistry = route::RouterRegistry<ArcReliableFrameDeque>;
-pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry>;
+pub type QuicRouterRegistry = route::QuicRouterRegistry<ArcReliableFrameDeque>;
+pub type ArcLocalCids = cid::ArcLocalCids<QuicRouterRegistry>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 pub type ArcDcidCell = cid::ArcCidCell<ArcReliableFrameDeque>;
@@ -161,7 +164,7 @@ pub type ArcPuncher =
 #[derive(Clone)]
 pub struct Components {
     // TODO: delete this
-    interfaces: Arc<QuicInterfaces>,
+    interfaces: Arc<InterfaceManager>,
     locations: Arc<Locations>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
@@ -191,7 +194,7 @@ pub enum SpecificComponents {
     Client {},
     Server {
         using_odcid: Arc<AtomicBool>,
-        odcid_router_entry: Arc<RouterEntry>,
+        odcid_router_entry: Arc<QuicRouterEntry>,
     },
 }
 

@@ -24,7 +24,7 @@ use qbase::{
     token::TokenRegistry,
 };
 use qcongestion::{ArcCC, Transport};
-use qinterface::IO;
+use qinterface::io::IO;
 use qrecovery::journal::{AckPackege, ArcRcvdJournal, Journal};
 use qtraversal::packet::{ForwardHeader, WriteForwardHeader};
 

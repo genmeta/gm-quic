@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
-use gm_quic::prelude::*;
+use gm_quic::{prelude::*, qinterface::io::IO};
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::info;

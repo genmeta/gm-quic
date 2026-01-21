@@ -1,8 +1,8 @@
-use qinterface::physical::PhysicalInterfaces;
+use qinterface::device::Devices;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let global = PhysicalInterfaces::global();
+    let global = Devices::global();
     let mut monitor = global.monitor();
     for (name, iface) in monitor.interfaces() {
         println!("Interface: {name} => {iface:#?}");

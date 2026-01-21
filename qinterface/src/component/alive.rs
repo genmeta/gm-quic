@@ -16,11 +16,11 @@ use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    IO, InterfaceExt,
-    logical::{
-        BindUriSchema, Interface, RebindedError, TryIntoSocketAddrError, component::Component,
-    },
-    physical::PhysicalInterfaces,
+    Interface, RebindedError,
+    bind_uri::{BindUriSchema, TryIntoSocketAddrError},
+    component::Component,
+    device::Devices,
+    io::{IO, IoExt},
 };
 
 #[derive(Debug, Error)]
@@ -107,14 +107,14 @@ pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure
 
 #[derive(Debug)]
 pub struct RebindOnNetworkChangedComponent {
-    physical_interfaces: &'static PhysicalInterfaces,
+    devices: &'static Devices,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl RebindOnNetworkChangedComponent {
-    pub fn new(iface: &Interface, physical_interfaces: &'static PhysicalInterfaces) -> Self {
+    pub fn new(iface: &Interface, devices: &'static Devices) -> Self {
         let component = Self {
-            physical_interfaces,
+            devices,
             task: Mutex::new(None),
         };
         component.init(iface);
@@ -143,7 +143,7 @@ impl RebindOnNetworkChangedComponent {
 
         let device = device.to_owned();
         let weak_iface = iface.bind_interface().downgrade();
-        let mut event_receiver = self.physical_interfaces.event_receiver();
+        let mut event_receiver = self.devices.event_receiver();
         *task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
             let try_rebind = async move || {
                 if let Ok(iface) = weak_iface.upgrade()

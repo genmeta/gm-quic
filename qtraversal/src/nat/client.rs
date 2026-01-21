@@ -16,9 +16,9 @@ use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
 use qdns::Resolve;
 use qinterface::{
-    IO, RefIO,
-    local::Locations,
-    logical::{Interface, RebindedError, WeakInterface, component::Component},
+    Interface, RebindedError, WeakInterface,
+    component::{Component, location::Locations},
+    io::{IO, RefIO},
 };
 use thiserror::Error;
 use tokio::{sync::Notify, task::JoinSet};

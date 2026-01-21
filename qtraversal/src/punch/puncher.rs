@@ -25,9 +25,11 @@ use qbase::{
     },
 };
 use qinterface::{
-    IO, InterfaceExt,
-    factory::ProductInterface,
-    logical::{BindUri, Interface, QuicInterfaces, WeakInterface, component::QuicRouterComponent},
+    Interface, WeakInterface,
+    bind_uri::BindUri,
+    component::route::QuicRouterComponent,
+    io::{IO, IoExt, ProductIO},
+    manager::InterfaceManager,
 };
 use qudp::DEFAULT_TTL;
 use tokio::{task::AbortHandle, time::timeout};
@@ -81,8 +83,8 @@ where
         broker: TX,
         product_header: PH,
         packet_space: Arc<S>,
-        ifaces: Arc<QuicInterfaces>,
-        iface_factory: Arc<dyn ProductInterface>,
+        ifaces: Arc<InterfaceManager>,
+        iface_factory: Arc<dyn ProductIO>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self(Arc::new(Puncher::new(
@@ -101,8 +103,8 @@ pub struct Puncher<TX, PH, S> {
     punch_history: DashSet<Link>,
     product_header: PH,
     packet_space: Arc<S>,
-    ifaces: Arc<QuicInterfaces>,
-    iface_factory: Arc<dyn ProductInterface>,
+    ifaces: Arc<InterfaceManager>,
+    iface_factory: Arc<dyn ProductIO>,
     stun_servers: Arc<[SocketAddr]>,
     address_book: Mutex<AddressBook>,
     punch_ifaces: DashMap<BindUri, Interface>,
@@ -119,8 +121,8 @@ where
         broker: TX,
         product_header: PH,
         packet_space: Arc<S>,
-        ifaces: Arc<QuicInterfaces>,
-        iface_factory: Arc<dyn ProductInterface>,
+        ifaces: Arc<InterfaceManager>,
+        iface_factory: Arc<dyn ProductIO>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self {
@@ -936,7 +938,7 @@ where
                     ..
                 },
             ) => {
-                let iface = QuicInterfaces::global().borrow(bind).ok_or_else(|| {
+                let iface = InterfaceManager::global().borrow(bind).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("Interface not found for bind URI: {:?}", bind),
@@ -1029,8 +1031,8 @@ where
 #[inline]
 async fn dynamic_iface(
     bind_uri: &BindUri,
-    ifaces: &Arc<QuicInterfaces>,
-    iface_factory: &Arc<dyn ProductInterface>,
+    ifaces: &Arc<InterfaceManager>,
+    iface_factory: &Arc<dyn ProductIO>,
     stun_servers: &[SocketAddr],
 ) -> io::Result<(Interface, StunClient)> {
     const MIN_PORT: u16 = 1024;

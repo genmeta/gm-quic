@@ -10,7 +10,6 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-async-trait = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }

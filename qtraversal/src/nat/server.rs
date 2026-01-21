@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr};
 
-use qinterface::RefIO;
+use qinterface::io::RefIO;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 

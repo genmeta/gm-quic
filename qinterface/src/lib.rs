@@ -1,188 +1,323 @@
-pub mod factory;
-pub mod local;
-pub mod logical;
-pub mod physical;
-pub mod route;
+pub mod bind_uri;
+pub mod component;
+pub mod device;
+pub mod io;
+pub mod manager;
 
 use std::{
-    any::Any,
-    future::Future,
-    io,
-    sync::Arc,
+    error::Error,
+    fmt::Debug,
+    sync::{Arc, Weak},
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use qbase::net::{addr::RealAddr, route::PacketHeader};
+use qbase::{
+    net::{addr::RealAddr, route::PacketHeader},
+    util::UniqueId,
+};
+use thiserror::Error;
 
-use crate::logical::BindUri;
+use crate::{
+    bind_uri::BindUri,
+    io::{IO, RefIO},
+    manager::InterfaceContext,
+};
 
-/// QUIC network I/O trait
-///
-/// Provides a unified interface for different network transport implementations.
-/// Note that some implementations may not support all bind address types.
-///
-/// `gm-quic` uses [`ProductQuicIO`] to create (bind) a new [`QuicIO`] instance.
-/// Read its documentation for more information.
-///
-/// Wrapping a new [`QuicIO`] is easy,
-/// you can refer to the implementations in the [`iface::handy`] module.
-///
-/// [`ProductQuicIO`]: crate::factory::ProductQuicIO
-#[async_trait::async_trait]
-pub trait IO: Send + Sync + Any {
-    /// Get the bind address that this interface is bound to
-    ///
-    /// This value cannot change after the interface is bound,
-    /// as it is used as the unique identifier for the interface.
-    fn bind_uri(&self) -> BindUri;
+#[derive(Debug, Clone)]
+pub struct BindInterface {
+    context: Arc<InterfaceContext>,
+}
 
-    /// Get the actual address that this interface is bound to.
-    ///
-    /// For example, if this interface is bound to an [`BindUri`],
-    /// this function should return the actual IP address and port
-    /// address of this interface.
-    ///
-    /// Just like [`UdpSocket::local_addr`] may return an error,
-    /// sometimes an interface cannot get its own actual address,
-    /// then the implementation should return an error as well.
-    ///
-    /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
-    fn real_addr(&self) -> io::Result<RealAddr>;
+impl BindInterface {
+    pub(crate) fn new(iface: InterfaceContext) -> Self {
+        Self {
+            context: Arc::new(iface),
+        }
+    }
 
-    /// Maximum size of a single network segment in bytes
-    fn max_segment_size(&self) -> io::Result<usize>;
+    pub fn bind_uri(&self) -> BindUri {
+        self.context.bind_uri()
+    }
 
-    /// Maximum number of segments that can be sent in a single batch
-    fn max_segments(&self) -> io::Result<usize>;
+    pub fn close(&self) -> impl Future<Output = std::io::Result<()>> + Send {
+        core::future::poll_fn(|cx| self.context.poll_close(cx))
+    }
 
-    /// Poll for sending packets
-    ///
-    /// Attempts to send multiple packets in a single operation.
-    /// Return the number of packets sent,
+    pub fn rebind(&self) -> impl Future<Output = ()> + Send {
+        core::future::poll_fn(|cx| self.poll_rebind(cx))
+    }
+
+    #[inline]
+    pub fn borrow(&self) -> Interface {
+        Interface {
+            bind_id: self.context.bind_id(),
+            bind_iface: self.clone(),
+        }
+    }
+
+    #[inline]
+    pub fn downgrade(&self) -> WeakBindInterface {
+        WeakBindInterface {
+            context: Arc::downgrade(&self.context),
+        }
+    }
+
+    #[inline]
+    pub fn borrow_weak(&self) -> WeakInterface {
+        self.borrow().downgrade()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Interface {
+    bind_id: UniqueId,
+    bind_iface: BindInterface,
+}
+
+#[derive(Debug, Error)]
+#[error("Interface has been rebinded")]
+pub struct RebindedError;
+
+impl RebindedError {
+    pub fn is_source_of(mut error: &(dyn Error + 'static)) -> bool {
+        loop {
+            if error.is::<Self>() {
+                return true;
+            }
+            match error.source() {
+                Some(source) => error = source,
+                None => return false,
+            }
+        }
+    }
+}
+
+impl From<RebindedError> for std::io::Error {
+    fn from(value: RebindedError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::ConnectionReset, value)
+    }
+}
+
+impl Interface {
+    #[inline]
+    fn borrow<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> std::io::Result<T> {
+        if self.bind_iface.context.bind_id() != self.bind_id {
+            return Err(RebindedError.into());
+        }
+        Ok(f(self.bind_iface.context.as_ref()))
+    }
+
+    #[inline]
+    pub fn bind_interface(&self) -> &BindInterface {
+        &self.bind_iface
+    }
+
+    #[inline]
+    pub fn downgrade(&self) -> WeakInterface {
+        WeakInterface {
+            bind_uri: self.bind_iface.bind_uri(),
+            bind_id: self.bind_id,
+            weak_iface: self.bind_iface.downgrade(),
+        }
+    }
+
+    pub fn same_io(&self, other: &Interface) -> bool {
+        self.bind_id == other.bind_id
+            && Arc::ptr_eq(&self.bind_iface.context, &other.bind_iface.context)
+    }
+
+    pub fn with_components<T>(&self, f: impl FnOnce(&component::Components, &Interface) -> T) -> T {
+        self.bind_iface.with_components(f)
+    }
+
+    pub fn with_components_mut<T>(
+        &self,
+        f: impl FnOnce(&mut component::Components, &Interface) -> T,
+    ) -> T {
+        self.bind_iface.with_components_mut(f)
+    }
+}
+
+impl RefIO for Interface {
+    type Interface = Self;
+
+    #[inline]
+    fn iface(&self) -> &Self::Interface {
+        self
+    }
+
+    fn same_io(&self, other: &Self) -> bool {
+        self.same_io(other)
+    }
+}
+
+impl IO for Interface {
+    #[inline]
+    fn bind_uri(&self) -> BindUri {
+        self.bind_iface.bind_uri()
+    }
+
+    #[inline]
+    fn real_addr(&self) -> std::io::Result<RealAddr> {
+        self.borrow(|iface| iface.real_addr())?
+    }
+
+    #[inline]
+    fn max_segment_size(&self) -> std::io::Result<usize> {
+        self.borrow(|iface| iface.max_segment_size())?
+    }
+
+    #[inline]
+    fn max_segments(&self) -> std::io::Result<usize> {
+        self.borrow(|iface| iface.max_segments())?
+    }
+
+    #[inline]
     fn poll_send(
         &self,
         cx: &mut Context,
-        pkts: &[io::IoSlice],
+        pkts: &[std::io::IoSlice],
         hdr: PacketHeader,
-    ) -> Poll<io::Result<usize>>;
+    ) -> Poll<std::io::Result<usize>> {
+        self.borrow(|iface| iface.poll_send(cx, pkts, hdr))?
+    }
 
-    /// Poll for receiving packets
-    ///
-    /// Attempts to receive multiple packets in a single operation.
-    /// The number of packets received is limited by the smaller of
-    /// `pkts.capacity()` and `hdrs.len()`.
+    #[inline]
     fn poll_recv(
         &self,
         cx: &mut Context,
         pkts: &mut [BytesMut],
         hdrs: &mut [PacketHeader],
-    ) -> Poll<io::Result<usize>>;
+    ) -> Poll<std::io::Result<usize>> {
+        self.borrow(|iface| iface.poll_recv(cx, pkts, hdrs))?
+    }
 
-    /// Asynchronously destroy the QuicIO.
-    ///
-    /// When it returns [`Poll::Ready`] (whether with `Ok` or `Err`),
-    /// it must indicate that the resource has been completely destroyed,
-    /// and the same [`BindUri`] can be successfully bound again.
-    ///
-    /// Even if this method is not called,
-    /// the implementation should ensure that [`QuicIO`] does not
-    /// leak any resources when it is dropped.
-    fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
+    #[inline]
+    fn poll_close(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        self.borrow(|iface| iface.poll_close(cx))?
+    }
 }
 
-pub trait InterfaceExt: IO {
-    #[inline]
-    fn sendmmsg(
-        &self,
-        mut bufs: &[io::IoSlice<'_>],
-        hdr: PacketHeader,
-    ) -> impl Future<Output = io::Result<()>> + Send {
-        async move {
-            while !bufs.is_empty() {
-                let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, hdr)).await?;
-                bufs = &bufs[sent..];
+#[derive(Debug, Error)]
+#[error("Interface has been unbound")]
+pub struct UnbondedError;
+
+impl UnbondedError {
+    pub fn is_source_of(mut error: &(dyn Error + 'static)) -> bool {
+        loop {
+            if error.is::<Self>() {
+                return true;
             }
-            Ok(())
-        }
-    }
-
-    fn recvmmsg<'b>(
-        &self,
-        bufs: &'b mut Vec<BytesMut>,
-        hdrs: &'b mut Vec<PacketHeader>,
-    ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b>>
-    + Send {
-        async move {
-            let rcvd = std::future::poll_fn(|cx| {
-                let max_segments = self.max_segments()?;
-                let max_segment_size = self.max_segment_size()?;
-                bufs.resize_with(max_segments, || BytesMut::zeroed(max_segment_size));
-                hdrs.resize_with(max_segments, PacketHeader::empty);
-                self.poll_recv(cx, bufs, hdrs)
-            })
-            .await?;
-
-            Ok(bufs
-                .drain(..rcvd)
-                .zip(hdrs.drain(..rcvd))
-                .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
-        }
-    }
-
-    #[inline]
-    fn close(&mut self) -> impl Future<Output = io::Result<()>> + Send {
-        async { core::future::poll_fn(|cx| self.poll_close(cx)).await }
-    }
-
-    fn recvmpkt<'b>(
-        &self,
-        bufs: &'b mut Vec<BytesMut>,
-        hdrs: &'b mut Vec<PacketHeader>,
-    ) -> impl Future<
-        Output = io::Result<impl Iterator<Item = (route::Packet, route::Way)> + Send + 'b>,
-    > + Send {
-        async {
-            use qbase::packet::{self, Packet, PacketReader};
-            fn is_initial_packet(pkt: &Packet) -> bool {
-                matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))))
+            match error.source() {
+                Some(source) => error = source,
+                None => return false,
             }
-
-            let bind_uri = self.bind_uri();
-            Ok(self
-                .recvmmsg(bufs, hdrs)
-                .await?
-                .flat_map(move |(buf, hdr)| {
-                    let size = buf.len();
-                    let bind_uri = bind_uri.clone();
-                    PacketReader::new(buf, 8)
-                        .flatten()
-                        .filter(move |pkt| !(is_initial_packet(pkt) && size < 1100))
-                        .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
-                }))
         }
     }
 }
 
-impl<I: IO + ?Sized> InterfaceExt for I {}
-
-pub trait RefIO: Clone + Send + Sync {
-    type Interface: IO + ?Sized;
-
-    fn iface(&self) -> &Self::Interface;
-
-    fn same_io(&self, other: &Self) -> bool;
+impl From<UnbondedError> for std::io::Error {
+    fn from(value: UnbondedError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::ConnectionReset, value)
+    }
 }
 
-impl<I: IO + ?Sized> RefIO for Arc<I> {
-    type Interface = I;
+#[derive(Debug, Clone)]
+pub struct WeakBindInterface {
+    context: Weak<InterfaceContext>,
+}
 
-    #[inline]
+impl WeakBindInterface {
+    pub fn upgrade(&self) -> Result<BindInterface, UnbondedError> {
+        Ok(BindInterface {
+            context: self.context.upgrade().ok_or(UnbondedError)?,
+        })
+    }
+
+    pub fn borrow(&self) -> Result<WeakInterface, UnbondedError> {
+        Ok(self.upgrade()?.borrow_weak())
+    }
+
+    pub fn same_io(&self, other: &WeakBindInterface) -> bool {
+        Weak::ptr_eq(&self.context, &other.context)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WeakInterface {
+    bind_uri: BindUri,
+    bind_id: UniqueId,
+    weak_iface: WeakBindInterface,
+}
+
+impl From<Interface> for WeakInterface {
+    fn from(iface: Interface) -> Self {
+        iface.downgrade()
+    }
+}
+
+impl WeakInterface {
+    pub fn upgrade(&self) -> Result<Interface, UnbondedError> {
+        Ok(Interface {
+            bind_iface: self.weak_iface.upgrade()?,
+            bind_id: self.bind_id,
+        })
+    }
+
+    pub fn same_io(&self, other: &WeakInterface) -> bool {
+        self.bind_id == other.bind_id && self.weak_iface.same_io(&other.weak_iface)
+    }
+}
+
+impl RefIO for WeakInterface {
+    type Interface = WeakInterface;
+
     fn iface(&self) -> &Self::Interface {
-        self.as_ref()
+        self
     }
 
     fn same_io(&self, other: &Self) -> bool {
-        Arc::ptr_eq(self, other)
+        self.same_io(other)
+    }
+}
+
+impl IO for WeakInterface {
+    fn bind_uri(&self) -> BindUri {
+        self.bind_uri.clone()
+    }
+
+    fn real_addr(&self) -> std::io::Result<RealAddr> {
+        self.upgrade()?.real_addr()
+    }
+
+    fn max_segment_size(&self) -> std::io::Result<usize> {
+        self.upgrade()?.max_segment_size()
+    }
+
+    fn max_segments(&self) -> std::io::Result<usize> {
+        self.upgrade()?.max_segments()
+    }
+
+    fn poll_send(
+        &self,
+        cx: &mut Context,
+        pkts: &[std::io::IoSlice],
+        hdr: PacketHeader,
+    ) -> Poll<std::io::Result<usize>> {
+        self.upgrade()?.poll_send(cx, pkts, hdr)
+    }
+
+    fn poll_recv(
+        &self,
+        cx: &mut Context,
+        pkts: &mut [BytesMut],
+        hdrs: &mut [PacketHeader],
+    ) -> Poll<std::io::Result<usize>> {
+        self.upgrade()?.poll_recv(cx, pkts, hdrs)
+    }
+
+    fn poll_close(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        self.upgrade()?.poll_close(cx)
     }
 }

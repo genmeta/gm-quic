@@ -26,8 +26,8 @@ use qevent::{
     telemetry::Instrument,
 };
 use qinterface::{
-    logical::BindUri,
-    route::{CipherPacket, PlainPacket},
+    bind_uri::BindUri,
+    component::route::{CipherPacket, PlainPacket},
 };
 use qrecovery::{crypto::CryptoStream, reliable};
 use qtraversal::frame::TraversalFrame;

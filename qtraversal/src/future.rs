@@ -158,6 +158,7 @@ impl<T> Future<T> {
 
     /// Get the value of the [`Future`] asynchronously.
     #[inline]
+    #[allow(unused)]
     pub async fn get(&'_ self) -> ReadyFuture<'_, T> {
         std::future::poll_fn(|cx| self.poll_get(cx)).await
     }

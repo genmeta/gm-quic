@@ -14,7 +14,7 @@
 //         handy::{LegacySeqLogger, ToCertificate},
 //     },
 //     qbase::param::{ClientParameters, ServerParameters},
-//     qinterface::logical::QuicInterfaces,
+//     qinterface::logical::InterfaceManager,
 //     qtraversal::{
 //         iface::{StunInterface, TraversalFactory},
 //         nat::{
@@ -329,7 +329,7 @@
 //         .unwrap();
 
 //     tokio::spawn(serve_echo(server.clone()));
-//     let server_iface = QuicInterfaces::global()
+//     let server_iface = InterfaceManager::global()
 //         .borrow(&(server_addr.into()))
 //         .unwrap();
 //     info!("Server listening on {server_addr}");
@@ -480,9 +480,10 @@ use std::{
 use gm_quic::{
     prelude::{handy::*, *},
     qbase,
+    qinterface::io::IO,
 };
 use qbase::param::{ClientParameters, ServerParameters};
-use qconnection::qinterface::{logical::BindUri, route::Router};
+use qconnection::qinterface::{bind_uri::BindUri, component::route::QuicRouter};
 use qevent::telemetry::QLog;
 use rustls::{
     pki_types::{CertificateDer, pem::PemObject},
@@ -607,7 +608,7 @@ async fn send_and_verify_echo(connection: &Connection, data: &[u8]) -> Result<()
 }
 
 async fn launch_echo_server(
-    quic_router: Arc<Router>,
+    quic_router: Arc<QuicRouter>,
     parameters: ServerParameters,
 ) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
     let listeners = QuicListeners::builder()
@@ -629,7 +630,10 @@ async fn launch_echo_server(
     Ok((listeners.clone(), serve_echo(listeners)))
 }
 
-fn launch_test_client(quic_router: Arc<Router>, parameters: ClientParameters) -> Arc<QuicClient> {
+fn launch_test_client(
+    quic_router: Arc<QuicRouter>,
+    parameters: ClientParameters,
+) -> Arc<QuicClient> {
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap));
     let client = QuicClient::builder()
@@ -647,7 +651,7 @@ fn launch_test_client(quic_router: Arc<Router>, parameters: ClientParameters) ->
 #[test]
 fn single_stream() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -665,7 +669,7 @@ fn single_stream() -> Result<(), BoxError> {
 #[test]
 fn signal_big_stream() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -683,7 +687,7 @@ fn signal_big_stream() -> Result<(), BoxError> {
 #[test]
 fn empty_stream() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -714,7 +718,7 @@ fn shutdown() -> Result<(), BoxError> {
             }
         }
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let listeners = QuicListeners::builder()
             .with_router(router.clone())
             .without_client_cert_verifier()
@@ -762,7 +766,7 @@ fn idle_timeout() -> Result<(), BoxError> {
             params
         }
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -781,7 +785,7 @@ fn idle_timeout() -> Result<(), BoxError> {
 #[test]
 fn double_connections() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -816,7 +820,7 @@ const PARALLEL_ECHO_STREAMS: usize = 2;
 #[test]
 fn parallel_stream() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -869,7 +873,7 @@ fn parallel_big_stream() -> Result<(), BoxError> {
             params
         }
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -941,7 +945,7 @@ fn limited_streams() -> Result<(), BoxError> {
             params
         }
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -976,7 +980,7 @@ fn limited_streams() -> Result<(), BoxError> {
 #[test]
 fn client_without_verify() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
@@ -1025,7 +1029,7 @@ impl<const SILENT: bool> AuthClient for ClientNameAuther<SILENT> {
 }
 
 async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
-    quic_router: Arc<Router>,
+    quic_router: Arc<QuicRouter>,
     server_parameters: ServerParameters,
 ) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
     let mut roots = rustls::RootCertStore::empty();
@@ -1058,7 +1062,7 @@ fn auth_client_name() -> Result<(), BoxError> {
     run(async {
         const SILENT_REFUSE: bool = false;
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_client_auth_test_server::<SILENT_REFUSE>(router.clone(), server_parameters())
                 .await?;
@@ -1097,7 +1101,7 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
     run(async {
         const SILENT_REFUSE: bool = false;
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_client_auth_test_server::<SILENT_REFUSE>(router.clone(), server_parameters())
                 .await?;
@@ -1137,7 +1141,7 @@ fn auth_client_refuse() -> Result<(), BoxError> {
     run(async {
         const SILENT_REFUSE: bool = false;
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_client_auth_test_server::<SILENT_REFUSE>(router.clone(), server_parameters())
                 .await?;
@@ -1178,7 +1182,7 @@ fn auth_client_refuse_silently() -> Result<(), BoxError> {
     run(async {
         const SILENT_REFUSE: bool = true;
 
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_client_auth_test_server::<SILENT_REFUSE>(router.clone(), server_parameters())
                 .await?;
@@ -1297,7 +1301,7 @@ pub async fn serve_echo_with_sign_verify(listeners: Arc<QuicListeners>) {
 }
 
 async fn launch_echo_with_sign_verify_server(
-    quic_router: Arc<Router>,
+    quic_router: Arc<QuicRouter>,
     parameters: ServerParameters,
 ) -> Result<(Arc<QuicListeners>, impl Future<Output: Send>), BoxError> {
     let mut roots = rustls::RootCertStore::empty();
@@ -1327,7 +1331,7 @@ async fn launch_echo_with_sign_verify_server(
 #[test]
 fn sign_and_verify() -> Result<(), BoxError> {
     run(async {
-        let router = Arc::new(Router::default());
+        let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_with_sign_verify_server(router.clone(), server_parameters()).await?;
         let _server_task = AbortOnDropHandle::new(tokio::spawn(server_task));
