@@ -619,7 +619,7 @@ impl ArcTlsHandshake {
         Ok(None)
     }
 
-    pub fn launch(
+    pub fn start(
         self,
         parameters: ArcParameters,
         quic_handshake: Handshake,

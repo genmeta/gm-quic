@@ -25,12 +25,10 @@ impl<const N: usize> WakerVec<N> {
         }
     }
 
-    pub fn register(&mut self, waker: &Waker) -> bool {
+    pub fn register(&mut self, waker: &Waker) {
         if !self.wakers.iter().any(|w| w.will_wake(waker)) {
             self.wakers.push(waker.clone());
-            return self.wakers.len() == 1;
         }
-        true
     }
 
     pub fn wake_all(&mut self) {
@@ -78,7 +76,7 @@ impl<const N: usize> Wakers<N> {
         self.wakers.lock().expect("Wakers mutex poisoned")
     }
 
-    pub fn register(&self, waker: &Waker) -> bool {
+    pub fn register(&self, waker: &Waker) {
         self.lock().register(waker)
     }
 
@@ -95,9 +93,7 @@ impl<const N: usize> Wakers<N> {
         cx: &mut Context<'_>,
         poll: impl FnOnce(&mut Context<'_>) -> Poll<T>,
     ) -> Poll<T> {
-        if !self.register(cx.waker()) {
-            return Poll::Pending;
-        }
+        self.register(cx.waker());
         poll(&mut Context::from_waker(&self.to_waker()))
     }
 }

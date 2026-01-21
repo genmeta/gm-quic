@@ -277,7 +277,7 @@ pub struct Devices {
 
 impl Debug for Devices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PhysicalInterfaces")
+        f.debug_struct("Devices")
             .field("state", &self.state)
             .field("watcher", &"...")
             .field("_timer", &self._timer)

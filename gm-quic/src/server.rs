@@ -393,9 +393,11 @@ impl QuicListeners {
             .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
             .with_zero_rtt(self.tls_config.max_early_data_size == 0xffffffff)
             .with_defer_idle_timeout(self.defer_idle_timeout)
+            .with_iface_factory(self.network.iface_factory.clone())
             .with_iface_manager(self.network.iface_manager.clone())
             .with_quic_router(self.network.quic_router.clone())
-            .with_iface_factory(self.network.iface_factory.clone())
+            // todo
+            // .with_stun_servers()
             .with_cids(origin_dcid)
             .with_qlog(self.qlogger.clone())
             .run();
@@ -404,9 +406,7 @@ impl QuicListeners {
         let quic_router = self.network.quic_router.clone();
 
         let try_accept_connection = async move {
-            quic_router
-                .deliver(packet, (bind_uri.clone(), pathway, link))
-                .await;
+            quic_router.deliver(packet, (bind_uri, pathway, link)).await;
 
             match connection.server_name().await {
                 Ok(server_name) => {

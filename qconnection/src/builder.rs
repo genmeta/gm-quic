@@ -219,6 +219,11 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 }
 
 impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
+    pub fn with_iface_factory(mut self, factory: Arc<dyn ProductIO>) -> Self {
+        self.iface_factory = factory;
+        self
+    }
+
     pub fn with_iface_manager(mut self, ifaces: Arc<InterfaceManager>) -> Self {
         self.ifaces = ifaces;
         self
@@ -231,11 +236,6 @@ impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
 
     pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
         self.locations = locations;
-        self
-    }
-
-    pub fn with_iface_factory(mut self, factory: Arc<dyn ProductIO>) -> Self {
-        self.iface_factory = factory;
         self
     }
 
@@ -285,10 +285,10 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
         let traversal_frames =
             ArcTraversalFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
-        let quicrouter_registry = self
+        let quic_router_registry = self
             .quic_router
             .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
-        let initial_scid = quicrouter_registry.gen_unique_cid();
+        let initial_scid = quic_router_registry.gen_unique_cid();
 
         let mut client_params = self.foundation.client_params;
         _ = client_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
@@ -327,7 +327,7 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             tx_wakers,
             send_lock: ArcSendLock::unrestricted(),
             reliable_frames,
-            quicrouter_registry,
+            quicrouter_registry: quic_router_registry,
             parameters,
             token_registry: self.foundation.token_registry,
             tls_session: TlsSession::Client(tls_session),
@@ -356,10 +356,10 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
         let traversal_frames =
             ArcTraversalFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
-        let quicrouter_registry = self
+        let quic_router_registry = self
             .quic_router
             .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
-        let initial_scid = quicrouter_registry.gen_unique_cid();
+        let initial_scid = quic_router_registry.gen_unique_cid();
         let odcid_router_entry = self
             .quic_router
             .insert(origin_dcid.into(), rcvd_pkt_q.clone());
@@ -388,7 +388,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
             tx_wakers,
             send_lock: tls_session.send_lock().clone(),
             reliable_frames,
-            quicrouter_registry,
+            quicrouter_registry: quic_router_registry,
             parameters: Parameters::new_server(server_params),
             token_registry: self.foundation.token_registry,
             tls_session: TlsSession::Server(tls_session),
@@ -587,7 +587,7 @@ impl PendingConnection {
 }
 
 fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
-    let task = components.tls_handshake.clone().launch(
+    let task = components.tls_handshake.clone().start(
         components.parameters.clone(),
         components.quic_handshake.clone(),
         components.crypto_streams.clone(),

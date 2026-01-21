@@ -19,7 +19,7 @@ pub const MAX_CID_SIZE: usize = 20;
 /// See [connection id](https://tools.ietf.org/html/rfc9000#name-connection-id)
 /// of [QUIC RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html)
 /// for more details.
-#[derive(Clone, Copy, Eq, Default, Debug)]
+#[derive(Clone, Copy, Eq, Default)]
 pub struct ConnectionId {
     pub(crate) len: u8,
     pub(crate) bytes: [u8; MAX_CID_SIZE],
@@ -35,6 +35,12 @@ impl core::fmt::LowerHex for ConnectionId {
 }
 
 impl core::fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::LowerHex::fmt(self, f)
+    }
+}
+
+impl core::fmt::Debug for ConnectionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         core::fmt::LowerHex::fmt(self, f)
     }

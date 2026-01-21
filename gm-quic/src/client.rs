@@ -118,9 +118,11 @@ impl QuicClient {
             .with_tls_config(self.tls_config.clone())
             .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
             .with_zero_rtt(self.tls_config.enable_early_data)
-            .with_quic_router(self.network.quic_router.clone())
             .with_iface_factory(self.network.iface_factory.clone())
             .with_iface_manager(self.network.iface_manager.clone())
+            .with_quic_router(self.network.quic_router.clone())
+            // todo
+            // .with_stun_servers()
             .with_defer_idle_timeout(self.defer_idle_timeout)
             .with_cids(ConnectionId::random_gen(8))
             .with_qlog(self.qlogger.clone())
