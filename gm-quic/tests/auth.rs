@@ -114,9 +114,6 @@ fn auth_client_name() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
 
         let client = {
-            let mut parameters = client_parameters();
-            _ = parameters.set(ParameterId::ClientName, "client".to_string());
-
             let mut roots = rustls::RootCertStore::empty();
             roots.add_parsable_certificates(
                 CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
@@ -124,8 +121,9 @@ fn auth_client_name() -> Result<(), BoxError> {
             let client = QuicClient::builder()
                 .with_router(router)
                 .with_root_certificates(roots)
-                .with_parameters(parameters)
+                .with_parameters(client_parameters())
                 .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_name("client")
                 .with_qlog(qlogger())
                 .enable_sslkeylog()
                 .build();
@@ -153,9 +151,6 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
 
         let client = {
-            let mut parameters = client_parameters();
-            _ = parameters.set(ParameterId::ClientName, "another_client".to_string());
-
             let mut roots = rustls::RootCertStore::empty();
             roots.add_parsable_certificates(
                 CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
@@ -163,8 +158,9 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
             let client = QuicClient::builder()
                 .with_router(router)
                 .with_root_certificates(roots)
-                .with_parameters(parameters)
+                .with_parameters(client_parameters())
                 .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_name("wrong_name")
                 .with_qlog(qlogger())
                 .enable_sslkeylog()
                 .build();
@@ -382,9 +378,6 @@ fn sign_and_verify() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
 
         let client = {
-            let mut parameters = client_parameters();
-            _ = parameters.set(ParameterId::ClientName, "client".to_string());
-
             let mut roots = rustls::RootCertStore::empty();
             roots.add_parsable_certificates(
                 CertificateDer::pem_slice_iter(CA_CERT).map(Result::unwrap),
@@ -392,8 +385,9 @@ fn sign_and_verify() -> Result<(), BoxError> {
             let client = QuicClient::builder()
                 .with_router(router)
                 .with_root_certificates(roots)
-                .with_parameters(parameters)
+                .with_parameters(client_parameters())
                 .with_cert(CLIENT_CERT, CLIENT_KEY)
+                .with_name("client")
                 .with_qlog(qlogger())
                 .enable_sslkeylog()
                 .build();

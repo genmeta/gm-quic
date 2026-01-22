@@ -133,12 +133,12 @@ use std::path::PathBuf;
 use gm_quic::prelude::*;
 
 async fn server() -> Result<(), Box<dyn std::error::Error>> {
-    let quic_listeners = QuicListeners::builder()?
+    let quic_listeners = QuicListeners::builder()
         .without_client_cert_verifier()         // 通常不需要客户端证书验证
         // .with_parameters(your_parameters)    // 自定义传输参数
         // .enable_0rtt()                       // 为服务器启用0-RTT
         // .enable_anti_port_scan()             // 抗端口扫描保护
-        .listen(8192);                          // 开始监听，设置积压队列（类似Unix listen）
+        .listen(8192)?;                         // 开始监听，设置积压队列（类似Unix listen）
 
     // 添加可连接的服务器
     quic_listeners.add_server(
@@ -151,7 +151,7 @@ async fn server() -> Result<(), Box<dyn std::error::Error>> {
             "iface://v6.eth0:4433", // 绑定到eth0的IPv6地址
         ],
         None, // ocsp
-    );
+    ).await?;
 
     // 继续调用 `quic_listeners.add_server()` 来添加更Server
     // 调用 `quic_listeners.remove_server()` 来移除一个Serer

@@ -146,7 +146,7 @@ impl QuicClient {
     /// ### Example
     ///
     /// ```no_run
-    /// # use gm_quic::prelude::{QuicClient, QuicIO};
+    /// # use gm_quic::prelude::*;
     /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let server_addresses = tokio::net::lookup_host("genmeta.net:443").await?;
     /// let paths = quic_client.probe(server_addresses).await?;

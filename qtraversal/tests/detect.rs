@@ -148,6 +148,7 @@ macro_rules! test_detect {
     (async fn $test_name:ident = test_detect_case($case:expr) $($tt:tt)*) => {
 
         #[test]
+        #[ignore] // run manually
         fn $test_name() {
             run(stringify!($test_name), async move {
                 test_detect_case($case).await

@@ -138,12 +138,12 @@ use std::path::PathBuf;
 use gm_quic::prelude::*;
 
 async fn server() -> Result<(), Box<dyn std::error::Error>> {
-    let quic_listeners = QuicListeners::builder()?
+    let quic_listeners = QuicListeners::builder()
         .without_client_cert_verifier()         // Client certificate verification is typically not required
         // .with_parameters(your_parameters)    // Custom transport parameters
         // .enable_0rtt()                       // Enable 0-RTT for servers
         // .enable_anti_port_scan()             // Anti-port scanning protection
-        .listen(8192);                          // Start listening with backlog (similar to Unix listen)
+        .listen(8192)?;                         // Start listening with backlog (similar to Unix listen)
 
     // Add a server that can be connected
     quic_listeners.add_server(
@@ -156,7 +156,7 @@ async fn server() -> Result<(), Box<dyn std::error::Error>> {
             "iface://v6.eth0:4433", // Bind to the eth0's IPv6 address
         ],
         None, // ocsp
-    );
+    ).await?;
 
     // Continue calling `quic_listeners.add_server()` to add more servers
     // Call `quic_listeners.remove_server()` to remove a server

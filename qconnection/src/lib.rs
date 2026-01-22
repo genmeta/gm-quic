@@ -19,7 +19,10 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
-    pub use qinterface::bind_uri::BindUri;
+    pub use qinterface::{
+        bind_uri::BindUri,
+        io::{IO as QuicIO, IoExt as QuicIoExt},
+    };
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};

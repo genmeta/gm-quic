@@ -464,8 +464,9 @@ mod tests {
         assert!(bind_uri.as_uri().query().is_none());
     }
 
-    #[test]
-    fn interface_not_found() {
+    // tokio runtime requeired for device listing
+    #[tokio::test]
+    async fn interface_not_found() {
         let bind_uri = BindUri::from_str(
             "iface://v4.ygiubiougbuyasiudbahsdbadfbkjadbhvkjabvckagdoiuehfjoiajhrpfhrbovhaelvkamdjkfs:8080",
         )
