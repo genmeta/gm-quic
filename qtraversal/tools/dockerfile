@@ -3,9 +3,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
-# 1. 使用阿里云APT镜像源
-RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+# # 1. 使用阿里云APT镜像源
+# RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+#     sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
 
 # 2. 分离系统包安装层（利用Docker缓存）
 RUN apt-get update && apt-get install -y \
@@ -20,12 +20,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. 安装Rust（独立层）
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly --profile minimal --no-modify-path
 
-# 4. 配置Cargo镜像源（使用TOML格式）
-RUN mkdir -p $CARGO_HOME && \
-    printf '[source.crates-io]\nreplace-with = "tuna"\n\n[source.tuna]\nregistry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"\n\n[net]\ngit-fetch-with-cli = true\nretry = 2\n' > $CARGO_HOME/config.toml
+# # 4. 配置Cargo镜像源（使用TOML格式）
+# RUN mkdir -p $CARGO_HOME && \
+#     printf '[source.crates-io]\nreplace-with = "tuna"\n\n[source.tuna]\nregistry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"\n\n[net]\ngit-fetch-with-cli = true\nretry = 2\n' > $CARGO_HOME/config.toml
 
-RUN rustup override set nightly
+# RUN rustup override set nightly
+
 # 5. 验证工具链
 RUN rustc --version && cargo --version

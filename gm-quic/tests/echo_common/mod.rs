@@ -1,3 +1,6 @@
+// common is submod for echo, auth and traversal
+#![allow(unused)]
+
 use std::sync::Arc;
 
 use gm_quic::{

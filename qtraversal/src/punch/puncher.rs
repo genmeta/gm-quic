@@ -24,6 +24,7 @@ use qbase::{
         io::{AssemblePacket, Packages, PadTo20},
     },
 };
+use qevent::telemetry::Instrument;
 use qinterface::{
     Interface, WeakInterface,
     bind_uri::BindUri,
@@ -33,6 +34,7 @@ use qinterface::{
 };
 use qudp::DEFAULT_TTL;
 use tokio::{task::AbortHandle, time::timeout};
+use tracing::Instrument as _;
 
 use crate::{
     Link, PathWay,
@@ -209,9 +211,13 @@ impl<TX, PH, S> Drop for Puncher<TX, PH, S> {
             .map(|entry| self.ifaces.unbind(entry.key().clone()))
             .collect();
         if !futures.is_empty() {
-            tokio::spawn(async move {
-                futures::future::join_all(futures).await;
-            });
+            tokio::spawn(
+                async move {
+                    futures::future::join_all(futures).await;
+                }
+                .instrument_in_current()
+                .in_current_span(),
+            );
         }
         self.punch_ifaces.clear();
     }
@@ -239,20 +245,25 @@ where
             let stun_servers = self.0.stun_servers.clone();
 
             let bind = bind_uri.clone();
-            tokio::spawn(async move {
-                let (_iface, stun_client) =
-                    dynamic_iface(&bind_uri, &ifaces, &iface_factory, &stun_servers).await?;
-                let outer = stun_client.outer_addr().await?;
+            tokio::spawn(
+                async move {
+                    let (_iface, stun_client) =
+                        dynamic_iface(&bind_uri, &ifaces, &iface_factory, &stun_servers).await?;
+                    let outer = stun_client.outer_addr().await?;
 
-                let mut address_book = puncher.0.address_book.lock().unwrap();
-                let frame = address_book.add_local_address(bind.clone(), outer, tire, nat_type)?;
-                tracing::debug!(target: "punch", bind_uri = %bind, %outer, nat_type = ?nat_type, "Sending AddAddress frame for dynamic");
-                puncher
-                    .0
-                    .broker
-                    .send_frame([TraversalFrame::AddAddress(frame)]);
-                Ok::<_, io::Error>(())
-            });
+                    let mut address_book = puncher.0.address_book.lock().unwrap();
+                    let frame =
+                        address_book.add_local_address(bind.clone(), outer, tire, nat_type)?;
+                    tracing::debug!(target: "punch", bind_uri = %bind, %outer, nat_type = ?nat_type, "Sending AddAddress frame for dynamic");
+                    puncher
+                        .0
+                        .broker
+                        .send_frame([TraversalFrame::AddAddress(frame)]);
+                    Ok::<_, io::Error>(())
+                }
+                .instrument_in_current()
+                .in_current_span(),
+            );
             return Ok(());
         }
         let mut address_book = self.0.address_book.lock().unwrap();
@@ -280,6 +291,7 @@ where
         Ok(ways)
     }
 
+    #[tracing::instrument(skip(self), ret, err)]
     pub fn add_peer_endpoint(
         &self,
         endpoint: SocketEndpointAddr,
@@ -325,18 +337,22 @@ where
             }
             Entry::Vacant(entry) => {
                 let tx = Arc::new(Transaction::new());
-                let task = tokio::spawn({
-                    let puncher = self.clone();
-                    let tx = tx.clone();
-                    async move {
-                        let result = puncher
-                            .punch_actively(bind, &local, &add_address_frame, tx)
-                            .await;
-                        puncher.0.punch_history.insert(punch_pair);
-                        puncher.0.transaction.remove(&punch_pair);
-                        result
+                let task = tokio::spawn(
+                    {
+                        let puncher = self.clone();
+                        let tx = tx.clone();
+                        async move {
+                            let result = puncher
+                                .punch_actively(bind, &local, &add_address_frame, tx)
+                                .await;
+                            puncher.0.punch_history.insert(punch_pair);
+                            puncher.0.transaction.remove(&punch_pair);
+                            result
+                        }
                     }
-                })
+                    .instrument_in_current()
+                    .in_current_span(),
+                )
                 .abort_handle();
                 entry.insert((task, tx.clone()));
             }
@@ -375,6 +391,8 @@ where
                     puncher.0.transaction.remove(&punch_pair);
                     result
                 }
+                .instrument_in_current()
+                .in_current_span()
             })
             .abort_handle();
             Ok::<_, io::Error>((task, tx.clone()))
@@ -886,6 +904,7 @@ where
         Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"))
     }
 
+    #[tracing::instrument(skip(self), ret, err)]
     fn resolve_punch_connection(
         &self,
         bind: &BindUri,
@@ -993,29 +1012,33 @@ where
                             let puncher = self.clone();
                             let bind = bind.clone();
                             tracing::debug!(target: "punch", %punch_pair, frame = ?frame, %link, "Received unsolicited punch frame, replying directly with PunchDone");
-                            tokio::spawn(async move {
-                                match puncher.0.ifaces.borrow(&bind) {
-                                    Some(iface) => {
-                                        if let Err(error) = puncher
-                                            .0
-                                            .send_packet(
-                                                &iface,
-                                                link,
-                                                DEFAULT_TTL.try_into().unwrap(),
-                                                TraversalFrame::PunchDone(PunchDoneFrame::new(
-                                                    punch_pair,
-                                                )),
-                                            )
-                                            .await
-                                        {
-                                            tracing::debug!(target: "punch", %punch_pair, %link, ?error, "Failed to send direct PunchDone for unsolicited frame");
+                            tokio::spawn(
+                                async move {
+                                    match puncher.0.ifaces.borrow(&bind) {
+                                        Some(iface) => {
+                                            if let Err(error) = puncher
+                                                .0
+                                                .send_packet(
+                                                    &iface,
+                                                    link,
+                                                    DEFAULT_TTL.try_into().unwrap(),
+                                                    TraversalFrame::PunchDone(PunchDoneFrame::new(
+                                                        punch_pair,
+                                                    )),
+                                                )
+                                                .await
+                                            {
+                                                tracing::debug!(target: "punch", %punch_pair, %link, ?error, "Failed to send direct PunchDone for unsolicited frame");
+                                            }
+                                        }
+                                        None => {
+                                            tracing::debug!(target: "punch", %punch_pair, %link, "Interface not found for bind uri: {}", bind);
                                         }
                                     }
-                                    None => {
-                                        tracing::debug!(target: "punch", %punch_pair, %link, "Interface not found for bind uri: {}", bind);
-                                    }
                                 }
-                            });
+                                .instrument_in_current()
+                                .in_current_span(),
+                            );
                         }
                     } else {
                         tracing::debug!(target: "punch", frame = ?frame, "Received unexpected frame");
@@ -1067,7 +1090,7 @@ async fn dynamic_iface(
             let stun_client = components
                 .init_with(|| {
                     let client =
-                        StunClient::new(iface.downgrade(), stun_router.clone(), stun_server);
+                        StunClient::new(iface.downgrade(), stun_router.clone(), stun_server, None);
                     StunClientComponent::new(client)
                 })
                 .client();

@@ -120,7 +120,7 @@ pub struct ConnectionFoundation<Foundation, TlsConfig> {
     ifaces: Arc<InterfaceManager>,
     iface_factory: Arc<dyn ProductIO>,
     quic_router: Arc<QuicRouter>,
-    locations: Arc<Locations>,
+    locations: Option<Arc<Locations>>,
     stun_servers: Arc<[SocketAddr]>,
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
     defer_idle_timeout: Duration,
@@ -140,7 +140,7 @@ impl ClientFoundation {
             ifaces: InterfaceManager::global().clone(),
             iface_factory: Arc::new(DEFAULT_IO_FACTORY),
             quic_router: QuicRouter::global().clone(),
-            locations: Locations::global().clone(),
+            locations: None,
             stun_servers: Arc::new([]),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
             defer_idle_timeout: Duration::ZERO,
@@ -183,7 +183,7 @@ impl ServerFoundation {
             ifaces: InterfaceManager::global().clone(),
             iface_factory: Arc::new(DEFAULT_IO_FACTORY),
             quic_router: QuicRouter::global().clone(),
-            locations: Locations::global().clone(),
+            locations: None,
             stun_servers: Arc::new([]),
             streams_ctrl: Box::new(DemandConcurrency), // ZST cause no alloc
             defer_idle_timeout: Duration::ZERO,
@@ -234,7 +234,7 @@ impl<Foundation, TlsConfig> ConnectionFoundation<Foundation, TlsConfig> {
         self
     }
 
-    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
+    pub fn with_locations(mut self, locations: Option<Arc<Locations>>) -> Self {
         self.locations = locations;
         self
     }
@@ -408,7 +408,7 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 pub struct PendingConnection {
     interfaces: Arc<InterfaceManager>,
     iface_factory: Arc<dyn ProductIO>,
-    locations: Arc<Locations>,
+    locations: Option<Arc<Locations>>,
     stun_servers: Arc<[SocketAddr]>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: Duration,

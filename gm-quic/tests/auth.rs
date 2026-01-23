@@ -169,6 +169,7 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
         };
         let connection = client.connected_to("localhost", [server_addr]).await?;
         let error = connection.terminated().await;
+        // TODO: 偶尔以NoViablePath结束，需要调查原因
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
 
         listeners.shutdown();
@@ -210,6 +211,7 @@ fn auth_client_refuse() -> Result<(), BoxError> {
         let connection = client.connected_to("localhost", [server_addr]).await?;
 
         let error = connection.terminated().await;
+        // TODO: 偶尔以NoViablePath结束，需要调查原因
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
 
         listeners.shutdown();

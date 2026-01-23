@@ -10,6 +10,7 @@ use qconnection::{
         component::{
             Components,
             alive::RebindOnNetworkChangedComponent,
+            location::{Locations, LocationsComponent},
             route::{QuicRouter, QuicRouterComponent},
         },
         device::Devices,
@@ -30,6 +31,7 @@ pub struct Network {
     pub iface_manager: Arc<InterfaceManager>,
     pub quic_router: Arc<QuicRouter>,
     pub stun_server: Option<Arc<str>>,
+    pub locations: Option<Arc<Locations>>,
 }
 
 impl Default for Network {
@@ -41,6 +43,7 @@ impl Default for Network {
             iface_manager: InterfaceManager::global().clone(),
             quic_router: QuicRouter::global().clone(),
             stun_server: None,
+            locations: Some(Locations::global().clone()),
         }
     }
 }
@@ -70,6 +73,13 @@ impl Network {
             let quic_router = components
                 .init_with(|| QuicRouterComponent::new(self.quic_router.clone()))
                 .router();
+
+            let locations = self.locations.clone().map(|locations| {
+                components
+                    .init_with(|| LocationsComponent::new(iface.downgrade(), locations.clone()))
+                    .clone()
+            });
+
             match self.stun_server.clone() {
                 // stun enabled:
                 Some(stun_server) => {
@@ -86,6 +96,7 @@ impl Network {
                                 self.resolver.clone(),
                                 stun_server,
                                 stun_agents.to_vec(),
+                                locations,
                             )
                         })
                         .clone();

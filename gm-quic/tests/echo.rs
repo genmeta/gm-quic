@@ -2,10 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use gm_quic::{
     prelude::{handy::*, *},
-    qbase,
+    qbase::param::{ClientParameters, ServerParameters},
+    qinterface::{bind_uri::BindUri, component::route::QuicRouter},
 };
-use qbase::param::{ClientParameters, ServerParameters};
-use qconnection::qinterface::{bind_uri::BindUri, component::route::QuicRouter};
 use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;

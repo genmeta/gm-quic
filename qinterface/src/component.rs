@@ -13,7 +13,7 @@ pub mod location;
 pub mod route;
 
 pub trait Component: Any + Debug + Send + Sync {
-    /// Gracefully shutdown the component when QuicIO is closing.
+    /// Gracefully shutdown the component when IO is unbound.
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()>;
 
     /// Re-initialize the component after the QuicIO has been rebound

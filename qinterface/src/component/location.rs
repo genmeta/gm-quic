@@ -1,14 +1,21 @@
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, hash_map},
-    sync::{Arc, LazyLock},
+    fmt::Debug,
+    ops::Deref,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    task::{Context, Poll},
 };
 
 use qbase::util::{UniqueId, UniqueIdGenerator};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::BindUri;
+use crate::{
+    BindUri, Interface, WeakInterface,
+    component::Component,
+    io::{IO, RefIO},
+};
 
 #[derive(Debug)]
 pub enum AddressEvent<D: ?Sized = dyn Any + Send + Sync> {
@@ -102,6 +109,7 @@ impl EventPublisher {
     }
 }
 
+#[derive(Debug)]
 pub struct Locations {
     new_event_tx: EventSender,
     new_subscriber_tx: mpsc::UnboundedSender<EventSender>,
@@ -151,7 +159,8 @@ impl Locations {
         _ = self.new_event_tx.send((bind_uri, event));
     }
 
-    pub fn upsert<D: Any + Send + Sync>(&self, bind_uri: BindUri, data: Arc<D>) {
+    pub fn upsert<D: Any + Send + Sync + Debug>(&self, bind_uri: BindUri, data: Arc<D>) {
+        tracing::debug!(%bind_uri, ?data, "Upsert location data");
         self.publish(bind_uri, AddressEvent::Upsert(data));
     }
 
@@ -182,5 +191,67 @@ impl Observer {
 
     pub fn try_recv(&mut self) -> Result<(BindUri, AddressEvent), mpsc::error::TryRecvError> {
         self.receiver.try_recv()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IfaceLocations<I> {
+    locations: Arc<Locations>,
+    ref_iface: Arc<Mutex<I>>,
+}
+
+impl<I: RefIO + 'static> IfaceLocations<I> {
+    pub fn new(ref_iface: I, locations: Arc<Locations>) -> Self {
+        locations.upsert(
+            ref_iface.iface().bind_uri(),
+            Arc::new(ref_iface.iface().real_addr()),
+        );
+
+        Self {
+            locations,
+            ref_iface: Arc::new(Mutex::new(ref_iface)),
+        }
+    }
+
+    fn lock_ref_iface(&self) -> MutexGuard<'_, I> {
+        self.ref_iface.lock().expect("Mutex poisoned")
+    }
+
+    /// Scope operation to the newest interface.
+    pub fn r#for<R>(&self, ref_iface: &R, f: impl FnOnce(&Locations, BindUri))
+    where
+        R: RefIO + 'static,
+    {
+        let current_iface = self.lock_ref_iface();
+        let current_iface = current_iface.deref();
+        if !(ref_iface as &dyn Any)
+            .downcast_ref::<I>()
+            .is_some_and(|ref_iface| ref_iface.same_io(current_iface))
+        {
+            return;
+        }
+        f(&self.locations, current_iface.iface().bind_uri());
+    }
+}
+
+pub type LocationsComponent = IfaceLocations<WeakInterface>;
+
+impl Component for LocationsComponent {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        _ = cx;
+        Poll::Ready(())
+    }
+
+    fn reinit(&self, iface: &Interface) {
+        let mut ref_iface = self.lock_ref_iface();
+        if iface.downgrade().same_io(ref_iface.deref()) {
+            return;
+        }
+        *ref_iface = iface.downgrade();
+        let bind_uri = iface.bind_uri();
+
+        self.locations.close(bind_uri.clone());
+        self.locations
+            .upsert(bind_uri.clone(), Arc::new(iface.real_addr()));
     }
 }

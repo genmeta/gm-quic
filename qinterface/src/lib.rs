@@ -101,7 +101,7 @@ impl From<RebindedError> for std::io::Error {
 
 impl Interface {
     #[inline]
-    fn borrow<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> std::io::Result<T> {
+    fn with<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> std::io::Result<T> {
         if self.bind_iface.context.bind_id() != self.bind_id {
             return Err(RebindedError.into());
         }
@@ -126,17 +126,6 @@ impl Interface {
         self.bind_id == other.bind_id
             && Arc::ptr_eq(&self.bind_iface.context, &other.bind_iface.context)
     }
-
-    pub fn with_components<T>(&self, f: impl FnOnce(&component::Components, &Interface) -> T) -> T {
-        self.bind_iface.with_components(f)
-    }
-
-    pub fn with_components_mut<T>(
-        &self,
-        f: impl FnOnce(&mut component::Components, &Interface) -> T,
-    ) -> T {
-        self.bind_iface.with_components_mut(f)
-    }
 }
 
 impl RefIO for Interface {
@@ -160,17 +149,17 @@ impl IO for Interface {
 
     #[inline]
     fn real_addr(&self) -> std::io::Result<RealAddr> {
-        self.borrow(|iface| iface.real_addr())?
+        self.with(|iface| iface.real_addr())?
     }
 
     #[inline]
     fn max_segment_size(&self) -> std::io::Result<usize> {
-        self.borrow(|iface| iface.max_segment_size())?
+        self.with(|iface| iface.max_segment_size())?
     }
 
     #[inline]
     fn max_segments(&self) -> std::io::Result<usize> {
-        self.borrow(|iface| iface.max_segments())?
+        self.with(|iface| iface.max_segments())?
     }
 
     #[inline]
@@ -180,7 +169,7 @@ impl IO for Interface {
         pkts: &[std::io::IoSlice],
         hdr: PacketHeader,
     ) -> Poll<std::io::Result<usize>> {
-        self.borrow(|iface| iface.poll_send(cx, pkts, hdr))?
+        self.with(|iface| iface.poll_send(cx, pkts, hdr))?
     }
 
     #[inline]
@@ -190,12 +179,12 @@ impl IO for Interface {
         pkts: &mut [BytesMut],
         hdrs: &mut [PacketHeader],
     ) -> Poll<std::io::Result<usize>> {
-        self.borrow(|iface| iface.poll_recv(cx, pkts, hdrs))?
+        self.with(|iface| iface.poll_recv(cx, pkts, hdrs))?
     }
 
     #[inline]
     fn poll_close(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>> {
-        self.borrow(|iface| iface.poll_close(cx))?
+        self.with(|iface| iface.poll_close(cx))?
     }
 }
 

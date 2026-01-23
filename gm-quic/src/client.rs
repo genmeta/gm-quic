@@ -7,7 +7,11 @@ use qbase::{
     param::ClientParameters,
     token::TokenSink,
 };
-use qconnection::{self, qdns::Resolve, qinterface::io::IO};
+use qconnection::{
+    self,
+    qdns::Resolve,
+    qinterface::{component::location::Locations, io::IO},
+};
 use qevent::telemetry::QLog;
 use qinterface::{
     BindInterface, Interface, bind_uri::BindUri, component::route::QuicRouter, device::Devices,
@@ -121,6 +125,7 @@ impl QuicClient {
             .with_iface_factory(self.network.iface_factory.clone())
             .with_iface_manager(self.network.iface_manager.clone())
             .with_quic_router(self.network.quic_router.clone())
+            .with_locations(self.network.locations.clone())
             // todo
             // .with_stun_servers()
             .with_defer_idle_timeout(self.defer_idle_timeout)
@@ -380,6 +385,11 @@ impl<T> QuicClientBuilder<T> {
 
     pub fn with_stun(mut self, server: impl Into<Arc<str>>) -> Self {
         self.network.stun_server = Some(server.into());
+        self
+    }
+
+    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
+        self.network.locations = Some(locations);
         self
     }
 

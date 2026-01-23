@@ -40,7 +40,7 @@ pub fn run<F: Future>(future: F) -> F::Output {
         let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
 
         tracing_subscriber::registry()
-            .with(console_subscriber::spawn())
+            // .with(console_subscriber::spawn())
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_writer(non_blocking)

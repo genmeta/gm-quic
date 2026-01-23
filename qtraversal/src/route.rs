@@ -45,7 +45,7 @@ pub enum Forwarder<I: RefIO + 'static> {
 }
 
 impl<I: RefIO> Forwarder<I> {
-    pub fn my_outers(&self) -> SmallVec<[SocketAddr; 8]> {
+    pub fn outers(&self) -> SmallVec<[SocketAddr; 8]> {
         match self {
             Forwarder::Clients { stun_clients } => stun_clients.with_clients(|clients| {
                 clients
@@ -58,23 +58,27 @@ impl<I: RefIO> Forwarder<I> {
     }
 
     pub fn should_forward(&self, dst: SocketEndpointAddr) -> Option<SocketAddr> {
-        let my_outers = self.my_outers();
+        let outers = self.outers();
 
-        if my_outers.is_empty() {
+        if outers.is_empty() {
             return None;
         }
 
-        let SocketEndpointAddr::Agent { agent, outer } = dst else {
+        let SocketEndpointAddr::Agent {
+            agent,
+            outer: dst_outer,
+        } = dst
+        else {
             return None;
         };
 
-        for my_outer in my_outers {
-            if my_outer == outer {
+        for outer in outers {
+            if outer == dst_outer {
                 return None;
             }
 
-            if my_outer == agent {
-                return Some(outer);
+            if outer == agent {
+                return Some(dst_outer);
             }
         }
 
@@ -227,6 +231,13 @@ impl ReceiveAndDeliverPacket {
 
                     // split_off forward header, deliver the rest as quic packet
                     let pkt = pkt.split_off(ForwardHeader::encoding_size(&fhdr.pathway()));
+                    let hdr = PacketHeader::new(
+                        fhdr.pathway().flip().map(Into::into),
+                        hdr.link(),
+                        hdr.ttl(),
+                        hdr.ecn(),
+                        pkt.len() as _,
+                    );
                     deliver_quic_packet(pkt, hdr).await;
                     Ok(())
                 };
@@ -259,7 +270,7 @@ impl ReceiveAndDeliverPacket {
     }
 
     pub fn reinit(&self, iface: &Interface) {
-        let (quic_router, stun_router, forwarder) = iface.with_components(|components, _| {
+        _ = iface.with_components(|components| {
             let quic_router = (self.quic)
                 .then(|| components.with(QuicRouterComponent::router))
                 .and_then(identity);
@@ -271,16 +282,15 @@ impl ReceiveAndDeliverPacket {
                 .forward
                 .then(|| components.with(ForwardersComponent::forwarder))
                 .and_then(identity);
-            (quic_router, stun_router, forwarder)
+            *self.lock_task() = Some(
+                Self::task()
+                    .maybe_quic_router(quic_router)
+                    .maybe_stun_router(stun_router)
+                    .maybe_forwarder(forwarder)
+                    .iface_ref(iface.downgrade())
+                    .spawn(),
+            );
         });
-        *self.lock_task() = Some(
-            Self::task()
-                .maybe_quic_router(quic_router)
-                .maybe_stun_router(stun_router)
-                .maybe_forwarder(forwarder)
-                .iface_ref(iface.downgrade())
-                .spawn(),
-        );
     }
 }
 

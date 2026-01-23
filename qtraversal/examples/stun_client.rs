@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let iface: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
 
     let stun_router = StunRouter::new();
-    let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_server);
+    let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_server, None);
 
     let _task = ReceiveAndDeliverPacket::task()
         .stun_router(stun_router)

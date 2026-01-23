@@ -17,7 +17,10 @@ use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
 use qdns::Resolve;
 use qinterface::{
     Interface, RebindedError, WeakInterface,
-    component::{Component, location::Locations},
+    component::{
+        Component,
+        location::{IfaceLocations, LocationsComponent},
+    },
     io::{IO, RefIO},
 };
 use thiserror::Error;
@@ -33,7 +36,7 @@ use crate::{
 
 #[derive(Error, Debug, Clone)]
 #[error(transparent)]
-struct ArcIoError(Arc<io::Error>);
+pub struct ArcIoError(Arc<io::Error>);
 
 impl From<io::Error> for ArcIoError {
     fn from(source: io::Error) -> Self {
@@ -129,19 +132,28 @@ pub struct StunClient<I: RefIO + 'static> {
     // 可能被复制进keep_alive_task
     stun_router: StunRouter,
     stun_agent: SocketAddr,
+    locations: Option<IfaceLocations<I>>,
 
     state: ArcClientState,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
+pub type ClientLocationData = Result<SocketEndpointAddr, ArcIoError>;
+
 impl<I: RefIO + 'static> StunClient<I> {
-    pub fn new(ref_iface: I, stun_router: StunRouter, stun_agent: SocketAddr) -> Self {
+    pub fn new(
+        ref_iface: I,
+        stun_router: StunRouter,
+        stun_agent: SocketAddr,
+        locations: Option<IfaceLocations<I>>,
+    ) -> Self {
         let client = Self {
             nat_type: Default::default(),
             outer_addr: Default::default(),
             stun_agent,
             ref_iface,
             stun_router,
+            locations,
             state: ArcClientState::new(),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         };
@@ -167,41 +179,25 @@ impl<I: RefIO + 'static> StunClient<I> {
         let ref_iface = self.ref_iface.clone();
         let bind_uri = ref_iface.iface().bind_uri();
 
+        let locations = self.locations.clone();
+
         let client_state = self.state.clone();
 
         let keep_alive_task = async move {
-            let handle_detect_result = |detect_result: &io::Result<SocketAddr>| match &detect_result
-            {
-                Ok(new_outer_addr) => {
-                    let ep = SocketEndpointAddr::Agent {
-                        agent: stun_agent,
-                        outer: (*new_outer_addr),
-                    };
-
-                    match outer_addr.try_get().as_deref().cloned() {
-                        Some(Ok(old_outer)) if old_outer == *new_outer_addr => {
-                            tracing::debug!(target: "stun", %new_outer_addr,  "Keep alive, outer addr unchanged");
-                        }
-                        Some(old_state) => {
-                            tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
-                            outer_addr.assign(Ok(*new_outer_addr));
-                            if !bind_uri.is_temporary() {
-                                // todo:  impl location component, get location from interface component
-                                Locations::global().upsert(bind_uri.clone(), Arc::new(ep));
-                            }
-                        }
-                        None => {
-                            tracing::debug!(target: "stun", %new_outer_addr, "Detected outer addr");
-                            outer_addr.assign(Ok(*new_outer_addr));
-                            if !bind_uri.is_temporary() {
-                                Locations::global().upsert(bind_uri.clone(), Arc::new(ep));
-                            }
-                        }
+            let log_detect_result = |detect_result: &io::Result<SocketAddr>| match &detect_result {
+                Ok(new_outer_addr) => match outer_addr.try_get().as_deref().cloned() {
+                    Some(Ok(old_outer)) if old_outer == *new_outer_addr => {
+                        tracing::debug!(target: "stun", %new_outer_addr,  "Keep alive, outer addr unchanged");
                     }
-                }
+                    Some(old_state) => {
+                        tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
+                    }
+                    None => {
+                        tracing::debug!(target: "stun", %new_outer_addr, "Detected outer addr");
+                    }
+                },
                 Err(error) => {
                     tracing::debug!(target: "stun", ?error, "Detect outer addr failed");
-                    Locations::global().remove::<SocketEndpointAddr>(bind_uri.clone());
                 }
             };
             tracing::debug!(target: "stun", "Starting keep alive task");
@@ -220,13 +216,27 @@ impl<I: RefIO + 'static> StunClient<I> {
                     Err(_) => client_state.try_update(ClientState::Active, ClientState::Inactive),
                 };
 
-                handle_detect_result(&detect_result);
+                log_detect_result(&detect_result);
 
                 let timeout = match detect_result {
                     Ok(_) => Duration::from_secs(30),
                     Err(_) => Duration::from_secs(1),
                 };
-                outer_addr.assign(detect_result.map_err(ArcIoError::from));
+
+                let detect_result = detect_result.map_err(ArcIoError::from);
+
+                if !bind_uri.is_temporary()
+                    && let Some(locations) = locations.as_ref()
+                {
+                    locations.r#for(&ref_iface, |locations, bind_uri| {
+                        let data = detect_result
+                            .clone()
+                            .map(|outer| SocketEndpointAddr::with_agent(stun_agent, outer));
+                        locations.upsert::<ClientLocationData>(bind_uri, Arc::new(data));
+                    });
+                }
+
+                outer_addr.assign(detect_result);
                 tokio::time::sleep(timeout).await;
             }
         };
@@ -250,6 +260,10 @@ impl<I: RefIO + 'static> StunClient<I> {
 
     pub async fn outer_addr(&self) -> io::Result<SocketAddr> {
         core::future::poll_fn(|cx| self.poll_outer_addr(cx)).await
+    }
+
+    pub fn agent_addr(&self) -> SocketAddr {
+        self.stun_agent
     }
 
     pub fn get_outer_addr(&self) -> Option<io::Result<SocketAddr>> {
@@ -331,12 +345,6 @@ impl<I: RefIO + 'static> StunClient<I> {
     }
 }
 
-impl<I: RefIO + 'static> Drop for StunClient<I> {
-    fn drop(&mut self) {
-        tracing::debug!(target: "stun", bind_uri = %self.ref_iface.iface().bind_uri(), "Drop stun client");
-    }
-}
-
 #[derive(Debug)]
 pub struct StunClientComponent {
     client: Mutex<StunClient<WeakInterface>>,
@@ -369,10 +377,18 @@ impl Component for StunClientComponent {
             return;
         }
 
+        let Ok(locations) = iface.with_component(|loc: &LocationsComponent| {
+            loc.reinit(iface);
+            loc.clone()
+        }) else {
+            return;
+        };
+
         let new_client = StunClient::new(
             iface.downgrade(),
             client.stun_router.clone(),
             client.stun_agent,
+            locations,
         );
         *client = new_client;
     }
@@ -400,12 +416,18 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
         resolver: Arc<dyn Resolve + Send + Sync>,
         server: Arc<str>,
         agents: impl IntoIterator<Item = SocketAddr>,
+        locations: Option<IfaceLocations<I>>,
     ) -> Self {
         let new_stun_client = {
             let ref_iface = ref_iface.clone();
             move |agent_addr: SocketAddr| {
                 let stun_router = router.clone();
-                StunClient::new(ref_iface.clone(), stun_router, agent_addr)
+                StunClient::new(
+                    ref_iface.clone(),
+                    stun_router,
+                    agent_addr,
+                    locations.clone(),
+                )
             }
         };
 
@@ -530,6 +552,7 @@ impl<I: RefIO + 'static> StunClients<I> {
         resolver: Arc<dyn Resolve + Send + Sync>,
         server: impl Into<Arc<str>>,
         agents: impl IntoIterator<Item = SocketAddr>,
+        locations: Option<IfaceLocations<I>>,
     ) -> Self {
         Self {
             clients: Arc::new(Mutex::new(StunClientsInner::new(
@@ -538,6 +561,7 @@ impl<I: RefIO + 'static> StunClients<I> {
                 resolver,
                 server.into(),
                 agents,
+                locations,
             ))),
         }
     }
@@ -565,21 +589,30 @@ impl Component for StunClientsComponent {
     }
 
     fn reinit(&self, iface: &Interface) {
-        _ = iface.with_component(|router: &StunRouterComponent| {
-            router.reinit(iface);
-            let router_ref_iface = router.ref_iface();
+        let mut clients = self.lock_clients();
+        if clients.ref_iface.same_io(&iface.downgrade()) {
+            return;
+        }
 
-            let mut clients = self.lock_clients();
-            if clients.ref_iface.same_io(&router_ref_iface) {
+        _ = iface.with_components(|components| {
+            let Some(router) = components.with(|router: &StunRouterComponent| {
+                router.reinit(iface);
+                router.router()
+            }) else {
                 return;
-            }
+            };
+            let locations = components.with(|locations: &LocationsComponent| {
+                locations.reinit(iface);
+                locations.clone()
+            });
 
             let new_clinets = StunClientsInner::new(
-                router_ref_iface,
-                router.router(),
+                iface.downgrade(),
+                router,
                 clients.resolver.clone(),
                 clients.server.clone(),
                 clients.lock_clients().keys().copied(),
+                locations,
             );
             *clients = new_clinets;
         });
@@ -697,8 +730,7 @@ async fn detect_nat_type<I: RefIO>(
             visualize_nat_detection!("Result: No response after {retry_times} attempts");
             visualize_nat_detection!("Conclusion: Filters packets based on destination port\n");
         }
-        tracing::info!(
-            target: "stun",
+        visualize_nat_detection!(
             "NAT detection completed. Network features: {:?}, NAT Type: {:?}",
             net_features,
             NatType::from(net_features)
@@ -855,8 +887,7 @@ async fn detect_nat_type<I: RefIO>(
                     "Conclusion: Absence of server response may indicates Dynamic NAT behavior\n"
                 );
             }
-            tracing::info!(
-                target: "stun",
+            visualize_nat_detection!(
                 "NAT detection completed. Network features: {:?}, NAT Type: {:?}",
                 net_features,
                 NatType::from(net_features)

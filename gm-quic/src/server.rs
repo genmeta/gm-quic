@@ -11,7 +11,7 @@ use qbase::{
 use qconnection::{
     self,
     qdns::Resolve,
-    qinterface::{self, bind_uri::BindUri, device::Devices},
+    qinterface::{self, bind_uri::BindUri, component::location::Locations, device::Devices},
     tls::AcceptAllClientAuther,
 };
 use qevent::telemetry::QLog;
@@ -396,6 +396,7 @@ impl QuicListeners {
             .with_iface_factory(self.network.iface_factory.clone())
             .with_iface_manager(self.network.iface_manager.clone())
             .with_quic_router(self.network.quic_router.clone())
+            .with_locations(self.network.locations.clone())
             // todo
             // .with_stun_servers()
             .with_cids(origin_dcid)
@@ -540,6 +541,11 @@ impl<T> QuicListenersBuilder<T> {
 
     pub fn with_stun(mut self, stun_server: impl Into<Arc<str>>) -> Self {
         self.network.stun_server = Some(stun_server.into());
+        self
+    }
+
+    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
+        self.network.locations = Some(locations);
         self
     }
 

@@ -267,6 +267,14 @@ impl<E> Pathway<E> {
     }
 
     #[inline]
+    pub fn map<E1>(self, mut f: impl FnMut(E) -> E1) -> Pathway<E1> {
+        Pathway {
+            local: f(self.local),
+            remote: f(self.remote),
+        }
+    }
+
+    #[inline]
     pub fn flip(self) -> Self {
         Self {
             local: self.remote,
@@ -401,6 +409,14 @@ impl<A> Link<A> {
         A: Clone,
     {
         self.dst.clone()
+    }
+
+    #[inline]
+    pub fn map<A1>(self, mut f: impl FnMut(A) -> A1) -> Link<A1> {
+        Link {
+            src: f(self.src),
+            dst: f(self.dst),
+        }
     }
 
     #[inline]

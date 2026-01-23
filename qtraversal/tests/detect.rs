@@ -124,7 +124,7 @@ async fn test_detect_case(case: usize) {
     let bind_uri = format!("inet://{}", case.bind_addr);
     let iface: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri.into()));
     let stun_router = StunRouter::new();
-    let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_agent);
+    let stun_client = StunClient::new(iface.clone(), stun_router.clone(), stun_agent, None);
 
     let _route_task = ReceiveAndDeliverPacket::task()
         .stun_router(stun_router)

@@ -12,7 +12,10 @@ use qbase::{
 };
 use qevent::telemetry::Instrument;
 use qinterface::{bind_uri::BindUri, component::location::AddressEvent};
-use qtraversal::{frame::TraversalFrame, nat::client::StunClientsComponent};
+use qtraversal::{
+    frame::TraversalFrame,
+    nat::client::{ClientLocationData, StunClientsComponent},
+};
 use tracing::Instrument as _;
 
 use super::Components;
@@ -39,15 +42,19 @@ impl ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for Components {
 
 impl Components {
     pub fn subscribe_local_address(&self) {
-        let location = &self.locations;
+        let Some(location) = &self.locations else {
+            return;
+        };
         let mut observer = location.subscribe();
         let conn = self.clone();
 
         let future = async move {
             let handle_address_event = |(bind_uri, event): (BindUri, AddressEvent)| {
-                let event = match event.downcast::<RealAddr>() {
+                let event = match event.downcast::<io::Result<RealAddr>>() {
                     Ok(AddressEvent::Upsert(data)) => {
-                        let real_addr = data.as_ref();
+                        // on error: delect from address book
+                        // THINK: Err和remove的异同？
+                        let Ok(real_addr) = data.as_ref() else { return };
                         let endpoint_addr = match *real_addr {
                             RealAddr::Internet(addr) => {
                                 EndpointAddr::Socket(SocketEndpointAddr::direct(addr))
@@ -64,9 +71,11 @@ impl Components {
                     Ok(AddressEvent::Closed) => return,
                     Err(event) => event,
                 };
-                let _event = match event.downcast::<SocketEndpointAddr>() {
+                let _event = match event.downcast::<ClientLocationData>() {
                     Ok(AddressEvent::Upsert(data)) => {
-                        let endpoint_addr = data.as_ref();
+                        let Ok(endpoint_addr) = data.as_ref() else {
+                            return;
+                        };
                         conn.add_local_endpoint(bind_uri.clone(), (*endpoint_addr).into());
                         if matches!(*endpoint_addr, SocketEndpointAddr::Agent { .. }) {
                             _ = conn
@@ -97,7 +106,7 @@ impl Components {
 
     // 添加本地直通地址 可以直接新建 path
     pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) {
-        let addr = match addr {
+        let addr: SocketEndpointAddr = match addr {
             EndpointAddr::Socket(addr) => addr,
             _ => return,
         };
@@ -124,7 +133,6 @@ impl Components {
         tracing::debug!(target: "quic", %addr, "Add peer endpoint");
         match self.puncher.add_peer_endpoint(addr) {
             Ok(ways) => {
-                let ways: Vec<(BindUri, qtraversal::Link, qtraversal::PathWay)> = ways;
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());
                 });
@@ -136,6 +144,7 @@ impl Components {
     }
 
     // 添加本地直连地址，用于打洞，不能直接新建路径
+    #[tracing::instrument(skip(self), ret, err)]
     pub fn add_local_punch_address(
         &self,
         bind_uri: BindUri,
@@ -167,15 +176,22 @@ impl Components {
             return Ok(());
         };
 
-        tokio::spawn(async move {
-            while let Some(result) = tasks.next().await {
-                if let Ok(nat_type) = result {
-                    _ = conn
-                        .puncher
-                        .add_local_address(bind_uri.clone(), local_addr, nat_type, 0);
+        tokio::spawn(
+            async move {
+                while let Some(result) = tasks.next().await {
+                    if let Ok(nat_type) = result {
+                        _ = conn.puncher.add_local_address(
+                            bind_uri.clone(),
+                            local_addr,
+                            nat_type,
+                            0,
+                        );
+                    }
                 }
             }
-        });
+            .instrument_in_current()
+            .in_current_span(),
+        );
         Ok(())
     }
 

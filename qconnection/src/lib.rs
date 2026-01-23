@@ -168,7 +168,7 @@ pub type ArcPuncher =
 pub struct Components {
     // TODO: delete this
     interfaces: Arc<InterfaceManager>,
-    locations: Arc<Locations>,
+    locations: Option<Arc<Locations>>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
     defer_idle_timer: ArcDeferIdleTimer,
@@ -434,8 +434,6 @@ struct ConnectionState {
     tracing_span: tracing::Span,
 }
 
-pub struct Connection(Arc<ConnectionState>);
-
 impl ConnectionState {
     // called by event
     pub fn enter_closing(&self, error: QuicError) -> Result<(), Error> {
@@ -520,6 +518,8 @@ impl ConnectionState {
         Ok(())
     }
 }
+
+pub struct Connection(Arc<ConnectionState>);
 
 impl Connection {
     pub fn role(&self) -> Result<Role, Error> {
@@ -672,7 +672,7 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.subscribe_local_address())
     }
 
-    pub fn paths(&self) -> Result<ArcPathContexts, Error> {
+    pub fn path_context(&self) -> Result<ArcPathContexts, Error> {
         self.0
             .try_map_components(|core_conn| core_conn.paths.clone())
     }
@@ -685,10 +685,11 @@ impl Connection {
     }
 }
 
+// TODO: move implementation to ConnectionState
 impl Drop for Connection {
     fn drop(&mut self) {
         let _span = self.0.tracing_span.enter();
-        if self.validate().is_ok() && self.close("", 0).is_ok() {
+        if self.validate().is_ok() && self.0.application_close("", 0).is_ok() {
             #[cfg(debug_assertions)]
             tracing::warn!(target: "quic", "Connection is still active when dropped, close it automatically.");
             #[cfg(not(debug_assertions))]

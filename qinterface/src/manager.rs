@@ -65,12 +65,12 @@ impl InterfaceManager {
     #[inline]
     pub fn global() -> &'static Arc<Self> {
         static GLOBAL: OnceLock<Arc<InterfaceManager>> = OnceLock::new();
-        GLOBAL.get_or_init(InterfaceManager::new)
+        GLOBAL.get_or_init(Arc::default)
     }
 
     #[inline]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn new_binding(
@@ -332,6 +332,17 @@ impl Interface {
         }
 
         Ok(components.with(f))
+    }
+
+    pub fn with_components<T>(&self, f: impl FnOnce(&Components) -> T) -> Result<T, RebindedError> {
+        let context = self.bind_iface.context.as_ref();
+        let (binding, components) = (context.binding(), context.components());
+
+        if self.bind_id != binding.id {
+            return Err(RebindedError);
+        }
+
+        Ok(f(components.deref()))
     }
 
     pub fn get_component<C: Component + Clone>(&self) -> Result<Option<C>, RebindedError> {
