@@ -10,7 +10,7 @@ use futures::{
 };
 use gm_quic::{
     prelude::{handy::*, *},
-    qinterface::{component::location::Locations, manager::InterfaceManager},
+    qinterface::manager::InterfaceManager,
     qtraversal::nat::client::{NatType, StunClientsComponent},
 };
 use rustls::RootCertStore;
@@ -161,7 +161,6 @@ async fn launch_stun_test_server(server: usize) -> Arc<QuicListeners> {
         .with_parameters(server_parameters())
         .without_client_cert_verifier()
         .with_stun(STUN_SERVERS)
-        .with_locations(Arc::new(Locations::new()))
         .with_router(Arc::default())
         .with_qlog(qlogger())
         .listen(1000)

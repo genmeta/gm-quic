@@ -94,7 +94,7 @@ async fn launch_client_auth_test_server<const SILENT_REFUSE: bool>(
             "localhost",
             SERVER_CERT,
             SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            [BindUri::from("inet://127.0.0.1:0").alloc_port()],
             None,
         )
         .await?;
@@ -363,7 +363,7 @@ async fn launch_echo_with_sign_verify_server(
             "localhost",
             SERVER_CERT,
             SERVER_KEY,
-            [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+            [BindUri::from("inet://127.0.0.1:0").alloc_port()],
             None,
         )
         .await?;

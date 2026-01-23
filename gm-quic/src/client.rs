@@ -388,8 +388,14 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
-    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
-        self.network.locations = Some(locations);
+    /// Specify the locations for interface sharing.
+    ///
+    /// If `None`, the client will not share interfaces with other clients/servers.
+    /// If `Some`, the client will use the given locations for interface sharing.
+    ///
+    /// By default, locations is `None` (disabled).
+    pub fn with_locations(mut self, locations: Option<Arc<Locations>>) -> Self {
+        self.network.locations = locations;
         self
     }
 

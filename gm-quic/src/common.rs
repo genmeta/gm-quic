@@ -43,7 +43,7 @@ impl Default for Network {
             iface_manager: InterfaceManager::global().clone(),
             quic_router: QuicRouter::global().clone(),
             stun_server: None,
-            locations: Some(Locations::global().clone()),
+            locations: None,
         }
     }
 }

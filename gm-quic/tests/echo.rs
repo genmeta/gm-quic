@@ -96,7 +96,7 @@ fn shutdown() -> Result<(), BoxError> {
                 "localhost",
                 SERVER_CERT,
                 SERVER_KEY,
-                [BindUri::from("inet://127.0.0.1:0?alloc_port=true").alloc_port()],
+                [BindUri::from("inet://127.0.0.1:0").alloc_port()],
                 None,
             )
             .await?;

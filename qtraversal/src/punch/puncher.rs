@@ -291,7 +291,6 @@ where
         Ok(ways)
     }
 
-    #[tracing::instrument(skip(self), ret, err)]
     pub fn add_peer_endpoint(
         &self,
         endpoint: SocketEndpointAddr,
@@ -904,7 +903,6 @@ where
         Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"))
     }
 
-    #[tracing::instrument(skip(self), ret, err)]
     fn resolve_punch_connection(
         &self,
         bind: &BindUri,
