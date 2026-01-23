@@ -24,18 +24,15 @@ use crate::{
     io::{IO, IoExt, ProductIO},
 };
 
-/// Global [`QuicIO`] manager that manages the lifecycle of all interfaces and automatically rebinds [`QuicIO`] when network changes occur.
+/// Global [`IO`] manager that manages the lifecycle of all interfaces.
 ///
 /// Calling the [`InterfaceManager::bind`] method with a [`BindUri`] returns a [`BindInterface`], primarily used for listening on addresses.
-/// As long as [`BindInterface`] instances exist, the corresponding [`QuicIO`] for that [`BindUri`] won't be automatically released.
+/// As long as [`BindInterface`] instances exist, the corresponding [`IO`] for that [`BindUri`] won't be automatically released.
 ///
-/// For actual data transmission, you need [`QuicInterface`], which can be obtained via [`InterfaceManager::get`] or [`BindInterface::borrow`].
-/// Like [`BindInterface`], it keeps the [`QuicIO`] alive, but with one key difference: once a rebind occurs,
-/// any previous [`QuicInterface`] for that [`BindUri`] becomes invalid, and attempting to send or receive packets
-/// will result in [`io::ErrorKind::NotConnected`] errors.
-///
-/// [`QuicIO`]: crate::QuicIO
-/// [`io::ErrorKind::NotConnected`]: std::io::ErrorKind::NotConnected
+/// For actual data transmission, you need [`Interface`], which can be obtained via [`InterfaceManager::borrow`] or [`BindInterface::borrow`].
+/// Like [`BindInterface`], it keeps the [`IO`] alive, but with one key difference: once a rebind occurs,
+/// any previous [`Interface`] for that [`BindUri`] becomes invalid, and attempting to send or receive packets
+/// will result in [`RebindedError] errors.
 #[derive(Default, Debug)]
 pub struct InterfaceManager {
     interfaces: DashMap<BindUri, InterfaceEntry>,

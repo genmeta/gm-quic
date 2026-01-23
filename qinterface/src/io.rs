@@ -27,7 +27,7 @@ use crate::bind_uri::BindUri;
 /// Wrapping a new [`IO`] is easy,
 /// you can refer to the implementations in the [`handy`] module.
 ///
-/// [`ProductIO`]: crate::factory::ProductIO
+/// [`ProductIO`]: crate::io::ProductIO
 pub trait IO: Send + Sync + Any {
     /// Get the bind address that this interface is bound to
     ///
@@ -77,14 +77,14 @@ pub trait IO: Send + Sync + Any {
         hdrs: &mut [PacketHeader],
     ) -> Poll<io::Result<usize>>;
 
-    /// Asynchronously destroy the QuicIO.
+    /// Asynchronously destroy the IO.
     ///
     /// When it returns [`Poll::Ready`] (whether with `Ok` or `Err`),
     /// it must indicate that the resource has been completely destroyed,
     /// and the same [`BindUri`] can be successfully bound again.
     ///
     /// Even if this method is not called,
-    /// the implementation should ensure that [`QuicIO`] does not
+    /// the implementation should ensure that [`IO`] does not
     /// leak any resources when it is dropped.
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>>;
 }

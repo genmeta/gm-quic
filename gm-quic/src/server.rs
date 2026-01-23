@@ -205,10 +205,10 @@ impl QuicListeners {
     /// If no matching server is found, the connection will be rejected.
     ///
     /// A server can be added without binding to any interface initially, but will not accept
-    /// connections until interfaces are added via [`add_interface`]. This allows flexible
+    /// connections until interfaces are added via [`bind`]. This allows flexible
     /// server configuration and hot-swapping of network bindings.
     ///
-    /// [`add_interface`]: Server::add_interface
+    /// [`bind`]: Server::bind
     pub async fn add_server(
         &self,
         server_name: impl Into<String>,
@@ -514,7 +514,7 @@ impl<T> QuicListenersBuilder<T> {
     ///
     /// If you call this multiple times, only the last `factory` will be used.
     ///
-    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// The default quic interface is provided by [`handy::DEFAULT_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
     pub fn with_iface_factory(mut self, iface_factory: Arc<dyn ProductIO + 'static>) -> Self {
@@ -707,7 +707,7 @@ impl<T> QuicListenersBuilder<T> {
     ///
     ///   Output format: JSON-SEQ ([RFC7464]), one JSON event per line.
     ///
-    /// - [`NoopLogger`]: Ignores all qlog events (default, recommended for production).
+    /// - [`handy::NoopLogger`] (default): Ignores all qlog events (default, recommended for production).
     ///
     /// [qvis]: https://qvis.quictools.info/
     /// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464

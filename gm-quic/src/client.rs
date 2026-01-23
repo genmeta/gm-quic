@@ -364,7 +364,7 @@ impl<T> QuicClientBuilder<T> {
     /// The given factory will be used by [`Self::bind`],
     /// and/or [`QuicClient::connect`] if no interface bound when client built.
     ///
-    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// The default quic interface is provided by [`handy::DEFAULT_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory.
     pub fn with_iface_factory(mut self, iface_factory: Arc<dyn ProductIO>) -> Self {
@@ -397,7 +397,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// If the bind failed, the error will be returned immediately.
     ///
-    /// The default quic interface is provided by [`handy::DEFAULT_QUIC_IO_FACTORY`].
+    /// The default quic interface is provided by [`handy::DEFAULT_IO_FACTORY`].
     /// For Unix and Windows targets, this is a high performance UDP library supporting GSO and GRO
     /// provided by `qudp` crate. For other platforms, please specify you own factory with
     /// [`QuicClientBuilder::with_iface_factory`].
@@ -521,7 +521,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     ///   Output format: JSON-SEQ ([RFC7464]), one JSON event per line.
     ///
-    /// - [`NoopLogger`]: Ignores all qlog events (default, recommended for production).
+    /// - [`handy::NoopLogger`] (default): Ignores all qlog events (default, recommended for production).
     ///
     /// [qvis]: https://qvis.quictools.info/
     /// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464
