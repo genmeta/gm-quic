@@ -13,7 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      # Limit test parallelism to 1 thread to avoid resource contention
+      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1
           
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

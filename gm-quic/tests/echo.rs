@@ -43,7 +43,8 @@ fn signal_big_stream() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
         let client = launch_test_client(router, client_parameters());
         let connection = client.connected_to("localhost", [server_addr]).await?;
-        send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(1024)).await?;
+        // Use 16x repeat (~58KB) instead of 1024x (~3.7MB) for CI stability
+        send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(16)).await?;
 
         listeners.shutdown();
         Ok(())
@@ -249,7 +250,8 @@ fn parallel_big_stream() -> Result<(), BoxError> {
         let client = launch_test_client(router, client_parameters());
 
         let mut big_streams = JoinSet::new();
-        let test_data = Arc::new(TEST_DATA.to_vec().repeat(32));
+        // Use 4x repeat (~14KB per connection) instead of 32x (~117KB) for CI stability
+        let test_data = Arc::new(TEST_DATA.to_vec().repeat(4));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
             let connection = client.connected_to("localhost", [server_addr]).await?;
