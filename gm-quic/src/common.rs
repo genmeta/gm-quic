@@ -3,7 +3,6 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
     prelude::{SocketEndpointAddr, handy},
-    qdns::{Resolve, StandResolver},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -23,6 +22,8 @@ use qconnection::{
     },
 };
 
+use crate::qtraversal::resolver::{Resolve, StandResolver};
+
 #[derive(Clone)]
 pub struct Network {
     pub resolver: Arc<dyn Resolve + Send + Sync>,
@@ -37,7 +38,7 @@ pub struct Network {
 impl Default for Network {
     fn default() -> Self {
         Self {
-            resolver: Arc::new(StandResolver::new()),
+            resolver: Arc::new(StandResolver),
             devices: Devices::global(),
             iface_factory: Arc::new(handy::DEFAULT_IO_FACTORY),
             iface_manager: InterfaceManager::global().clone(),
@@ -50,15 +51,17 @@ impl Default for Network {
 
 impl Network {
     async fn lookup_agents(&self, stun_server: &str) -> Option<Vec<SocketAddr>> {
-        self.resolver.lookup(stun_server).await.ok().map(|agents| {
-            agents
-                .into_iter()
-                .filter_map(|agent| match agent {
-                    SocketEndpointAddr::Direct { addr } => Some(addr),
-                    SocketEndpointAddr::Agent { .. } => None,
-                })
-                .collect::<Vec<_>>()
-        })
+        let stream = self.resolver.lookup(stun_server);
+        let agents: Vec<SocketAddr> = stream
+            .filter_map(|res| async move {
+                match res {
+                    Ok((_, SocketEndpointAddr::Direct { addr })) => Some(addr),
+                    _ => None,
+                }
+            })
+            .collect()
+            .await;
+        (!agents.is_empty()).then_some(agents)
     }
 
     fn init_iface_components(

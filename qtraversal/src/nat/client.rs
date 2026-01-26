@@ -14,7 +14,6 @@ use std::{
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
-use qdns::Resolve;
 use qinterface::{
     Interface, RebindedError, WeakInterface,
     component::{
@@ -32,6 +31,7 @@ use super::{router::StunRouter, tx::Transaction};
 use crate::{
     future::Future,
     nat::{iface::StunIO, msg::Request, router::StunRouterComponent},
+    resolver::Resolve,
 };
 
 #[derive(Error, Debug, Clone)]
@@ -470,19 +470,22 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
 
                 let lookup_new_agents = async || {
                     // TODO: rename to stun.genmeta.net
-                    let agents = resolver.lookup(server.as_ref()).await.ok()?;
+                    let stream = resolver.lookup(server.as_ref());
+
+                    let resolved_agents = stream
+                        .filter_map(|res| async move {
+                            match res {
+                                Ok((_, SocketEndpointAddr::Direct { addr })) => Some(addr),
+                                _ => None,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .await;
 
                     let clients = lock_clients();
-                    let new_agents = agents
+                    let new_agents = resolved_agents
                         .into_iter()
-                        .filter_map(move |agent_addr| match agent_addr {
-                            SocketEndpointAddr::Direct { addr } if clients.contains_key(&addr) => {
-                                None
-                            }
-                            SocketEndpointAddr::Agent { .. } => None,
-                            SocketEndpointAddr::Direct { addr } => Some(addr),
-                        })
-                        .peekable()
+                        .filter(|addr| !clients.contains_key(addr))
                         .collect::<Vec<_>>();
 
                     (!new_agents.is_empty()).then_some(new_agents)
