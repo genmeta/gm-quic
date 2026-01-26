@@ -52,7 +52,7 @@ use std::{
     sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
-pub use ::{qbase, qdns, qevent, qinterface, qrecovery, qtraversal, qunreliable};
+pub use ::{qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
 use derive_more::From;
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};

@@ -6,6 +6,7 @@ pub mod prelude {
 
     pub use crate::{
         client::{BindInterfaceError, ConnectServerError, QuicClient},
+        qtraversal::resolver::{Resolve, StandResolver},
         server::{ListenError, ListenersShutdown, QuicListeners, Server, ServerError},
     };
 

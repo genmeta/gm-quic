@@ -25,7 +25,6 @@ enum_dispatch = { workspace = true }
 futures = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
-qdns = { workspace = true }
 qevent = { workspace = true }
 qrecovery = { workspace = true }
 ring = { workspace = true }

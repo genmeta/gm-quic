@@ -10,7 +10,6 @@ use qbase::{
 };
 use qconnection::{
     self,
-    qdns::Resolve,
     qinterface::{self, bind_uri::BindUri, component::location::Locations, device::Devices},
     tls::AcceptAllClientAuther,
 };

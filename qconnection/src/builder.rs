@@ -293,12 +293,15 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
         let mut client_params = self.foundation.client_params;
         _ = client_params.set(ParameterId::InitialSourceConnectionId, initial_scid);
 
-        let tls_session = ClientTlsSession::init(
-            self.foundation.server_name.clone(),
-            Arc::new(self.tls_config),
-            &client_params,
-        )
-        .expect("Failed to initialize TLS handshake");
+        let host = self
+            .foundation
+            .server_name
+            .split_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(&self.foundation.server_name)
+            .to_string();
+        let tls_session = ClientTlsSession::init(host, Arc::new(self.tls_config), &client_params)
+            .expect("Failed to initialize TLS handshake");
 
         let zero_rtt_keys = ArcZeroRttKeys::new_pending(Role::Client);
 

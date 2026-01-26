@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use qbase::{
     net::{Family, addr::AddrKind},
     param::ClientParameters,
@@ -9,7 +9,6 @@ use qbase::{
 };
 use qconnection::{
     self,
-    qdns::Resolve,
     qinterface::{component::location::Locations, io::IO},
 };
 use qevent::telemetry::QLog;
@@ -23,7 +22,7 @@ use rustls::{
 };
 use thiserror::Error;
 
-use crate::{prelude::*, *};
+use crate::{prelude::*, qtraversal::resolver::Resolve, *};
 
 type TlsClientConfig = rustls::ClientConfig;
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -285,7 +284,13 @@ impl QuicClient {
     /// Asynchronous operations on the connection will wait for the handshake.
     pub async fn connect<'a>(&'a self, server: &'a str) -> Result<Connection, ConnectServerError> {
         // TODO: http dns mdns
-        let server_eps = self.network.resolver.lookup(server).await?;
+        let server_eps = self
+            .network
+            .resolver
+            .lookup(server)
+            .map_ok(|(_, addr)| EndpointAddr::Socket(addr))
+            .try_collect::<Vec<_>>()
+            .await?;
         self.connected_to(server, server_eps).await
     }
 }
