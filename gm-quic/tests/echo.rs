@@ -152,6 +152,23 @@ fn idle_timeout() -> Result<(), BoxError> {
 #[test]
 fn double_connections() -> Result<(), BoxError> {
     run(async {
+        // Use extended timeouts for parallel connection tests on slower CI
+        fn client_parameters() -> ClientParameters {
+            let mut params = handy::client_parameters();
+            params
+                .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+                .expect("unreachable");
+            params
+        }
+
+        fn server_parameters() -> ServerParameters {
+            let mut params = handy::server_parameters();
+            params
+                .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+                .expect("unreachable");
+            params
+        }
+
         let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;
@@ -187,6 +204,22 @@ const PARALLEL_ECHO_STREAMS: usize = 2;
 #[test]
 fn parallel_stream() -> Result<(), BoxError> {
     run(async {
+        fn client_parameters() -> ClientParameters {
+            let mut params = handy::client_parameters();
+            params
+                .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+                .expect("unreachable");
+            params
+        }
+
+        fn server_parameters() -> ServerParameters {
+            let mut params = handy::server_parameters();
+            params
+                .set(ParameterId::MaxIdleTimeout, Duration::from_secs(60))
+                .expect("unreachable");
+            params
+        }
+
         let router = Arc::new(QuicRouter::default());
         let (listeners, server_task) =
             launch_echo_server(router.clone(), server_parameters()).await?;

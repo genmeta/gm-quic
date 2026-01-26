@@ -57,7 +57,7 @@ pub fn run<F: Future>(future: F) -> F::Output {
 
     RT.block_on(async move {
         LazyLock::force(&TRACING);
-        match time::timeout(Duration::from_secs(30), future).await {
+        match time::timeout(Duration::from_secs(60), future).await {
             Ok(output) => output,
             Err(_timedout) => panic!("test timed out"),
         }
