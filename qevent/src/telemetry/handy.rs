@@ -169,7 +169,8 @@ impl QLog for TracingLogger {
     fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span {
         use crate::legacy;
 
-        let span = tracing::info_span!("qlog", role = %vantage_point, odcid = %group_id);
+        let span =
+            tracing::info_span!(parent: None,"qlog", role = %vantage_point, odcid = %group_id);
 
         let qlog_file_seq = crate::build!(legacy::QlogFileSeq {
             title: format!("{group_id}_{vantage_point}.sqlog"),

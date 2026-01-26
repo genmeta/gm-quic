@@ -2,7 +2,7 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
-use std::{fmt::Debug, sync::Arc};
+use std::{borrow::Cow, fmt::Debug, sync::Arc};
 
 use bytes::{Buf, Bytes};
 use qbase::{
@@ -84,32 +84,41 @@ where
 {
     let header = product_header.new_header().ok()?;
     let mut packet = S::new_packet(space, header, buffer).ok()?;
-    if !ccf.belongs_to(packet.as_ref().packet_type()) {
-        let ccf = ConnectionCloseFrame::from(match ccf {
+
+    let ccf = match ccf.belongs_to(packet.as_ref().packet_type()) {
+        true => Cow::Borrowed(ccf),
+        false => Cow::Owned(ConnectionCloseFrame::from(match ccf {
             ConnectionCloseFrame::App(app_close_frame) => app_close_frame.conceal(),
             ConnectionCloseFrame::Quic(..) => unreachable!(),
-        });
-        packet
-            .assemble_packet(&mut Packages((&ccf, PadTo20)))
-            .ok()?;
-    } else {
-        packet.assemble_packet(&mut Packages((ccf, PadTo20))).ok()?;
-    }
+        })),
+    };
+
+    packet
+        .assemble_packet(&mut Packages((ccf.as_ref(), PadTo20)))
+        .ok()?;
     Some(packet.encrypt_and_protect_packet().0)
 }
 
 impl Spaces {
-    pub async fn send_ccf_packets(&self, terminator: &Terminator) {
-        let send_initial = terminator.try_send(|buf, ccf| {
-            assemble_closing_packet(self.initial().as_ref(), terminator, buf, ccf)
-        });
-        let send_handshake = terminator.try_send(|buf, ccf| {
-            assemble_closing_packet(self.handshake().as_ref(), terminator, buf, ccf)
-        });
-        let send_one_rtt = terminator.try_send(|buf, ccf| {
-            assemble_closing_packet::<OneRttHeader, _>(self.data().as_ref(), terminator, buf, ccf)
-        });
-        tokio::join!(send_initial, send_handshake, send_one_rtt);
+    pub async fn send_ccf_packets(&self, t: &Terminator) {
+        t.try_send(|mut buf, ccf| {
+            let original_size = buf.len();
+            let initial_size = assemble_closing_packet(self.initial().as_ref(), t, buf, ccf);
+            buf = &mut buf[initial_size.unwrap_or(0)..];
+            let handshake_size = assemble_closing_packet(self.handshake().as_ref(), t, buf, ccf);
+            buf = &mut buf[handshake_size.unwrap_or(0)..];
+            let one_rtt_size =
+                assemble_closing_packet::<OneRttHeader, _>(self.data().as_ref(), t, buf, ccf);
+            buf = &mut buf[one_rtt_size.unwrap_or(0)..];
+
+            if initial_size.is_some() {
+                buf.fill(0);
+                Some(original_size)
+            } else {
+                (original_size != buf.len()).then_some(original_size - buf.len())
+            }
+        })
+        .await;
     }
 }
 
