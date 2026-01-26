@@ -1,4 +1,3 @@
-#[cfg(all(feature = "qudp", any(unix, windows)))]
 use crate::BindUri;
 
 #[cfg(all(feature = "qudp", any(unix, windows)))]
@@ -260,8 +259,8 @@ pub static DEFAULT_IO_FACTORY: fn(BindUri) -> qudp::UdpSocketController =
     |bind_uri| qudp::UdpSocketController::bind(bind_uri);
 
 #[cfg(not(all(feature = "qudp", any(unix, windows))))]
-pub static DEFAULT_IO_FACTORY: fn(BindUri) -> handy::unsupported::Unsupported =
-    |bind_uri| unsupported::bind(bind_uri);
+pub static DEFAULT_IO_FACTORY: fn(BindUri) -> unsupported::Unsupported =
+    |bind_uri| unsupported::Unsupported::bind(bind_uri);
 
 const _: () = {
     use super::ProductIO;
