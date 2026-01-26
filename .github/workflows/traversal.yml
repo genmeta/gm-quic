@@ -1,0 +1,64 @@
+name: Traversal Tests
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nat-detection:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
+
+    - name: Run NAT Detection Tests
+      run: |
+        docker run --rm --privileged \
+          -v ${{ github.workspace }}:/gm-quic \
+          gm-quic-traversal-test:latest \
+          /bin/bash -c "
+            set -e
+            cd /gm-quic
+            
+            # Setup network topology and start STUN servers
+            bash qtraversal/tools/run_stun.sh
+            
+            echo '----------------------------------------'
+            echo 'Running qtraversal detection tests'
+            echo '----------------------------------------'
+            ip netns exec nsa cargo test --package qtraversal test_detect -- --nocapture --include-ignored
+          "
+
+  hole-punching:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
+
+    - name: Run Hole Punching Tests
+      run: |
+        docker run --rm --privileged \
+          -v ${{ github.workspace }}:/gm-quic \
+          gm-quic-traversal-test:latest \
+          /bin/bash -c "
+            set -e
+            cd /gm-quic
+            
+            # Setup network topology and start STUN servers
+            bash qtraversal/tools/run_stun.sh
+            
+            echo '----------------------------------------'
+            echo 'Running gm-quic traversal integration tests'
+            echo '----------------------------------------'
+            ip netns exec nsa cargo test --test traversal -- --include-ignored --nocapture
+          "
