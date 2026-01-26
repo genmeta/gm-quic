@@ -26,3 +26,6 @@ log
 .DS_Store
 *.sqlog
 .cargo/config.toml
+
+# Local agent instructions
+AGENTS.md

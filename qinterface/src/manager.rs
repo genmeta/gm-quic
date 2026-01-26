@@ -501,3 +501,158 @@ impl Drop for InterfaceContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    use futures::task::noop_waker_ref;
+
+    use super::*;
+    use crate::{
+        component::Component,
+        io::{IO, ProductIO},
+    };
+
+    #[derive(Debug)]
+    struct TestComponent {
+        shutdown_calls: Arc<AtomicUsize>,
+    }
+
+    impl Component for TestComponent {
+        fn poll_shutdown(&self, _cx: &mut Context<'_>) -> Poll<()> {
+            self.shutdown_calls.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(())
+        }
+
+        fn reinit(&self, _iface: &crate::Interface) {}
+    }
+
+    #[derive(Debug)]
+    struct TestIo {
+        bind_uri: BindUri,
+        close_calls: Arc<AtomicUsize>,
+    }
+
+    impl IO for TestIo {
+        fn bind_uri(&self) -> BindUri {
+            self.bind_uri.clone()
+        }
+
+        fn real_addr(&self) -> io::Result<RealAddr> {
+            Err(io::Error::new(io::ErrorKind::Unsupported, "not needed"))
+        }
+
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Ok(1200)
+        }
+
+        fn max_segments(&self) -> io::Result<usize> {
+            Ok(1)
+        }
+
+        fn poll_send(
+            &self,
+            _cx: &mut Context,
+            _pkts: &[io::IoSlice],
+            _hdr: route::PacketHeader,
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_recv(
+            &self,
+            _cx: &mut Context,
+            _pkts: &mut [BytesMut],
+            _hdrs: &mut [route::PacketHeader],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_close(&mut self, _cx: &mut Context) -> Poll<io::Result<()>> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestFactory {
+        close_calls: Arc<AtomicUsize>,
+    }
+
+    impl ProductIO for TestFactory {
+        fn bind(&self, bind_uri: BindUri) -> Box<dyn IO> {
+            Box::new(TestIo {
+                bind_uri,
+                close_calls: self.close_calls.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn binding_take_io_is_idempotent_and_switches_to_dropping_io() {
+        let close_calls = Arc::new(AtomicUsize::new(0));
+        let bind_uri: BindUri = "inet://127.0.0.1:0".into();
+
+        let mut binding = Binding {
+            io: Box::new(TestIo {
+                bind_uri: bind_uri.clone(),
+                close_calls: close_calls.clone(),
+            }),
+            id: UniqueIdGenerator::new().generate(),
+        };
+
+        let first = binding.take_io();
+        assert!(first.is_some());
+        assert!(binding.is_dropping());
+
+        let second = binding.take_io();
+        assert!(second.is_none());
+
+        // Ensure the original IO wasn't closed by take_io itself.
+        assert_eq!(close_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn poll_close_shuts_down_components_before_io_close() {
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let close_calls = Arc::new(AtomicUsize::new(0));
+
+        let bind_uri: BindUri = "inet://127.0.0.1:0".into();
+        let mut components = Components::new();
+        components.init_with(|| TestComponent {
+            shutdown_calls: shutdown_calls.clone(),
+        });
+
+        let mut cx = Context::from_waker(noop_waker_ref());
+        let ctx = InterfaceContext {
+            factory: Arc::new(TestFactory {
+                close_calls: close_calls.clone(),
+            }),
+            binding: RwLock::new(Binding {
+                io: Box::new(TestIo {
+                    bind_uri,
+                    close_calls: close_calls.clone(),
+                }),
+                id: UniqueIdGenerator::new().generate(),
+            }),
+            dropped: Arc::new(SetOnce::new()),
+            ifaces: Arc::new(InterfaceManager::new()),
+            components: RwLock::new(components),
+        };
+
+        let r = ctx.poll_close(&mut cx);
+        assert!(matches!(r, Poll::Ready(Ok(()))));
+        assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(close_calls.load(Ordering::SeqCst), 1);
+
+        // Prevent Drop from spawning without a runtime.
+        let _ = ctx.binding_mut().take_io();
+    }
+}

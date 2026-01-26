@@ -31,7 +31,7 @@ tracing = { workspace = true }
 qudp = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 
 [features]
 qudp = ["dep:qudp"]
