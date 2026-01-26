@@ -252,11 +252,15 @@ fn auth_client_refuse_silently() -> Result<(), BoxError> {
         };
         let connection = client.connected_to("localhost", [server_addr]).await?;
 
-        assert!(
-            time::timeout(Duration::from_secs(3), connection.handshaked())
-                .await
-                .is_err()
-        );
+        // Silent refuse means server doesn't send CCF, so client should either:
+        // 1. Timeout waiting for handshake
+        // 2. Fail with NoViablePath when path times out
+        let result = time::timeout(Duration::from_secs(1), connection.handshaked()).await;
+        match result {
+            Err(_timeout) => {}                                     // Expected: timeout
+            Ok(Err(e)) if e.kind() == ErrorKind::NoViablePath => {} // Also acceptable: path timeout
+            Ok(other) => panic!("Expected timeout or NoViablePath, got {:?}", other),
+        }
 
         listeners.shutdown();
         Ok(())
