@@ -144,6 +144,9 @@ impl<T: Copy + Into<BindUri>> From<&T> for BindUri {
 
 impl BindUri {
     pub const TEMPORARY_PROP: &str = "temporary";
+    pub const STUN_PROP: &str = "stun";
+    pub const STUN_SERVER_PROP: &str = "stun_server";
+    pub const RELAY_PROP: &str = "relay";
 
     pub fn scheme(&self) -> BindUriSchema {
         self.0
@@ -262,6 +265,33 @@ impl BindUri {
             Some(bool) if bool == "true" => true,
             None | Some(..) => false,
         }
+    }
+
+    pub fn enable_stun(&mut self) {
+        self.add_prop(Self::STUN_PROP, "true");
+    }
+
+    pub fn is_stun_enabled(&self) -> bool {
+        match self.prop(Self::STUN_PROP) {
+            Some(bool) if bool == "true" => true,
+            None | Some(..) => false,
+        }
+    }
+
+    pub fn with_stun_server(&mut self, stun_server: &str) {
+        self.add_prop(Self::STUN_SERVER_PROP, stun_server);
+    }
+
+    pub fn stun_server(&self) -> Option<Cow<'_, str>> {
+        self.prop(Self::STUN_SERVER_PROP)
+    }
+
+    pub fn with_relay(&mut self, relay: &str) {
+        self.add_prop(Self::RELAY_PROP, relay);
+    }
+
+    pub fn relay(&self) -> Option<Cow<'_, str>> {
+        self.prop(Self::RELAY_PROP)
     }
 
     pub fn resolve(&self) -> Result<SocketAddr, TryIntoSocketAddrError> {
@@ -525,5 +555,52 @@ mod tests {
             "iface://v4.wlan0:8080/?temporary=true"
         );
         assert!(bind_uri.is_temporary());
+    }
+
+    #[test]
+    fn stun_enabled() {
+        let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        assert!(!bind_uri.is_stun_enabled());
+
+        bind_uri.enable_stun();
+        assert!(bind_uri.is_stun_enabled());
+
+        let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?stun=true").unwrap();
+        assert!(bind_uri.is_stun_enabled());
+
+        let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?stun=false").unwrap();
+        assert!(!bind_uri.is_stun_enabled());
+    }
+
+    #[test]
+    fn stun_server() {
+        let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        assert!(bind_uri.stun_server().is_none());
+
+        bind_uri.with_stun_server("stun.example.com:3478");
+        assert_eq!(
+            bind_uri.stun_server().as_deref(),
+            Some("stun.example.com:3478")
+        );
+
+        let bind_uri =
+            BindUri::from_str("iface://v4.wlan0:8080?stun_server=stun.l.google.com:19302").unwrap();
+        assert_eq!(
+            bind_uri.stun_server().as_deref(),
+            Some("stun.l.google.com:19302")
+        );
+    }
+
+    #[test]
+    fn relay() {
+        let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        assert!(bind_uri.relay().is_none());
+
+        bind_uri.with_relay("turn.example.com:3478");
+        assert_eq!(bind_uri.relay().as_deref(), Some("turn.example.com:3478"));
+
+        let bind_uri =
+            BindUri::from_str("iface://v4.wlan0:8080?relay=turn.l.google.com:19302").unwrap();
+        assert_eq!(bind_uri.relay().as_deref(), Some("turn.l.google.com:19302"));
     }
 }
