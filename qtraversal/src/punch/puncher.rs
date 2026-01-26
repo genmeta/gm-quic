@@ -247,8 +247,9 @@ where
             let bind = bind_uri.clone();
             tokio::spawn(
                 async move {
-                    let (_iface, stun_client) =
+                    let (iface, stun_client) =
                         dynamic_iface(&bind_uri, &ifaces, &iface_factory, &stun_servers).await?;
+                    puncher.0.punch_ifaces.insert(iface.bind_uri(), iface.clone());
                     let outer = stun_client.outer_addr().await?;
 
                     let mut address_book = puncher.0.address_book.lock().unwrap();
