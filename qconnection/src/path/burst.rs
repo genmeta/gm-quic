@@ -315,10 +315,7 @@ impl Burst {
             one_rtt: one_rtt_data_sources,
         }: &mut DataSources,
         mut buffer: &mut [u8],
-    ) -> Result<usize, BurstError>
-where
-        // I: PackageIntoSpacePacketWriter<InitialHeader, InitialSpace>,
-    {
+    ) -> Result<usize, BurstError> {
         let Self {
             path,
             spaces,

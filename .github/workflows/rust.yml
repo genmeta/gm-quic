@@ -22,6 +22,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build
         run: cargo build --verbose
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
       - name: Run tests
         # Limit test parallelism to 1 thread to avoid resource contention
         # GitHub runners have limited cores (ubuntu/windows=2, macos=3)
