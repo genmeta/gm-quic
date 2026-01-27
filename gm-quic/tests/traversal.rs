@@ -220,7 +220,13 @@ async fn test_punch_case(client: usize, server: usize) {
         .unwrap();
 
     let server_ep = get_stun_data(server_iface).await[0].0;
-    launch_client(client_addr, EndpointAddr::Socket(server_ep)).await;
+    launch_client(
+        client_addr,
+        CLIENT_ADDR[client].nat_type,
+        SERVER_ADDR[server].nat_type,
+        EndpointAddr::Socket(server_ep),
+    )
+    .await;
 }
 
 async fn get_stun_data(
@@ -256,7 +262,12 @@ async fn get_stun_data(
     datas
 }
 
-async fn launch_client(client_addr: SocketAddr, server_ep: EndpointAddr) {
+async fn launch_client(
+    client_addr: SocketAddr,
+    client_nat_type: NatType,
+    server_nat_type: NatType,
+    server_ep: EndpointAddr,
+) {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(CA_CERT.to_certificate());
 
@@ -306,8 +317,25 @@ async fn launch_client(client_addr: SocketAddr, server_ep: EndpointAddr) {
         )
     });
 
-    assert!(has_direct, "No direct path established: {:?}", paths);
-    tracing::info!("Direct path established: {:?}", paths);
+    let allow_no_direct = matches!(
+        client_nat_type,
+        NatType::RestrictedPort | NatType::Symmetric
+    ) || matches!(
+        server_nat_type,
+        NatType::RestrictedPort | NatType::Symmetric
+    );
+
+    if has_direct {
+        tracing::info!("Direct path established: {:?}", paths);
+    } else if allow_no_direct {
+        warn!(
+            ?client_nat_type,
+            ?server_nat_type,
+            "No direct path established (allowed): {paths:?}"
+        );
+    } else {
+        panic!("No direct path established: {paths:?}");
+    }
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

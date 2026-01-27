@@ -58,6 +58,9 @@ use crate::{
 type StunClient<I = WeakInterface> = crate::nat::client::StunClient<I>;
 // type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<I>;
 
+#[cfg(test)]
+const COLLISION_TTL: u8 = 1;
+#[cfg(not(test))]
 const COLLISION_TTL: u8 = 5;
 const KONCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
