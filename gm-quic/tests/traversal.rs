@@ -108,6 +108,12 @@ macro_rules! test_punch_pair {
         #[ignore]
         fn $test_name() {
             run(async move {
+                let span = tracing::info_span!(
+                    stringify!($test_name),
+                    client = stringify!($client),
+                    server = stringify!($server)
+                );
+                let _enter = span.enter();
                 test_punch_case($client, $server).await
             });
         }
