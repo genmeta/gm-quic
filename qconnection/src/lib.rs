@@ -168,7 +168,7 @@ pub type ArcPuncher =
 pub struct Components {
     // TODO: delete this
     interfaces: Arc<InterfaceManager>,
-    locations: Option<Arc<Locations>>,
+    locations: Arc<Locations>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
     defer_idle_timer: ArcDeferIdleTimer,

@@ -42,10 +42,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for Components {
 
 impl Components {
     pub fn subscribe_local_address(&self) {
-        let Some(location) = &self.locations else {
-            return;
-        };
-        let mut observer = location.subscribe();
+        let mut observer = self.locations.subscribe();
         let conn = self.clone();
 
         let future = async move {

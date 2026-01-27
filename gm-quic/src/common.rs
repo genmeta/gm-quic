@@ -31,7 +31,7 @@ pub struct Network {
     pub iface_manager: Arc<InterfaceManager>,
     pub quic_router: Arc<QuicRouter>,
     pub stun_server: Option<Arc<str>>,
-    pub locations: Option<Arc<Locations>>,
+    pub locations: Arc<Locations>,
 }
 
 impl Default for Network {
@@ -43,7 +43,7 @@ impl Default for Network {
             iface_manager: InterfaceManager::global().clone(),
             quic_router: QuicRouter::global().clone(),
             stun_server: None,
-            locations: None,
+            locations: Arc::new(Locations::new()),
         }
     }
 }
@@ -74,11 +74,9 @@ impl Network {
                 .init_with(|| QuicRouterComponent::new(self.quic_router.clone()))
                 .router();
 
-            let locations = self.locations.clone().map(|locations| {
-                components
-                    .init_with(|| LocationsComponent::new(iface.downgrade(), locations.clone()))
-                    .clone()
-            });
+            let locations = components
+                .init_with(|| LocationsComponent::new(iface.downgrade(), self.locations.clone()))
+                .clone();
 
             match stun_agent {
                 // stun enabled:
@@ -96,7 +94,7 @@ impl Network {
                                 self.resolver.clone(),
                                 stun_server,
                                 stun_agents.to_vec(),
-                                locations,
+                                Some(locations.clone()),
                             )
                         })
                         .clone();

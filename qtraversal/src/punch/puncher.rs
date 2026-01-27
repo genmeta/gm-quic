@@ -28,7 +28,7 @@ use qevent::telemetry::Instrument;
 use qinterface::{
     Interface, WeakInterface,
     bind_uri::BindUri,
-    component::route::QuicRouterComponent,
+    component::route::{QuicRouter, QuicRouterComponent},
     io::{IO, IoExt, ProductIO},
     manager::InterfaceManager,
 };
@@ -87,6 +87,7 @@ where
         packet_space: Arc<S>,
         ifaces: Arc<InterfaceManager>,
         iface_factory: Arc<dyn ProductIO>,
+        quic_router: Arc<QuicRouter>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self(Arc::new(Puncher::new(
@@ -95,6 +96,7 @@ where
             packet_space,
             ifaces,
             iface_factory,
+            quic_router,
             stun_servers,
         )))
     }
@@ -107,6 +109,7 @@ pub struct Puncher<TX, PH, S> {
     packet_space: Arc<S>,
     ifaces: Arc<InterfaceManager>,
     iface_factory: Arc<dyn ProductIO>,
+    quic_router: Arc<QuicRouter>,
     stun_servers: Arc<[SocketAddr]>,
     address_book: Mutex<AddressBook>,
     punch_ifaces: DashMap<BindUri, Interface>,
@@ -125,6 +128,7 @@ where
         packet_space: Arc<S>,
         ifaces: Arc<InterfaceManager>,
         iface_factory: Arc<dyn ProductIO>,
+        quic_router: Arc<QuicRouter>,
         stun_servers: Arc<[SocketAddr]>,
     ) -> Self {
         Self {
@@ -134,6 +138,7 @@ where
             packet_space,
             ifaces,
             iface_factory,
+            quic_router,
             stun_servers,
             address_book: Mutex::new(AddressBook::default()),
             punch_ifaces: DashMap::new(),
@@ -243,12 +248,14 @@ where
             let ifaces = self.0.ifaces.clone();
             let iface_factory = self.0.iface_factory.clone();
             let stun_servers = self.0.stun_servers.clone();
+            let quic_router = self.0.quic_router.clone();
 
             let bind = bind_uri.clone();
             tokio::spawn(
                 async move {
                     let (iface, stun_client) =
-                        dynamic_iface(&bind_uri, &ifaces, &iface_factory, &stun_servers).await?;
+                        dynamic_iface(&bind_uri, &ifaces, &iface_factory, &quic_router, &stun_servers)
+                            .await?;
                     puncher.0.punch_ifaces.insert(iface.bind_uri(), iface.clone());
                     let outer = stun_client.outer_addr().await?;
 
@@ -449,9 +456,17 @@ where
         let dynamic_iface = {
             let ifaces = self.0.ifaces.clone();
             let iface_factory = self.0.iface_factory.clone();
+            let quic_router = self.0.quic_router.clone();
             let stun_servers = self.0.stun_servers.clone();
             async move |bind_uri: &BindUri| {
-                dynamic_iface(bind_uri, &ifaces, &iface_factory, &stun_servers).await
+                dynamic_iface(
+                    bind_uri,
+                    &ifaces,
+                    &iface_factory,
+                    &quic_router,
+                    &stun_servers,
+                )
+                .await
             }
         };
 
@@ -574,6 +589,7 @@ where
                     let mut predictor = PortPredictor::new(
                         ifaces.clone(),
                         self.0.iface_factory.clone(),
+                        self.0.quic_router.clone(),
                         bind_uri.clone(),
                         link.dst(),
                         BIRTHDAY_ATTACK_PORTS,
@@ -752,6 +768,7 @@ where
                 let mut predictor = PortPredictor::new(
                     ifaces.clone(),
                     self.0.iface_factory.clone(),
+                    self.0.quic_router.clone(),
                     bind_uri.clone(),
                     link.dst(),
                     BIRTHDAY_ATTACK_PORTS,
@@ -1055,6 +1072,7 @@ async fn dynamic_iface(
     bind_uri: &BindUri,
     ifaces: &Arc<InterfaceManager>,
     iface_factory: &Arc<dyn ProductIO>,
+    quic_router: &Arc<QuicRouter>,
     stun_servers: &[SocketAddr],
 ) -> io::Result<(Interface, StunClient)> {
     const MIN_PORT: u16 = 1024;
@@ -1075,6 +1093,10 @@ async fn dynamic_iface(
         .bind(bind_uri, iface_factory.clone())
         .await
         .with_components_mut(|components, iface| {
+            // Ensure this temporary iface can receive+deliver QUIC packets to the connection.
+            // Must use the connection-owned router.
+            components.init_with(|| QuicRouterComponent::new(quic_router.clone()));
+
             let local_addr = SocketAddr::try_from(iface.real_addr()?).map_err(io::Error::other)?;
             let stun_server = *stun_servers
                 .iter()
@@ -1093,10 +1115,9 @@ async fn dynamic_iface(
                     StunClientComponent::new(client)
                 })
                 .client();
-            let quic_router = components.with(QuicRouterComponent::router);
             components.init_with(|| {
                 ReceiveAndDeliverPacket::builder(iface.downgrade())
-                    .maybe_quic_router(quic_router)
+                    .quic_router(quic_router.clone())
                     .stun_router(stun_router)
                     .init()
             });

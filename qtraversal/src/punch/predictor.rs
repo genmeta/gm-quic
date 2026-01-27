@@ -6,6 +6,7 @@ use std::{
 use qinterface::{
     Interface,
     bind_uri::{BindUri, BindUriSchema},
+    component::route::{QuicRouter, QuicRouterComponent},
     io::{IO, ProductIO},
     manager::InterfaceManager,
 };
@@ -14,6 +15,7 @@ use crate::{
     Link,
     frame::{TraversalFrame, konck::KonckFrame},
     punch::{scheduler::SCHEDULER, tx::Transaction},
+    route::ReceiveAndDeliverPacket,
 };
 
 const PUNCH_INITIAL_RTT: Duration = Duration::from_millis(333);
@@ -35,6 +37,7 @@ pub type PacketSendFn = Arc<
 pub struct PortPredictor {
     ifaces: Arc<InterfaceManager>,
     factory: Arc<dyn ProductIO>,
+    quic_router: Arc<QuicRouter>,
     ports: VecDeque<(u16, BindUri, Interface, tokio::time::Instant)>,
     bind_uri: BindUri,
     dst: SocketAddr,
@@ -48,6 +51,7 @@ impl PortPredictor {
     pub fn new(
         ifaces: Arc<InterfaceManager>,
         factory: Arc<dyn ProductIO>,
+        quic_router: Arc<QuicRouter>,
         bind_uri: BindUri,
         dst: SocketAddr,
         max_total: u32,
@@ -61,6 +65,7 @@ impl PortPredictor {
         Ok(Self {
             ifaces,
             factory,
+            quic_router,
             ports: VecDeque::new(),
             bind_uri,
             dst,
@@ -266,11 +271,23 @@ impl PortPredictor {
                 continue;
             }
             let bind_addr = self.port_to_bind_uri(port);
-            let iface = self
+            let bind_iface = self
                 .ifaces
                 .bind(bind_addr.clone(), self.factory.clone())
-                .await
-                .borrow();
+                .await;
+
+            bind_iface.with_components_mut(|components, iface| {
+                // Ensure this temporary iface can RECEIVE and deliver QUIC packets.
+                // It must use the connection-owned router, not a global router.
+                components.init_with(|| QuicRouterComponent::new(self.quic_router.clone()));
+                components.init_with(|| {
+                    ReceiveAndDeliverPacket::builder(iface.downgrade())
+                        .quic_router(self.quic_router.clone())
+                        .init()
+                });
+            });
+
+            let iface = bind_iface.borrow();
 
             match iface.real_addr() {
                 Ok(real_addr) => {

@@ -10,7 +10,7 @@ use futures::{
 };
 use gm_quic::{
     prelude::{handy::*, *},
-    qinterface::manager::InterfaceManager,
+    qinterface::{component::location::Locations, manager::InterfaceManager},
     qtraversal::nat::client::{NatType, StunClientsComponent},
 };
 use rustls::RootCertStore;
@@ -163,11 +163,13 @@ test_punch_pair! {
 
 async fn launch_stun_test_server(server: usize) -> Arc<QuicListeners> {
     let server_addr: SocketAddr = SERVER_ADDR[server].bind_addr.parse().unwrap();
+    let locations = Arc::new(Locations::new());
     let listeners = QuicListeners::builder()
         .with_parameters(server_parameters())
         .without_client_cert_verifier()
         .with_stun(STUN_SERVERS)
         .with_router(Arc::default())
+        .with_locations(locations)
         .with_qlog(qlogger())
         .listen(1000)
         .unwrap();
@@ -258,12 +260,15 @@ async fn launch_client(client_addr: SocketAddr, server_ep: EndpointAddr) {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(CA_CERT.to_certificate());
 
+    // Emulate server-side: pre-initialize a locations table so all client connections share it.
+    let locations = Arc::new(Locations::new());
     let client = QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .enable_sslkeylog()
         .with_parameters(client_parameters())
         .with_stun(STUN_SERVERS)
+        .with_locations(locations)
         .bind([client_addr])
         .await
         .with_qlog(qlogger())
