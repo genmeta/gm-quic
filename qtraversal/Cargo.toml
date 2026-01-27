@@ -43,6 +43,10 @@ tracing = { workspace = true }
 workspace = true
 features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
 
+[features]
+# Enable shorter TTL only for tests (especially integration tests in other crates).
+test-ttl = []
+
 [[example]]
 name = "stun_client"
 

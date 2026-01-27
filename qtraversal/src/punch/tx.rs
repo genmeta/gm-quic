@@ -26,10 +26,6 @@ impl Transaction {
         }
     }
 
-    pub fn try_punch_done(&self) -> Option<(Link, PunchDoneFrame)> {
-        self.punch_done_frame.get().cloned()
-    }
-
     pub async fn recv_punch_done(&self) -> (Link, PunchDoneFrame) {
         *self.punch_done_frame.wait().await
     }

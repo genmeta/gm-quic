@@ -30,6 +30,7 @@ http = { workspace = true }
 indicatif = { workspace = true }
 postcard = { workspace = true }
 qevent = { workspace = true, features = ["telemetry"] }
+qtraversal = { workspace = true, features = ["test-ttl"] }
 rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 serde = { workspace = true }

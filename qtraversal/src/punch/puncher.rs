@@ -1,8 +1,7 @@
 use std::{
-    cmp::Ordering,
     collections::HashSet,
     convert::TryInto,
-    io::{self, ErrorKind},
+    io,
     net::SocketAddr,
     ops::Deref,
     str::FromStr,
@@ -58,10 +57,10 @@ use crate::{
 type StunClient<I = WeakInterface> = crate::nat::client::StunClient<I>;
 // type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<I>;
 
-#[cfg(test)]
-const COLLISION_TTL: u8 = 1;
-#[cfg(not(test))]
-const COLLISION_TTL: u8 = 5;
+#[cfg(any(test, feature = "test-ttl"))]
+pub const COLLISION_TTL: u8 = 1;
+#[cfg(not(any(test, feature = "test-ttl")))]
+pub const COLLISION_TTL: u8 = 5;
 const KONCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
 const MAX_RETRIES: usize = 5;
@@ -411,7 +410,7 @@ where
         match self.0.transaction.entry(punch_pair) {
             Entry::Occupied(mut entry) => {
                 let (task, tx) = entry.get_mut();
-                if compare_endpoints(&pathway.local(), &pathway.remote())? == Ordering::Less {
+                if pathway.local() < pathway.remote() {
                     task.abort();
                     // 创建被动打洞
                     let (task, tx) = crate_punch_task()?;
@@ -576,7 +575,6 @@ where
             // 3. Local Symmetric, Remote RestrictedPort -> Birthday Attack
             // Send PunchMeNow, expect PunchMeNow. Use random socket collision, expect PunchDone.
             (Symmetric, RestrictedPort) => {
-                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Strategy: Local Symmetric, Remote RestrictedPort, birthday attack");
                 // Send PunchMeNow first
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting PunchMeNow then rush");
                 broker.send_frame([punch_me_now.into()]);
@@ -842,7 +840,9 @@ where
         // Remote has opened hole. We use new interface to collide, expecting PunchDone.
         // 2. Local RestrictedPort, Remote Symmetric
         // We open holes on 300 random ports, send PunchMeNow. Expect Konck collision, then respond PunchDone.
-        // 3. General Punching
+        // 3. Local Symmetric, Remote RestrictedPort | Dynamic
+        // We use random socket collision to open hole, expecting PunchDone.
+        // 4. General Punching
         // Received PunchMeNow implies remote has opened hole. We send direct Konck, expecting PunchDone.
 
         match (local_nat, remote_nat) {
@@ -898,6 +898,43 @@ where
                         )
                         .await?;
                     return Ok(());
+                }
+            }
+            // 3. Local Symmetric, Remote RestrictedPort
+            // Use new consolidated PortPredictor birthday attack. Expect PunchDone.
+            (Symmetric, RestrictedPort | Dynamic) => {
+                let mut predictor = PortPredictor::new(
+                    ifaces.clone(),
+                    self.0.iface_factory.clone(),
+                    self.0.quic_router.clone(),
+                    bind.clone(),
+                    link.dst(),
+                    BIRTHDAY_ATTACK_PORTS,
+                )?;
+
+                // Create packet send function
+                let puncher_ref = self.0.clone();
+                let packet_send_fn: PacketSendFn = Arc::new(move |iface, link, ttl, frame| {
+                    let puncher = puncher_ref.clone();
+                    Box::pin(async move { puncher.send_packet(iface, link, ttl, frame).await })
+                });
+
+                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Starting consolidated birthday attack");
+                match predictor
+                    .predict(punch_pair, tx.clone(), packet_send_fn)
+                    .await
+                {
+                    Ok(Some((bind_uri, iface))) => {
+                        tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %bind_uri, "Birthday attack succeeded");
+                        self.0.punch_ifaces.insert(bind_uri, iface);
+                        return Ok(());
+                    }
+                    Ok(None) => {
+                        tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Birthday attack completed without success");
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "Birthday attack failed");
+                    }
                 }
             }
             // 3. General Punching
@@ -1126,40 +1163,4 @@ async fn dynamic_iface(
             });
             Ok((iface.to_owned(), stun_client))
         })
-}
-
-fn compare_endpoints(
-    local: &SocketEndpointAddr,
-    remote: &SocketEndpointAddr,
-) -> io::Result<Ordering> {
-    use std::mem::discriminant;
-
-    use SocketEndpointAddr::*;
-    match (local, remote) {
-        (Direct { addr: local_addr }, Direct { addr: remote_addr })
-            if discriminant(local_addr) == discriminant(remote_addr) =>
-        {
-            Ok(local_addr.cmp(remote_addr))
-        }
-        (
-            Agent {
-                agent: local_agent,
-                outer: local_outer,
-            },
-            Agent {
-                agent: remote_agent,
-                outer: remote_outer,
-            },
-        ) if discriminant(local_agent) == discriminant(remote_agent)
-            && discriminant(local_outer) == discriminant(remote_outer) =>
-        {
-            Ok(local_agent
-                .cmp(remote_agent)
-                .then_with(|| local_outer.cmp(remote_outer)))
-        }
-        _ => Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            "Unsupported endpoint address",
-        )),
-    }
 }

@@ -431,7 +431,7 @@ impl CongestionController {
     }
 
     #[inline]
-    fn need_ack(&mut self) -> bool {
+    fn need_ack(&self) -> bool {
         Epoch::iter().any(|&epoch| self.packet_spaces[epoch].rcvd_packets.need_ack().is_some())
     }
 
@@ -537,7 +537,7 @@ impl super::Transport for ArcCC {
     }
 
     fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
-        let mut guard = self.0.lock().unwrap();
+        let guard = self.0.lock().unwrap();
         guard.packet_spaces[epoch].rcvd_packets.need_ack()
     }
 

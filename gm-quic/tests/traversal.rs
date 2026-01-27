@@ -3,6 +3,7 @@ use std::{
     io,
     net::SocketAddr,
     sync::{Arc, LazyLock},
+    time::Duration,
 };
 
 use futures::{
@@ -310,6 +311,17 @@ async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: 
         .await
         .expect("echo test failed");
 
+    // wait a bit for direct path establishment
+    if matches!(
+        (client_case.nat_type, server_case.nat_type),
+        (NatType::Symmetric, NatType::RestrictedPort)
+            | (NatType::RestrictedPort, NatType::Symmetric)
+    ) {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    } else {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     let paths = connection
         .path_context()
         .expect("conenction failed")
@@ -317,7 +329,6 @@ async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: 
         .into_iter()
         .map(|(p, _)| p)
         .collect::<Vec<_>>();
-
     let has_direct = paths.iter().any(|pathway| {
         matches!(
             pathway.local(),
@@ -325,23 +336,16 @@ async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: 
         )
     });
 
-    let allow_no_direct = matches!(
-        (client_case.nat_type, server_case.nat_type),
-        (NatType::Symmetric, NatType::RestrictedPort)
-            | (NatType::RestrictedPort, NatType::Symmetric)
-    );
-
     if has_direct {
         tracing::info!("Direct path established: {:?}", paths);
-    } else if allow_no_direct {
-        warn!(
-            ?client_case.nat_type,
-            ?server_case.nat_type,
-            "No direct path established (allowed): {paths:?}"
-        );
     } else {
         panic!("No direct path established: {paths:?}");
     }
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+#[test]
+fn test_collision_ttl_is_1_in_tests() {
+    assert_eq!(gm_quic::qtraversal::punch::puncher::COLLISION_TTL, 1);
+}

@@ -1,5 +1,10 @@
 use std::{
-    collections::VecDeque, future::poll_fn, io, net::SocketAddr, str::FromStr, sync::Arc,
+    collections::{BTreeMap, HashMap},
+    future::poll_fn,
+    io,
+    net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
     time::Duration,
 };
 
@@ -21,6 +26,11 @@ use crate::{
 const PUNCH_INITIAL_RTT: Duration = Duration::from_millis(333);
 const RTT_MULTIPLIER: u32 = 3;
 const MAX_CONCURRENT_SOCKETS: usize = 60;
+const INTERFACES_PER_ROUND: usize = 30;
+const MAX_ROUNDS: i32 = 10;
+const RESPONSE_TIMEOUT_MS: u64 = 100;
+const MIN_PORT: u16 = 1024;
+const PACKET_TTL: u8 = 64;
 
 pub type PacketSendFn = Arc<
     dyn Fn(
@@ -38,11 +48,12 @@ pub struct PortPredictor {
     ifaces: Arc<InterfaceManager>,
     factory: Arc<dyn ProductIO>,
     quic_router: Arc<QuicRouter>,
-    ports: VecDeque<(u16, BindUri, Interface, tokio::time::Instant)>,
+    port_map: HashMap<u16, (BindUri, Interface, tokio::time::Instant)>,
+    eviction_order: BTreeMap<tokio::time::Instant, u16>,
     bind_uri: BindUri,
     dst: SocketAddr,
     estimated_rtt: Duration,
-    total_created: usize,
+    total_created: u32,
     max_total: u32,
     interface_name: String,
 }
@@ -66,7 +77,8 @@ impl PortPredictor {
             ifaces,
             factory,
             quic_router,
-            ports: VecDeque::new(),
+            port_map: HashMap::new(),
+            eviction_order: BTreeMap::new(),
             bind_uri,
             dst,
             estimated_rtt: PUNCH_INITIAL_RTT,
@@ -104,32 +116,42 @@ impl PortPredictor {
         let timeout = self.estimated_rtt * RTT_MULTIPLIER;
         let now = tokio::time::Instant::now();
         let mut recycled = 0;
-        let mut i = 0;
-        while i < self.ports.len() {
-            if now.duration_since(self.ports[i].3) >= timeout {
-                let (port, bind_uri, _iface, _) = self.ports.remove(i).unwrap();
+        let cutoff = now - timeout;
+        // Collect expired instants to avoid modifying while iterating
+        let expired_instants: Vec<_> = self
+            .eviction_order
+            .range(..=cutoff)
+            .map(|(&instant, &port)| (instant, port))
+            .collect();
+        for (instant, port) in expired_instants {
+            if let Some((bind_uri, _iface, _)) = self.port_map.remove(&port) {
+                self.eviction_order.remove(&instant);
                 self.ifaces.unbind(bind_uri).await;
                 if let Err(e) = self.release_quota() {
                     tracing::warn!(target: "punch", %e, port, "Failed to release quota for interface");
                 }
                 recycled += 1;
-            } else {
-                i += 1;
             }
         }
         if recycled > 0 {
-            tracing::debug!(target: "punch", recycled, active_ports = self.ports.len(), 
+            tracing::debug!(target: "punch", recycled, active_ports = self.port_map.len(), 
                           timeout_ms = timeout.as_millis(), "Recycled expired ports");
         }
         Ok(recycled)
     }
 
     async fn recycle_if_full(&mut self) -> io::Result<()> {
-        while self.ports.len() >= MAX_CONCURRENT_SOCKETS {
-            if let Some((port, bind_uri, _iface, _)) = self.ports.pop_front() {
-                self.ifaces.unbind(bind_uri).await;
-                if let Err(e) = self.release_quota() {
-                    tracing::warn!(target: "punch", %e, port, "Failed to release quota for interface");
+        while self.port_map.len() >= MAX_CONCURRENT_SOCKETS {
+            if let Some((&instant, &port)) = self.eviction_order.first_key_value() {
+                if let Some((bind_uri, _iface, _)) = self.port_map.remove(&port) {
+                    self.eviction_order.remove(&instant);
+                    self.ifaces.unbind(bind_uri).await;
+                    if let Err(e) = self.release_quota() {
+                        tracing::warn!(target: "punch", %e, port, "Failed to release quota for interface");
+                    }
+                } else {
+                    // Should not happen
+                    self.eviction_order.remove(&instant);
                 }
             } else {
                 break;
@@ -138,14 +160,10 @@ impl PortPredictor {
         Ok(())
     }
 
-    async fn handle_punch_done(&mut self, src_port: u16) -> Option<(BindUri, Interface)> {
-        let mut i = 0;
-        while i < self.ports.len() {
-            if self.ports[i].0 == src_port {
-                let (_port, bind_uri, iface, _) = self.ports.remove(i).unwrap();
-                return Some((bind_uri, iface));
-            }
-            i += 1;
+    async fn claim_interface(&mut self, src_port: u16) -> Option<(BindUri, Interface)> {
+        if let Some((bind_uri, iface, instant)) = self.port_map.remove(&src_port) {
+            self.eviction_order.remove(&instant);
+            return Some((bind_uri, iface));
         }
         None
     }
@@ -157,47 +175,44 @@ impl PortPredictor {
         packet_send_fn: PacketSendFn,
     ) -> io::Result<Option<(BindUri, Interface)>> {
         tracing::debug!(target: "punch", %punch_pair, "Starting port prediction");
-        let interfaces_per_round = 30;
-        let max_rounds = 10;
-        let response_timeout = Duration::from_millis(100);
+        let interfaces_per_round = INTERFACES_PER_ROUND;
+        let max_rounds = MAX_ROUNDS;
+        let response_timeout = Duration::from_millis(RESPONSE_TIMEOUT_MS);
         let mut rounds_processed = 0;
         let mut last_error = None;
-        while rounds_processed < max_rounds && ((self.total_created as u32) < self.max_total) {
-            if let Some((link, _)) = tx.try_punch_done()
-                && let Some(result) = self.handle_punch_done(link.src().port()).await
-            {
-                tracing::debug!(target: "punch", %punch_pair, "Early punch done detected");
-                return Ok(Some(result));
-            }
-            match self
+        while rounds_processed < max_rounds && self.total_created < self.max_total {
+            // Allocate and probe interfaces
+            if self
                 .allocate_and_probe(punch_pair, &packet_send_fn, interfaces_per_round)
                 .await
+                .is_ok()
             {
-                Ok(_) => {
-                    if let Ok((link, _)) =
-                        tokio::time::timeout(response_timeout, tx.recv_punch_done()).await
-                    {
-                        tracing::debug!(target: "punch", %punch_pair, %link, "Punch done received after round");
-                        if let Some(result) = self.handle_punch_done(link.src().port()).await {
-                            return Ok(Some(result));
-                        }
+                // Wait for punch done response (could be from previous rounds or current round)
+                if let Ok((link, _)) =
+                    tokio::time::timeout(response_timeout, tx.recv_punch_done()).await
+                {
+                    tracing::debug!(target: "punch", %punch_pair, %link, "Punch done received");
+                    let result = self.claim_interface(link.src().port()).await;
+                    if result.is_none() {
                         tracing::warn!(target: "punch", %link, "Could not find interface for punch done");
-                        return Ok(None);
                     }
+                    self.cleanup_all_resources().await?;
+                    return Ok(result);
                 }
-                Err(_) => {
-                    last_error = Some(io::Error::other(format!(
-                        "Failed to process round {}",
-                        rounds_processed
-                    )));
-                }
+            } else {
+                last_error = Some(io::Error::other(format!(
+                    "Failed to process round {}",
+                    rounds_processed
+                )));
             }
             rounds_processed += 1;
         }
-        if let Err(cleanup_error) = self.cleanup_all_resources().await {
-            tracing::error!(target: "punch", %punch_pair, %cleanup_error, "Failed to cleanup resources after port prediction");
+
+        // Cleanup and return
+        if let Err(e) = self.cleanup_all_resources().await {
+            tracing::error!(target: "punch", %punch_pair, %e, "Failed to cleanup resources after port prediction");
         }
-        tracing::debug!(target: "punch", %punch_pair, rounds_processed, "Port prediction completed without success");
+        tracing::debug!(target: "punch", %punch_pair, rounds_processed, "Port prediction failed after maximum rounds");
         last_error.map_or(Ok(None), Err)
     }
 
@@ -207,7 +222,11 @@ impl PortPredictor {
         packet_send_fn: &PacketSendFn,
         interfaces_count: usize,
     ) -> io::Result<Vec<Interface>> {
-        let interfaces_count = interfaces_count.min(self.max_total as usize - self.total_created);
+        // Recycle expired and over-limit interfaces before allocating new ones
+        self.recycle_expired_interfaces().await?;
+        self.recycle_if_full().await?;
+
+        let interfaces_count = interfaces_count.min((self.max_total - self.total_created) as usize);
         tracing::debug!(target: "punch", %punch_pair, interfaces_count, "Allocating interfaces");
 
         let mut interfaces = Vec::new();
@@ -217,12 +236,9 @@ impl PortPredictor {
                     if let Ok(qbase::net::addr::RealAddr::Internet(socket_addr)) = iface.real_addr()
                     {
                         let port = socket_addr.port();
-                        self.ports.push_back((
-                            port,
-                            bind_uri,
-                            iface.clone(),
-                            tokio::time::Instant::now(),
-                        ));
+                        let now = tokio::time::Instant::now();
+                        self.port_map.insert(port, (bind_uri, iface.clone(), now));
+                        self.eviction_order.insert(now, port);
                         interfaces.push(iface);
                     }
                 }
@@ -235,39 +251,15 @@ impl PortPredictor {
             return Err(io::Error::other("Failed to create any interfaces"));
         }
 
-        match self
-            .send_batch_packets(&interfaces, punch_pair, packet_send_fn)
+        self.send_probe_packets(&interfaces, punch_pair, packet_send_fn)
             .await
-        {
-            Ok(()) => {
-                tracing::debug!(target: "punch", %punch_pair, packets_sent = interfaces.len(), "Packets sent successfully");
-            }
-            Err(e) => {
-                tracing::error!(target: "punch", %punch_pair, %e, "Failed to send packets");
-                for _ in 0..interfaces.len() {
-                    if let Some((port, bind_uri, _iface, _)) = self.ports.pop_back() {
-                        self.ifaces.unbind(bind_uri).await;
-                        if let Err(cleanup_err) = self.release_quota() {
-                            tracing::warn!(target: "punch", %cleanup_err, port, "Failed to cleanup port after packet send failure");
-                        }
-                    }
-                }
-                return Err(e);
-            }
-        }
-        Ok(interfaces)
     }
 
     async fn create_single_interface(&mut self) -> io::Result<(BindUri, Interface)> {
-        self.recycle_expired_interfaces().await?;
-        self.recycle_if_full().await?;
-
-        // Request quota just-in-time before creating interface
-        self.request_quota().await?;
-
+        self.acquire_quota().await?;
         loop {
-            let port = rand::random::<u16>() % (u16::MAX - 1024) + 1024;
-            if self.ports.iter().any(|(p, _, _, _)| *p == port) {
+            let port = rand::random::<u16>() % (u16::MAX - MIN_PORT) + MIN_PORT;
+            if self.port_map.contains_key(&port) {
                 continue;
             }
             let bind_addr = self.port_to_bind_uri(port);
@@ -277,8 +269,6 @@ impl PortPredictor {
                 .await;
 
             bind_iface.with_components_mut(|components, iface| {
-                // Ensure this temporary iface can RECEIVE and deliver QUIC packets.
-                // It must use the connection-owned router, not a global router.
                 components.init_with(|| QuicRouterComponent::new(self.quic_router.clone()));
                 components.init_with(|| {
                     ReceiveAndDeliverPacket::builder(iface.downgrade())
@@ -290,8 +280,7 @@ impl PortPredictor {
             let iface = bind_iface.borrow();
 
             match iface.real_addr() {
-                Ok(real_addr) => {
-                    tracing::debug!(target: "punch", %bind_addr, %real_addr, "Created new interface");
+                Ok(_real_addr) => {
                     self.total_created += 1;
                     return Ok((bind_addr, iface));
                 }
@@ -305,20 +294,32 @@ impl PortPredictor {
         }
     }
 
-    async fn send_batch_packets(
-        &self,
+    async fn send_probe_packets(
+        &mut self,
         interfaces: &[Interface],
         punch_pair: Link,
         packet_send_fn: &PacketSendFn,
-    ) -> io::Result<()> {
+    ) -> io::Result<Vec<Interface>> {
         tracing::debug!(target: "punch", %punch_pair, interface_count = interfaces.len(), "Sending packets");
         let mut successful_sends = 0;
+        let mut successful_interfaces = Vec::new();
         for iface in interfaces {
             if let Ok(qbase::net::addr::RealAddr::Internet(socket_addr)) = iface.real_addr() {
                 let link = Link::new(socket_addr, punch_pair.dst());
                 let frame = TraversalFrame::Konck(KonckFrame::new(punch_pair));
-                if packet_send_fn(iface, link, 64, frame).await.is_ok() {
+                if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {
                     successful_sends += 1;
+                    successful_interfaces.push(iface.clone());
+                } else {
+                    // Clean up failed interface immediately
+                    let port = socket_addr.port();
+                    if let Some((bind_uri, _, instant)) = self.port_map.remove(&port) {
+                        self.eviction_order.remove(&instant);
+                        self.ifaces.unbind(bind_uri).await;
+                        if let Err(cleanup_err) = self.release_quota() {
+                            tracing::warn!(target: "punch", %cleanup_err, port, "Failed to cleanup port after packet send failure");
+                        }
+                    }
                 }
             }
         }
@@ -326,7 +327,7 @@ impl PortPredictor {
                       failed_sends = interfaces.len() - successful_sends,
                       total_interfaces = interfaces.len(), "Packet sending completed");
         if successful_sends > 0 || interfaces.is_empty() {
-            Ok(())
+            Ok(successful_interfaces)
         } else {
             Err(io::Error::other(format!(
                 "Failed to send packets to all {} interfaces",
@@ -336,12 +337,16 @@ impl PortPredictor {
     }
 
     async fn cleanup_all_resources(&mut self) -> io::Result<()> {
-        tracing::debug!(target: "punch", active_ports = self.ports.len(), 
+        tracing::debug!(target: "punch", active_ports = self.port_map.len(), 
                       "Starting resource cleanup");
-        while let Some((port, bind_uri, _iface, _)) = self.ports.pop_front() {
-            self.ifaces.unbind(bind_uri).await;
-            if let Err(e) = self.release_quota() {
-                tracing::warn!(target: "punch", %e, port, "Failed to release quota for interface");
+        let ports_to_cleanup: Vec<_> = self.port_map.keys().cloned().collect();
+        for port in ports_to_cleanup {
+            if let Some((bind_uri, _, instant)) = self.port_map.remove(&port) {
+                self.eviction_order.remove(&instant);
+                self.ifaces.unbind(bind_uri).await;
+                if let Err(e) = self.release_quota() {
+                    tracing::warn!(target: "punch", %e, port, "Failed to release quota for interface");
+                }
             }
         }
         tracing::debug!(target: "punch", "Resource cleanup completed");
@@ -357,12 +362,11 @@ impl PortPredictor {
                 tracing::warn!(target: "punch", %e, "Failed to release 1 quota unit to scheduler");
                 e
             })?;
-        tracing::debug!(target: "punch", "Released 1 quota unit to scheduler");
         Ok(())
     }
 
-    async fn request_quota(&mut self) -> io::Result<()> {
-        if self.total_created as u32 + 1 > self.max_total {
+    async fn acquire_quota(&mut self) -> io::Result<()> {
+        if self.total_created + 1 > self.max_total {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 format!(
@@ -386,7 +390,6 @@ impl PortPredictor {
                 format!("Expected to allocate 1 quota unit, but got {}", allocated),
             ));
         }
-        tracing::debug!(target: "punch", "Requested and allocated 1 quota unit from scheduler");
         Ok(())
     }
 }
@@ -394,9 +397,9 @@ impl PortPredictor {
 impl Drop for PortPredictor {
     fn drop(&mut self) {
         let futures: Vec<_> = self
-            .ports
-            .iter()
-            .map(|(_, bind_uri, _, _)| self.ifaces.unbind(bind_uri.clone()))
+            .port_map
+            .values()
+            .map(|(bind_uri, _, _)| self.ifaces.unbind(bind_uri.clone()))
             .collect();
         if !futures.is_empty() {
             tokio::spawn(async move {
