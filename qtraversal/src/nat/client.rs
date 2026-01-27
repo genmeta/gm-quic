@@ -897,7 +897,7 @@ async fn detect_nat_type<I: RefIO>(
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum NatType {
     Blocked = 0x00,
     FullCone = 0x01,

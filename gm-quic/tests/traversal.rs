@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     net::SocketAddr,
     sync::{Arc, LazyLock},
@@ -85,21 +86,19 @@ pub const CASES: [TestCase; 10] = [
     },
 ];
 
-const CLIENT_ADDR: [TestCase; 5] = [
-    CASES[0], // Full cone
-    CASES[1], // Restricted cone
-    CASES[2], // Port restricted
-    CASES[3], // Dynamic
-    CASES[4], // Symmetric
-];
+static CLIENT_CASES: LazyLock<HashMap<NatType, TestCase>> = LazyLock::new(|| {
+    CASES[0..5]
+        .iter()
+        .map(|case| (case.nat_type, *case))
+        .collect()
+});
 
-const SERVER_ADDR: [TestCase; 5] = [
-    CASES[5], // Full cone
-    CASES[6], // Restricted cone
-    CASES[7], // Port restricted
-    CASES[8], // Dynamic
-    CASES[9], // Symmetric
-];
+static SERVER_CASES: LazyLock<HashMap<NatType, TestCase>> = LazyLock::new(|| {
+    CASES[5..10]
+        .iter()
+        .map(|case| (case.nat_type, *case))
+        .collect()
+});
 
 macro_rules! test_punch_pair {
     (async fn $test_name:ident = test_punch_case($client:expr, $server:expr) $($tt:tt)*) => {
@@ -134,35 +133,35 @@ macro_rules! test_punch_pair {
 */
 
 test_punch_pair! {
-    async fn test_punch_full_cone_to_full_cone = test_punch_case(0, 0)
-    async fn test_punch_full_cone_to_restricted_cone = test_punch_case(0, 1)
-    async fn test_punch_full_cone_to_port_restricted = test_punch_case(0, 2)
-    async fn test_punch_full_cone_to_dynamic = test_punch_case(0, 3)
-    async fn test_punch_full_cone_to_symmetric = test_punch_case(0, 4)
-    async fn test_punch_restricted_cone_to_full_cone = test_punch_case(1, 0)
-    async fn test_punch_restricted_cone_to_restricted_cone = test_punch_case(1, 1)
-    async fn test_punch_restricted_cone_to_port_restricted = test_punch_case(1, 2)
-    async fn test_punch_restricted_cone_to_dynamic = test_punch_case(1, 3)
-    async fn test_punch_restricted_cone_to_symmetric = test_punch_case(1, 4)
-    async fn test_punch_port_restricted_to_full_cone = test_punch_case(2, 0)
-    async fn test_punch_port_restricted_to_restricted_cone = test_punch_case(2, 1)
-    async fn test_punch_port_restricted_to_port_restricted = test_punch_case(2, 2)
-    async fn test_punch_port_restricted_to_dynamic = test_punch_case(2, 3)
-    async fn test_punch_port_restricted_to_symmetric = test_punch_case(2, 4)
-    async fn test_punch_dynamic_to_full_cone = test_punch_case(3, 0)
-    async fn test_punch_dynamic_to_restricted_cone = test_punch_case(3, 1)
-    async fn test_punch_dynamic_to_port_restricted = test_punch_case(3, 2)
-    async fn test_punch_dynamic_to_dynamic = test_punch_case(3, 3)
-    async fn test_punch_dynamic_to_symmetric = test_punch_case(3, 4)
-    async fn test_punch_symmetric_to_full_cone = test_punch_case(4, 0)
-    async fn test_punch_symmetric_to_restricted_cone = test_punch_case(4, 1)
-    async fn test_punch_symmetric_to_port_restricted = test_punch_case(4, 2)
-    async fn test_punch_symmetric_to_dynamic = test_punch_case(4, 3)
-    async fn test_punch_symmetric_to_symmetric = test_punch_case(4, 4)
+    async fn test_punch_full_cone_to_full_cone = test_punch_case(NatType::FullCone, NatType::FullCone)
+    async fn test_punch_full_cone_to_restricted_cone = test_punch_case(NatType::FullCone, NatType::RestrictedCone)
+    async fn test_punch_full_cone_to_port_restricted = test_punch_case(NatType::FullCone, NatType::RestrictedPort)
+    async fn test_punch_full_cone_to_dynamic = test_punch_case(NatType::FullCone, NatType::Dynamic)
+    async fn test_punch_full_cone_to_symmetric = test_punch_case(NatType::FullCone, NatType::Symmetric)
+    async fn test_punch_restricted_cone_to_full_cone = test_punch_case(NatType::RestrictedCone, NatType::FullCone)
+    async fn test_punch_restricted_cone_to_restricted_cone = test_punch_case(NatType::RestrictedCone, NatType::RestrictedCone)
+    async fn test_punch_restricted_cone_to_port_restricted = test_punch_case(NatType::RestrictedCone, NatType::RestrictedPort)
+    async fn test_punch_restricted_cone_to_dynamic = test_punch_case(NatType::RestrictedCone, NatType::Dynamic)
+    async fn test_punch_restricted_cone_to_symmetric = test_punch_case(NatType::RestrictedCone, NatType::Symmetric)
+    async fn test_punch_port_restricted_to_full_cone = test_punch_case(NatType::RestrictedPort, NatType::FullCone)
+    async fn test_punch_port_restricted_to_restricted_cone = test_punch_case(NatType::RestrictedPort, NatType::RestrictedCone)
+    async fn test_punch_port_restricted_to_port_restricted = test_punch_case(NatType::RestrictedPort, NatType::RestrictedPort)
+    async fn test_punch_port_restricted_to_dynamic = test_punch_case(NatType::RestrictedPort, NatType::Dynamic)
+    async fn test_punch_port_restricted_to_symmetric = test_punch_case(NatType::RestrictedPort, NatType::Symmetric)
+    async fn test_punch_dynamic_to_full_cone = test_punch_case(NatType::Dynamic, NatType::FullCone)
+    async fn test_punch_dynamic_to_restricted_cone = test_punch_case(NatType::Dynamic, NatType::RestrictedCone)
+    async fn test_punch_dynamic_to_port_restricted = test_punch_case(NatType::Dynamic, NatType::RestrictedPort)
+    async fn test_punch_dynamic_to_dynamic = test_punch_case(NatType::Dynamic, NatType::Dynamic)
+    async fn test_punch_dynamic_to_symmetric = test_punch_case(NatType::Dynamic, NatType::Symmetric)
+    async fn test_punch_symmetric_to_full_cone = test_punch_case(NatType::Symmetric, NatType::FullCone)
+    async fn test_punch_symmetric_to_restricted_cone = test_punch_case(NatType::Symmetric, NatType::RestrictedCone)
+    async fn test_punch_symmetric_to_port_restricted = test_punch_case(NatType::Symmetric, NatType::RestrictedPort)
+    async fn test_punch_symmetric_to_dynamic = test_punch_case(NatType::Symmetric, NatType::Dynamic)
+    async fn test_punch_symmetric_to_symmetric = test_punch_case(NatType::Symmetric, NatType::Symmetric)
 }
 
-async fn launch_stun_test_server(server: usize) -> Arc<QuicListeners> {
-    let server_addr: SocketAddr = SERVER_ADDR[server].bind_addr.parse().unwrap();
+async fn launch_stun_test_server(server_case: TestCase) -> Arc<QuicListeners> {
+    let server_addr: SocketAddr = server_case.bind_addr.parse().unwrap();
     let locations = Arc::new(Locations::new());
     let listeners = QuicListeners::builder()
         .with_parameters(server_parameters())
@@ -186,47 +185,76 @@ async fn launch_stun_test_server(server: usize) -> Arc<QuicListeners> {
     listeners
 }
 
-static SERVERS: [LazyLock<Shared<BoxFuture<Arc<QuicListeners>>>>; 5] = [
-    LazyLock::new(|| launch_stun_test_server(0).boxed().shared()),
-    LazyLock::new(|| launch_stun_test_server(1).boxed().shared()),
-    LazyLock::new(|| launch_stun_test_server(2).boxed().shared()),
-    LazyLock::new(|| launch_stun_test_server(3).boxed().shared()),
-    LazyLock::new(|| launch_stun_test_server(4).boxed().shared()),
-];
+static SERVERS: LazyLock<HashMap<NatType, Shared<BoxFuture<Arc<QuicListeners>>>>> =
+    LazyLock::new(|| {
+        SERVER_CASES
+            .values()
+            .map(|case| {
+                let server = launch_stun_test_server(*case).boxed().shared();
+                (case.nat_type, server)
+            })
+            .collect()
+    });
 
-async fn test_punch_case(client: usize, server: usize) {
-    info!(
-        "Testing punch case: client {} ({:?}) <-> server {} ({:?})",
-        client, CLIENT_ADDR[client].nat_type, server, SERVER_ADDR[server].nat_type
-    );
+async fn launch_stun_test_client(client_case: TestCase) -> Arc<QuicClient> {
+    let client_addr: SocketAddr = client_case.bind_addr.parse().unwrap();
 
-    if client == 3 || server == 3 {
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(CA_CERT.to_certificate());
+
+    let locations = Arc::new(Locations::new());
+    let client = QuicClient::builder()
+        .with_root_certificates(roots)
+        .without_cert()
+        .enable_sslkeylog()
+        .with_parameters(client_parameters())
+        .with_stun(STUN_SERVERS)
+        .with_locations(locations)
+        .bind([client_addr])
+        .await
+        .with_qlog(qlogger())
+        .build();
+
+    info!("Client bound on {client_addr}");
+
+    Arc::new(client)
+}
+
+static CLIENTS: LazyLock<HashMap<NatType, Shared<BoxFuture<Arc<QuicClient>>>>> =
+    LazyLock::new(|| {
+        CLIENT_CASES
+            .values()
+            .map(|case| {
+                let client = launch_stun_test_client(*case).boxed().shared();
+                (case.nat_type, client)
+            })
+            .collect()
+    });
+
+async fn test_punch_case(client_nat: NatType, server_nat: NatType) {
+    let client_case = CLIENT_CASES[&client_nat];
+    let server_case = SERVER_CASES[&server_nat];
+
+    info!("Testing punch case: client {client_nat:?} <-> server {server_nat:?}",);
+
+    if client_nat == NatType::Dynamic || server_nat == NatType::Dynamic {
         warn!("Skipping Dynamic NAT test case");
         // TODO: Dynamic NAT 模拟有问题
         return;
     }
-    if client == 4 && server == 4 {
+    if client_nat == NatType::Symmetric && server_nat == NatType::Symmetric {
         warn!("Skipping Symmetric NAT to Symmetric NAT test case");
         // Symmetric NAT 互穿不通
         return;
     }
 
-    let client_addr: SocketAddr = CLIENT_ADDR[client].bind_addr.parse().unwrap();
-    let server_addr: SocketAddr = SERVER_ADDR[server].bind_addr.parse().unwrap();
-
-    let _server = SERVERS[server].clone().await;
+    let _server = SERVERS[&server_nat].clone().await;
     let server_iface = InterfaceManager::global()
-        .borrow(&(server_addr.into()))
+        .borrow(&(server_case.bind_addr.parse::<SocketAddr>().unwrap().into()))
         .unwrap();
 
     let server_ep = get_stun_data(server_iface).await[0].0;
-    launch_client(
-        client_addr,
-        CLIENT_ADDR[client].nat_type,
-        SERVER_ADDR[server].nat_type,
-        EndpointAddr::Socket(server_ep),
-    )
-    .await;
+    launch_client(client_case, server_case, server_ep.into()).await;
 }
 
 async fn get_stun_data(
@@ -262,32 +290,12 @@ async fn get_stun_data(
     datas
 }
 
-async fn launch_client(
-    client_addr: SocketAddr,
-    client_nat_type: NatType,
-    server_nat_type: NatType,
-    server_ep: EndpointAddr,
-) {
-    let mut roots = RootCertStore::empty();
-    roots.add_parsable_certificates(CA_CERT.to_certificate());
-
-    // Emulate server-side: pre-initialize a locations table so all client connections share it.
-    let locations = Arc::new(Locations::new());
-    let client = QuicClient::builder()
-        .with_root_certificates(roots)
-        .without_cert()
-        .enable_sslkeylog()
-        .with_parameters(client_parameters())
-        .with_stun(STUN_SERVERS)
-        .with_locations(locations)
-        .bind([client_addr])
-        .await
-        .with_qlog(qlogger())
-        .build();
+async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: EndpointAddr) {
+    let client = CLIENTS[&client_case.nat_type].clone().await;
 
     get_stun_data(
         InterfaceManager::global()
-            .borrow(&client_addr.into())
+            .borrow(&client_case.bind_addr.parse::<SocketAddr>().unwrap().into())
             .unwrap(),
     )
     .await;
@@ -318,19 +326,17 @@ async fn launch_client(
     });
 
     let allow_no_direct = matches!(
-        client_nat_type,
-        NatType::RestrictedPort | NatType::Symmetric
-    ) || matches!(
-        server_nat_type,
-        NatType::RestrictedPort | NatType::Symmetric
+        (client_case.nat_type, server_case.nat_type),
+        (NatType::Symmetric, NatType::RestrictedPort)
+            | (NatType::RestrictedPort, NatType::Symmetric)
     );
 
     if has_direct {
         tracing::info!("Direct path established: {:?}", paths);
     } else if allow_no_direct {
         warn!(
-            ?client_nat_type,
-            ?server_nat_type,
+            ?client_case.nat_type,
+            ?server_case.nat_type,
             "No direct path established (allowed): {paths:?}"
         );
     } else {
