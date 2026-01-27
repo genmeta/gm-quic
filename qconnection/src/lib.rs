@@ -531,6 +531,7 @@ impl Drop for ConnectionState {
     }
 }
 
+#[derive(Clone)]
 pub struct Connection(Arc<ConnectionState>);
 
 impl Connection {
