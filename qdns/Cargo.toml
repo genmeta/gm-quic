@@ -21,9 +21,8 @@ rustls = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = [
     # default features(excluding "default-tls")
     "charset",
-    "rustls-tls",                 # no openssl
-    "http2",
-    "macos-system-configuration",
+    "rustls",                       # no openssl (was "rustls-tls" in 0.12)
+    # "macos-system-configuration", # removed in reqwest 0.13
     # additional features
     "json",
 ] }

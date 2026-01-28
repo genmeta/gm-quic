@@ -130,10 +130,11 @@ impl Resolve for HttpResolver {
             if let Some(record) = self.cached_records.get(name) {
                 return Ok(record.addrs.clone());
             }
+            let mut url = self.base_url.join("lookup").expect("Invalid URL");
+            url.query_pairs_mut().append_pair("host", name);
             let response = self
                 .http_client
-                .get(self.base_url.join("lookup").expect("Invalid URL"))
-                .query(&[("host", name)])
+                .get(url)
                 .send()
                 .await;
 
