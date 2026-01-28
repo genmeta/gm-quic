@@ -77,10 +77,10 @@ impl InterfaceManager {
     ) -> BindInterface {
         let context = InterfaceContext {
             factory: factory.clone(),
-            binding: RwLock::new(Binding {
-                io: factory.bind(entry.key().clone()),
-                id: self.bind_id_generator.generate(),
-            }),
+            binding: RwLock::new(Binding::new(
+                factory.bind(entry.key().clone()),
+                self.bind_id_generator.generate(),
+            )),
             dropped: Arc::new(SetOnce::new()),
             ifaces: self.clone(),
             components: RwLock::new(Components::default()),
@@ -206,6 +206,20 @@ mod spawn_on_drop {
 struct Binding {
     io: Box<dyn IO>,
     id: UniqueId,
+    span: tracing::Span,
+}
+
+impl Binding {
+    fn new(io: Box<dyn IO>, id: UniqueId) -> Self {
+        let bind_uri = io.bind_uri();
+        let span = tracing::info_span!(
+            parent: None,
+            "interface",
+            %bind_uri,
+            bind_id = usize::from(id),
+        );
+        Self { io, id, span }
+    }
 }
 
 pub struct InterfaceContext {
@@ -228,6 +242,25 @@ impl InterfaceContext {
 
     pub fn bind_id(&self) -> UniqueId {
         self.binding().id
+    }
+
+    fn with_io<T>(&self, f: impl FnOnce(&dyn IO) -> T) -> T {
+        let binding = self.binding();
+        let _guard = binding.span.enter();
+        f(binding.io.as_ref())
+    }
+
+    pub(crate) fn with_bind_io<T>(
+        &self,
+        bind_id: UniqueId,
+        f: impl FnOnce(&dyn IO) -> T,
+    ) -> Result<T, RebindedError> {
+        let binding = self.binding();
+        if binding.id != bind_id {
+            return Err(RebindedError);
+        }
+        let _guard = binding.span.enter();
+        Ok(f(binding.io.as_ref()))
     }
 
     fn components(&self) -> RwLockReadGuard<'_, Components> {
@@ -268,19 +301,26 @@ impl BindInterface {
         // B:                                      lock(B),             lock(C), rebind, reinit
 
         // hold read lock to prevent subsequent rebind, avoid compoents seeing inconsistent state
-        let (new_bind_id, components) = {
+        let (new_bind_id, components, span) = {
             let mut binding = context.binding_mut();
             let components = context.components();
 
             ready!(context.factory.poll_rebind(cx, &mut binding.io));
             binding.id = context.ifaces.bind_id_generator.generate();
-            (binding.id, components)
+            binding.span = tracing::info_span!(
+                parent: None,
+                "interface",
+                bind_uri = %binding.io.bind_uri(),
+                bind_id = usize::from(binding.id),
+            );
+            (binding.id, components, binding.span.clone())
         };
 
         let iface = Interface {
             bind_id: new_bind_id,
             bind_iface: self.clone(),
         };
+        let _guard = span.enter();
         for (.., component) in &components.map {
             component.reinit(&iface);
         }
@@ -296,6 +336,7 @@ impl BindInterface {
     pub fn with_components<T>(&self, f: impl FnOnce(&Components, &Interface) -> T) -> T {
         let context = self.context.as_ref();
         let (binding, components) = (context.binding(), context.components());
+        let _guard = binding.span.enter();
 
         let iface = Interface {
             bind_id: binding.id,
@@ -307,6 +348,7 @@ impl BindInterface {
     pub fn with_components_mut<T>(&self, f: impl FnOnce(&mut Components, &Interface) -> T) -> T {
         let context = self.context.as_ref();
         let (binding, mut components) = (context.binding(), context.components_mut());
+        let _guard = binding.span.enter();
 
         let iface = Interface {
             bind_id: binding.id,
@@ -328,6 +370,7 @@ impl Interface {
             return Err(RebindedError);
         }
 
+        let _guard = binding.span.enter();
         Ok(components.with(f))
     }
 
@@ -339,6 +382,7 @@ impl Interface {
             return Err(RebindedError);
         }
 
+        let _guard = binding.span.enter();
         Ok(f(components.deref()))
     }
 
@@ -353,15 +397,15 @@ impl IO for InterfaceContext {
     }
 
     fn real_addr(&self) -> io::Result<RealAddr> {
-        self.binding().io.real_addr()
+        self.with_io(|io| io.real_addr())
     }
 
     fn max_segment_size(&self) -> io::Result<usize> {
-        self.binding().io.max_segment_size()
+        self.with_io(|io| io.max_segment_size())
     }
 
     fn max_segments(&self) -> io::Result<usize> {
-        self.binding().io.max_segments()
+        self.with_io(|io| io.max_segments())
     }
 
     fn poll_send(
@@ -370,7 +414,7 @@ impl IO for InterfaceContext {
         pkts: &[io::IoSlice],
         hdr: route::PacketHeader,
     ) -> Poll<io::Result<usize>> {
-        self.binding().io.poll_send(cx, pkts, hdr)
+        self.with_io(|io| io.poll_send(cx, pkts, hdr))
     }
 
     fn poll_recv(
@@ -379,7 +423,7 @@ impl IO for InterfaceContext {
         pkts: &mut [BytesMut],
         hdrs: &mut [route::PacketHeader],
     ) -> Poll<io::Result<usize>> {
-        self.binding().io.poll_recv(cx, pkts, hdrs)
+        self.with_io(|io| io.poll_recv(cx, pkts, hdrs))
     }
 
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -600,13 +644,13 @@ mod tests {
         let close_calls = Arc::new(AtomicUsize::new(0));
         let bind_uri: BindUri = "inet://127.0.0.1:0".into();
 
-        let mut binding = Binding {
-            io: Box::new(TestIo {
+        let mut binding = Binding::new(
+            Box::new(TestIo {
                 bind_uri: bind_uri.clone(),
                 close_calls: close_calls.clone(),
             }),
-            id: UniqueIdGenerator::new().generate(),
-        };
+            UniqueIdGenerator::new().generate(),
+        );
 
         let first = binding.take_io();
         assert!(first.is_some());
@@ -635,13 +679,13 @@ mod tests {
             factory: Arc::new(TestFactory {
                 close_calls: close_calls.clone(),
             }),
-            binding: RwLock::new(Binding {
-                io: Box::new(TestIo {
+            binding: RwLock::new(Binding::new(
+                Box::new(TestIo {
                     bind_uri,
                     close_calls: close_calls.clone(),
                 }),
-                id: UniqueIdGenerator::new().generate(),
-            }),
+                UniqueIdGenerator::new().generate(),
+            )),
             dropped: Arc::new(SetOnce::new()),
             ifaces: Arc::new(InterfaceManager::new()),
             components: RwLock::new(components),

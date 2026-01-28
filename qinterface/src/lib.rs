@@ -101,11 +101,11 @@ impl From<RebindedError> for std::io::Error {
 
 impl Interface {
     #[inline]
-    fn with<T>(&self, f: impl FnOnce(&InterfaceContext) -> T) -> std::io::Result<T> {
-        if self.bind_iface.context.bind_id() != self.bind_id {
-            return Err(RebindedError.into());
-        }
-        Ok(f(self.bind_iface.context.as_ref()))
+    fn with_io<T>(&self, f: impl FnOnce(&dyn IO) -> T) -> std::io::Result<T> {
+        self.bind_iface
+            .context
+            .with_bind_io(self.bind_id, f)
+            .map_err(Into::into)
     }
 
     #[inline]
@@ -149,17 +149,17 @@ impl IO for Interface {
 
     #[inline]
     fn real_addr(&self) -> std::io::Result<RealAddr> {
-        self.with(|iface| iface.real_addr())?
+        self.with_io(|io| io.real_addr())?
     }
 
     #[inline]
     fn max_segment_size(&self) -> std::io::Result<usize> {
-        self.with(|iface| iface.max_segment_size())?
+        self.with_io(|io| io.max_segment_size())?
     }
 
     #[inline]
     fn max_segments(&self) -> std::io::Result<usize> {
-        self.with(|iface| iface.max_segments())?
+        self.with_io(|io| io.max_segments())?
     }
 
     #[inline]
@@ -169,7 +169,7 @@ impl IO for Interface {
         pkts: &[std::io::IoSlice],
         hdr: PacketHeader,
     ) -> Poll<std::io::Result<usize>> {
-        self.with(|iface| iface.poll_send(cx, pkts, hdr))?
+        self.with_io(|io| io.poll_send(cx, pkts, hdr))?
     }
 
     #[inline]
@@ -179,12 +179,12 @@ impl IO for Interface {
         pkts: &mut [BytesMut],
         hdrs: &mut [PacketHeader],
     ) -> Poll<std::io::Result<usize>> {
-        self.with(|iface| iface.poll_recv(cx, pkts, hdrs))?
+        self.with_io(|io| io.poll_recv(cx, pkts, hdrs))?
     }
 
     #[inline]
     fn poll_close(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>> {
-        self.with(|iface| iface.poll_close(cx))?
+        self.bind_iface.context.poll_close(cx)
     }
 }
 
