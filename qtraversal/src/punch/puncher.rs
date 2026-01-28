@@ -65,7 +65,7 @@ const KONCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
 const MAX_RETRIES: usize = 5;
 const KONCK_TTL: u8 = 64;
-const BIRTHDAY_ATTACK_PORTS: u32 = 300;
+const BIRTHDAY_ATTACK_PORTS: u32 = 400;
 const PUNCH_ME_NOW_TIMEOUT_MS: u64 = 1000;
 const COLLISION_TIMEOUT_SECS: u64 = 3;
 
@@ -842,7 +842,9 @@ where
         // We open holes on 300 random ports, send PunchMeNow. Expect Konck collision, then respond PunchDone.
         // 3. Local Symmetric, Remote RestrictedPort | Dynamic
         // We use random socket collision to open hole, expecting PunchDone.
-        // 4. General Punching
+        // 4. Local RestrictedCone, Remote Symmetric
+        // Reflect, konck then Send PunchmeNow, wait for konck, send PunchDone.
+        // 5. General Punching
         // Received PunchMeNow implies remote has opened hole. We send direct Konck, expecting PunchDone.
 
         match (local_nat, remote_nat) {
@@ -937,7 +939,43 @@ where
                     }
                 }
             }
-            // 3. General Punching
+            // 4. Local RestrictedCone, Remote Symmetric
+            // Reflect, Konck and  PunchmeNow, wait for konck, send PunchDone
+            (RestrictedCone, Symmetric) => {
+                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passive strategy: Local RestrictedCone, Remote Symmetric, reflect & send PunchMeNow");
+                let iface = ifaces
+                    .borrow(&bind)
+                    .ok_or_else(|| io::Error::other("No interface found"))?;
+                let punch_me_now = PunchMeNowFrame::new(
+                    punch_pair,
+                    remote_address.paired_with_seq_num(),
+                    *local_address.deref(),
+                    local_address.tire(),
+                    local_nat,
+                );
+                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting Konck then PunchDone");
+                let konck_frame = KonckFrame::new(punch_pair);
+                self.0
+                    .send_packet(&iface, link, COLLISION_TTL, Konck(konck_frame))
+                    .await?;
+                broker.send_frame([PunchMeNow(punch_me_now)]);
+                let time = PUNCH_TIMEOUT_MS;
+                if let Ok((link, _)) =
+                    tokio::time::timeout(Duration::from_millis(time), tx.recv_konck()).await
+                {
+                    tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending punch done");
+                    self.0
+                        .send_packet(
+                            &iface,
+                            link,
+                            KONCK_TTL,
+                            PunchDone(PunchDoneFrame::new(punch_pair)),
+                        )
+                        .await?;
+                    return Ok(());
+                }
+            }
+            // 5. General Punching
             // Received PunchMeNow implies remote has opened hole. We send direct Konck, expecting PunchDone.
             _ => {
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passive strategy: General punching, send direct Konck");
