@@ -53,8 +53,8 @@ macro_rules! span {
 
 #[macro_export]
 macro_rules! event {
-    ($event_type:ty { $($evnet_field:tt)* } $(, $($tt:tt)* )?) => {{
-        $crate::event!($crate::build!($event_type { $($evnet_field)* }) $(, $($tt)* )?);
+    ($event_type:ty { $($event_field:tt)* } $(, $($tt:tt)* )?) => {{
+        $crate::event!($crate::build!($event_type { $($event_field)* }) $(, $($tt)* )?);
     }};
     ($event_data:expr                       $(, $($tt:tt)* )?) => {{
         let __build_data = || $event_data;

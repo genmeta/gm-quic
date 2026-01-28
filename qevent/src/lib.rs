@@ -189,7 +189,7 @@ pub struct TraceError {
 pub struct Event {
     time: f64,
     #[serde(flatten)]
-    data: EvnetData,
+    data: EventData,
     /// A qlog event can be associated with a single "network path" (usually, but not always, identified by a 4-tuple
     /// of IP addresses and ports). In many cases, the path will be the same for all events in a given trace, and does
     /// not need to be logged explicitly with each event. In this case, the "path" field can be omitted (in which case
@@ -389,7 +389,7 @@ pub enum EventImportance {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "name", content = "data")]
 #[enum_dispatch::enum_dispatch(BeEventData)]
-pub enum EvnetData {
+pub enum EventData {
     #[serde(rename = "quic:server_listening")]
     ServerListening(quic::connectivity::ServerListening),
     #[serde(rename = "quic:connection_started")]
@@ -650,50 +650,50 @@ mod rollback {
     use super::*;
     use crate::{build, legacy};
 
-    impl TryFrom<EvnetData> for legacy::EventData {
+    impl TryFrom<EventData> for legacy::EventData {
         type Error = ();
         #[rustfmt::skip]
-        fn try_from(value: EvnetData) -> Result<Self, Self::Error> {
+        fn try_from(value: EventData) -> Result<Self, Self::Error> {
             match value {
-                EvnetData::ServerListening(data) => Ok(legacy::EventData::ServerListening(data.into())),
-                EvnetData::ConnectionStarted(data) => Ok(legacy::EventData::ConnectionStarted(data.into())),
-                EvnetData::ConnectionClosed(data) => Ok(legacy::EventData::ConnectionClosed(data.into())),
-                EvnetData::ConnectionIdUpdated(data) => Ok(legacy::EventData::ConnectionIdUpdated(data.into())),
-                EvnetData::SpinBitUpdated(data) => Ok(legacy::EventData::SpinBitUpdated(data.into())),
-                EvnetData::ConnectionStateUpdated(data) => Ok(legacy::EventData::ConnectionStateUpdated(data.into())),
-                EvnetData::PathAssigned(_data) => Err(()),
-                EvnetData::MtuUpdated(_data) => Err(()),
-                EvnetData::VersionInformation(data) => Ok(legacy::EventData::VersionInformation(data.into())),
-                EvnetData::ALPNInformation(data) => Ok(legacy::EventData::AlpnInformation(data.into())),
-                EvnetData::ParametersSet(data) => Ok(legacy::EventData::TransportParametersSet(data.into())),
-                EvnetData::ParametersRestored(data) => Ok(legacy::EventData::TransportParametersRestored(data.into())),
-                EvnetData::PacketSent(data) => Ok(legacy::EventData::PacketSent(data.into())),
-                EvnetData::PacketReceived(data) => Ok(legacy::EventData::PacketReceived(data.into())),
-                EvnetData::PacketDropped(data) => Ok(legacy::EventData::PacketDropped(data.into())),
-                EvnetData::PacketBuffered(data) => Ok(legacy::EventData::PacketBuffered(data.into())),
-                EvnetData::PacketsAcked(data) => Ok(legacy::EventData::PacketsAcked(data.into())),
-                EvnetData::UdpDatagramSent(data) => Ok(legacy::EventData::DatagramsSent(data.into())),
-                EvnetData::UdpDatagramReceived(data) => Ok(legacy::EventData::DatagramsReceived(data.into())),
-                EvnetData::UdpDatagramDropped(data) => Ok(legacy::EventData::DatagramDropped(data.into())),
-                EvnetData::StreamStateUpdated(data) => Ok(legacy::EventData::StreamStateUpdated(data.into())),
-                EvnetData::FramesProcessed(data) => Ok(legacy::EventData::FramesProcessed(data.into())),
-                EvnetData::StreamDataMoved(data) => Ok(legacy::EventData::DataMoved(data.into())),
-                EvnetData::DatagramDataMoved(_data) => Err(()),
-                EvnetData::MigrationStateUpdated(_data) => Err(()),
-                EvnetData::KeyUpdated(data) => Ok(legacy::EventData::KeyUpdated(data.into())),
-                EvnetData::KeyDiscarded(data) => Ok(legacy::EventData::KeyDiscarded(data.into())),
-                EvnetData::RecoveryParametersSet(data) => Ok(legacy::EventData::RecoveryParametersSet(data.into())),
-                EvnetData::RecoveryMetricsUpdated(data) => Ok(legacy::EventData::MetricsUpdated(data.into())),
-                EvnetData::CongestionStateUpdated(data) => Ok(legacy::EventData::CongestionStateUpdated(data.into())),
-                EvnetData::LossTimerUpdated(data) => Ok(legacy::EventData::LossTimerUpdated(data.into())),
-                EvnetData::PacketLost(data) => Ok(legacy::EventData::PacketLost(data.into())),
-                EvnetData::MarkedForRetransmit(data) => Ok(legacy::EventData::MarkedForRetransmit(data.into())),
-                EvnetData::ECNStateUpdated(_data) => Err(()),
-                EvnetData::Error(data) => Ok(legacy::EventData::GenericError(data.into())),
-                EvnetData::Warning(data) => Ok(legacy::EventData::GenericWarning(data.into())),
-                EvnetData::Info(data) => Ok(legacy::EventData::GenericInfo(data.into())),
-                EvnetData::Debug(data) => Ok(legacy::EventData::GenericDebug(data.into())),
-                EvnetData::Verbose(data) => Ok(legacy::EventData::GenericVerbose(data.into())),
+                EventData::ServerListening(data) => Ok(legacy::EventData::ServerListening(data.into())),
+                EventData::ConnectionStarted(data) => Ok(legacy::EventData::ConnectionStarted(data.into())),
+                EventData::ConnectionClosed(data) => Ok(legacy::EventData::ConnectionClosed(data.into())),
+                EventData::ConnectionIdUpdated(data) => Ok(legacy::EventData::ConnectionIdUpdated(data.into())),
+                EventData::SpinBitUpdated(data) => Ok(legacy::EventData::SpinBitUpdated(data.into())),
+                EventData::ConnectionStateUpdated(data) => Ok(legacy::EventData::ConnectionStateUpdated(data.into())),
+                EventData::PathAssigned(_data) => Err(()),
+                EventData::MtuUpdated(_data) => Err(()),
+                EventData::VersionInformation(data) => Ok(legacy::EventData::VersionInformation(data.into())),
+                EventData::ALPNInformation(data) => Ok(legacy::EventData::AlpnInformation(data.into())),
+                EventData::ParametersSet(data) => Ok(legacy::EventData::TransportParametersSet(data.into())),
+                EventData::ParametersRestored(data) => Ok(legacy::EventData::TransportParametersRestored(data.into())),
+                EventData::PacketSent(data) => Ok(legacy::EventData::PacketSent(data.into())),
+                EventData::PacketReceived(data) => Ok(legacy::EventData::PacketReceived(data.into())),
+                EventData::PacketDropped(data) => Ok(legacy::EventData::PacketDropped(data.into())),
+                EventData::PacketBuffered(data) => Ok(legacy::EventData::PacketBuffered(data.into())),
+                EventData::PacketsAcked(data) => Ok(legacy::EventData::PacketsAcked(data.into())),
+                EventData::UdpDatagramSent(data) => Ok(legacy::EventData::DatagramsSent(data.into())),
+                EventData::UdpDatagramReceived(data) => Ok(legacy::EventData::DatagramsReceived(data.into())),
+                EventData::UdpDatagramDropped(data) => Ok(legacy::EventData::DatagramDropped(data.into())),
+                EventData::StreamStateUpdated(data) => Ok(legacy::EventData::StreamStateUpdated(data.into())),
+                EventData::FramesProcessed(data) => Ok(legacy::EventData::FramesProcessed(data.into())),
+                EventData::StreamDataMoved(data) => Ok(legacy::EventData::DataMoved(data.into())),
+                EventData::DatagramDataMoved(_data) => Err(()),
+                EventData::MigrationStateUpdated(_data) => Err(()),
+                EventData::KeyUpdated(data) => Ok(legacy::EventData::KeyUpdated(data.into())),
+                EventData::KeyDiscarded(data) => Ok(legacy::EventData::KeyDiscarded(data.into())),
+                EventData::RecoveryParametersSet(data) => Ok(legacy::EventData::RecoveryParametersSet(data.into())),
+                EventData::RecoveryMetricsUpdated(data) => Ok(legacy::EventData::MetricsUpdated(data.into())),
+                EventData::CongestionStateUpdated(data) => Ok(legacy::EventData::CongestionStateUpdated(data.into())),
+                EventData::LossTimerUpdated(data) => Ok(legacy::EventData::LossTimerUpdated(data.into())),
+                EventData::PacketLost(data) => Ok(legacy::EventData::PacketLost(data.into())),
+                EventData::MarkedForRetransmit(data) => Ok(legacy::EventData::MarkedForRetransmit(data.into())),
+                EventData::ECNStateUpdated(_data) => Err(()),
+                EventData::Error(data) => Ok(legacy::EventData::GenericError(data.into())),
+                EventData::Warning(data) => Ok(legacy::EventData::GenericWarning(data.into())),
+                EventData::Info(data) => Ok(legacy::EventData::GenericInfo(data.into())),
+                EventData::Debug(data) => Ok(legacy::EventData::GenericDebug(data.into())),
+                EventData::Verbose(data) => Ok(legacy::EventData::GenericVerbose(data.into())),
             }
         }
     }
@@ -801,8 +801,8 @@ mod tests {
     }
 
     #[test]
-    fn evnet_data() {
-        let data = EvnetData::from(build!(Warning {
+    fn event_data() {
+        let data = EventData::from(build!(Warning {
             message: "deepseek（已深度思考（用时0秒））：服务器繁忙，请稍后再试。",
             code: 255u64,
         }));
