@@ -2,9 +2,9 @@ name: Traversal Tests
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 env:
@@ -20,29 +20,35 @@ jobs:
       run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
 
     - name: Get NAT detection test list
-      id: nat-tests
       run: |
         TESTS=$(cargo test --package qtraversal test_detect -- --list | \
-          grep ": test$" | awk '{print $1}' | tr '\n' ' ')
-        echo "tests=$TESTS" >> $GITHUB_OUTPUT
+          grep ": test$" | awk '{print $1}' | sed 's/:$//')
+        echo "$TESTS" > /tmp/nat_tests.txt
+        cat /tmp/nat_tests.txt
 
     - name: Run NAT detection tests serially
       run: |
-        IFS=' ' read -ra NAT_TESTS <<< "${{ steps.nat-tests.outputs.tests }}"
+        mapfile -t NAT_TESTS < /tmp/nat_tests.txt
 
         for test in "${NAT_TESTS[@]}"; do
+          if [ -z "$test" ]; then
+            continue
+          fi
           echo "========================================"
           echo "Running NAT detection: $test"
           echo "========================================"
 
           docker run --rm --privileged \
             -v ${{ github.workspace }}:/gm-quic \
+            -v /tmp/nat_tests.txt:/tmp/nat_tests.txt:ro \
             gm-quic-traversal-test:latest \
             /bin/bash -c "
               set -e
               cd /gm-quic
               bash qtraversal/tools/run_stun.sh
-              cargo test --package qtraversal '$test' -- --nocapture --include-ignored
+              cargo test --package qtraversal --no-run
+              echo 'DEBUG: Running test [$test]'
+              ip netns exec nsa cargo test --package qtraversal '$test' -- --nocapture --include-ignored
             "
 
           echo "Completed: $test"
@@ -58,29 +64,35 @@ jobs:
       run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
 
     - name: Get hole punching test list
-      id: hp-tests
       run: |
         TESTS=$(cargo test --test traversal -- --list | \
-          grep ": test$" | awk '{print $1}' | tr '\n' ' ')
-        echo "tests=$TESTS" >> $GITHUB_OUTPUT
+          grep ": test$" | awk '{print $1}' | sed 's/:$//')
+        echo "$TESTS" > /tmp/hp_tests.txt
+        cat /tmp/hp_tests.txt
 
     - name: Run hole punching tests serially
       run: |
-        IFS=' ' read -ra HP_TESTS <<< "${{ steps.hp-tests.outputs.tests }}"
+        mapfile -t HP_TESTS < /tmp/hp_tests.txt
 
         for test in "${HP_TESTS[@]}"; do
+          if [ -z "$test" ]; then
+            continue
+          fi
           echo "========================================"
           echo "Running hole punching: $test"
           echo "========================================"
 
           docker run --rm --privileged \
             -v ${{ github.workspace }}:/gm-quic \
+            -v /tmp/hp_tests.txt:/tmp/hp_tests.txt:ro \
             gm-quic-traversal-test:latest \
             /bin/bash -c "
               set -e
               cd /gm-quic
               bash qtraversal/tools/run_stun.sh
-              cargo test --test traversal '$test' -- --include-ignored --nocapture
+              cargo test --test traversal --no-run
+              echo 'DEBUG: Running test [$test]'
+              ip netns exec nsa cargo test --test traversal '$test' -- --include-ignored --nocapture
             "
 
           echo "Completed: $test"
