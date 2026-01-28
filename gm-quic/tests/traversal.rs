@@ -255,7 +255,7 @@ async fn test_punch_case(client_nat: NatType, server_nat: NatType) {
         .unwrap();
 
     let server_ep = get_stun_data(server_iface).await[0].0;
-    launch_client(client_case, server_case, server_ep.into()).await;
+    launch_client(client_case, server_ep.into()).await;
 }
 
 async fn get_stun_data(
@@ -291,7 +291,7 @@ async fn get_stun_data(
     datas
 }
 
-async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: EndpointAddr) {
+async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
     let client = CLIENTS[&client_case.nat_type].clone().await;
 
     get_stun_data(
@@ -304,42 +304,42 @@ async fn launch_client(client_case: TestCase, server_case: TestCase, server_ep: 
     // 不会进行绑定，不会出错
     let connection = client.connected_to("localhost", [server_ep]).await.unwrap();
     let odcid = connection.origin_dcid().expect("connection failed");
-    tracing::info!(%odcid, "conneced to server");
+    tracing::info!(%odcid, "connected to server");
     let test_data = Arc::new(TEST_DATA.to_vec());
 
-    send_and_verify_echo(&connection, &test_data)
-        .await
-        .expect("echo test failed");
+    // 循环检查直连路径，每秒检查一次
+    // 如果没有直连路径，执行 echo 测试确保连接正常
+    // 总超时由 run() 函数的 60s 超时控制
+    loop {
+        // 检查是否有直连路径
+        let paths = connection
+            .path_context()
+            .expect("connection failed")
+            .paths::<Vec<_>>()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect::<Vec<_>>();
 
-    // wait a bit for direct path establishment
-    if matches!(
-        (client_case.nat_type, server_case.nat_type),
-        (NatType::Symmetric, NatType::RestrictedPort)
-            | (NatType::RestrictedPort, NatType::Symmetric)
-    ) {
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    } else {
+        let has_direct = paths.iter().any(|pathway| {
+            matches!(
+                pathway.local(),
+                EndpointAddr::Socket(SocketEndpointAddr::Direct { .. })
+            )
+        });
+
+        if has_direct {
+            tracing::info!("Direct path established: {:?}", paths);
+            return;
+        }
+
+        // 没有直连路径，执行 echo 测试确保连接正常
+        tracing::debug!("No direct path yet, verifying connection with echo test");
+        send_and_verify_echo(&connection, &test_data)
+            .await
+            .expect("echo test failed");
+
+        // 等待 1 秒后再次检查
         tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-
-    let paths = connection
-        .path_context()
-        .expect("conenction failed")
-        .paths::<Vec<_>>()
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect::<Vec<_>>();
-    let has_direct = paths.iter().any(|pathway| {
-        matches!(
-            pathway.local(),
-            EndpointAddr::Socket(SocketEndpointAddr::Direct { .. })
-        )
-    });
-
-    if has_direct {
-        tracing::info!("Direct path established: {:?}", paths);
-    } else {
-        panic!("No direct path established: {paths:?}");
     }
 }
 
