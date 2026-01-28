@@ -19,23 +19,35 @@ jobs:
     - name: Build Docker image
       run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
 
-    - name: Run NAT Detection Tests
+    - name: Get NAT detection test list
+      id: nat-tests
       run: |
-        docker run --rm --privileged \
-          -v ${{ github.workspace }}:/gm-quic \
-          gm-quic-traversal-test:latest \
-          /bin/bash -c "
-            set -e
-            cd /gm-quic
-            
-            # Setup network topology and start STUN servers
-            bash qtraversal/tools/run_stun.sh
-            
-            echo '----------------------------------------'
-            echo 'Running qtraversal detection tests'
-            echo '----------------------------------------'
-            ip netns exec nsa cargo test --package qtraversal test_detect -- --nocapture --include-ignored
-          "
+        TESTS=$(cargo test --package qtraversal test_detect -- --list | \
+          grep ": test$" | awk '{print $1}' | tr '\n' ' ')
+        echo "tests=$TESTS" >> $GITHUB_OUTPUT
+
+    - name: Run NAT detection tests serially
+      run: |
+        IFS=' ' read -ra NAT_TESTS <<< "${{ steps.nat-tests.outputs.tests }}"
+
+        for test in "${NAT_TESTS[@]}"; do
+          echo "========================================"
+          echo "Running NAT detection: $test"
+          echo "========================================"
+
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/gm-quic \
+            gm-quic-traversal-test:latest \
+            /bin/bash -c "
+              set -e
+              cd /gm-quic
+              bash qtraversal/tools/run_stun.sh
+              cargo test --package qtraversal '$test' -- --nocapture --include-ignored
+            "
+
+          echo "Completed: $test"
+          echo ""
+        done
 
   hole-punching:
     runs-on: ubuntu-latest
@@ -45,20 +57,32 @@ jobs:
     - name: Build Docker image
       run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
 
-    - name: Run Hole Punching Tests
+    - name: Get hole punching test list
+      id: hp-tests
       run: |
-        docker run --rm --privileged \
-          -v ${{ github.workspace }}:/gm-quic \
-          gm-quic-traversal-test:latest \
-          /bin/bash -c "
-            set -e
-            cd /gm-quic
-            
-            # Setup network topology and start STUN servers
-            bash qtraversal/tools/run_stun.sh
-            
-            echo '----------------------------------------'
-            echo 'Running gm-quic traversal integration tests'
-            echo '----------------------------------------'
-            ip netns exec nsa cargo test --test traversal -- --include-ignored --nocapture
-          "
+        TESTS=$(cargo test --test traversal -- --list | \
+          grep ": test$" | awk '{print $1}' | tr '\n' ' ')
+        echo "tests=$TESTS" >> $GITHUB_OUTPUT
+
+    - name: Run hole punching tests serially
+      run: |
+        IFS=' ' read -ra HP_TESTS <<< "${{ steps.hp-tests.outputs.tests }}"
+
+        for test in "${HP_TESTS[@]}"; do
+          echo "========================================"
+          echo "Running hole punching: $test"
+          echo "========================================"
+
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/gm-quic \
+            gm-quic-traversal-test:latest \
+            /bin/bash -c "
+              set -e
+              cd /gm-quic
+              bash qtraversal/tools/run_stun.sh
+              cargo test --test traversal '$test' -- --include-ignored --nocapture
+            "
+
+          echo "Completed: $test"
+          echo ""
+        done
