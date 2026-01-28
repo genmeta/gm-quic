@@ -190,9 +190,9 @@ impl IO for Interface {
 
 #[derive(Debug, Error)]
 #[error("Interface has been unbound")]
-pub struct UnbondedError;
+pub struct UnboundError;
 
-impl UnbondedError {
+impl UnboundError {
     pub fn is_source_of(mut error: &(dyn Error + 'static)) -> bool {
         loop {
             if error.is::<Self>() {
@@ -206,8 +206,8 @@ impl UnbondedError {
     }
 }
 
-impl From<UnbondedError> for std::io::Error {
-    fn from(value: UnbondedError) -> Self {
+impl From<UnboundError> for std::io::Error {
+    fn from(value: UnboundError) -> Self {
         std::io::Error::new(std::io::ErrorKind::ConnectionReset, value)
     }
 }
@@ -218,13 +218,13 @@ pub struct WeakBindInterface {
 }
 
 impl WeakBindInterface {
-    pub fn upgrade(&self) -> Result<BindInterface, UnbondedError> {
+    pub fn upgrade(&self) -> Result<BindInterface, UnboundError> {
         Ok(BindInterface {
-            context: self.context.upgrade().ok_or(UnbondedError)?,
+            context: self.context.upgrade().ok_or(UnboundError)?,
         })
     }
 
-    pub fn borrow(&self) -> Result<WeakInterface, UnbondedError> {
+    pub fn borrow(&self) -> Result<WeakInterface, UnboundError> {
         Ok(self.upgrade()?.borrow_weak())
     }
 
@@ -247,7 +247,7 @@ impl From<Interface> for WeakInterface {
 }
 
 impl WeakInterface {
-    pub fn upgrade(&self) -> Result<Interface, UnbondedError> {
+    pub fn upgrade(&self) -> Result<Interface, UnboundError> {
         Ok(Interface {
             bind_iface: self.weak_iface.upgrade()?,
             bind_id: self.bind_id,
