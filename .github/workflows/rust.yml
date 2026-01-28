@@ -27,12 +27,6 @@ jobs:
         # GitHub runners have limited cores (ubuntu/windows=2, macos=3)
         run: cargo test --workspace --verbose -- --test-threads=1
 
-  commitlint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: wagoid/commitlint-github-action@v5
-
   format:
     runs-on: ubuntu-latest
     steps:
