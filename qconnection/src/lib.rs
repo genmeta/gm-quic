@@ -519,6 +519,19 @@ impl ConnectionState {
     }
 }
 
+impl Drop for ConnectionState {
+    fn drop(&mut self) {
+        let _span = self.tracing_span.enter();
+        if self.validate().is_ok() && self.application_close("", 0).is_ok() {
+            #[cfg(debug_assertions)]
+            tracing::warn!(target: "quic", "Connection is still active when dropped, close it automatically.");
+            #[cfg(not(debug_assertions))]
+            tracing::debug!(target: "quic", "Connection is still active when dropped, close it automatically.");
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Connection(Arc<ConnectionState>);
 
 impl Connection {
@@ -682,18 +695,5 @@ impl Connection {
     /// Return error if no viable path exists, or the connection is closed.
     pub fn validate(&self) -> Result<(), Error> {
         self.0.validate()
-    }
-}
-
-// TODO: move implementation to ConnectionState
-impl Drop for Connection {
-    fn drop(&mut self) {
-        let _span = self.0.tracing_span.enter();
-        if self.validate().is_ok() && self.0.application_close("", 0).is_ok() {
-            #[cfg(debug_assertions)]
-            tracing::warn!(target: "quic", "Connection is still active when dropped, close it automatically.");
-            #[cfg(not(debug_assertions))]
-            tracing::debug!(target: "quic", "Connection is still active when dropped, close it automatically.");
-        }
     }
 }
