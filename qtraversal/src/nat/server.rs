@@ -1,8 +1,14 @@
-use std::{io, net::SocketAddr};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Mutex,
+    task::{Context, Poll, ready},
+};
 
-use qinterface::io::RefIO;
-use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use qinterface::{Interface, WeakInterface, component::Component, io::RefIO};
+use tokio_util::task::AbortOnDropHandle;
+use tracing::{info, trace};
 
 use super::{
     msg::{Attr, Request, Response},
@@ -11,101 +17,240 @@ use super::{
 use crate::nat::{
     iface::StunIO,
     msg::{CHANGE_IP, CHANGE_PORT, Packet},
+    router::StunRouterComponent,
 };
 
-pub struct StunServer<I> {
-    ifaces: [(I, StunRouter); 2],
-    change: SocketAddr,
+#[derive(Debug, Clone, Default)]
+pub struct StunServerConfig {
+    change_port: Option<u16>,
+    change_address: Option<SocketAddr>,
+}
+
+impl StunServerConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_options(change_port: Option<u16>, change_address: Option<SocketAddr>) -> Self {
+        Self {
+            change_port,
+            change_address,
+        }
+    }
+
+    pub fn with_change_port(mut self, change_port: u16) -> Self {
+        self.change_port = Some(change_port);
+        self
+    }
+
+    pub fn with_change_address(mut self, change_address: SocketAddr) -> Self {
+        self.change_address = Some(change_address);
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct StunServer<I: RefIO + 'static> {
+    ref_iface: I,
+    stun_router: StunRouter,
+    config: StunServerConfig,
 }
 
 impl<I: RefIO + 'static> StunServer<I> {
-    pub fn new(ifaces: [(I, StunRouter); 2], change: SocketAddr) -> Self {
+    pub fn new(ref_iface: I, stun_router: StunRouter, config: StunServerConfig) -> Self {
         info!(
-            "new stun io0 {:?}, io1 {:?}",
-            ifaces[0].0.iface().local_addr(),
-            ifaces[1].0.iface().local_addr()
+            target: "stun",
+            local_addr = ?ref_iface.iface().local_addr(),
+            change_port = ?config.change_port,
+            change_address = ?config.change_address,
+            "new stun server",
         );
-
-        Self { ifaces, change }
-    }
-
-    pub async fn run(&mut self) -> io::Result<()> {
-        info!("Server started");
-        let tasks = [
-            self.spawn_recv_request_task(self.ifaces[0].0.clone(), self.ifaces[0].1.clone())?,
-            self.spawn_recv_request_task(self.ifaces[1].0.clone(), self.ifaces[1].1.clone())?,
-        ];
-
-        let results = futures::future::join_all(tasks).await;
-        for result in results {
-            result??;
-        }
-        info!("Server finished");
-        Ok(())
-    }
-
-    fn change_port(&self, io: &(impl StunIO + ?Sized)) -> io::Result<SocketAddr> {
-        if io.local_addr()? == self.ifaces[0].0.iface().local_addr()? {
-            self.ifaces[1].0.iface().local_addr()
-        } else {
-            self.ifaces[0].0.iface().local_addr()
+        Self {
+            ref_iface,
+            stun_router,
+            config,
         }
     }
 
-    fn spawn_recv_request_task(
-        &self,
-        ref_iface: I,
-        stun_router: StunRouter,
-    ) -> io::Result<JoinHandle<io::Result<()>>> {
-        let local_addr = ref_iface.iface().local_addr()?;
-        let change_port_addr = self.change_port(ref_iface.iface())?;
-        let change_ip_and_port_addr = SocketAddr::new(self.change.ip(), change_port_addr.port());
-        Ok(tokio::spawn(async move {
-            while let Some((request, txid, src)) = stun_router.receive_request().await {
-                debug!(target: "stun", ?request, "recv request");
-                match (request.change_request(), request.response_address()) {
-                    (Some(changes), _) => {
-                        let mut addr = src;
-                        if changes & CHANGE_IP != 0 && changes & CHANGE_PORT != 0 {
-                            addr = change_ip_and_port_addr;
-                        } else if changes & CHANGE_PORT != 0 {
-                            addr = change_port_addr;
-                        }
-                        let request = Request::with_response_addr(src);
-                        debug!(target: "stun", ?request, to = %addr, "send request");
-                        ref_iface
-                            .iface()
-                            .send_stun_packet(Packet::Request(request), txid, addr)
-                            .await?;
-                    }
-                    (None, Some(&response_addr)) => {
-                        let response = Response::with(vec![
-                            Attr::SourceAddress(local_addr),
-                            Attr::MappedAddress(response_addr),
-                            Attr::ChangedAddress(change_ip_and_port_addr),
-                        ]);
-                        debug!(target: "stun", ?response, to = %response_addr, "send response");
-                        ref_iface
-                            .iface()
-                            .send_stun_packet(Packet::Response(response), txid, response_addr)
-                            .await?;
-                    }
-                    _ => {
-                        let response = Response::with(vec![
-                            Attr::SourceAddress(local_addr),
-                            Attr::MappedAddress(src),
-                            Attr::ChangedAddress(change_ip_and_port_addr),
-                        ]);
-                        debug!(target: "stun", ?response, to = %src, "send response");
-                        ref_iface
-                            .iface()
-                            .send_stun_packet(Packet::Response(response), txid, src)
-                            .await?;
-                    }
-                }
-            }
-            debug!(target: "stun", "Request handler finished - no more requests");
-            Ok(())
+    pub fn spawn(self) -> AbortOnDropHandle<io::Result<()>> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            serve_loop(self.ref_iface, self.stun_router, self.config).await
         }))
+    }
+}
+
+async fn serve_loop<I: RefIO>(
+    ref_iface: I,
+    stun_router: StunRouter,
+    config: StunServerConfig,
+) -> io::Result<()> {
+    info!(target: "stun", "Server started");
+    let local_addr = ref_iface.iface().local_addr()?;
+
+    while let Some((request, txid, src)) = stun_router.receive_request().await {
+        trace!(target: "stun", ?request, "recv request");
+        match (request.change_request(), request.response_address()) {
+            (Some(changes), _) => {
+                let Ok(addr) = select_change_target(src, changes, local_addr, &config) else {
+                    trace!(
+                        target: "stun",
+                        changes,
+                        change_port = ?config.change_port,
+                        change_address = ?config.change_address,
+                        "drop request: server lacks requested change capability",
+                    );
+                    continue;
+                };
+                let request = Request::with_response_addr(src);
+                trace!(target: "stun", ?request, to = %addr, "send request");
+                ref_iface
+                    .iface()
+                    .send_stun_packet(Packet::Request(request), txid, addr)
+                    .await?;
+            }
+            (None, Some(&response_addr)) => {
+                let mut attrs = vec![
+                    Attr::SourceAddress(local_addr),
+                    Attr::MappedAddress(response_addr),
+                ];
+                if let Some(addr) = config.change_address {
+                    attrs.push(Attr::ChangedAddress(addr));
+                }
+                let response = Response::with(attrs);
+                trace!(target: "stun", ?response, to = %response_addr, "send response");
+                ref_iface
+                    .iface()
+                    .send_stun_packet(Packet::Response(response), txid, response_addr)
+                    .await?;
+            }
+            _ => {
+                let mut attrs = vec![Attr::SourceAddress(local_addr), Attr::MappedAddress(src)];
+                if let Some(addr) = config.change_address {
+                    attrs.push(Attr::ChangedAddress(addr));
+                }
+                let response = Response::with(attrs);
+                trace!(target: "stun", ?response, to = %src, "send response");
+                ref_iface
+                    .iface()
+                    .send_stun_packet(Packet::Response(response), txid, src)
+                    .await?;
+            }
+        }
+    }
+
+    trace!(target: "stun", "Request handler finished - no more requests");
+    Ok(())
+}
+
+fn select_change_target(
+    src: SocketAddr,
+    changes: u8,
+    local_addr: SocketAddr,
+    config: &StunServerConfig,
+) -> io::Result<SocketAddr> {
+    let wants_ip = changes & CHANGE_IP != 0;
+    let wants_port = changes & CHANGE_PORT != 0;
+
+    match (wants_ip, wants_port) {
+        (false, false) => Ok(src),
+        (true, false) => {
+            let addr = config.change_address.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Unsupported, "CHANGE_IP not supported")
+            })?;
+            if addr.port() != local_addr.port() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "CHANGE_IP requires same port on change_address",
+                ));
+            }
+            Ok(addr)
+        }
+        (false, true) => {
+            let port = config.change_port.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Unsupported, "CHANGE_PORT not supported")
+            })?;
+            Ok(SocketAddr::new(local_addr.ip(), port))
+        }
+        (true, true) => {
+            let addr = config.change_address.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "CHANGE_IP and CHANGE_PORT not supported",
+                )
+            })?;
+            Ok(addr)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StunServerComponentInner {
+    ref_iface: WeakInterface,
+    config: StunServerConfig,
+    task: Option<AbortOnDropHandle<io::Result<()>>>,
+}
+
+#[derive(Debug)]
+pub struct StunServerComponent {
+    inner: Mutex<StunServerComponentInner>,
+}
+
+impl StunServerComponent {
+    pub fn new(
+        ref_iface: WeakInterface,
+        stun_router: StunRouter,
+        config: StunServerConfig,
+    ) -> Self {
+        let task =
+            Some(StunServer::new(ref_iface.clone(), stun_router.clone(), config.clone()).spawn());
+        Self {
+            inner: Mutex::new(StunServerComponentInner {
+                ref_iface,
+                config,
+                task,
+            }),
+        }
+    }
+
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, StunServerComponentInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Component for StunServerComponent {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut inner = self.lock_inner();
+        if let Some(task) = inner.task.as_mut() {
+            task.abort();
+            _ = ready!(Pin::new(task).poll(cx));
+            inner.task = None;
+        }
+        Poll::Ready(())
+    }
+
+    fn reinit(&self, iface: &Interface) {
+        let mut inner = self.lock_inner();
+        if inner.ref_iface.same_io(&iface.downgrade()) {
+            return;
+        }
+
+        _ = iface.with_components(|components| {
+            let Some(router) = components.with(|router: &StunRouterComponent| {
+                router.reinit(iface);
+                router.router()
+            }) else {
+                return;
+            };
+            if let Some(task) = inner.task.take() {
+                task.abort();
+            }
+
+            inner.ref_iface = iface.downgrade();
+            inner.task = Some(
+                StunServer::new(inner.ref_iface.clone(), router, inner.config.clone()).spawn(),
+            );
+        });
     }
 }

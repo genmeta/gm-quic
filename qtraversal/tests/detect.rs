@@ -160,7 +160,7 @@ macro_rules! test_detect {
     () => {}
 }
 
-// ip netns exec nsa cargo test --package qtraversal test_detect -- --nocapture
+// ip netns exec nsa cargo test --package qtraversal test_detect -- --include-ignored --nocapture
 test_detect! {
     async fn test_detect_full_cone_client = test_detect_case(0)
     async fn test_detect_restricted_cone_client = test_detect_case(1)
