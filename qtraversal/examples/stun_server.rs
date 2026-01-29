@@ -3,7 +3,10 @@ use std::{io::Result, net::SocketAddr, sync::Arc};
 use clap::Parser;
 use qinterface::io::{IO, ProductIO, handy::DEFAULT_IO_FACTORY};
 use qtraversal::{
-    nat::{router::StunRouter, server::StunServer},
+    nat::{
+        router::StunRouter,
+        server::{StunServer, StunServerConfig},
+    },
     route::{Forwarder, ReceiveAndDeliverPacket},
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,35 +30,45 @@ async fn main() -> Result<()> {
     let args = Arguments::parse();
     init_logger(&args)?;
 
-    let bind_uri = format!("inet://{}", args.bind_addr1).into();
-    let iface1: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
+    let factory: Arc<dyn ProductIO> = Arc::new(DEFAULT_IO_FACTORY);
+
+    let bind_uri1 = format!("inet://{}", args.bind_addr1).into();
+    let iface1: Arc<dyn IO> = Arc::from(factory.bind(bind_uri1));
     let stun_router1 = StunRouter::new();
-    let forwarder1 = Forwarder::Server {
-        outer_addr: args.outer_addr1,
-    };
     let _iface1_recv_task = ReceiveAndDeliverPacket::task()
         .stun_router(stun_router1.clone())
-        .forwarder(forwarder1)
+        .forwarder(Forwarder::Server {
+            outer_addr: args.outer_addr1,
+        })
         .iface_ref(iface1.clone())
         .spawn();
 
-    let bind_uri = format!("inet://{}", args.bind_addr2).into();
-    let iface2: Arc<dyn IO> = Arc::from(DEFAULT_IO_FACTORY.bind(bind_uri));
+    let bind_uri2 = format!("inet://{}", args.bind_addr2).into();
+    let iface2: Arc<dyn IO> = Arc::from(factory.bind(bind_uri2));
     let stun_router2 = StunRouter::new();
-    let forwarder2 = Forwarder::Server {
-        outer_addr: args.outer_addr2,
-    };
     let _iface2_recv_task = ReceiveAndDeliverPacket::task()
         .stun_router(stun_router2.clone())
-        .forwarder(forwarder2)
+        .forwarder(Forwarder::Server {
+            outer_addr: args.outer_addr2,
+        })
         .iface_ref(iface2.clone())
         .spawn();
 
-    let mut server = StunServer::new(
-        [(iface1, stun_router1), (iface2, stun_router2)],
-        args.change_addr,
+    let server1 = StunServer::new(
+        iface1,
+        stun_router1,
+        StunServerConfig::new()
+            .with_change_port(args.bind_addr2.port())
+            .with_change_address(args.change_addr),
     );
-    server.run().await?;
+    let server2 = StunServer::new(
+        iface2,
+        stun_router2,
+        StunServerConfig::new()
+            .with_change_port(args.bind_addr1.port())
+            .with_change_address(args.change_addr),
+    );
+    _ = tokio::try_join!(server1.spawn(), server2.spawn())?;
     Ok(())
 }
 
