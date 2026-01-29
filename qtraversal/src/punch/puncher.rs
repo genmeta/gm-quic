@@ -331,9 +331,16 @@ where
     }
 
     fn recv_add_address_frame(&self, add_address_frame: AddAddressFrame) -> io::Result<()> {
-        let mut address_book = self.0.address_book.lock().unwrap();
-        address_book.add_remote_address(add_address_frame)?;
-        let (bind, local) = address_book.pick_local_address(&add_address_frame)?;
+        // The lock on address_book must be released before accessing the transaction map
+        // to avoid a deadlock with recv_punch_me_now, which holds the transaction lock
+        // while trying to acquire the address_book lock.
+        let (bind, local) = {
+            let mut address_book = self.0.address_book.lock().unwrap();
+            address_book.add_remote_address(add_address_frame)?;
+            let (bind, local) = address_book.pick_local_address(&add_address_frame)?;
+            (bind.clone(), local)
+        };
+
         let punch_pair = Link::new(*local, *add_address_frame);
         if self.0.punch_history.contains(&punch_pair) {
             tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local.nat_type(), add_address_frame.nat_type()), "Punch already completed, skipping");
