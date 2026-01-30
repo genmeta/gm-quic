@@ -15,11 +15,12 @@ use crate::{
     frame::EncodeSize,
     net::{
         Family,
-        addr::{AddrKind, RealAddr},
+        addr::{AddrKind, BoundAddr},
         be_socket_addr,
     },
 };
 
+// 放到 addr
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SocketEndpointAddr {
     Direct {
@@ -211,11 +212,11 @@ impl EndpointAddr {
     }
 }
 
-impl From<RealAddr> for EndpointAddr {
-    fn from(addr: RealAddr) -> Self {
+impl From<BoundAddr> for EndpointAddr {
+    fn from(addr: BoundAddr) -> Self {
         match addr {
-            RealAddr::Internet(socket_addr) => SocketEndpointAddr::direct(socket_addr).into(),
-            RealAddr::Bluetooth(ble_addr) => BleEndpontAddr::new(ble_addr).into(),
+            BoundAddr::Internet(socket_addr) => SocketEndpointAddr::direct(socket_addr).into(),
+            BoundAddr::Bluetooth(ble_addr) => BleEndpontAddr::new(ble_addr).into(),
         }
     }
 }
@@ -315,7 +316,7 @@ impl<E: Display> Display for Pathway<E> {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Link<A = RealAddr> {
+pub struct Link<A = BoundAddr> {
     src: A,
     dst: A,
 }
@@ -356,21 +357,21 @@ impl<T: BufMut> WriteLink for T {
     }
 }
 
-impl From<Link<SocketAddr>> for Link<RealAddr> {
+impl From<Link<SocketAddr>> for Link<BoundAddr> {
     fn from(value: Link<SocketAddr>) -> Self {
         Self {
-            src: RealAddr::from(value.src),
-            dst: RealAddr::from(value.dst),
+            src: BoundAddr::from(value.src),
+            dst: BoundAddr::from(value.dst),
         }
     }
 }
 
-impl TryInto<Link<SocketAddr>> for Link<RealAddr> {
+impl TryInto<Link<SocketAddr>> for Link<BoundAddr> {
     type Error = std::io::Error;
 
     fn try_into(self) -> Result<Link<SocketAddr>, Self::Error> {
         match (self.src, self.dst) {
-            (RealAddr::Internet(src), RealAddr::Internet(dst)) => Ok(Link::new(src, dst)),
+            (BoundAddr::Internet(src), BoundAddr::Internet(dst)) => Ok(Link::new(src, dst)),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Invalid socket address type",
@@ -458,7 +459,7 @@ impl PacketHeader {
     pub fn empty() -> Self {
         let src = SocketAddr::from(([0, 0, 0, 0], 0));
         let dst = SocketAddr::from(([0, 0, 0, 0], 0));
-        let link = Link::new(RealAddr::from(src), RealAddr::from(dst));
+        let link = Link::new(BoundAddr::from(src), BoundAddr::from(dst));
         Self::new(link.into(), link, 0, None, 0)
     }
 

@@ -14,7 +14,7 @@ pub mod qudp {
     use bytes::BytesMut;
     use qbase::{
         net::{
-            addr::RealAddr,
+            addr::BoundAddr,
             route::{Link, Pathway},
         },
         util::Wakers,
@@ -101,8 +101,8 @@ pub mod qudp {
             self.bind_uri.clone()
         }
 
-        fn real_addr(&self) -> io::Result<RealAddr> {
-            self.usc()?.local_addr().map(RealAddr::Internet)
+        fn bound_addr(&self) -> io::Result<BoundAddr> {
+            self.usc()?.local_addr().map(BoundAddr::Internet)
         }
 
         fn max_segments(&self) -> io::Result<usize> {
@@ -141,7 +141,7 @@ pub mod qudp {
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
             self.recv_wakers.combine_with(cx, |cx| {
-                let dst = RealAddr::Internet(io.local_addr()?);
+                let dst = BoundAddr::Internet(io.local_addr()?);
                 let len = qbase_hdrs.len().min(pkts.len());
                 let mut hdrs = Vec::with_capacity(len);
                 hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
@@ -185,7 +185,7 @@ pub mod unsupported {
     };
 
     use bytes::BytesMut;
-    use qbase::net::{addr::RealAddr, route::PacketHeader};
+    use qbase::net::{addr::BoundAddr, route::PacketHeader};
     use thiserror::Error;
 
     use crate::{BindUri, IO};
@@ -218,7 +218,7 @@ pub mod unsupported {
             self.bind_uri.clone()
         }
 
-        fn real_addr(&self) -> io::Result<RealAddr> {
+        fn bound_addr(&self) -> io::Result<BoundAddr> {
             Err(UnsupportedError(()).into())
         }
 

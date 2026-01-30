@@ -22,7 +22,7 @@ fn unbind_destroys_and_weak_upgrade_fails() {
         manager.unbind(bind_uri.clone()).await;
 
         // existing strong handle remains upgradeable, but should be unusable
-        let err = bind_iface.borrow().real_addr().unwrap_err();
+        let err = bind_iface.borrow().bound_addr().unwrap_err();
         assert_eq!(err.kind(), ErrorKind::NotConnected);
 
         // ensure IO was actually closed

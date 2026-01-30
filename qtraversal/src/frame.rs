@@ -23,6 +23,7 @@ pub mod punch_done;
 pub mod punch_me_now;
 pub mod remove_address;
 
+// TODO；移动到 qbase
 pub const ADD_ADDRESS_FRAME_TYPE: u32 = 0x3d7e90; // 0x3d7e90 for IPv4, 0x3d7e91 for IPv6
 pub const PUNCH_ME_NOW_FRAME_TYPE: u32 = 0x3d7e92; // 0x3d7e92 for IPv4, 0x3d7e93 for IPv6
 pub const REMOVE_ADDRESS_FRAME_TYPE: u32 = 0x3d7e94;

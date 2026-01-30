@@ -8,7 +8,7 @@ use std::{
 };
 
 use qbase::net::{
-    addr::RealAddr,
+    addr::BoundAddr,
     route::{Link, PacketHeader},
 };
 use thiserror::Error;
@@ -61,25 +61,25 @@ pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure
         return Err(InterfaceFailure::BleProtocol);
     }
 
-    let real_addr = match iface
-        .real_addr()
+    let bound_addr = match iface
+        .bound_addr()
         .map_err(InterfaceFailure::InterfaceBroken)?
     {
-        RealAddr::Internet(addr) => addr,
+        BoundAddr::Internet(addr) => addr,
         _ => return Err(InterfaceFailure::InvalidImplementation),
     };
 
     let socket_addr = SocketAddr::try_from(&iface.bind_uri())?;
 
     // Check if addresses match
-    if !(real_addr.ip() == socket_addr.ip()
-        && (socket_addr.port() == 0 || real_addr.port() == socket_addr.port()))
+    if !(bound_addr.ip() == socket_addr.ip()
+        && (socket_addr.port() == 0 || bound_addr.port() == socket_addr.port()))
     {
         return Err(InterfaceFailure::AddressMismatch);
     }
 
     // Test connectivity with a local socket
-    let localhost = match real_addr.ip() {
+    let localhost = match bound_addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.into(),
         IpAddr::V4(ip) => ip.into(),
         IpAddr::V6(ip) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.into(),
@@ -93,7 +93,7 @@ pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure
         .map_err(InterfaceFailure::TestSocketBindFailed)?;
 
     // Send test packet
-    let link = Link::new(real_addr, dst_addr);
+    let link = Link::new(bound_addr, dst_addr);
     let packets = [io::IoSlice::new(&[0; 1])];
     let header = PacketHeader::new(link.into(), link.into(), 64, None, packets[0].len() as u16);
 

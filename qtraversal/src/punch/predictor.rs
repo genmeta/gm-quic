@@ -233,7 +233,8 @@ impl PortPredictor {
         for _i in 0..interfaces_count {
             match self.create_single_interface().await {
                 Ok((bind_uri, iface)) => {
-                    if let Ok(qbase::net::addr::RealAddr::Internet(socket_addr)) = iface.real_addr()
+                    if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) =
+                        iface.bound_addr()
                     {
                         let port = socket_addr.port();
                         let now = tokio::time::Instant::now();
@@ -279,8 +280,8 @@ impl PortPredictor {
 
             let iface = bind_iface.borrow();
 
-            match iface.real_addr() {
-                Ok(_real_addr) => {
+            match iface.bound_addr() {
+                Ok(_bound_addr) => {
                     self.total_created += 1;
                     return Ok((bind_addr, iface));
                 }
@@ -304,7 +305,7 @@ impl PortPredictor {
         let mut successful_sends = 0;
         let mut successful_interfaces = Vec::new();
         for iface in interfaces {
-            if let Ok(qbase::net::addr::RealAddr::Internet(socket_addr)) = iface.real_addr() {
+            if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) = iface.bound_addr() {
                 let link = Link::new(socket_addr, punch_pair.dst());
                 let frame = TraversalFrame::Konck(KonckFrame::new(punch_pair));
                 if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {

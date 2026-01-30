@@ -168,7 +168,7 @@ impl QuicClient {
         let avaliable_ifaces = self.bind_ifaces.as_ref().map(|map| {
             map.iter()
                 .map(|entry| entry.value().borrow())
-                .filter_map(|iface| Some((iface.real_addr().ok()?, iface)))
+                .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
                 .collect::<Vec<_>>()
         });
 
@@ -192,11 +192,11 @@ impl QuicClient {
                     }
                 };
                 let iface = self.network.bind(bind_uri.clone()).await.borrow();
-                let real_addr = iface.real_addr().map_err(|source| BindInterfaceError {
+                let bound_addr = iface.bound_addr().map_err(|source| BindInterfaceError {
                     bind_uri: Some(bind_uri),
                     bind_error: source,
                 })?;
-                Ok(vec![(real_addr, iface)])
+                Ok(vec![(bound_addr, iface)])
             }
             Some(bind_interfaces) => {
                 let ifaces = bind_interfaces
@@ -219,17 +219,17 @@ impl QuicClient {
                 continue;
             }
             paths.extend(select_or_bind_ifaces(&server_ep).await?.into_iter().map(
-                move |(real_addr, iface)| {
+                move |(bound_addr, iface)| {
                     let dst = match server_ep {
                         EndpointAddr::Socket(socket_endpoint_addr) => {
-                            RealAddr::Internet(*socket_endpoint_addr)
+                            BoundAddr::Internet(*socket_endpoint_addr)
                         }
                         EndpointAddr::Ble(ble_endpont_addr) => {
-                            RealAddr::Bluetooth(*ble_endpont_addr)
+                            BoundAddr::Bluetooth(*ble_endpont_addr)
                         }
                     };
-                    let link = Link::new(real_addr, dst);
-                    let pathway = Pathway::new(real_addr.into(), server_ep);
+                    let link = Link::new(bound_addr, dst);
+                    let pathway = Pathway::new(bound_addr.into(), server_ep);
                     (iface, link, pathway)
                 },
             ));
