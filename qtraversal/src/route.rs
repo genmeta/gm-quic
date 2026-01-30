@@ -224,7 +224,7 @@ impl ReceiveAndDeliverPacket {
                             forwarder.should_forward(fhdr.pathway().remote())
                     {
                         let bufs = &[io::IoSlice::new(&pkt)];
-                        let link = Link::new(iface.real_addr()?, forward_target.into());
+                        let link = Link::new(iface.bound_addr()?, forward_target.into());
                         let hdr = PacketHeader::new(link.into(), link, 64, None, pkt.len() as _);
                         return iface.sendmmsg(bufs, hdr).await;
                     };

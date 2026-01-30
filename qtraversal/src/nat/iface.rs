@@ -1,7 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, BytesMut};
-use qbase::net::addr::RealAddr;
+use qbase::net::addr::BoundAddr;
 use qinterface::io::{IO, IoExt};
 
 use crate::{
@@ -12,8 +12,8 @@ use crate::{
 
 pub trait StunIO: IO {
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        let real_addr = self.real_addr()?;
-        real_addr.try_into().map_err(io::Error::other)
+        let bound_addr = self.bound_addr()?;
+        bound_addr.try_into().map_err(io::Error::other)
     }
 
     fn send_stun_packet(
@@ -38,7 +38,7 @@ pub trait StunIO: IO {
             let bufs = &[io::IoSlice::new(&buf)];
 
             // assemble packet header
-            let link = Link::new(self.real_addr()?, RealAddr::Internet(dst));
+            let link = Link::new(self.bound_addr()?, BoundAddr::Internet(dst));
             let pathway = link.into();
 
             let hdr = qbase::net::route::PacketHeader::new(pathway, link, 64, None, 0);

@@ -4,7 +4,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::ReceiveFrame,
     net::{
-        addr::RealAddr,
+        addr::BoundAddr,
         route::{BleEndpontAddr, EndpointAddr, Link, Pathway, SocketEndpointAddr},
         tx::Signals,
     },
@@ -47,16 +47,18 @@ impl Components {
 
         let future = async move {
             let handle_address_event = |(bind_uri, event): (BindUri, AddressEvent)| {
-                let event = match event.downcast::<io::Result<RealAddr>>() {
+                let event = match event.downcast::<io::Result<BoundAddr>>() {
                     Ok(AddressEvent::Upsert(data)) => {
                         // on error: delect from address book
                         // THINK: Err和remove的异同？
-                        let Ok(real_addr) = data.as_ref() else { return };
-                        let endpoint_addr = match *real_addr {
-                            RealAddr::Internet(addr) => {
+                        let Ok(bound_addr) = data.as_ref() else {
+                            return;
+                        };
+                        let endpoint_addr = match *bound_addr {
+                            BoundAddr::Internet(addr) => {
                                 EndpointAddr::Socket(SocketEndpointAddr::direct(addr))
                             }
-                            RealAddr::Bluetooth(addr) => {
+                            BoundAddr::Bluetooth(addr) => {
                                 EndpointAddr::Ble(BleEndpontAddr::new(addr))
                             }
                             _ => return,

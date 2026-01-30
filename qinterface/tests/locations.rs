@@ -25,7 +25,7 @@ fn locations_component_emits_closed_then_upsert_on_rebind() {
             LocationsComponent::new(iface.downgrade(), locations.clone())
         });
 
-        // initial upsert (real_addr result) should be delivered to the subscriber
+        // initial upsert (bound_addr result) should be delivered to the subscriber
         let (u_bind, ev) = time::timeout(Duration::from_secs(2), observer.recv())
             .await
             .expect("timeout waiting for initial upsert")

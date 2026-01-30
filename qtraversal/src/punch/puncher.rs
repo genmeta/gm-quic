@@ -565,7 +565,7 @@ where
                 broker.send_frame([punch_me_now.into()]);
 
                 let link = Link::new(
-                    iface.real_addr()?.try_into().expect("Must be SocketAddr"),
+                    iface.bound_addr()?.try_into().expect("Must be SocketAddr"),
                     link.dst(),
                 );
                 let result: io::Result<()> = loop {
@@ -685,7 +685,7 @@ where
                 tracing::debug!(target: "punch", %punch_pair, "Sending PunchMeNow + Konck expecting PunchDone");
                 broker.send_frame([PunchMeNow(punch_me_now)]);
                 let link = Link::new(
-                    iface.real_addr()?.try_into().expect("Must be SocketAddr"),
+                    iface.bound_addr()?.try_into().expect("Must be SocketAddr"),
                     link.dst(),
                 );
                 let time = Duration::from_millis(100);
@@ -1067,10 +1067,10 @@ where
                         format!("Interface not found for bind URI: {:?}", bind),
                     )
                 })?;
-                let local_real = iface.real_addr()?.try_into().map_err(|_| {
-                    io::Error::other("Failed to convert real address to SocketAddr")
+                let local_bound = iface.bound_addr()?.try_into().map_err(|_| {
+                    io::Error::other("Failed to convert bound address to SocketAddr")
                 })?;
-                Ok((local_real, *remote_agent))
+                Ok((local_bound, *remote_agent))
             }
             _ => Err(io::Error::other(
                 "Unsupported endpoint type combination for punching",
@@ -1185,7 +1185,7 @@ async fn dynamic_iface(
             // Must use the connection-owned router.
             components.init_with(|| QuicRouterComponent::new(quic_router.clone()));
 
-            let local_addr = SocketAddr::try_from(iface.real_addr()?).map_err(io::Error::other)?;
+            let local_addr = SocketAddr::try_from(iface.bound_addr()?).map_err(io::Error::other)?;
             let stun_server = *stun_servers
                 .iter()
                 .find(|addr| addr.is_ipv4() == local_addr.is_ipv4())

@@ -26,7 +26,7 @@ fn manual_rebind_makes_old_interface_stale() {
         assert!(!old_iface.same_io(&new_iface));
 
         // Old iface IO operations should fail with ConnectionReset/RebindedError
-        let err = old_iface.real_addr().unwrap_err();
+        let err = old_iface.bound_addr().unwrap_err();
         assert_eq!(err.kind(), ErrorKind::ConnectionReset);
         assert!(RebindedError::is_source_of(err.get_ref().unwrap()));
 
@@ -37,7 +37,7 @@ fn manual_rebind_makes_old_interface_stale() {
         let _ = err; // it's exactly RebindedError
 
         // New iface works
-        new_iface.real_addr().expect("new iface should be usable");
+        new_iface.bound_addr().expect("new iface should be usable");
         assert!(probe.reinit_calls.load(std::sync::atomic::Ordering::SeqCst) > 0);
     })
 }
