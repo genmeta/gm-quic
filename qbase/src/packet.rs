@@ -106,7 +106,7 @@ pub enum PacketContains {
     JustPing,
     EffectivePayload,
 }
-
+// TODO: PacketContent.include(frame_type) -> PacketContent
 impl PacketContains {
     pub fn include(self, frame_type: FrameType) -> Self {
         match frame_type {

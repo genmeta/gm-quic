@@ -117,7 +117,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
             .unwrap()
             .1
             .borrow()
-            .real_addr()?
+            .bound_addr()?
     );
 
     serve_echo(listeners).await?;

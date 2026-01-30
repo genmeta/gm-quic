@@ -11,7 +11,7 @@ use qbase::{
         MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, PingFrame,
         ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
-    net::addr::RealAddr,
+    net::addr::BoundAddr,
     packet::header::{
         GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
@@ -163,10 +163,10 @@ impl From<SocketAddr> for PathEndpointInfo {
     }
 }
 
-impl From<RealAddr> for PathEndpointInfo {
-    fn from(value: RealAddr) -> Self {
+impl From<BoundAddr> for PathEndpointInfo {
+    fn from(value: BoundAddr) -> Self {
         match value {
-            RealAddr::Internet(socket_addr) => socket_addr.into(),
+            BoundAddr::Internet(socket_addr) => socket_addr.into(),
             _ => crate::build!(Self {}),
         }
     }
@@ -627,7 +627,7 @@ impl From<&PingFrame> for QuicFrame {
 
 impl<D: ContinuousData + ?Sized> From<(&CryptoFrame, &D)> for QuicFrame {
     fn from((frame, data): (&CryptoFrame, &D)) -> Self {
-        let payload_length = frame.length();
+        let payload_length = frame.len();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Crypto {
             offset: frame.offset(),
@@ -644,7 +644,7 @@ impl<D: ContinuousData + ?Sized> From<(&CryptoFrame, &D)> for QuicFrame {
 
 impl From<&CryptoFrame> for QuicFrame {
     fn from(frame: &CryptoFrame) -> Self {
-        let payload_length = frame.length();
+        let payload_length = frame.len();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Crypto {
             offset: frame.offset(),

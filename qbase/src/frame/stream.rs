@@ -90,6 +90,7 @@ impl From<u8> for Fin {
 }
 
 /// Stream flags combining offset, length, and fin
+/// TODO: 移除
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Flags(pub Offset, pub Len, pub Fin);
 

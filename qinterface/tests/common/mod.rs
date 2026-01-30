@@ -14,7 +14,7 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::net::{
-    addr::RealAddr,
+    addr::BoundAddr,
     route::{Link, PacketHeader, Pathway},
 };
 use qinterface::{Interface, bind_uri::BindUri, component::Component, device::Devices, io::IO};
@@ -72,17 +72,17 @@ pub struct FakeIoState {
 #[derive(Debug)]
 pub struct FakeIo {
     bind_uri: BindUri,
-    real_addr: RealAddr,
+    bound_addr: BoundAddr,
     state: Arc<FakeIoState>,
     closed: AtomicBool,
     close_notify: Arc<Notify>,
 }
 
 impl FakeIo {
-    pub fn new(bind_uri: BindUri, real_addr: RealAddr, state: Arc<FakeIoState>) -> Self {
+    pub fn new(bind_uri: BindUri, bound_addr: BoundAddr, state: Arc<FakeIoState>) -> Self {
         Self {
             bind_uri,
-            real_addr,
+            bound_addr,
             state,
             closed: AtomicBool::new(false),
             close_notify: Arc::new(Notify::new()),
@@ -99,8 +99,8 @@ impl IO for FakeIo {
         self.bind_uri.clone()
     }
 
-    fn real_addr(&self) -> io::Result<RealAddr> {
-        Ok(self.real_addr)
+    fn bound_addr(&self) -> io::Result<BoundAddr> {
+        Ok(self.bound_addr)
     }
 
     fn max_segment_size(&self) -> io::Result<usize> {
@@ -156,11 +156,11 @@ impl FakeFactory {
 impl qinterface::io::ProductIO for FakeFactory {
     fn bind(&self, bind_uri: BindUri) -> Box<dyn IO> {
         let generation = self.state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let real_addr = RealAddr::Internet(SocketAddr::new(
+        let bound_addr = BoundAddr::Internet(SocketAddr::new(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             self.base_port.saturating_add(generation as u16),
         ));
-        Box::new(FakeIo::new(bind_uri, real_addr, self.state.clone()))
+        Box::new(FakeIo::new(bind_uri, bound_addr, self.state.clone()))
     }
 }
 

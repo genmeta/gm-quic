@@ -11,7 +11,8 @@ use qbase::{
     cid::ConnectionId,
     error::{ErrorKind, QuicError},
     net::{
-        route::{EndpointAddr, Pathway, SocketEndpointAddr},
+        addr::{EndpointAddr, SocketEndpointAddr},
+        route::Pathway,
         tx::ArcSendWakers,
     },
 };

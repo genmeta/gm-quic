@@ -10,7 +10,7 @@ use qbase::{
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::{
-        addr::RealAddr,
+        addr::BoundAddr,
         route::{Link, Pathway},
     },
     packet::GetDcid,
@@ -81,7 +81,7 @@ impl QuicRouter {
             self.table.get(&signpost).map(|queue| queue.clone())
         } else {
             match link.dst() {
-                RealAddr::Internet(socket_addr) => {
+                BoundAddr::Internet(socket_addr) => {
                     let signpost = Signpost::from(socket_addr);
                     self.table.get(&signpost).map(|queue| queue.clone())
                 }

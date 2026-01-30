@@ -12,7 +12,7 @@ use bytes::BytesMut;
 use dashmap::{DashMap, Entry};
 use futures::FutureExt;
 use qbase::{
-    net::{addr::RealAddr, route},
+    net::{addr::BoundAddr, route},
     util::{UniqueId, UniqueIdGenerator},
 };
 use tokio::sync::SetOnce;
@@ -396,8 +396,8 @@ impl IO for InterfaceContext {
         self.binding().io.bind_uri()
     }
 
-    fn real_addr(&self) -> io::Result<RealAddr> {
-        self.with_io(|io| io.real_addr())
+    fn bound_addr(&self) -> io::Result<BoundAddr> {
+        self.with_io(|io| io.bound_addr())
     }
 
     fn max_segment_size(&self) -> io::Result<usize> {
@@ -459,7 +459,7 @@ mod dropping_io {
             self.bind_uri.clone()
         }
 
-        fn real_addr(&self) -> io::Result<RealAddr> {
+        fn bound_addr(&self) -> io::Result<BoundAddr> {
             Err(self.to_io_error())
         }
 
@@ -589,7 +589,7 @@ mod tests {
             self.bind_uri.clone()
         }
 
-        fn real_addr(&self) -> io::Result<RealAddr> {
+        fn bound_addr(&self) -> io::Result<BoundAddr> {
             Err(io::Error::new(io::ErrorKind::Unsupported, "not needed"))
         }
 

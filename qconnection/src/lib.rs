@@ -63,7 +63,10 @@ use qbase::{
     error::{AppError, Error, ErrorKind, QuicError},
     flow,
     frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
-    net::route::{EndpointAddr, Link, Pathway},
+    net::{
+        addr::EndpointAddr,
+        route::{Link, Pathway},
+    },
     param::{ArcParameters, ParameterId},
     role::Role,
     sid::StreamId,

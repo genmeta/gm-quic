@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::net::{addr::RealAddr, route::PacketHeader};
+use qbase::net::{addr::BoundAddr, route::PacketHeader};
 
 pub mod handy;
 
@@ -46,7 +46,7 @@ pub trait IO: Send + Sync + Any {
     /// then the implementation should return an error as well.
     ///
     /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
-    fn real_addr(&self) -> io::Result<RealAddr>;
+    fn bound_addr(&self) -> io::Result<BoundAddr>;
 
     /// Maximum size of a single network segment in bytes
     fn max_segment_size(&self) -> io::Result<usize>;

@@ -1,7 +1,7 @@
 use bytes::BufMut;
 use qbase::net::{
     Family,
-    route::{SocketEndpointAddr, WriteSocketEndpointAddr, be_socket_endpoint_addr},
+    addr::{SocketEndpointAddr, WriteSocketEndpointAddr, be_socket_endpoint_addr},
 };
 
 use crate::PathWay;

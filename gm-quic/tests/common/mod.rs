@@ -82,7 +82,7 @@ pub fn launch_test_client(
     Arc::new(client)
 }
 
-pub fn get_server_addr(listeners: &QuicListeners) -> qbase::net::addr::RealAddr {
+pub fn get_server_addr(listeners: &QuicListeners) -> qbase::net::addr::BoundAddr {
     let localhost = listeners
         .get_server("localhost")
         .expect("Server localhost must be registered");
@@ -94,7 +94,7 @@ pub fn get_server_addr(listeners: &QuicListeners) -> qbase::net::addr::RealAddr 
         .expect("Server should bind at least one address");
     localhost_bind_interface
         .borrow()
-        .real_addr()
+        .bound_addr()
         .expect("failed to get real addr")
 }
 

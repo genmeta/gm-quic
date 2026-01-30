@@ -56,7 +56,7 @@ impl CryptoFrame {
     }
 
     /// Return the length of the frame.
-    pub fn length(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.length.into_inner()
     }
 
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
         assert_eq!(frame.encoding_size(), 1 + 1 + 2);
         assert_eq!(frame.offset(), 0);
-        assert_eq!(frame.length(), 500);
+        assert_eq!(frame.len(), 500);
         assert_eq!(frame.range(), 0..500);
     }
 

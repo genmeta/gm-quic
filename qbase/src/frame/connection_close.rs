@@ -123,6 +123,7 @@ pub enum ConnectionCloseFrame {
     Quic(QuicCloseFrame),
 }
 
+// TODO: 删除 frame type 常量
 const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 
 impl super::GetFrameType for ConnectionCloseFrame {

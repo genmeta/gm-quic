@@ -142,7 +142,7 @@ async fn run(options: Options) -> Result<(), Error> {
             .unwrap()
             .1
             .borrow()
-            .real_addr()?
+            .bound_addr()?
     );
 
     loop {

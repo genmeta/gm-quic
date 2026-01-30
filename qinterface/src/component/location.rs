@@ -34,6 +34,7 @@ impl<D: ?Sized> Clone for AddressEvent<D> {
     }
 }
 
+// TODO： 固定类型
 impl AddressEvent {
     pub fn downcast<D: Any + Send + Sync>(self) -> Result<AddressEvent<D>, Self> {
         match self {
@@ -204,7 +205,7 @@ impl<I: RefIO + 'static> IfaceLocations<I> {
     pub fn new(ref_iface: I, locations: Arc<Locations>) -> Self {
         locations.upsert(
             ref_iface.iface().bind_uri(),
-            Arc::new(ref_iface.iface().real_addr()),
+            Arc::new(ref_iface.iface().bound_addr()),
         );
 
         Self {
@@ -252,6 +253,6 @@ impl Component for LocationsComponent {
 
         self.locations.close(bind_uri.clone());
         self.locations
-            .upsert(bind_uri.clone(), Arc::new(iface.real_addr()));
+            .upsert(bind_uri.clone(), Arc::new(iface.bound_addr()));
     }
 }

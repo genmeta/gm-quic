@@ -13,7 +13,7 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::{
-    net::{addr::RealAddr, route::PacketHeader},
+    net::{addr::BoundAddr, route::PacketHeader},
     util::UniqueId,
 };
 use thiserror::Error;
@@ -148,8 +148,8 @@ impl IO for Interface {
     }
 
     #[inline]
-    fn real_addr(&self) -> std::io::Result<RealAddr> {
-        self.with_io(|io| io.real_addr())?
+    fn bound_addr(&self) -> std::io::Result<BoundAddr> {
+        self.with_io(|io| io.bound_addr())?
     }
 
     #[inline]
@@ -276,8 +276,8 @@ impl IO for WeakInterface {
         self.bind_uri.clone()
     }
 
-    fn real_addr(&self) -> std::io::Result<RealAddr> {
-        self.upgrade()?.real_addr()
+    fn bound_addr(&self) -> std::io::Result<BoundAddr> {
+        self.upgrade()?.bound_addr()
     }
 
     fn max_segment_size(&self) -> std::io::Result<usize> {

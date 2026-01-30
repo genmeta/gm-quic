@@ -13,7 +13,7 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use qbase::{net::route::SocketEndpointAddr, varint::VarInt};
+use qbase::{net::addr::SocketEndpointAddr, varint::VarInt};
 use qinterface::{
     Interface, RebindedError, WeakInterface,
     component::{
