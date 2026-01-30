@@ -13,7 +13,7 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::{
-    net::route::{PacketHeader, SocketEndpointAddr},
+    net::{addr::SocketEndpointAddr, route::PacketHeader},
     util::ArcAsyncDeque,
 };
 use qinterface::{

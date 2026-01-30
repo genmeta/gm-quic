@@ -12,11 +12,7 @@ use std::{
 use dashmap::{DashMap, DashSet, Entry};
 use qbase::{
     frame::{ReceiveFrame, SendFrame},
-    net::{
-        AddrFamily,
-        route::{PacketHeader, SocketEndpointAddr},
-        tx::Signals,
-    },
+    net::{AddrFamily, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
     packet::{
         Package, PacketSpace, ProductHeader,
         header::short::OneRttHeader,

@@ -4,8 +4,8 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::ReceiveFrame,
     net::{
-        addr::BoundAddr,
-        route::{BleEndpontAddr, EndpointAddr, Link, Pathway, SocketEndpointAddr},
+        addr::{BleEndpontAddr, BoundAddr, EndpointAddr, SocketEndpointAddr},
+        route::{Link, Pathway},
         tx::Signals,
     },
     packet::{ProductHeader, header::short::OneRttHeader},
