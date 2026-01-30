@@ -1,7 +1,7 @@
 use std::{fmt::Debug, io};
 
 use futures::stream::BoxStream;
-use qbase::net::route::SocketEndpointAddr;
+use qbase::net::addr::SocketEndpointAddr;
 use qinterface::bind_uri::BindUri;
 
 pub type ResolveItem = (Option<BindUri>, SocketEndpointAddr);

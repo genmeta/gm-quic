@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use qbase::net::route::SocketEndpointAddr;
+use qbase::net::addr::SocketEndpointAddr;
 
 pub mod addr;
 pub mod frame;
