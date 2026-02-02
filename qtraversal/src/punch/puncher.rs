@@ -57,17 +57,23 @@ use crate::{
 type StunClient<I = WeakInterface> = crate::nat::client::StunClient<I>;
 // type StunProtocol<IO = WeakQuicInterface> = crate::nat::protocol::StunProtocol<I>;
 
+// TTL
 #[cfg(any(test, feature = "test-ttl"))]
 pub const COLLISION_TTL: u8 = 1;
 #[cfg(not(any(test, feature = "test-ttl")))]
 pub const COLLISION_TTL: u8 = 5;
+const KONCK_TTL: u8 = 64;
+
+// Timeout
 const KONCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
-const MAX_RETRIES: usize = 5;
-const KONCK_TTL: u8 = 64;
-const BIRTHDAY_ATTACK_PORTS: u32 = 400;
 const PUNCH_ME_NOW_TIMEOUT_MS: u64 = 1000;
-const COLLISION_TIMEOUT_SECS: u64 = 3;
+const COLLISION_TIMEOUT_MS: u64 = 3000;
+
+// Quantity
+const MAX_RETRIES: usize = 5;
+const COLLISION_PORTS: u32 = 400;
+const BIRTHDAY_ATTACK_PORTS: u32 = 300;
 
 pub struct ArcPuncher<TX, PH, S>(Arc<Puncher<TX, PH, S>>);
 
@@ -191,7 +197,7 @@ where
         let mut random_ports = HashSet::new();
         let dst = link.dst();
         let ip = dst.ip();
-        while random_ports.len() < BIRTHDAY_ATTACK_PORTS as usize {
+        while random_ports.len() < COLLISION_PORTS as usize {
             let port = rand::random::<u16>() % (u16::MAX - 1024) + 1024;
             let dst = SocketAddr::new(ip, port);
             if !random_ports.insert(port) {
@@ -587,7 +593,7 @@ where
                 broker.send_frame([punch_me_now.into()]);
 
                 if timeout(
-                    Duration::from_secs(COLLISION_TIMEOUT_SECS),
+                    Duration::from_millis(COLLISION_TIMEOUT_MS),
                     tx.receive_punch_me_now(),
                 )
                 .await
@@ -627,9 +633,8 @@ where
                             tracing::warn!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "Birthday attack failed");
                         }
                     }
-                } else {
-                    tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Did not receive PunchMeNow response");
                 }
+
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
             }
             // 4. Local Symmetric, Remote RestrictedCone -> Reverse Punching
@@ -643,28 +648,26 @@ where
                     tx.receive_punch_me_now(),
                 )
                 .await
-                .is_ok()
+                .is_err()
                 {
-                    let iface = ifaces
-                        .borrow(&bind_uri)
-                        .ok_or_else(|| io::Error::other("No interface found"))?;
-                    for i in 0..5 {
-                        tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending Konck expecting PunchDone");
-                        self.0
-                            .send_packet(
-                                &iface,
-                                link,
-                                KONCK_TTL,
-                                Konck(KonckFrame::new(punch_pair)),
-                            )
-                            .await?;
-                        let time = Duration::from_millis(KONCK_TIMEOUT_MS);
-                        if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
-                            tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
-                            return Ok(());
-                        }
+                    tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Wait for PunchMeNow timeout, try to connect blindly");
+                }
+
+                let iface = ifaces
+                    .borrow(&bind_uri)
+                    .ok_or_else(|| io::Error::other("No interface found"))?;
+                for i in 0..5 {
+                    tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending Konck expecting PunchDone");
+                    self.0
+                        .send_packet(&iface, link, KONCK_TTL, Konck(KonckFrame::new(punch_pair)))
+                        .await?;
+                    let time = Duration::from_millis(KONCK_TIMEOUT_MS);
+                    if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
+                        tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
+                        return Ok(());
                     }
                 }
+
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch failed");
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
             }

@@ -57,16 +57,18 @@ async fn main() -> Result<()> {
     let server1 = StunServer::new(
         iface1,
         stun_router1,
-        StunServerConfig::new()
-            .with_change_port(args.bind_addr2.port())
-            .with_change_address(args.change_addr),
+        StunServerConfig::builder()
+            .change_port(args.bind_addr2.port())
+            .change_address(args.change_addr)
+            .init(),
     );
     let server2 = StunServer::new(
         iface2,
         stun_router2,
-        StunServerConfig::new()
-            .with_change_port(args.bind_addr1.port())
-            .with_change_address(args.change_addr),
+        StunServerConfig::builder()
+            .change_port(args.bind_addr1.port())
+            .change_address(args.change_addr)
+            .init(),
     );
     _ = tokio::try_join!(server1.spawn(), server2.spawn())?;
     Ok(())
