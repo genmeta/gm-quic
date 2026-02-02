@@ -21,6 +21,7 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
+use tracing::info;
 
 use crate::qtraversal::resolver::{Resolve, StandResolver};
 
@@ -61,6 +62,7 @@ impl Network {
             })
             .collect()
             .await;
+        info!("stun agents for server {}: {:?}", stun_server, agents);
         (!agents.is_empty()).then_some(agents)
     }
 
