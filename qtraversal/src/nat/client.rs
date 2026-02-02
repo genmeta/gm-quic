@@ -405,7 +405,7 @@ struct StunClientsInner<I: RefIO + 'static> {
     task: Option<AbortOnDropHandle<()>>,
 }
 
-pub const DEFAULT_STUN_SERVER: &str = "nat.genmeta.net";
+pub const DEFAULT_STUN_SERVER: &str = "nat.genmeta.net:20004";
 
 impl<I: RefIO + 'static> StunClientsInner<I> {
     pub const MIN_AGENTS: usize = 3;
@@ -421,26 +421,31 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
         let new_stun_client = {
             let ref_iface = ref_iface.clone();
             move |agent_addr: SocketAddr| {
+                let local_addr = ref_iface.iface().local_addr().ok()?;
+                if local_addr.is_ipv4() != agent_addr.is_ipv4() {
+                    return None;
+                }
                 let stun_router = router.clone();
-                StunClient::new(
+                Some(StunClient::new(
                     ref_iface.clone(),
                     stun_router,
                     agent_addr,
                     locations.clone(),
-                )
+                ))
             }
         };
 
         let clients: Arc<Mutex<StunClientsMap<I>>> = Arc::new(Mutex::new(
             agents
                 .into_iter()
-                .map(|agent| (agent, new_stun_client(agent)))
+                .filter_map(|agent| new_stun_client(agent).map(|client| (agent, client)))
                 .collect(),
         ));
         let task = AbortOnDropHandle::new(tokio::spawn({
             let clients = clients.clone();
             let resolver = resolver.clone();
             let server = server.clone();
+            let ref_iface = ref_iface.clone();
             async move {
                 let lock_clients = || clients.lock().expect("StunClients mutex poisoned");
 
@@ -482,10 +487,13 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                         .collect::<Vec<_>>()
                         .await;
 
+                    let local_addr = ref_iface.iface().local_addr().ok()?;
+                    let is_ipv4 = local_addr.is_ipv4();
+
                     let clients = lock_clients();
                     let new_agents = resolved_agents
                         .into_iter()
-                        .filter(|addr| !clients.contains_key(addr))
+                        .filter(|addr| addr.is_ipv4() == is_ipv4 && !clients.contains_key(addr))
                         .collect::<Vec<_>>();
 
                     (!new_agents.is_empty()).then_some(new_agents)
@@ -494,8 +502,10 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                 let insert_stun_clients = |new_agents: Vec<SocketAddr>| {
                     let mut clients = lock_clients();
                     for agent_addr in new_agents {
-                        tracing::debug!(target: "stun", %agent_addr, "Discovered new STUN agent");
-                        clients.insert(agent_addr, new_stun_client(agent_addr));
+                        if let Some(client) = new_stun_client(agent_addr) {
+                            tracing::debug!(target: "stun", %agent_addr, "Discovered new STUN agent");
+                            clients.insert(agent_addr, client);
+                        }
                     }
                 };
 
