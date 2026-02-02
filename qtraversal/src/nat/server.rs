@@ -26,26 +26,14 @@ pub struct StunServerConfig {
     change_address: Option<SocketAddr>,
 }
 
+#[bon::bon]
 impl StunServerConfig {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn from_options(change_port: Option<u16>, change_address: Option<SocketAddr>) -> Self {
+    #[builder(finish_fn = init)]
+    pub fn new(change_port: Option<u16>, change_address: Option<SocketAddr>) -> Self {
         Self {
             change_port,
             change_address,
         }
-    }
-
-    pub fn with_change_port(mut self, change_port: u16) -> Self {
-        self.change_port = Some(change_port);
-        self
-    }
-
-    pub fn with_change_address(mut self, change_address: SocketAddr) -> Self {
-        self.change_address = Some(change_address);
-        self
     }
 }
 
@@ -213,9 +201,7 @@ impl StunServerComponent {
     }
 
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, StunServerComponentInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner.lock().unwrap()
     }
 }
 
