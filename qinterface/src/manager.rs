@@ -301,9 +301,9 @@ impl BindInterface {
         // B:                                      lock(B),             lock(C), rebind, reinit
 
         // hold read lock to prevent subsequent rebind, avoid compoents seeing inconsistent state
-        let (new_bind_id, components, span) = {
+
+        let (new_bind_id, new_bind_uri, span) = {
             let mut binding = context.binding_mut();
-            let components = context.components();
 
             ready!(context.factory.poll_rebind(cx, &mut binding.io));
             binding.id = context.ifaces.bind_id_generator.generate();
@@ -313,11 +313,13 @@ impl BindInterface {
                 bind_uri = %binding.io.bind_uri(),
                 bind_id = usize::from(binding.id),
             );
-            (binding.id, components, binding.span.clone())
+            (binding.id, binding.io.bind_uri(), binding.span.clone())
         };
 
+        let components = context.components();
         let iface = Interface {
             bind_id: new_bind_id,
+            bind_uri: new_bind_uri,
             bind_iface: self.clone(),
         };
         let _guard = span.enter();
@@ -340,6 +342,7 @@ impl BindInterface {
 
         let iface = Interface {
             bind_id: binding.id,
+            bind_uri: binding.io.bind_uri(),
             bind_iface: self.clone(),
         };
         f(components.deref(), &iface)
@@ -347,11 +350,16 @@ impl BindInterface {
 
     pub fn with_components_mut<T>(&self, f: impl FnOnce(&mut Components, &Interface) -> T) -> T {
         let context = self.context.as_ref();
-        let (binding, mut components) = (context.binding(), context.components_mut());
-        let _guard = binding.span.enter();
+        let (bind_id, bind_uri, span) = {
+            let binding = context.binding();
+            (binding.id, binding.io.bind_uri(), binding.span.clone())
+        };
+        let mut components = context.components_mut();
+        let _guard = span.enter();
 
         let iface = Interface {
-            bind_id: binding.id,
+            bind_id,
+            bind_uri,
             bind_iface: self.clone(),
         };
         f(components.deref_mut(), &iface)

@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
-    prelude::{SocketEndpointAddr, handy},
+    prelude::{QuicIO, SocketEndpointAddr, handy},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -104,7 +104,7 @@ impl Network {
                         })
                         .clone();
                     // initial forwarder
-                    let relay = bind_iface
+                    let relay = iface
                         .bind_uri()
                         .relay()
                         .and_then(|r| r.parse::<SocketAddr>().ok());

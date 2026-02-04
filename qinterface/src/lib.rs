@@ -52,6 +52,7 @@ impl BindInterface {
     pub fn borrow(&self) -> Interface {
         Interface {
             bind_id: self.context.bind_id(),
+            bind_uri: self.context.bind_uri(),
             bind_iface: self.clone(),
         }
     }
@@ -72,6 +73,7 @@ impl BindInterface {
 #[derive(Debug, Clone)]
 pub struct Interface {
     bind_id: UniqueId,
+    bind_uri: BindUri,
     bind_iface: BindInterface,
 }
 
@@ -116,7 +118,7 @@ impl Interface {
     #[inline]
     pub fn downgrade(&self) -> WeakInterface {
         WeakInterface {
-            bind_uri: self.bind_iface.bind_uri(),
+            bind_uri: self.bind_uri.clone(),
             bind_id: self.bind_id,
             weak_iface: self.bind_iface.downgrade(),
         }
@@ -144,7 +146,7 @@ impl RefIO for Interface {
 impl IO for Interface {
     #[inline]
     fn bind_uri(&self) -> BindUri {
-        self.bind_iface.bind_uri()
+        self.bind_uri.clone()
     }
 
     #[inline]
@@ -250,6 +252,7 @@ impl WeakInterface {
     pub fn upgrade(&self) -> Result<Interface, UnboundError> {
         Ok(Interface {
             bind_iface: self.weak_iface.upgrade()?,
+            bind_uri: self.bind_uri.clone(),
             bind_id: self.bind_id,
         })
     }
