@@ -674,11 +674,13 @@ fn tls_fin_handler(
 
         let parameters = parameters.lock_guard()?;
 
-        if zero_rtt_rejected {
-            debug_assert_eq!(parameters.role(), Role::Client);
-            tracing::debug!(target: "quic", "0-RTT is not enabled, or not accepted by the server.");
-        } else {
-            tracing::debug!(target: "quic", "0-RTT is enabled and accepted by the server.");
+        if parameters.role() == Role::Client {
+            if zero_rtt_rejected {
+                debug_assert_eq!(parameters.role(), Role::Client);
+                tracing::debug!(target: "quic", "0-RTT is not enabled, or not accepted by the server.");
+            } else {
+                tracing::debug!(target: "quic", "0-RTT is enabled and accepted by the server.");
+            }
         }
 
         match parameters.role() {
