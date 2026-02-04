@@ -4,13 +4,14 @@ use std::{
     future::Future,
     io, mem,
     ops::{Deref, DerefMut},
-    sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, OnceLock},
     task::{Context, Poll, ready},
 };
 
 use bytes::BytesMut;
 use dashmap::{DashMap, Entry};
 use futures::FutureExt;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use qbase::{
     net::{addr::BoundAddr, route},
     util::{UniqueId, UniqueIdGenerator},
@@ -233,11 +234,11 @@ pub struct InterfaceContext {
 
 impl InterfaceContext {
     fn binding(&self) -> RwLockReadGuard<'_, Binding> {
-        self.binding.read().expect("QuicIO binding poisoned")
+        self.binding.read_recursive()
     }
 
     fn binding_mut(&self) -> RwLockWriteGuard<'_, Binding> {
-        self.binding.write().expect("QuicIO binding poisoned")
+        self.binding.write()
     }
 
     pub fn bind_id(&self) -> UniqueId {
@@ -264,11 +265,11 @@ impl InterfaceContext {
     }
 
     fn components(&self) -> RwLockReadGuard<'_, Components> {
-        self.components.read().expect("Components poisoned")
+        self.components.read_recursive()
     }
 
     fn components_mut(&self) -> RwLockWriteGuard<'_, Components> {
-        self.components.write().expect("Components poisoned")
+        self.components.write()
     }
 
     pub fn poll_close(&self, cx: &mut Context) -> Poll<io::Result<()>> {
