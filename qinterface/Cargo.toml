@@ -17,6 +17,7 @@ futures = { workspace = true }
 http = { workspace = true }
 netdev = { workspace = true }
 netwatcher = { workspace = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 qbase = { workspace = true }
 qevent = { workspace = true }
@@ -31,7 +32,11 @@ tracing = { workspace = true }
 qudp = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = [
+    "test-util",
+    "macros",
+    "rt-multi-thread",
+] }
 
 [features]
 qudp = ["dep:qudp"]
