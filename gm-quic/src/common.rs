@@ -21,7 +21,6 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
-use tracing::info;
 
 use crate::qtraversal::resolver::{Resolve, StandResolver};
 
@@ -52,17 +51,18 @@ impl Default for Network {
 
 impl Network {
     async fn lookup_agents(&self, stun_server: &str) -> Option<Vec<SocketAddr>> {
-        let stream = self.resolver.lookup(stun_server);
-        let agents: Vec<SocketAddr> = stream
-            .filter_map(|res| async move {
-                match res {
-                    Ok((_, SocketEndpointAddr::Direct { addr })) => Some(addr),
-                    _ => None,
-                }
+        let agents: Vec<SocketAddr> = self
+            .resolver
+            .lookup(stun_server)
+            .await
+            .ok()?
+            .filter_map(async |(_, addr)| match addr {
+                SocketEndpointAddr::Direct { addr } => Some(addr),
+                SocketEndpointAddr::Agent { .. } => None,
             })
             .collect()
             .await;
-        info!("stun agents for server {}: {:?}", stun_server, agents);
+        tracing::debug!("stun agents for server {}: {:?}", stun_server, agents);
         (!agents.is_empty()).then_some(agents)
     }
 

@@ -475,14 +475,13 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
 
                 let lookup_new_agents = async || {
                     // TODO: rename to stun.genmeta.net
-                    let stream = resolver.lookup(server.as_ref());
-
-                    let resolved_agents = stream
-                        .filter_map(|res| async move {
-                            match res {
-                                Ok((_, SocketEndpointAddr::Direct { addr })) => Some(addr),
-                                _ => None,
-                            }
+                    let resolved_agents = resolver
+                        .lookup(server.as_ref())
+                        .await
+                        .ok()?
+                        .filter_map(async |(_, addr)| match addr {
+                            SocketEndpointAddr::Direct { addr } => Some(addr),
+                            SocketEndpointAddr::Agent { .. } => None,
                         })
                         .collect::<Vec<_>>()
                         .await;

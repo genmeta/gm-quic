@@ -301,24 +301,13 @@ impl BindUri {
                     .as_iface_bind_uri()
                     .expect("Already checked BindUriSchema is iface");
 
-                let interface = crate::device::Devices::global()
+                let devices = crate::device::Devices::global();
+                devices
                     .get(interface)
                     .ok_or(TryIntoSocketAddrError::InterfaceNotFound)?;
-                let ip_addr = match ip_family {
-                    Family::V4 => interface
-                        .ipv4
-                        .first()
-                        .map(|ipnet| ipnet.addr())
-                        .map(IpAddr::V4)
-                        .ok_or(TryIntoSocketAddrError::LinkNotFound)?,
-                    Family::V6 => interface
-                        .ipv6
-                        .iter()
-                        .map(|ipnet| ipnet.addr())
-                        .find(|ip| !matches!(ip.octets(), [0xfe, 0x80, ..]))
-                        .map(IpAddr::V6)
-                        .ok_or(TryIntoSocketAddrError::LinkNotFound)?,
-                };
+                let ip_addr = devices
+                    .resolve(interface, ip_family)
+                    .ok_or(TryIntoSocketAddrError::LinkNotFound)?;
 
                 Ok(SocketAddr::new(ip_addr, port))
             }

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
+    net::IpAddr,
     sync::{Arc, Mutex, OnceLock, RwLock},
     time::Duration,
 };
@@ -9,7 +10,10 @@ use derive_more::{Deref, DerefMut};
 pub use netdev::Interface;
 pub use netwatcher::Error as WatcherError;
 use netwatcher::WatchHandle;
-use qbase::util::{UniqueId, UniqueIdGenerator};
+use qbase::{
+    net::Family,
+    util::{UniqueId, UniqueIdGenerator},
+};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     time::MissedTickBehavior,
@@ -364,6 +368,23 @@ impl Devices {
 
     pub fn get(&self, name: &str) -> Option<Interface> {
         self.state.get(name)
+    }
+
+    pub fn resolve(&self, device: &str, family: Family) -> Option<IpAddr> {
+        let interface = self.get(device)?;
+        match family {
+            Family::V4 => interface
+                .ipv4
+                .first()
+                .map(|ipnet| ipnet.addr())
+                .map(IpAddr::V4),
+            Family::V6 => interface
+                .ipv6
+                .iter()
+                .map(|ipnet| ipnet.addr())
+                .find(|ip| !matches!(ip.octets(), [0xfe, 0x80, ..]))
+                .map(IpAddr::V6),
+        }
     }
 }
 
