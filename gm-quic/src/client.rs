@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use qbase::{
     net::{Family, addr::AddrKind},
     param::ClientParameters,
@@ -284,13 +284,17 @@ impl QuicClient {
     /// Asynchronous operations on the connection will wait for the handshake.
     pub async fn connect<'a>(&'a self, server: &'a str) -> Result<Connection, ConnectServerError> {
         // TODO: http dns mdns
-        let server_eps = self
+        let stream = self
             .network
             .resolver
             .lookup(server)
-            .map_ok(|(_, addr)| EndpointAddr::Socket(addr))
-            .try_collect::<Vec<_>>()
-            .await?;
+            .await
+            .map_err(|source| ConnectServerError::Dns { source })?;
+        // TODO: connected and return, then add addresses
+        let server_eps = stream
+            .map(|(_, addr)| EndpointAddr::Socket(addr))
+            .collect::<Vec<_>>()
+            .await;
         self.connected_to(server, server_eps).await
     }
 }
