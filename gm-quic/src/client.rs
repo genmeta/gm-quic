@@ -22,7 +22,7 @@ use rustls::{
 };
 use thiserror::Error;
 
-use crate::{prelude::*, qtraversal::resolver::Resolve, *};
+use crate::{prelude::*, *};
 
 type TlsClientConfig = rustls::ClientConfig;
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -284,15 +284,14 @@ impl QuicClient {
     /// Asynchronous operations on the connection will wait for the handshake.
     pub async fn connect<'a>(&'a self, server: &'a str) -> Result<Connection, ConnectServerError> {
         // TODO: http dns mdns
-        let stream = self
+        // TODO: connected and return, then add addresses
+        let server_eps = self
             .network
             .resolver
             .lookup(server)
             .await
-            .map_err(|source| ConnectServerError::Dns { source })?;
-        // TODO: connected and return, then add addresses
-        let server_eps = stream
-            .map(|(_, addr)| EndpointAddr::Socket(addr))
+            .map_err(|source| ConnectServerError::Dns { source })?
+            .map(|(_, ep)| ep)
             .collect::<Vec<_>>()
             .await;
         self.connected_to(server, server_eps).await

@@ -13,7 +13,11 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use qbase::{net::addr::SocketEndpointAddr, varint::VarInt};
+use qbase::{
+    net::addr::{EndpointAddr, SocketEndpointAddr},
+    varint::VarInt,
+};
+use qdns::Resolve;
 use qinterface::{
     Interface, RebindedError, WeakInterface,
     component::{
@@ -31,7 +35,6 @@ use super::{router::StunRouter, tx::Transaction};
 use crate::{
     future::Future,
     nat::{iface::StunIO, msg::Request, router::StunRouterComponent},
-    resolver::Resolve,
 };
 
 #[derive(Error, Debug, Clone)]
@@ -480,8 +483,8 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                         .await
                         .ok()?
                         .filter_map(async |(_, addr)| match addr {
-                            SocketEndpointAddr::Direct { addr } => Some(addr),
-                            SocketEndpointAddr::Agent { .. } => None,
+                            EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) => Some(addr),
+                            _ => None,
                         })
                         .collect::<Vec<_>>()
                         .await;

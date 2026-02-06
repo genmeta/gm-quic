@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
-    prelude::{SocketEndpointAddr, handy},
+    prelude::{EndpointAddr, SocketEndpointAddr, handy},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -21,8 +21,7 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
-
-use crate::qtraversal::resolver::{Resolve, StandResolver};
+use qdns::{Resolve, SystemResolver};
 
 #[derive(Clone)]
 pub struct Network {
@@ -38,7 +37,7 @@ pub struct Network {
 impl Default for Network {
     fn default() -> Self {
         Self {
-            resolver: Arc::new(StandResolver),
+            resolver: Arc::new(SystemResolver),
             devices: Devices::global(),
             iface_factory: Arc::new(handy::DEFAULT_IO_FACTORY),
             iface_manager: InterfaceManager::global().clone(),
@@ -57,8 +56,8 @@ impl Network {
             .await
             .ok()?
             .filter_map(async |(_, addr)| match addr {
-                SocketEndpointAddr::Direct { addr } => Some(addr),
-                SocketEndpointAddr::Agent { .. } => None,
+                EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) => Some(addr),
+                _ => None,
             })
             .collect()
             .await;
