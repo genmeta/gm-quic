@@ -13,6 +13,7 @@ members = [
     "gm-quic",
     "h3-shim",
     "qtraversal",
+    "qdns",
 ]
 default-members = [
     "qmacro",

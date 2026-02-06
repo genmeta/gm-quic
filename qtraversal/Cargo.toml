@@ -19,6 +19,7 @@ futures = { workspace = true }
 bitflags = { workspace = true }
 nom = { workspace = true }
 qbase = { workspace = true }
+qdns = { workspace = true }
 qevent = { workspace = true }
 qinterface = { workspace = true, features = ["qudp"] }
 qudp = { workspace = true }

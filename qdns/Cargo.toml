@@ -1,0 +1,16 @@
+[package]
+name = "qdns"
+version = "0.4.0"
+edition.workspace = true
+description = "gm-quic's dns abstractions"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+futures = { workspace = true }
+tokio = { workspace = true }
+qinterface = { workspace = true }
+qbase = { workspace = true }
