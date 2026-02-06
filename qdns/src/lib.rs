@@ -1,43 +1,51 @@
 use std::{
     fmt::{Debug, Display},
     io,
+    sync::Arc,
 };
 
 use futures::{FutureExt, TryFutureExt, future::BoxFuture, stream::BoxStream};
-use qbase::net::{
+pub use qbase::net::{
     Family,
-    addr::{EndpointAddr, SocketEndpointAddr},
+    addr::{BleEndpontAddr, EndpointAddr, SocketEndpointAddr},
 };
 
 pub type PublishFuture<'a> = BoxFuture<'a, io::Result<()>>;
 
-pub trait Publisher: Display + Debug {
-    fn publish<'a>(&self, name: &'a str, endpoints: &'a [EndpointAddr]) -> PublishFuture<'a>;
+pub trait Publish: Display + Debug {
+    fn publish<'a>(&'a self, name: &'a str, endpoints: &'a [EndpointAddr]) -> PublishFuture<'a>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Source {
-    Mdns { nic: String, family: Family },
-    Http { server: String },
+    Mdns { nic: Arc<str>, family: Family },
+    Http { server: Arc<str> },
     System,
     Dht,
 }
 
-// gm-quic -> resolve trait
-// gmdns -> h3x
-//       -> resolve trait
+impl Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Mdns { nic, family } => write!(f, "mDNS({nic} {family}) Resolver"),
+            Source::Http { server } => write!(f, "HTTP DNS({server}) Resolver"),
+            Source::System => write!(f, "System DNS Resolver"),
+            Source::Dht => write!(f, "DHT"),
+        }
+    }
+}
 
 pub type Record = (Source, EndpointAddr);
-pub type RecordStream<'a> = BoxStream<'a, Record>;
-pub type ResolveResult<'a> = io::Result<RecordStream<'a>>;
-pub type ResolveFuture<'a> = BoxFuture<'a, ResolveResult<'a>>;
+pub type RecordStream<'n> = BoxStream<'n, Record>;
+pub type ResolveResult<'n> = io::Result<RecordStream<'n>>;
+pub type ResolveFuture<'r, 'n> = BoxFuture<'r, ResolveResult<'n>>;
 
 /// Resolves names into QUIC peer endpoints.
 ///
 /// The result is a stream to allow implementations that yield endpoints over time
 /// (e.g. multi-source resolvers, H3x Dns, Mdns).
-pub trait Resolve: Send + Sync + Debug {
-    fn lookup<'a>(&'a self, name: &'a str) -> ResolveFuture<'a>;
+pub trait Resolve: Send + Sync + Display + Debug {
+    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n>;
 }
 
 use futures::{StreamExt, stream};
@@ -48,12 +56,12 @@ pub struct SystemResolver;
 
 impl Display for SystemResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "System DNS Resolver")
+        Display::fmt(&Source::System, f)
     }
 }
 
 impl Resolve for SystemResolver {
-    fn lookup<'a>(&'a self, name: &'a str) -> BoxFuture<'a, io::Result<RecordStream<'a>>> {
+    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
         let source = Source::System;
         tokio::net::lookup_host(name)
             .map_ok(move |addrs| {
