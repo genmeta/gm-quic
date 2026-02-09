@@ -282,19 +282,55 @@ impl QuicClient {
     ///
     /// The returned [`Connection`] may not have completed the handshake yet.
     /// Asynchronous operations on the connection will wait for the handshake.
-    pub async fn connect<'a>(&'a self, server: &'a str) -> Result<Connection, ConnectServerError> {
-        // TODO: http dns mdns
-        // TODO: connected and return, then add addresses
-        let server_eps = self
+    pub async fn connect<'a>(
+        self: &Arc<Self>,
+        server: &'a str,
+    ) -> Result<Connection, ConnectServerError> {
+        let mut server_eps = self
             .network
             .resolver
             .lookup(server)
             .await
-            .map_err(|source| ConnectServerError::Dns { source })?
-            .map(|(_, ep)| ep)
-            .collect::<Vec<_>>()
-            .await;
-        self.connected_to(server, server_eps).await
+            .map_err(|source| ConnectServerError::Dns { source })?;
+
+        let connection = self.new_connection(server);
+        if connection.subscribe_address().is_err() {
+            // connection already closed, return immediately(not connect error)
+            return Ok(connection);
+        }
+
+        let mut last_error = None;
+        let mut paths = loop {
+            let Some((server_ep_source, server_ep)) = server_eps.next().await else {
+                return Err(last_error.expect("DNS lookup should return at least one address"));
+            };
+            match self.probe([server_ep]).await {
+                Ok(paths) => break paths,
+                Err(error) => last_error = Some(error.into()),
+            }
+        };
+
+        // TODO: initial path based on source of server endpoint
+        for (iface, link, pathway) in paths {
+            _ = connection.add_path(iface.bind_uri(), link, pathway);
+        }
+
+        tokio::spawn({
+            let connection = connection.clone();
+            let client = self.clone();
+            async move {
+                while let Some((source, server_ep)) = server_eps.next().await {
+                    _ = connection.add_peer_endpoint(server_ep);
+                    for (iface, link, pathway) in
+                        client.probe([server_ep]).await.unwrap_or_default()
+                    {
+                        _ = connection.add_path(iface.bind_uri(), link, pathway);
+                    }
+                }
+            }
+        });
+
+        Ok(connection)
     }
 }
 
