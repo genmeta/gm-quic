@@ -282,10 +282,7 @@ impl QuicClient {
     ///
     /// The returned [`Connection`] may not have completed the handshake yet.
     /// Asynchronous operations on the connection will wait for the handshake.
-    pub async fn connect<'a>(
-        self: &Arc<Self>,
-        server: &'a str,
-    ) -> Result<Connection, ConnectServerError> {
+    pub async fn connect(self: &Arc<Self>, server: &str) -> Result<Connection, ConnectServerError> {
         let mut server_eps = self
             .network
             .resolver
@@ -300,8 +297,8 @@ impl QuicClient {
         }
 
         let mut last_error = None;
-        let mut paths = loop {
-            let Some((server_ep_source, server_ep)) = server_eps.next().await else {
+        let paths = loop {
+            let Some((_server_ep_source, server_ep)) = server_eps.next().await else {
                 return Err(last_error.expect("DNS lookup should return at least one address"));
             };
             match self.probe([server_ep]).await {
@@ -319,7 +316,7 @@ impl QuicClient {
             let connection = connection.clone();
             let client = self.clone();
             async move {
-                while let Some((source, server_ep)) = server_eps.next().await {
+                while let Some((_source, server_ep)) = server_eps.next().await {
                     _ = connection.add_peer_endpoint(server_ep);
                     for (iface, link, pathway) in
                         client.probe([server_ep]).await.unwrap_or_default()
