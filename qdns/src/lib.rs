@@ -27,8 +27,8 @@ pub enum Source {
 impl Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Source::Mdns { nic, family } => write!(f, "mDNS({nic} {family}) Resolver"),
-            Source::Http { server } => write!(f, "HTTP DNS({server}) Resolver"),
+            Source::Mdns { nic, family } => write!(f, "mDNS Resolver({nic} {family})"),
+            Source::Http { server } => write!(f, "HTTP DNS Resolver({server})"),
             Source::System => write!(f, "System DNS Resolver"),
             Source::Dht => write!(f, "DHT"),
         }
