@@ -36,16 +36,16 @@ impl Display for Source {
 }
 
 pub type Record = (Source, EndpointAddr);
-pub type RecordStream<'n> = BoxStream<'n, Record>;
-pub type ResolveResult<'n> = io::Result<RecordStream<'n>>;
-pub type ResolveFuture<'r, 'n> = BoxFuture<'r, ResolveResult<'n>>;
+pub type RecordStream = BoxStream<'static, Record>;
+pub type ResolveResult = io::Result<RecordStream>;
+pub type ResolveFuture<'r> = BoxFuture<'r, ResolveResult>;
 
 /// Resolves names into QUIC peer endpoints.
 ///
 /// The result is a stream to allow implementations that yield endpoints over time
 /// (e.g. multi-source resolvers, H3x Dns, Mdns).
 pub trait Resolve: Send + Sync + Display + Debug {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n>;
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l>;
 }
 
 use futures::{StreamExt, stream};
@@ -61,10 +61,10 @@ impl Display for SystemResolver {
 }
 
 impl Resolve for SystemResolver {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         let source = Source::System;
-        tokio::net::lookup_host(name)
-            .map_ok(move |addrs| {
+        tokio::net::lookup_host(name.to_owned())
+            .map_ok(|addrs| {
                 stream::iter(addrs.map(move |addr| {
                     let ep = EndpointAddr::Socket(SocketEndpointAddr::direct(addr));
                     (source.clone(), ep)
