@@ -12,6 +12,18 @@ impl ToCertificate for Vec<CertificateDer<'static>> {
     }
 }
 
+impl ToCertificate for &[CertificateDer<'static>] {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        self.to_vec().to_certificate()
+    }
+}
+
+impl<const N: usize> ToCertificate for [CertificateDer<'static>; N] {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        self.to_vec().to_certificate()
+    }
+}
+
 impl ToCertificate for CertificateDer<'static> {
     fn to_certificate(self) -> Vec<CertificateDer<'static>> {
         vec![self]
@@ -56,6 +68,12 @@ pub trait ToPrivateKey {
 impl ToPrivateKey for PrivateKeyDer<'static> {
     fn to_private_key(self) -> PrivateKeyDer<'static> {
         self
+    }
+}
+
+impl ToPrivateKey for &PrivateKeyDer<'static> {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        self.clone_key()
     }
 }
 
