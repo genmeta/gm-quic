@@ -81,7 +81,7 @@ impl<T: BufMut> WriteStunHeader for T {
 //     Dst endpoint, // 根据dst type，是Endpoint::Agent还是Direct
 //     ... Real Quic Packet
 //   }
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ForwardHeader {
     remian: u8,  // 后 5bits
     version: u8, // 前 4bits

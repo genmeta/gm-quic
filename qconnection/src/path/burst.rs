@@ -563,6 +563,7 @@ impl Burst {
                                 &self.path.pathway.try_into().unwrap(),
                                 payload,
                             );
+                            tracing::debug!(?forward_hdr, link=%self.path.link(),"put forward header");
                             header.put_forward_header(&forward_hdr);
                         }
                         io::IoSlice::new(&segment[..reversed_size + packet_size])
