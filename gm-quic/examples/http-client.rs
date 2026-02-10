@@ -102,13 +102,15 @@ async fn run(options: Options) -> Result<(), Error> {
         QuicClient::builder().with_root_certificates(roots)
     };
 
-    let client = client_builder
-        .with_qlog(qlogger)
-        .without_cert()
-        .with_parameters(handy::client_parameters())
-        .with_alpns(options.alpns)
-        .enable_sslkeylog()
-        .build();
+    let client = Arc::new(
+        client_builder
+            .with_qlog(qlogger)
+            .without_cert()
+            .with_parameters(handy::client_parameters())
+            .with_alpns(options.alpns)
+            .enable_sslkeylog()
+            .build(),
+    );
 
     if options.uris.len() == 1 && options.uris[0].path() == "/" {
         return process(&client, &options.uris[0], options.save).await;
@@ -121,7 +123,11 @@ async fn run(options: Options) -> Result<(), Error> {
     Ok(())
 }
 
-async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> Result<(), Error> {
+async fn process(
+    client: &Arc<QuicClient>,
+    base_uri: &Uri,
+    save: Option<PathBuf>,
+) -> Result<(), Error> {
     let mut stdin = BufReader::new(io::stdin());
     eprintln!(
         "Enter interactive mode. Input content to request (e.g: Cargo.toml), input `exit` or `quit` to quit."
@@ -147,7 +153,7 @@ async fn process(client: &QuicClient, base_uri: &Uri, save: Option<PathBuf>) -> 
     }
 }
 
-async fn download(client: &QuicClient, uri: Uri, save: Option<&PathBuf>) -> Result<(), Error> {
+async fn download(client: &Arc<QuicClient>, uri: Uri, save: Option<&PathBuf>) -> Result<(), Error> {
     let authority = uri.authority().ok_or("authority must be present in uri")?;
 
     let file_path = uri.path().strip_prefix('/');

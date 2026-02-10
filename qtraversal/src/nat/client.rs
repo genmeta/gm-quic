@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     io::{self},
     net::SocketAddr,
     ops::{ControlFlow, Deref},
@@ -37,9 +38,15 @@ use crate::{
     nat::{iface::StunIO, msg::Request, router::StunRouterComponent},
 };
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Clone)]
 #[error(transparent)]
 pub struct ArcIoError(Arc<io::Error>);
+
+impl fmt::Debug for ArcIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.as_ref().fmt(f)
+    }
+}
 
 impl From<io::Error> for ArcIoError {
     fn from(source: io::Error) -> Self {
@@ -441,7 +448,10 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
         let clients: Arc<Mutex<StunClientsMap<I>>> = Arc::new(Mutex::new(
             agents
                 .into_iter()
-                .filter_map(|agent| new_stun_client(agent).map(|client| (agent, client)))
+                .filter_map(|agent| {
+                    tracing::debug!(target: "stun", %agent, "Initializing STUN client for agent");
+                    new_stun_client(agent).map(|client| (agent, client))
+                })
                 .collect(),
         ));
         let task = AbortOnDropHandle::new(tokio::spawn({

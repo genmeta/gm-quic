@@ -278,16 +278,19 @@ impl BindUri {
         }
     }
 
-    pub fn with_stun_server(&mut self, stun_server: &str) {
+    pub fn with_stun_server(mut self, stun_server: &str) -> Self {
         self.add_prop(Self::STUN_SERVER_PROP, stun_server);
+        self
     }
 
     pub fn stun_server(&self) -> Option<Cow<'_, str>> {
         self.prop(Self::STUN_SERVER_PROP)
     }
 
-    pub fn with_relay(&mut self, relay: &str) {
+    // TODO: change to bool flag
+    pub fn with_relay(mut self, relay: &str) -> Self {
         self.add_prop(Self::RELAY_PROP, relay);
+        self
     }
 
     pub fn relay(&self) -> Option<Cow<'_, str>> {
@@ -563,10 +566,10 @@ mod tests {
 
     #[test]
     fn stun_server() {
-        let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        let bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
         assert!(bind_uri.stun_server().is_none());
 
-        bind_uri.with_stun_server("stun.example.com:3478");
+        let bind_uri = bind_uri.with_stun_server("stun.example.com:3478");
         assert_eq!(
             bind_uri.stun_server().as_deref(),
             Some("stun.example.com:3478")
@@ -582,10 +585,10 @@ mod tests {
 
     #[test]
     fn relay() {
-        let mut bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
+        let bind_uri = BindUri::from_str("iface://v4.wlan0:8080").unwrap();
         assert!(bind_uri.relay().is_none());
 
-        bind_uri.with_relay("turn.example.com:3478");
+        let bind_uri = bind_uri.with_relay("turn.example.com:3478");
         assert_eq!(bind_uri.relay().as_deref(), Some("turn.example.com:3478"));
 
         let bind_uri =

@@ -101,27 +101,29 @@ async fn run(options: Options) -> Result<(), Error> {
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     roots.add_parsable_certificates(options.roots.iter().flat_map(|path| path.to_certificate()));
 
-    let client = QuicClient::builder()
-        .with_root_certificates(roots)
-        .without_cert()
-        .with_parameters(handy::client_parameters())
-        .with_qlog(qlogger)
-        .defer_idle_timeout(Duration::from_secs(60))
-        .enable_sslkeylog()
-        .enable_0rtt()
-        .build();
+    let client = Arc::new(
+        QuicClient::builder()
+            .with_root_certificates(roots)
+            .without_cert()
+            .with_parameters(handy::client_parameters())
+            .with_qlog(qlogger)
+            .defer_idle_timeout(Duration::from_secs(60))
+            .enable_sslkeylog()
+            .enable_0rtt()
+            .build(),
+    );
 
     match options.files {
         files if files.is_empty() => process(&client, &options.auth, options.progress).await,
         files => {
             let files = files.iter().map(|p| p.as_path());
-            send_and_verify_files(Arc::new(client), options.auth, files, options.progress).await
+            send_and_verify_files(&client, options.auth, files, options.progress).await
         }
     }
 }
 
 async fn send_and_verify_files(
-    client: Arc<QuicClient>,
+    client: &Arc<QuicClient>,
     auth: Authority,
     files: impl Iterator<Item = &Path>,
     progress: bool,
@@ -168,7 +170,7 @@ async fn send_and_verify_files(
     Ok(())
 }
 
-async fn process(client: &QuicClient, auth: &Authority, progress: bool) -> Result<(), Error> {
+async fn process(client: &Arc<QuicClient>, auth: &Authority, progress: bool) -> Result<(), Error> {
     eprintln!(
         "Enter interactive mode. Input anything, enter, then server will echo it back. Input `exit` or `quit` to quit."
     );
@@ -206,7 +208,7 @@ fn new_pb(prefix: impl Into<Cow<'static, str>>, len: u64) -> ProgressBar {
 }
 
 async fn send_and_verify_echo(
-    client: &QuicClient,
+    client: &Arc<QuicClient>,
     auth: &Authority,
     data: &[u8],
     tx_pb: ProgressBar,
