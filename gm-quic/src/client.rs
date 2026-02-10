@@ -46,7 +46,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 #[derive(Clone)]
 pub struct QuicClient {
     network: common::Network,
-    bind_ifaces: Option<DashMap<BindUri, BindInterface>>,
+    bind_ifaces: DashMap<BindUri, BindInterface>,
 
     // quic config(in initialize order)
     _prefer_versions: Vec<u32>,
@@ -85,26 +85,23 @@ pub struct BindInterfaceError {
 
 impl QuicClient {
     #[inline]
-    pub fn bind_ifaces(&self) -> Option<HashMap<BindUri, BindInterface>> {
-        self.bind_ifaces.as_ref().map(|map| {
-            map.iter()
-                .map(|entry| (entry.key().clone(), entry.value().clone()))
-                .collect()
-        })
-    }
-
-    #[inline]
-    pub fn add_bind_iface(&self, interface: BindInterface) {
-        if let Some(interfaces) = self.bind_ifaces.as_ref() {
-            interfaces.insert(interface.bind_uri(), interface);
-        }
-    }
-
-    #[inline]
-    pub fn remove_bind_iface(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+    pub fn bind_ifaces(&self) -> HashMap<BindUri, BindInterface> {
         self.bind_ifaces
-            .as_ref()
-            .and_then(|interfaces| interfaces.remove(bind_uri).map(|(_, iface)| iface))
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    pub async fn bind(&self, bind_uri: impl Into<BindUri>) -> BindInterface {
+        let bind_interface = self.network.bind(bind_uri.into()).await;
+        self.bind_ifaces
+            .insert(bind_interface.bind_uri(), bind_interface.clone());
+        bind_interface
+    }
+
+    #[inline]
+    pub fn unbind(&self, bind_uri: &BindUri) -> Option<BindInterface> {
+        self.bind_ifaces.remove(bind_uri).map(|(_, iface)| iface)
     }
 
     /// Creates a new QUIC connection to the specified server without any initial paths.
@@ -165,8 +162,9 @@ impl QuicClient {
         &self,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Vec<(Interface, Link, Pathway)>, BindInterfaceError> {
-        let avaliable_ifaces = self.bind_ifaces.as_ref().map(|map| {
-            map.iter()
+        let avaliable_ifaces = (!self.bind_ifaces.is_empty()).then(|| {
+            self.bind_ifaces
+                .iter()
                 .map(|entry| entry.value().borrow())
                 .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
                 .collect::<Vec<_>>()
@@ -198,8 +196,8 @@ impl QuicClient {
                 })?;
                 Ok(vec![(bound_addr, iface)])
             }
-            Some(bind_interfaces) => {
-                let ifaces = bind_interfaces
+            Some(avaliable_ifaces) => {
+                let ifaces = avaliable_ifaces
                     .iter()
                     .filter(|(addr, _)| addr.kind() == server_ep.addr_kind())
                     .cloned()
@@ -265,7 +263,7 @@ impl QuicClient {
             _ = connection.add_path(iface.bind_uri(), link, pathway);
         }
 
-        _ = connection.subscribe_address();
+        _ = connection.subscribe_local_address();
         for server_ep in server_eps.into_iter() {
             _ = connection.add_peer_endpoint(server_ep);
         }
@@ -291,7 +289,7 @@ impl QuicClient {
             .map_err(|source| ConnectServerError::Dns { source })?;
 
         let connection = self.new_connection(server);
-        if connection.subscribe_address().is_err() {
+        if connection.subscribe_local_address().is_err() {
             // connection already closed, return immediately(not connect error)
             return Ok(connection);
         }
@@ -337,7 +335,7 @@ pub struct QuicClientBuilder<T> {
     network: common::Network,
 
     // client
-    bind_ifaces: Option<DashMap<BindUri, BindInterface>>,
+    bind_ifaces: DashMap<BindUri, BindInterface>,
     // client: quic config(in initialize order)
     prefer_versions: Vec<u32>,
     token_sink: Arc<dyn TokenSink>,
@@ -376,7 +374,7 @@ impl QuicClient {
             network: common::Network::default(),
 
             // client
-            bind_ifaces: None,
+            bind_ifaces: DashMap::new(),
             // client: quic config(in initialize order)
             prefer_versions: vec![1],
             token_sink: Arc::new(handy::NoopTokenRegistry),
@@ -457,14 +455,13 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// If all interfaces are closed, clients will no longer be able to initiate new connections.
     pub async fn bind(mut self, bind_uris: impl IntoIterator<Item = impl Into<BindUri>>) -> Self {
-        self.bind_ifaces = Some(
-            self.network
-                .bind_many(bind_uris)
-                .await
-                .map(|bind_iface| (bind_iface.bind_uri(), bind_iface))
-                .collect()
-                .await,
-        );
+        self.bind_ifaces = self
+            .network
+            .bind_many(bind_uris)
+            .await
+            .map(|bind_iface| (bind_iface.bind_uri(), bind_iface))
+            .collect()
+            .await;
         self
     }
 
