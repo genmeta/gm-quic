@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
@@ -68,7 +68,7 @@ impl Network {
     fn init_iface_components(
         &self,
         bind_iface: &BindInterface,
-        stun_agent: Option<(Arc<str>, &[SocketAddr])>,
+        stun_agent: Option<(Arc<str>, Vec<SocketAddr>)>,
     ) {
         bind_iface.with_components_mut(move |components: &mut Components, iface: &Interface| {
             // rebind interface on network changed
@@ -97,7 +97,7 @@ impl Network {
                                 stun_router.clone(),
                                 self.resolver.clone(),
                                 stun_server,
-                                stun_agents.to_vec(),
+                                stun_agents,
                                 Some(locations.clone()),
                             )
                         })
@@ -148,18 +148,17 @@ impl Network {
             self.stun_server.clone()
         };
 
-        let stun_agents = if let Some(server) = &stun_server {
-            self.lookup_agents(server).await.unwrap_or_default()
-        } else {
-            Vec::new()
+        let stun_agents = match &stun_server {
+            Some(stun_server) => self
+                .lookup_agents(stun_server.as_ref())
+                .await
+                .unwrap_or_default(),
+            None => vec![],
         };
 
         let factory = self.iface_factory.clone();
         let bind_iface = self.iface_manager.bind(bind_uri, factory).await;
-        self.init_iface_components(
-            &bind_iface,
-            stun_server.map(|s| (s, stun_agents.as_slice())),
-        );
+        self.init_iface_components(&bind_iface, stun_server.map(|s| (s, stun_agents)));
         bind_iface
     }
 
@@ -167,51 +166,6 @@ impl Network {
         &self,
         bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
     ) -> impl Stream<Item = BindInterface> {
-        let this = self.clone();
-        let cache = std::sync::Arc::new(std::sync::Mutex::new(
-            HashMap::<Arc<str>, Vec<SocketAddr>>::new(),
-        ));
-        stream::iter(bind_uris).then(move |bind_uri| {
-            let this = this.clone();
-            let cache = cache.clone();
-            async move {
-                let bind_uri = bind_uri.into();
-                let stun_server = if let Some(server) = bind_uri.stun_server() {
-                    Some(Arc::from(server))
-                } else if let Some("false") = bind_uri.prop(BindUri::STUN_PROP).as_deref() {
-                    None
-                } else {
-                    this.stun_server.clone()
-                };
-
-                let stun_agents = if let Some(stun_server) = &stun_server {
-                    let cached = {
-                        let cache = cache.lock().unwrap();
-                        cache.get(stun_server).cloned()
-                    };
-
-                    if let Some(agents) = cached {
-                        agents
-                    } else {
-                        let agents = this.lookup_agents(stun_server).await.unwrap_or_default();
-                        cache
-                            .lock()
-                            .unwrap()
-                            .insert(stun_server.clone(), agents.clone());
-                        agents
-                    }
-                } else {
-                    Vec::new()
-                };
-
-                let factory = this.iface_factory.clone();
-                let bind_iface = this.iface_manager.bind(bind_uri, factory).await;
-                this.init_iface_components(
-                    &bind_iface,
-                    stun_server.map(|s| (s, stun_agents.as_slice())),
-                );
-                bind_iface
-            }
-        })
+        stream::iter(bind_uris).then(async |bind_uri| self.bind(bind_uri.into()).await)
     }
 }
