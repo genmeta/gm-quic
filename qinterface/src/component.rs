@@ -63,6 +63,10 @@ impl Components {
             .and_then(|c| (c.as_ref() as &dyn Any).downcast_ref())
     }
 
+    pub fn exist<C: Component>(&self) -> bool {
+        self.map.contains_key(&TypeId::of::<C>())
+    }
+
     pub fn with<C: Component, T>(&self, f: impl FnOnce(&C) -> T) -> Option<T> {
         self.get::<C>().map(f)
     }
@@ -73,6 +77,18 @@ impl Components {
             .entry(TypeId::of::<C>())
             .or_insert_with(|| Box::new(init()));
         (ref_mut.as_mut() as &mut dyn Any).downcast_mut().unwrap()
+    }
+
+    pub fn try_init_with<C: Component, E>(
+        &mut self,
+        init: impl FnOnce() -> Result<C, E>,
+    ) -> Result<&mut C, E> {
+        let entry = self.map.entry(TypeId::of::<C>());
+        let ref_mut = match entry {
+            hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            hash_map::Entry::Vacant(entry) => entry.insert(Box::new(init()?)),
+        };
+        Ok((ref_mut.as_mut() as &mut dyn Any).downcast_mut().unwrap())
     }
 
     pub fn poll_remove<C>(&mut self, cx: &mut Context<'_>) -> Poll<()>
