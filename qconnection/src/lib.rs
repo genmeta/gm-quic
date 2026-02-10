@@ -683,7 +683,7 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.remove_address(addr))
     }
 
-    pub fn subscribe_address(&self) -> Result<(), Error> {
+    pub fn subscribe_local_address(&self) -> Result<(), Error> {
         self.0
             .try_map_components(|core_conn| core_conn.subscribe_local_address())
     }
