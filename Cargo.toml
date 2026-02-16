@@ -53,7 +53,7 @@ netdev = "0.40"
 nom = "8"
 netwatcher = "0.4"
 pin-project-lite = "0.2"
-rand = "0.9"
+rand = "0.10"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }

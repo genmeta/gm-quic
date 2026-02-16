@@ -4,7 +4,7 @@ use std::{
 };
 
 use nom::{IResult, bytes::streaming::take, number::streaming::be_u8};
-use rand::Rng;
+use rand::RngExt;
 
 /// The connection id length must not exceed 20 bytes. See [`ConnectionId`].
 pub const MAX_CID_SIZE: usize = 20;

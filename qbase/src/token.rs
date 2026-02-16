@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use bytes::BufMut;
 use derive_more::Deref;
 use nom::{IResult, bytes::complete::take};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     error::{ErrorKind, QuicError},
