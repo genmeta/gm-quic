@@ -9,7 +9,7 @@ use nom::{
     number::streaming::{be_u8, be_u16},
 };
 use qbase::net::{AddrFamily, Family, WriteSocketAddr, be_socket_addr};
-use rand::Rng;
+use rand::RngExt;
 use thiserror::Error;
 
 pub const BINDING_REQUEST: u16 = 0x0001;

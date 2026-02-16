@@ -1,7 +1,5 @@
 use std::time::Instant;
 
-use rand::Rng;
-
 use super::{Bbr, BbrStateMachine, HIGH_GAIN, PROBE_RTT_DURATION};
 use crate::rtt::INITIAL_RTT;
 

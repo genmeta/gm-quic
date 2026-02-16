@@ -1,4 +1,5 @@
 use derive_more::Deref;
+use rand::RngExt;
 
 use crate::frame::{GetFrameType, io::WriteFrameType};
 /// PATH_CHALLENGE frame.
@@ -26,7 +27,6 @@ impl PathChallengeFrame {
     }
 
     pub fn random() -> Self {
-        use rand::Rng;
         let mut rng = rand::rng();
         let mut data = [0; 8];
         rng.fill(&mut data);
