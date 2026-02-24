@@ -1,4 +1,13 @@
-use std::{collections::HashMap, io, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -11,6 +20,7 @@ use qconnection::{
     self,
     qinterface::{component::location::Locations, io::IO},
 };
+use qdns::Source;
 use qevent::telemetry::QLog;
 use qinterface::{
     BindInterface, Interface, bind_uri::BindUri, component::route::QuicRouter, device::Devices,
@@ -47,6 +57,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 pub struct QuicClient {
     network: common::Network,
     bind_ifaces: DashMap<BindUri, BindInterface>,
+    manual_bind: Arc<AtomicBool>,
 
     // quic config(in initialize order)
     _prefer_versions: Vec<u32>,
@@ -96,6 +107,7 @@ impl QuicClient {
         let bind_interface = self.network.bind(bind_uri.into()).await;
         self.bind_ifaces
             .insert(bind_interface.bind_uri(), bind_interface.clone());
+        self.manual_bind.store(true, Ordering::Relaxed);
         bind_interface
     }
 
@@ -130,26 +142,115 @@ impl QuicClient {
             .run()
     }
 
+    /// Builds a [`BindUri`] from the DNS [`Source`] and endpoint address.
+    ///
+    /// - For [`Source::Mdns`]: binds to the discovering NIC (e.g., `iface://v4.en0:0`).
+    /// - For other sources: binds to a wildcard address matching the endpoint family.
+    fn bind_uri_for(source: &Source, ep: &EndpointAddr) -> BindUri {
+        match source {
+            Source::Mdns { nic, family } => {
+                let f = match family {
+                    Family::V4 => "v4",
+                    Family::V6 => "v6",
+                };
+                BindUri::from_str(&format!("iface://{f}.{nic}:0"))
+                    .expect("iface URI should be valid")
+                    .alloc_port()
+            }
+            _ => match ep.addr_kind() {
+                AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
+                    .expect("URL should be valid")
+                    .alloc_port(),
+                AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
+                    .expect("URL should be valid")
+                    .alloc_port(),
+                _ => unreachable!("BLE and other address kinds are not supported yet"),
+            },
+        }
+    }
+
+    /// Ensures at least one interface exists for the given endpoint.
+    async fn ensure_iface_for(&self, source: &Source, ep: &EndpointAddr) {
+        if self.manual_bind.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.bind_ifaces.is_empty() {
+            let bind_uri = Self::bind_uri_for(source, ep);
+            let iface = self.network.bind(bind_uri).await;
+            self.bind_ifaces.insert(iface.bind_uri(), iface);
+        }
+    }
+
+    /// Returns matching bound interfaces or auto-binds a new one.
+    async fn select_or_bind_ifaces(
+        &self,
+        source: &Source,
+        ep: &EndpointAddr,
+    ) -> Result<Vec<(BoundAddr, Interface)>, BindInterfaceError> {
+        let iface_matches_source =
+            |iface: &Interface| match source {
+                Source::Mdns { nic, family } => iface.bind_uri().as_iface_bind_uri().is_some_and(
+                    |(iface_family, iface_name, _)| {
+                        iface_family == *family && iface_name == nic.as_ref()
+                    },
+                ),
+                _ => true,
+            };
+
+        if self.manual_bind.load(Ordering::Relaxed) {
+            let ifaces = self
+                .bind_ifaces
+                .iter()
+                .map(|entry| entry.value().borrow())
+                .filter(|iface| iface_matches_source(iface))
+                .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
+                .filter(|(addr, _)| addr.kind() == ep.addr_kind())
+                .collect::<Vec<_>>();
+            Ok(ifaces)
+        } else {
+            let ifaces = self
+                .bind_ifaces
+                .iter()
+                .map(|entry| entry.value().borrow())
+                .filter(|iface| iface_matches_source(iface))
+                .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
+                .filter(|(addr, _)| addr.kind() == ep.addr_kind())
+                .collect::<Vec<_>>();
+            if !ifaces.is_empty() {
+                return Ok(ifaces);
+            }
+            let bind_uri = Self::bind_uri_for(source, ep);
+            let iface = self.network.bind(bind_uri.clone()).await.borrow();
+            let bound_addr = iface.bound_addr().map_err(|source| BindInterfaceError {
+                bind_uri: Some(bind_uri),
+                bind_error: source,
+            })?;
+            Ok(vec![(bound_addr, iface)])
+        }
+    }
+
     /// Probes and generates potential network paths to the given server endpoints.
     ///
-    /// This method determines which local interfaces should be used to reach the
-    /// specified server addresses.
+    /// Each endpoint is paired with its DNS [`Source`] so that the correct network
+    /// interface can be selected:
     ///
-    /// - **With bound interfaces**: If the client was created with specific bound interfaces,
-    ///   it attempts to pair those interfaces with the server's addresses (e.g., IPv4 to IPv4).
-    /// - **Without bound interfaces**: If no interfaces were explicitly bound, the client
-    ///   automatically binds to system-assigned addresses (ephemeral ports) appropriate
-    ///   for the server's address family.
+    /// - **Direct endpoints**: selects matching bound interfaces or auto-binds a new one,
+    ///   then constructs [`Link`] and [`Pathway`] for each.
+    /// - **Agent endpoints**: ensures an interface exists but does **not** build a path —
+    ///   the puncher system handles Agent paths after STUN discovery.
     ///
-    /// Returns a list of tuples containing the interface, link, and pathway information
-    /// needed to establish a connection path.
+    /// Returns a list of `(Interface, Link, Pathway)` tuples for Direct endpoints only.
     ///
     /// ### Example
     ///
     /// ```no_run
     /// # use gm_quic::prelude::*;
+    /// # use gm_quic::qdns::Source;
     /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let server_addresses = tokio::net::lookup_host("genmeta.net:443").await?;
+    /// let server_addresses: Vec<_> = tokio::net::lookup_host("genmeta.net:443")
+    ///     .await?
+    ///     .map(|addr| (Source::System, addr.into()))
+    ///     .collect();
     /// let paths = quic_client.probe(server_addresses).await?;
     /// let connection = quic_client.new_connection("genmeta.net");
     /// for (iface, link, pathway) in paths {
@@ -160,64 +261,21 @@ impl QuicClient {
     /// ```
     pub async fn probe(
         &self,
-        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
+        server_eps: impl IntoIterator<Item = (Source, EndpointAddr)>,
     ) -> Result<Vec<(Interface, Link, Pathway)>, BindInterfaceError> {
-        let avaliable_ifaces = (!self.bind_ifaces.is_empty()).then(|| {
-            self.bind_ifaces
-                .iter()
-                .map(|entry| entry.value().borrow())
-                .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
-                .collect::<Vec<_>>()
-        });
-
-        let select_or_bind_ifaces = async |server_ep: &EndpointAddr| match &avaliable_ifaces {
-            None => {
-                let bind_uri: BindUri = match server_ep.addr_kind() {
-                    AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
-                        .expect("URL should be valid")
-                        .alloc_port(),
-                    AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
-                        .expect("URL should be valid")
-                        .alloc_port(),
-                    _ => {
-                        return Err(BindInterfaceError {
-                            bind_uri: None,
-                            bind_error: io::Error::new(
-                                io::ErrorKind::Unsupported,
-                                "BLE and other address kinds are not supported yet",
-                            ),
-                        });
-                    }
-                };
-                let iface = self.network.bind(bind_uri.clone()).await.borrow();
-                let bound_addr = iface.bound_addr().map_err(|source| BindInterfaceError {
-                    bind_uri: Some(bind_uri),
-                    bind_error: source,
-                })?;
-                Ok(vec![(bound_addr, iface)])
-            }
-            Some(avaliable_ifaces) => {
-                let ifaces = avaliable_ifaces
-                    .iter()
-                    .filter(|(addr, _)| addr.kind() == server_ep.addr_kind())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                Ok(ifaces)
-            }
-        };
-
-        let server_eps = server_eps.into_iter().map(Into::into).collect::<Vec<_>>();
+        let server_eps = server_eps.into_iter().collect::<Vec<_>>();
 
         let mut paths = vec![];
-        for &server_ep in &server_eps {
+        for (source, server_ep) in server_eps {
             if matches!(
                 server_ep,
                 EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
             ) {
-                continue;
-            }
-            paths.extend(select_or_bind_ifaces(&server_ep).await?.into_iter().map(
-                move |(bound_addr, iface)| {
+                self.ensure_iface_for(&source, &server_ep).await;
+            } else {
+                let ifaces = self.select_or_bind_ifaces(&source, &server_ep).await?;
+
+                paths.extend(ifaces.into_iter().map(move |(bound_addr, iface)| {
                     let dst = match server_ep {
                         EndpointAddr::Socket(socket_endpoint_addr) => {
                             BoundAddr::Internet(*socket_endpoint_addr)
@@ -229,8 +287,8 @@ impl QuicClient {
                     let link = Link::new(bound_addr, dst);
                     let pathway = Pathway::new(bound_addr.into(), server_ep);
                     (iface, link, pathway)
-                },
-            ));
+                }));
+            }
         }
 
         Ok(paths)
@@ -248,14 +306,31 @@ impl QuicClient {
     ///
     /// If `server_eps` is empty, this is equivalent to calling [`QuicClient::new_connection`]
     /// and the connection will remain idle until paths are added.
+    ///
+    /// All endpoints are treated as originating from [`Source::System`].
+    /// Use [`Self::connected_to_with_source`] to supply explicit DNS sources.
+    // TODO: 移除这个方法，强制用户使用带 Source 的版本，避免误用
     pub async fn connected_to(
         &self,
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
     ) -> Result<Connection, ConnectServerError> {
-        let server_eps = server_eps.into_iter().map(Into::into).collect::<Vec<_>>();
+        let server_eps = server_eps.into_iter().map(|ep| (Source::System, ep.into()));
+        self.connected_to_with_source(server_name, server_eps).await
+    }
+
+    /// —Connects to a server using `(Source, EndpointAddr)` pairs.
+    ///
+    /// This variant preserves the DNS [`Source`] so that the correct network interface
+    /// is selected for each endpoint (e.g., mDNS endpoints bind to the discovering NIC).
+    pub async fn connected_to_with_source(
+        &self,
+        server_name: impl Into<String>,
+        server_eps: impl IntoIterator<Item = (Source, EndpointAddr)>,
+    ) -> Result<Connection, ConnectServerError> {
+        let server_eps = server_eps.into_iter().collect::<Vec<_>>();
         let paths = self
-            .probe(server_eps.iter().copied())
+            .probe(server_eps.iter().cloned())
             .await
             .map_err(|source| ConnectServerError::BindInterface { source })?;
         let connection = self.new_connection(server_name);
@@ -264,7 +339,7 @@ impl QuicClient {
         }
 
         _ = connection.subscribe_local_address();
-        for server_ep in server_eps.into_iter() {
+        for (_, server_ep) in server_eps {
             _ = connection.add_peer_endpoint(server_ep);
         }
         Ok(connection)
@@ -290,36 +365,73 @@ impl QuicClient {
 
         let connection = self.new_connection(server);
         if connection.subscribe_local_address().is_err() {
-            // connection already closed, return immediately(not connect error)
+            // connection already closed, return immediately (not connect error)
             return Ok(connection);
         }
 
         let mut last_error = None;
+        let mut agent_eps = Vec::new();
+
+        // Consume the DNS stream until we get at least one Direct path,
+        // stashing any Agent endpoints along the way.
         let paths = loop {
-            let Some((_server_ep_source, server_ep)) = server_eps.next().await else {
-                return Err(last_error.expect("DNS lookup should return at least one address"));
+            let Some((source, server_ep)) = server_eps.next().await else {
+                if agent_eps.is_empty() {
+                    return Err(last_error.expect("DNS lookup should return at least one address"));
+                }
+                break vec![];
             };
-            match self.probe([server_ep]).await {
+
+            if matches!(
+                server_ep,
+                EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
+            ) {
+                // Agent endpoint: ensure an interface exists, stash for later.
+                self.ensure_iface_for(&source, &server_ep).await;
+                agent_eps.push(server_ep);
+                continue;
+            }
+
+            // Direct endpoint: probe to build paths.
+            match self.probe([(source, server_ep)]).await {
                 Ok(paths) => break paths,
                 Err(error) => last_error = Some(error.into()),
             }
         };
 
-        // TODO: initial path based on source of server endpoint
+        // Add Direct paths.
         for (iface, link, pathway) in paths {
             _ = connection.add_path(iface.bind_uri(), link, pathway);
         }
 
+        // Register stashed Agent endpoints to the puncher system.
+        for server_ep in &agent_eps {
+            _ = connection.add_peer_endpoint(*server_ep);
+        }
+
+        // Background task: keep consuming the DNS stream for late-arriving endpoints.
         tokio::spawn({
             let connection = connection.clone();
             let client = self.clone();
             async move {
-                while let Some((_source, server_ep)) = server_eps.next().await {
-                    _ = connection.add_peer_endpoint(server_ep);
-                    for (iface, link, pathway) in
-                        client.probe([server_ep]).await.unwrap_or_default()
-                    {
-                        _ = connection.add_path(iface.bind_uri(), link, pathway);
+                while let Some((source, server_ep)) = server_eps.next().await {
+                    if matches!(
+                        server_ep,
+                        EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
+                    ) {
+                        // Agent endpoint in background.
+                        client.ensure_iface_for(&source, &server_ep).await;
+                        _ = connection.add_peer_endpoint(server_ep);
+                    } else {
+                        // Direct endpoint in background.
+                        _ = connection.add_peer_endpoint(server_ep);
+                        for (iface, link, pathway) in client
+                            .probe([(source, server_ep)])
+                            .await
+                            .unwrap_or_default()
+                        {
+                            _ = connection.add_path(iface.bind_uri(), link, pathway);
+                        }
                     }
                 }
             }
@@ -336,6 +448,7 @@ pub struct QuicClientBuilder<T> {
 
     // client
     bind_ifaces: DashMap<BindUri, BindInterface>,
+    manual_bind: bool,
     // client: quic config(in initialize order)
     prefer_versions: Vec<u32>,
     token_sink: Arc<dyn TokenSink>,
@@ -375,6 +488,7 @@ impl QuicClient {
 
             // client
             bind_ifaces: DashMap::new(),
+            manual_bind: false,
             // client: quic config(in initialize order)
             prefer_versions: vec![1],
             token_sink: Arc::new(handy::NoopTokenRegistry),
@@ -462,6 +576,7 @@ impl<T> QuicClientBuilder<T> {
             .map(|bind_iface| (bind_iface.bind_uri(), bind_iface))
             .collect()
             .await;
+        self.manual_bind = true;
         self
     }
 
@@ -500,6 +615,7 @@ impl<T> QuicClientBuilder<T> {
         QuicClientBuilder {
             network: self.network,
             bind_ifaces: self.bind_ifaces,
+            manual_bind: self.manual_bind,
             prefer_versions: self.prefer_versions,
             token_sink: self.token_sink,
             parameters: self.parameters,
@@ -726,6 +842,7 @@ impl QuicClientBuilder<TlsClientConfig> {
         QuicClient {
             network: self.network,
             bind_ifaces: self.bind_ifaces,
+            manual_bind: Arc::new(AtomicBool::new(self.manual_bind)),
             _prefer_versions: self.prefer_versions,
             token_sink: self.token_sink,
             parameters: self.parameters,
