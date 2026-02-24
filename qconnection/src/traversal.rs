@@ -124,13 +124,13 @@ impl Components {
     }
 
     // 添加对端直通地址，可以直接新建 path
-    pub fn add_peer_endpoint(&self, addr: EndpointAddr) {
+    pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qdns::Source) {
         let addr = match addr {
             EndpointAddr::Socket(addr) => addr,
             _ => return,
         };
-        tracing::debug!(target: "quic", %addr, "Add peer endpoint");
-        match self.puncher.add_peer_endpoint(addr) {
+        tracing::debug!(target: "quic", %addr, ?source, "Add peer endpoint");
+        match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
                 ways.into_iter().for_each(|way| {
                     let _ = self.add_path(way.0, way.1.into(), way.2.into());

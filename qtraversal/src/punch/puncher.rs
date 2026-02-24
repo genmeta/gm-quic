@@ -295,8 +295,8 @@ where
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.add_local_endpoint(bind.clone(), addr)?;
         let mut ways = Vec::new();
-        for remote_ep in address_book.remote_endpoint().iter() {
-            if let Ok(way) = self.resolve_punch_connection(&bind, &addr, remote_ep) {
+        for (remote_ep, source) in address_book.remote_endpoint().iter() {
+            if let Ok(way) = self.resolve_punch_connection(&bind, &addr, remote_ep, source) {
                 ways.push(way);
             }
         }
@@ -306,12 +306,13 @@ where
     pub fn add_peer_endpoint(
         &self,
         endpoint: SocketEndpointAddr,
+        source: qdns::Source,
     ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
-        address_book.add_peer_endpoint(endpoint)?;
+        address_book.add_peer_endpoint(endpoint, source.clone())?;
         let mut ways = Vec::new();
         for (bind, local_ep) in address_book.local_endpoint().iter() {
-            if let Ok(way) = self.resolve_punch_connection(bind, local_ep, &endpoint) {
+            if let Ok(way) = self.resolve_punch_connection(bind, local_ep, &endpoint, &source) {
                 ways.push(way);
             }
         }
@@ -1010,7 +1011,18 @@ where
         bind: &BindUri,
         local: &SocketEndpointAddr,
         remote: &SocketEndpointAddr,
+        source: &qdns::Source,
     ) -> io::Result<(BindUri, Link, PathWay)> {
+        if let qdns::Source::Mdns { nic, family } = source {
+            let matches_iface = bind
+                .as_iface_bind_uri()
+                .is_some_and(|(lf, ln, _)| lf == *family && ln == nic.as_ref());
+            if !matches_iface {
+                return Err(io::Error::other(
+                    "Bind URI does not match source constraint",
+                ));
+            }
+        }
         if local == remote {
             return Err(io::Error::other("Local and remote endpoints are identical"));
         }
