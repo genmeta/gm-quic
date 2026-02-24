@@ -294,6 +294,35 @@ impl QuicClient {
         Ok(paths)
     }
 
+    /// Processes a single server endpoint for the given connection:
+    /// 1. Registers the peer endpoint (with its DNS source) in the connection's address book.
+    /// 2. Probes for immediate paths (Direct endpoints) or ensures an interface
+    ///    is bound (Agent endpoints).  See [`Self::probe`] for details.
+    /// 3. Adds any resulting Direct paths to the connection.
+    ///
+    /// Returns `true` if at least one Direct path was added.
+    async fn setup_server_endpoint(
+        &self,
+        connection: &Connection,
+        source: Source,
+        server_ep: EndpointAddr,
+    ) -> Result<bool, BindInterfaceError> {
+        // Register the peer endpoint with its DNS source — the puncher will
+        // only auto-create paths with local endpoints matching the source constraint
+        // (e.g. mDNS endpoints are restricted to the discovering NIC).
+        _ = connection.add_peer_endpoint(server_ep, source.clone());
+
+        // probe() handles both Direct and Agent uniformly:
+        //   Direct → select/bind interface, construct Link & Pathway, return paths.
+        //   Agent  → ensure an interface is bound, return empty paths.
+        let paths = self.probe([(source, server_ep)]).await?;
+        let has_direct_path = !paths.is_empty();
+        for (iface, link, pathway) in paths {
+            _ = connection.add_path(iface.bind_uri(), link, pathway);
+        }
+        Ok(has_direct_path)
+    }
+
     /// Connects to a server using specific endpoint addresses.
     ///
     /// This method combines [`QuicClient::probe`] and [`QuicClient::new_connection`].
@@ -319,7 +348,7 @@ impl QuicClient {
         self.connected_to_with_source(server_name, server_eps).await
     }
 
-    /// —Connects to a server using `(Source, EndpointAddr)` pairs.
+    /// Connects to a server using `(Source, EndpointAddr)` pairs.
     ///
     /// This variant preserves the DNS [`Source`] so that the correct network interface
     /// is selected for each endpoint (e.g., mDNS endpoints bind to the discovering NIC).
@@ -328,19 +357,12 @@ impl QuicClient {
         server_name: impl Into<String>,
         server_eps: impl IntoIterator<Item = (Source, EndpointAddr)>,
     ) -> Result<Connection, ConnectServerError> {
-        let server_eps = server_eps.into_iter().collect::<Vec<_>>();
-        let paths = self
-            .probe(server_eps.iter().cloned())
-            .await
-            .map_err(|source| ConnectServerError::BindInterface { source })?;
         let connection = self.new_connection(server_name);
-        for (iface, link, pathway) in paths {
-            _ = connection.add_path(iface.bind_uri(), link, pathway);
-        }
-
         _ = connection.subscribe_local_address();
-        for (_, server_ep) in server_eps {
-            _ = connection.add_peer_endpoint(server_ep);
+        for (source, server_ep) in server_eps {
+            self.setup_server_endpoint(&connection, source, server_ep)
+                .await
+                .map_err(|source| ConnectServerError::BindInterface { source })?;
         }
         Ok(connection)
     }
@@ -369,44 +391,36 @@ impl QuicClient {
             return Ok(connection);
         }
 
-        let mut last_error = None;
-        let mut agent_eps = Vec::new();
+        let mut last_error: Option<ConnectServerError> = None;
 
         // Consume the DNS stream until we get at least one Direct path,
-        // stashing any Agent endpoints along the way.
-        let paths = loop {
-            let Some((source, server_ep)) = server_eps.next().await else {
-                if agent_eps.is_empty() {
-                    return Err(last_error.expect("DNS lookup should return at least one address"));
+        // or exhaust all endpoints (Agent-only is acceptable).
+        //
+        // `last_error` doubles as a "no viable endpoint yet" sentinel:
+        // - On `Ok(false)` (Agent registered): clear it — we have a viable fallback.
+        // - On `Err`: set/keep it — probe failure, keep looking.
+        // - On stream exhaustion: if still `Some`, nothing viable → propagate error.
+        while let Some((source, server_ep)) = server_eps.next().await {
+            match self
+                .setup_server_endpoint(&connection, source, server_ep)
+                .await
+            {
+                Ok(true) => {
+                    last_error = None; // Got a Direct path, proceed.
+                    break;
                 }
-                break vec![];
-            };
-
-            if matches!(
-                server_ep,
-                EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
-            ) {
-                // Agent endpoint: ensure an interface exists, stash for later.
-                self.ensure_iface_for(&source, &server_ep).await;
-                agent_eps.push(server_ep);
-                continue;
+                Ok(false) => {
+                    // Agent endpoint registered — even if later Direct probes fail,
+                    // the puncher can still establish paths asynchronously.
+                    last_error = None;
+                }
+                Err(error) => {
+                    last_error.get_or_insert(error.into());
+                }
             }
-
-            // Direct endpoint: probe to build paths.
-            match self.probe([(source, server_ep)]).await {
-                Ok(paths) => break paths,
-                Err(error) => last_error = Some(error.into()),
-            }
-        };
-
-        // Add Direct paths.
-        for (iface, link, pathway) in paths {
-            _ = connection.add_path(iface.bind_uri(), link, pathway);
         }
-
-        // Register stashed Agent endpoints to the puncher system.
-        for server_ep in &agent_eps {
-            _ = connection.add_peer_endpoint(*server_ep);
+        if let Some(error) = last_error {
+            return Err(error);
         }
 
         // Background task: keep consuming the DNS stream for late-arriving endpoints.
@@ -415,24 +429,9 @@ impl QuicClient {
             let client = self.clone();
             async move {
                 while let Some((source, server_ep)) = server_eps.next().await {
-                    if matches!(
-                        server_ep,
-                        EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
-                    ) {
-                        // Agent endpoint in background.
-                        client.ensure_iface_for(&source, &server_ep).await;
-                        _ = connection.add_peer_endpoint(server_ep);
-                    } else {
-                        // Direct endpoint in background.
-                        _ = connection.add_peer_endpoint(server_ep);
-                        for (iface, link, pathway) in client
-                            .probe([(source, server_ep)])
-                            .await
-                            .unwrap_or_default()
-                        {
-                            _ = connection.add_path(iface.bind_uri(), link, pathway);
-                        }
-                    }
+                    _ = client
+                        .setup_server_endpoint(&connection, source, server_ep)
+                        .await;
                 }
             }
         });

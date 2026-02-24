@@ -673,9 +673,9 @@ impl Connection {
             .try_map_components(|core_conn| core_conn.add_local_endpoint(bind, addr))
     }
 
-    pub fn add_peer_endpoint(&self, addr: EndpointAddr) -> Result<(), Error> {
+    pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qdns::Source) -> Result<(), Error> {
         self.0
-            .try_map_components(|core_conn| core_conn.add_peer_endpoint(addr))
+            .try_map_components(|core_conn| core_conn.add_peer_endpoint(addr, source))
     }
 
     pub fn remove_address(&self, addr: SocketAddr) -> Result<(), Error> {
