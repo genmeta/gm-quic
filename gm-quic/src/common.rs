@@ -49,20 +49,16 @@ impl Default for Network {
 }
 
 impl Network {
-    async fn lookup_agents(&self, stun_server: &str) -> Option<Vec<SocketAddr>> {
-        let agents: Vec<SocketAddr> = self
-            .resolver
-            .lookup(stun_server)
-            .await
-            .ok()?
-            .filter_map(async |(_, addr)| match addr {
-                EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) => Some(addr),
-                _ => None,
-            })
-            .collect()
-            .await;
-        tracing::debug!("stun agents for server {}: {:?}", stun_server, agents);
-        (!agents.is_empty()).then_some(agents)
+    /// 只取第一个可用的 STUN agent 即返回，后续由 StunClientsComponent 自动补充到 MIN_AGENTS
+    async fn lookup_first_agent(&self, stun_server: &str) -> Option<Vec<SocketAddr>> {
+        let mut stream = self.resolver.lookup(stun_server).await.ok()?;
+        while let Some((_, addr)) = stream.next().await {
+            if let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr {
+                tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
+                return Some(vec![addr]);
+            }
+        }
+        None
     }
 
     fn init_iface_components(
@@ -89,7 +85,7 @@ impl Network {
                     let stun_router = components
                         .init_with(|| StunRouterComponent::new(iface.downgrade()))
                         .router();
-                    // initial stun clients
+                    // initial stun clients (后续会自动补充到 MIN_AGENTS)
                     let clients = components
                         .init_with(|| {
                             StunClientsComponent::new(
@@ -149,8 +145,8 @@ impl Network {
         };
 
         let stun_agents = match &stun_server {
-            Some(stun_server) => self
-                .lookup_agents(stun_server.as_ref())
+            Some(server) => self
+                .lookup_first_agent(server.as_ref())
                 .await
                 .unwrap_or_default(),
             None => vec![],
