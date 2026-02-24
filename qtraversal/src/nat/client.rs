@@ -486,52 +486,33 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                     async move { _ = stream.next().await }
                 };
 
-                let lookup_new_agents = async || {
-                    // TODO: rename to stun.genmeta.net
-                    let resolved_agents = resolver
-                        .lookup(server.as_ref())
-                        .await
-                        .ok()?
-                        .filter_map(async |(_, addr)| match addr {
-                            EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) => Some(addr),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .await;
-
-                    let local_addr = ref_iface.iface().local_addr().ok()?;
-                    let is_ipv4 = local_addr.is_ipv4();
-
-                    let clients = lock_clients();
-                    let new_agents = resolved_agents
-                        .into_iter()
-                        .filter(|addr| addr.is_ipv4() == is_ipv4 && !clients.contains_key(addr))
-                        .collect::<Vec<_>>();
-
-                    (!new_agents.is_empty()).then_some(new_agents)
-                };
-
-                let insert_stun_clients = |new_agents: Vec<SocketAddr>| {
-                    let mut clients = lock_clients();
-                    for agent_addr in new_agents {
-                        if let Some(client) = new_stun_client(agent_addr) {
-                            tracing::debug!(target: "stun", %agent_addr, "Discovered new STUN agent");
-                            clients.insert(agent_addr, client);
-                        }
-                    }
-                };
-
                 loop {
                     while !{ should_lookup_agents(&lock_clients()) } {
                         { wait_too_few_agents(&lock_clients()) }.await;
                     }
 
-                    let Some(new_agents) = lookup_new_agents().await else {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        continue;
-                    };
-
-                    insert_stun_clients(new_agents);
+                    // 保证两次 lookup 至少间隔 10s，同时限时 10s 防止 resolver 卡住
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                    _ = tokio::time::timeout_at(deadline, async {
+                        let Ok(stream) = resolver.lookup(server.as_ref()).await else { return };
+                        let Some(is_ipv4) = ref_iface.iface().local_addr().ok().map(|a| a.is_ipv4()) else { return };
+                        let mut stream = std::pin::pin!(stream);
+                        while let Some((_, addr)) = stream.next().await {
+                            let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr else { continue };
+                            if addr.is_ipv4() != is_ipv4 { continue }
+                            let done = {
+                                let mut clients = lock_clients();
+                                if clients.contains_key(&addr) { continue }
+                                if let Some(client) = new_stun_client(addr) {
+                                    tracing::debug!(target: "stun", %addr, "Discovered new STUN agent");
+                                    clients.insert(addr, client);
+                                    !should_lookup_agents(&clients)
+                                } else { false }
+                            };
+                            if done { break }
+                        }
+                    }).await;
+                    tokio::time::sleep_until(deadline).await;
                 }
             }
         }));
