@@ -13,7 +13,7 @@ pub use qbase::net::{
 pub type PublishFuture<'a> = BoxFuture<'a, io::Result<()>>;
 
 pub trait Publish: Display + Debug {
-    fn publish<'a>(&'a self, name: &'a str, endpoints: &'a [EndpointAddr]) -> PublishFuture<'a>;
+    fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> PublishFuture<'a>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
