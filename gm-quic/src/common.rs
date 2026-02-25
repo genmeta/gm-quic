@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
-    prelude::{EndpointAddr, SocketEndpointAddr, handy},
+    prelude::{AddrKind, EndpointAddr, SocketEndpointAddr, handy},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -21,7 +21,7 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
-use qdns::{Resolve, SystemResolver};
+use qdns::{Family, Resolve, SystemResolver};
 
 #[derive(Clone)]
 pub struct Network {
@@ -50,13 +50,24 @@ impl Default for Network {
 
 impl Network {
     /// 只取第一个可用的 STUN agent 即返回，后续由 StunClientsComponent 自动补充到 MIN_AGENTS
-    async fn lookup_first_agent(&self, stun_server: &str) -> Option<Vec<SocketAddr>> {
+    async fn lookup_first_agent(
+        &self,
+        stun_server: &str,
+        family: Option<Family>,
+    ) -> Option<Vec<SocketAddr>> {
         let mut stream = self.resolver.lookup(stun_server).await.ok()?;
-        while let Some((_, addr)) = stream.next().await {
-            if let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr {
-                tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
-                return Some(vec![addr]);
+        while let Some((_, EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }))) =
+            stream.next().await
+        {
+            let is_match = family.is_none_or(|family| match family {
+                Family::V4 => addr.is_ipv4(),
+                Family::V6 => addr.is_ipv6(),
+            });
+            if !is_match {
+                continue;
             }
+            tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
+            return Some(vec![addr]);
         }
         None
     }
@@ -144,9 +155,14 @@ impl Network {
             self.stun_server.clone()
         };
 
+        let family = match bind_uri.addr_kind() {
+            AddrKind::Internet(family) => Some(family),
+            _ => None,
+        };
+
         let stun_agents = match &stun_server {
             Some(server) => self
-                .lookup_first_agent(server.as_ref())
+                .lookup_first_agent(server.as_ref(), family)
                 .await
                 .unwrap_or_default(),
             None => vec![],
@@ -155,6 +171,7 @@ impl Network {
         let factory = self.iface_factory.clone();
         let bind_iface = self.iface_manager.bind(bind_uri, factory).await;
         self.init_iface_components(&bind_iface, stun_server.map(|s| (s, stun_agents)));
+
         bind_iface
     }
 
