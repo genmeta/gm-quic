@@ -15,7 +15,10 @@ use std::{
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::{
-    net::addr::{EndpointAddr, SocketEndpointAddr},
+    net::{
+        Family,
+        addr::{AddrKind, EndpointAddr, SocketEndpointAddr},
+    },
     varint::VarInt,
 };
 use qdns::Resolve;
@@ -146,6 +149,7 @@ pub struct StunClient<I: RefIO + 'static> {
 
     state: ArcClientState,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    nat_started: Arc<AtomicBool>,
 }
 
 pub type ClientLocationData = Result<SocketEndpointAddr, ArcIoError>;
@@ -166,14 +170,13 @@ impl<I: RefIO + 'static> StunClient<I> {
             locations,
             state: ArcClientState::new(),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
+            nat_started: Arc::new(AtomicBool::new(false)),
         };
-
+        tracing::debug!(target: "stun", %stun_agent, "Created new STUN client");
         {
             let mut tasks = client.lock_tasks();
-            tasks.spawn(client.nat_detect_task());
             tasks.spawn(client.keep_alive_task());
         }
-
         client
     }
 
@@ -181,11 +184,27 @@ impl<I: RefIO + 'static> StunClient<I> {
         self.tasks.lock().expect("StunClient tasks lock poisoned")
     }
 
+    fn start_nat_detect(&self) {
+        if self.state.get() == ClientState::Closing {
+            return;
+        }
+        if self
+            .nat_started
+            .compare_exchange(false, true, SeqCst, SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let mut tasks = self.lock_tasks();
+        tasks.spawn(self.nat_detect_task());
+    }
+
     fn keep_alive_task(&self) -> impl futures::Future<Output = ()> + use<I> {
         let outer_addr = self.outer_addr.clone();
         let stun_agent = self.stun_agent;
         let stun_router = self.stun_router.clone();
-
+        tracing::info!(target: "stun", %stun_agent, "Starting STUN client keep alive task");
         let ref_iface = self.ref_iface.clone();
         let bind_uri = ref_iface.iface().bind_uri();
 
@@ -313,6 +332,7 @@ impl<I: RefIO + 'static> StunClient<I> {
     }
 
     pub fn poll_nat_type(&self, cx: &mut Context) -> Poll<io::Result<NatType>> {
+        self.start_nat_detect();
         if self.state.get() == ClientState::Closing {
             return Poll::Ready(Err(RebindedError.into()));
         }
@@ -322,10 +342,12 @@ impl<I: RefIO + 'static> StunClient<I> {
     }
 
     pub async fn nat_type(&self) -> io::Result<NatType> {
+        self.start_nat_detect();
         core::future::poll_fn(|cx| self.poll_nat_type(cx)).await
     }
 
     pub fn get_nat_type(&self) -> Option<io::Result<NatType>> {
+        self.start_nat_detect();
         if self.state.get() == ClientState::Closing {
             return Some(Err(RebindedError.into()));
         }
@@ -495,7 +517,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                     _ = tokio::time::timeout_at(deadline, async {
                         let Ok(stream) = resolver.lookup(server.as_ref()).await else { return };
-                        let Some(is_ipv4) = ref_iface.iface().local_addr().ok().map(|a| a.is_ipv4()) else { return };
+                        let is_ipv4 = matches!(ref_iface.iface().bind_uri().addr_kind(), AddrKind::Internet(Family::V4));
                         let mut stream = std::pin::pin!(stream);
                         while let Some((_, addr)) = stream.next().await {
                             let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr else { continue };

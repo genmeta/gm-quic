@@ -161,7 +161,6 @@ impl Locations {
     }
 
     pub fn upsert<D: Any + Send + Sync + Debug>(&self, bind_uri: BindUri, data: Arc<D>) {
-        tracing::debug!(%bind_uri, ?data, "Upsert location data");
         self.publish(bind_uri, AddressEvent::Upsert(data));
     }
 
