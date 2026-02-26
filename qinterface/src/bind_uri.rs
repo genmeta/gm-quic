@@ -22,9 +22,9 @@ pub enum ParseBindUriError {
     #[error("Invalid uri {0}")]
     InvalidUri(<Uri as FromStr>::Err),
     #[error("Missing scheme")]
-    MissingSchema,
+    MissingScheme,
     #[error("Invalid bind uri scheme: {0}")]
-    InvalidSchema(ParseBindUriSchemeError),
+    InvalidScheme(ParseBindUriSchemeError),
     #[error("Path must be empty")]
     HasPath,
     #[error("Missing ip family for iface scheme BindUri")]
@@ -77,26 +77,26 @@ impl FromStr for BindUri {
 
         let uri: Uri = s.parse().map_err(ParseBindUriError::InvalidUri)?;
 
-        let schema = uri
+        let scheme = uri
             .scheme()
-            .ok_or(ParseBindUriError::MissingSchema)?
+            .ok_or(ParseBindUriError::MissingScheme)?
             .as_str()
             .parse()
-            .map_err(ParseBindUriError::InvalidSchema)?;
+            .map_err(ParseBindUriError::InvalidScheme)?;
         debug_assert!(uri.authority().is_some(), "BindUri should be absolute URI");
 
         if uri.path() != "/" {
             return Err(ParseBindUriError::HasPath);
         }
 
-        match schema {
-            BindUriSchema::Iface => {
+        match scheme {
+            BindUriScheme::Iface => {
                 parse_iface_bind_uri(&uri)?;
             }
-            BindUriSchema::Inet => {
+            BindUriScheme::Inet => {
                 parse_inet_bind_uri(&uri)?;
             }
-            BindUriSchema::Ble => {
+            BindUriScheme::Ble => {
                 parse_ble_bind_uri(&uri);
             }
         }
@@ -148,13 +148,13 @@ impl BindUri {
     pub const STUN_SERVER_PROP: &str = "stun_server";
     pub const RELAY_PROP: &str = "relay";
 
-    pub fn scheme(&self) -> BindUriSchema {
+    pub fn scheme(&self) -> BindUriScheme {
         self.0
             .scheme()
-            .expect("Invalid BindUri: Missing schema")
+            .expect("Invalid BindUri: Missing scheme")
             .as_str()
             .parse()
-            .expect("Invalid BindUri: Invalid schema")
+            .expect("Invalid BindUri: Invalid scheme")
     }
 
     #[inline]
@@ -164,33 +164,33 @@ impl BindUri {
 
     pub fn addr_kind(&self) -> AddrKind {
         match self.scheme() {
-            BindUriSchema::Iface => AddrKind::Internet(
+            BindUriScheme::Iface => AddrKind::Internet(
                 self.as_iface_bind_uri()
-                    .expect("Already checked BindUriSchema is iface")
+                    .expect("Already checked BindUriScheme is iface")
                     .0,
             ),
-            BindUriSchema::Inet => {
+            BindUriScheme::Inet => {
                 match self
                     .as_inet_bind_uri()
-                    .expect("Already checked BindUriSchema is inet")
+                    .expect("Already checked BindUriScheme is inet")
                 {
                     SocketAddr::V4(_) => AddrKind::Internet(Family::V4),
                     SocketAddr::V6(_) => AddrKind::Internet(Family::V6),
                 }
             }
-            BindUriSchema::Ble => AddrKind::Bluetooth,
+            BindUriScheme::Ble => AddrKind::Bluetooth,
         }
     }
 
     pub fn as_iface_bind_uri(&self) -> Option<(Family, &str, u16)> {
-        if self.scheme() != BindUriSchema::Iface {
+        if self.scheme() != BindUriScheme::Iface {
             return None;
         }
         Some(parse_iface_bind_uri(&self.0).expect("BindUri should be valid"))
     }
 
     pub fn as_inet_bind_uri(&self) -> Option<SocketAddr> {
-        if self.scheme() != BindUriSchema::Inet {
+        if self.scheme() != BindUriScheme::Inet {
             return None;
         }
         Some(parse_inet_bind_uri(&self.0).expect("BindUri should be valid"))
@@ -223,19 +223,19 @@ impl BindUri {
 
     pub fn alloc_port(&self) -> Self {
         match self.scheme() {
-            BindUriSchema::Iface => {
+            BindUriScheme::Iface => {
                 let (.., port) = self
                     .as_iface_bind_uri()
-                    .expect("Already checked BindUriSchema is iface");
+                    .expect("Already checked BindUriScheme is iface");
                 assert_eq!(port, 0, "Only port 0 is allocatable");
             }
-            BindUriSchema::Inet => {
+            BindUriScheme::Inet => {
                 let addr = self
                     .as_inet_bind_uri()
-                    .expect("Already checked BindUriSchema is inet");
+                    .expect("Already checked BindUriScheme is inet");
                 assert_eq!(addr.port(), 0, "Only port 0 is allocatable");
             }
-            BindUriSchema::Ble => panic!("BLE address cannot allocate port"),
+            BindUriScheme::Ble => panic!("BLE address cannot allocate port"),
         }
 
         let mut new_uri = self.clone();
@@ -299,10 +299,10 @@ impl BindUri {
 
     pub fn resolve(&self) -> Result<SocketAddr, TryIntoSocketAddrError> {
         match self.scheme() {
-            BindUriSchema::Iface => {
+            BindUriScheme::Iface => {
                 let (ip_family, interface, port) = self
                     .as_iface_bind_uri()
-                    .expect("Already checked BindUriSchema is iface");
+                    .expect("Already checked BindUriScheme is iface");
 
                 let devices = crate::device::Devices::global();
                 devices
@@ -314,17 +314,17 @@ impl BindUri {
 
                 Ok(SocketAddr::new(ip_addr, port))
             }
-            BindUriSchema::Inet => Ok(self
+            BindUriScheme::Inet => Ok(self
                 .as_inet_bind_uri()
-                .expect("Already checked BindUriSchema is inet")),
-            BindUriSchema::Ble => Err(TryIntoSocketAddrError::NotSocketBindUri),
+                .expect("Already checked BindUriScheme is inet")),
+            BindUriScheme::Ble => Err(TryIntoSocketAddrError::NotSocketBindUri),
         }
     }
 }
 
 #[derive(Debug, Error)]
 pub enum TryIntoSocketAddrError {
-    #[error("Only inet or iface schema BindUri can be converted to SocketAddr")]
+    #[error("Only inet or iface scheme BindUri can be converted to SocketAddr")]
     NotSocketBindUri,
     #[error("Device not found")]
     InterfaceNotFound,
@@ -349,18 +349,18 @@ impl TryFrom<BindUri> for SocketAddr {
 }
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BindUriSchema {
+pub enum BindUriScheme {
     Iface,
     Inet,
     Ble,
 }
 
-impl BindUriSchema {
+impl BindUriScheme {
     pub const fn to_str(&self) -> &'static str {
         match self {
-            BindUriSchema::Iface => "iface",
-            BindUriSchema::Inet => "inet",
-            BindUriSchema::Ble => "ble",
+            BindUriScheme::Iface => "iface",
+            BindUriScheme::Inet => "inet",
+            BindUriScheme::Ble => "ble",
         }
     }
 }
@@ -369,26 +369,22 @@ impl BindUriSchema {
 #[error("Expect one of: iface, inet, ble")]
 pub struct ParseBindUriSchemeError;
 
-impl FromStr for BindUriSchema {
+impl FromStr for BindUriScheme {
     type Err = ParseBindUriSchemeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "iface" => Ok(BindUriSchema::Iface),
-            "inet" => Ok(BindUriSchema::Inet),
-            "ble" => Ok(BindUriSchema::Ble),
+            "iface" => Ok(BindUriScheme::Iface),
+            "inet" => Ok(BindUriScheme::Inet),
+            "ble" => Ok(BindUriScheme::Ble),
             _ => Err(ParseBindUriSchemeError),
         }
     }
 }
 
-impl Display for BindUriSchema {
+impl Display for BindUriScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BindUriSchema::Iface => write!(f, "iface"),
-            BindUriSchema::Inet => write!(f, "inet"),
-            BindUriSchema::Ble => write!(f, "ble"),
-        }
+        self.to_str().fmt(f)
     }
 }
 
@@ -405,18 +401,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_schema() {
+    fn missing_scheme() {
         assert!(matches!(
             BindUri::from_str("invalid_uri"),
-            Err(ParseBindUriError::MissingSchema)
+            Err(ParseBindUriError::MissingScheme)
         ));
     }
 
     #[test]
-    fn invalid_schema() {
+    fn invalid_scheme() {
         assert!(matches!(
             BindUri::from_str("invalid://example.com"),
-            Err(ParseBindUriError::InvalidSchema(_))
+            Err(ParseBindUriError::InvalidScheme(_))
         ));
     }
 
@@ -463,7 +459,7 @@ mod tests {
     #[test]
     fn iface_bind_uri() {
         let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?temporary=true").unwrap();
-        assert_eq!(bind_uri.scheme(), BindUriSchema::Iface);
+        assert_eq!(bind_uri.scheme(), BindUriScheme::Iface);
         let (family, interface, port) = bind_uri.as_iface_bind_uri().unwrap();
         assert_eq!(family, Family::V4);
         assert_eq!(interface, "wlan0");
@@ -477,7 +473,7 @@ mod tests {
     #[test]
     fn inet_bind_uri() {
         let bind_uri = BindUri::from_str("inet://127.0.0.1:7777").unwrap();
-        assert_eq!(bind_uri.scheme(), BindUriSchema::Inet);
+        assert_eq!(bind_uri.scheme(), BindUriScheme::Inet);
         let addr = bind_uri.as_inet_bind_uri().unwrap();
         assert_eq!(
             addr,
@@ -576,10 +572,10 @@ mod tests {
         );
 
         let bind_uri =
-            BindUri::from_str("iface://v4.wlan0:8080?stun_server=stun.l.google.com:19302").unwrap();
+            BindUri::from_str("iface://v4.wlan0:8080?stun_server=stun.genmeta.net").unwrap();
         assert_eq!(
             bind_uri.stun_server().as_deref(),
-            Some("stun.l.google.com:19302")
+            Some("stun.genmeta.net")
         );
     }
 
@@ -592,7 +588,7 @@ mod tests {
         assert_eq!(bind_uri.relay().as_deref(), Some("turn.example.com:3478"));
 
         let bind_uri =
-            BindUri::from_str("iface://v4.wlan0:8080?relay=turn.l.google.com:19302").unwrap();
-        assert_eq!(bind_uri.relay().as_deref(), Some("turn.l.google.com:19302"));
+            BindUri::from_str("iface://v4.wlan0:8080?relay=turn.genmeta.net").unwrap();
+        assert_eq!(bind_uri.relay().as_deref(), Some("turn.genmeta.net"));
     }
 }

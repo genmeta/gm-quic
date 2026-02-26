@@ -17,7 +17,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     Interface, RebindedError,
-    bind_uri::{BindUriSchema, TryIntoSocketAddrError},
+    bind_uri::{BindUriScheme, TryIntoSocketAddrError},
     component::Component,
     device::Devices,
     io::{IO, IoExt},
@@ -57,7 +57,7 @@ impl InterfaceFailure {
 }
 
 pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure> {
-    if iface.bind_uri().scheme() == BindUriSchema::Ble {
+    if iface.bind_uri().scheme() == BindUriScheme::Ble {
         return Err(InterfaceFailure::BleProtocol);
     }
 

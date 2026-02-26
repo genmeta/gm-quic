@@ -10,7 +10,7 @@ use std::{
 
 use qinterface::{
     Interface,
-    bind_uri::{BindUri, BindUriSchema},
+    bind_uri::{BindUri, BindUriScheme},
     component::route::{QuicRouter, QuicRouterComponent},
     io::{IO, ProductIO},
     manager::InterfaceManager,
@@ -68,8 +68,8 @@ impl PortPredictor {
         max_total: u32,
     ) -> io::Result<Self> {
         let interface_name = match bind_uri.scheme() {
-            BindUriSchema::Iface => bind_uri.as_iface_bind_uri().unwrap().1.to_string(),
-            BindUriSchema::Inet => bind_uri.as_inet_bind_uri().unwrap().ip().to_string(),
+            BindUriScheme::Iface => bind_uri.as_iface_bind_uri().unwrap().1.to_string(),
+            BindUriScheme::Inet => bind_uri.as_inet_bind_uri().unwrap().ip().to_string(),
             _ => return Err(io::ErrorKind::Unsupported.into()),
         };
         tracing::debug!(target: "punch", %bind_uri, %dst, max_total, %interface_name, "Created port predictor");
@@ -90,7 +90,7 @@ impl PortPredictor {
 
     fn port_to_bind_uri(&self, port: u16) -> BindUri {
         match self.bind_uri.scheme() {
-            BindUriSchema::Iface => {
+            BindUriScheme::Iface => {
                 let (ip_family, device, _) = self.bind_uri.as_iface_bind_uri().unwrap();
                 let bind_uri = format!(
                     "iface://{ip_family}.{device}:{port}?{}=true",
@@ -100,7 +100,7 @@ impl PortPredictor {
                     panic!("Constructed invalid iface bind URI {bind_uri}: {e}",)
                 })
             }
-            BindUriSchema::Inet => {
+            BindUriScheme::Inet => {
                 let socket_addr = self.bind_uri.as_inet_bind_uri().unwrap();
                 let ip = socket_addr.ip();
                 let bind_uri = format!("inet://{ip}:{port}?{}=true", BindUri::TEMPORARY_PROP);
@@ -108,7 +108,7 @@ impl PortPredictor {
                     panic!("Constructed invalid inet bind URI {bind_uri}: {e}",)
                 })
             }
-            _ => unreachable!("Unsupported bind URI schema for port prediction"),
+            _ => unreachable!("Unsupported bind URI scheme for port prediction"),
         }
     }
 
