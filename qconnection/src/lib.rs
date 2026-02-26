@@ -21,7 +21,7 @@ pub mod prelude {
     };
     pub use qinterface::{
         bind_uri::BindUri,
-        io::{IO as QuicIO, IoExt as QuicIoExt},
+        io::{IO, IoExt},
     };
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
     #[cfg(feature = "unreliable")]
