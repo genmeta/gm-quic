@@ -7,7 +7,7 @@ use std::{
 };
 
 use derive_more::{Display, Into};
-use http::Uri;
+use http::{Uri, uri::Scheme};
 use qbase::{
     net::{Family, addr::AddrKind},
     util::UniqueIdGenerator,
@@ -74,9 +74,16 @@ impl FromStr for BindUri {
         if let Ok(socket_addr) = s.parse::<SocketAddr>() {
             return Ok(socket_addr.into());
         }
+        s.parse::<Uri>()
+            .map_err(ParseBindUriError::InvalidUri)?
+            .try_into()
+    }
+}
 
-        let uri: Uri = s.parse().map_err(ParseBindUriError::InvalidUri)?;
+impl TryFrom<Uri> for BindUri {
+    type Error = ParseBindUriError;
 
+    fn try_from(uri: Uri) -> Result<Self, Self::Error> {
         let scheme = uri
             .scheme()
             .ok_or(ParseBindUriError::MissingScheme)?
@@ -139,6 +146,13 @@ impl<T: Copy + Into<BindUri>> From<&T> for BindUri {
     #[inline]
     fn from(value: &T) -> Self {
         (*value).into()
+    }
+}
+
+impl From<&BindUri> for BindUri {
+    #[inline]
+    fn from(value: &BindUri) -> Self {
+        value.clone()
     }
 }
 
@@ -362,6 +376,15 @@ impl BindUriScheme {
             BindUriScheme::Inet => "inet",
             BindUriScheme::Ble => "ble",
         }
+    }
+}
+
+impl From<BindUriScheme> for Scheme {
+    fn from(value: BindUriScheme) -> Self {
+        value
+            .to_str()
+            .parse()
+            .expect("BindUriScheme should be valid URI scheme")
     }
 }
 
