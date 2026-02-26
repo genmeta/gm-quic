@@ -596,10 +596,7 @@ mod tests {
 
         let bind_uri =
             BindUri::from_str("iface://v4.wlan0:8080?stun_server=stun.genmeta.net").unwrap();
-        assert_eq!(
-            bind_uri.stun_server().as_deref(),
-            Some("stun.genmeta.net")
-        );
+        assert_eq!(bind_uri.stun_server().as_deref(), Some("stun.genmeta.net"));
     }
 
     #[test]
@@ -610,8 +607,7 @@ mod tests {
         let bind_uri = bind_uri.with_relay("turn.example.com:3478");
         assert_eq!(bind_uri.relay().as_deref(), Some("turn.example.com:3478"));
 
-        let bind_uri =
-            BindUri::from_str("iface://v4.wlan0:8080?relay=turn.genmeta.net").unwrap();
+        let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?relay=turn.genmeta.net").unwrap();
         assert_eq!(bind_uri.relay().as_deref(), Some("turn.genmeta.net"));
     }
 }
