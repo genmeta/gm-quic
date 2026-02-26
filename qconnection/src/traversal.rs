@@ -143,7 +143,6 @@ impl Components {
     }
 
     // 添加本地直连地址，用于打洞，不能直接新建路径
-    #[tracing::instrument(skip(self), ret, err)]
     pub fn add_local_punch_address(
         &self,
         bind_uri: BindUri,
