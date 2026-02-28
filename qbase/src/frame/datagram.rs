@@ -1,7 +1,7 @@
 use bytes::Buf;
 use nom::IResult;
 
-use super::{FrameType, GetFrameType};
+use super::{FrameType, GetFrameType, io::WriteFrameType};
 use crate::{
     util::{ContinuousData, WriteData},
     varint::{VarInt, WriteVarInt, be_varint},
@@ -91,7 +91,7 @@ where
     D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
-        self.put_varint(&frame.frame_type().into());
+        self.put_frame_type(frame.frame_type());
         if frame.encode_len {
             self.put_varint(&frame.len);
         }

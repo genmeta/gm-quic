@@ -385,8 +385,8 @@ where
     D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &StreamFrame, data: &D) {
-        let stream_type = frame.frame_type();
-        self.put_varint(&stream_type.into());
+        use crate::frame::io::WriteFrameType;
+        self.put_frame_type(frame.frame_type());
         self.put_streamid(&frame.id);
         if frame.offset.into_inner() != 0 {
             self.put_varint(&frame.offset);

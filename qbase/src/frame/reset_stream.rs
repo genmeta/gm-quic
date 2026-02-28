@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
     sid::{StreamId, WriteStreamId, be_streamid},
     varint::{VarInt, WriteVarInt, be_varint},
 };
@@ -24,8 +25,6 @@ pub struct ResetStreamFrame {
     app_error_code: VarInt,
     final_size: VarInt,
 }
-
-const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
 
 impl super::GetFrameType for ResetStreamFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -88,7 +87,7 @@ pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFra
 
 impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
     fn put_frame(&mut self, frame: &ResetStreamFrame) {
-        self.put_u8(RESET_STREAM_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);
         self.put_varint(&frame.final_size);
@@ -136,9 +135,12 @@ impl From<&ResetStreamFrame> for ResetStreamError {
 mod tests {
     use nom::{Parser, combinator::flat_map};
 
-    use super::{RESET_STREAM_FRAME_TYPE, ResetStreamError, ResetStreamFrame};
+    use super::{ResetStreamError, ResetStreamFrame};
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         varint::{VarInt, be_varint},
     };
 
@@ -165,21 +167,11 @@ mod tests {
 
     #[test]
     fn test_read_reset_stream_frame() {
-        let buf = vec![
-            RESET_STREAM_FRAME_TYPE,
-            0x52,
-            0x34,
-            0x80,
-            0,
-            0x56,
-            0x78,
-            0x80,
-            0,
-            0x9a,
-            0xbc,
-        ];
+        let mut buf = Vec::new();
+        buf.put_frame_type(FrameType::ResetStream);
+        buf.extend_from_slice(&[0x52, 0x34, 0x80, 0, 0x56, 0x78, 0x80, 0, 0x9a, 0xbc]);
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == RESET_STREAM_FRAME_TYPE as u64 {
+            if frame_type == VarInt::from(FrameType::ResetStream) {
                 super::be_reset_stream_frame
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -208,21 +200,9 @@ mod tests {
             // 0x9abc = 0b10011010 10111100 => 0b10000000 0x00 0x9a 0xbc
             VarInt::from_u32(0x9abc),
         ));
-        assert_eq!(
-            buf,
-            vec![
-                RESET_STREAM_FRAME_TYPE,
-                0x52,
-                0x34,
-                0x80,
-                0,
-                0x56,
-                0x78,
-                0x80,
-                0,
-                0x9a,
-                0xbc
-            ]
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::ResetStream);
+        expected.extend_from_slice(&[0x52, 0x34, 0x80, 0, 0x56, 0x78, 0x80, 0, 0x9a, 0xbc]);
+        assert_eq!(buf, expected);
     }
 }

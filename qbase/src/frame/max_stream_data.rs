@@ -1,4 +1,5 @@
 use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
     sid::{StreamId, WriteStreamId, be_streamid},
     varint::{VarInt, WriteVarInt, be_varint},
 };
@@ -20,8 +21,6 @@ pub struct MaxStreamDataFrame {
     stream_id: StreamId,
     max_stream_data: VarInt,
 }
-
-const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
 
 impl MaxStreamDataFrame {
     /// Create a new [`MaxStreamDataFrame`].
@@ -75,7 +74,7 @@ pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDa
 
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
     fn put_frame(&mut self, frame: &MaxStreamDataFrame) {
-        self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.max_stream_data);
     }
@@ -83,9 +82,12 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_STREAM_DATA_FRAME_TYPE, MaxStreamDataFrame};
+    use super::MaxStreamDataFrame;
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         varint::VarInt,
     };
 
@@ -116,9 +118,9 @@ mod tests {
             VarInt::from_u32(0x1234).into(),
             VarInt::from_u32(0x5678),
         ));
-        assert_eq!(
-            buf,
-            vec![MAX_STREAM_DATA_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::MaxStreamData);
+        expected.extend_from_slice(&[0x52, 0x34, 0x80, 0, 0x56, 0x78]);
+        assert_eq!(buf, expected);
     }
 }

@@ -1,5 +1,6 @@
 use derive_more::Deref;
 
+use crate::frame::{GetFrameType, io::WriteFrameType};
 /// PATH_CHALLENGE frame.
 ///
 /// ```text
@@ -33,8 +34,6 @@ impl PathChallengeFrame {
     }
 }
 
-const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
-
 impl super::GetFrameType for PathChallengeFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathChallenge
@@ -61,18 +60,25 @@ pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChalleng
 // BufMut write extension for PATH_CHALLENGE_FRAME
 impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
     fn put_frame(&mut self, frame: &PathChallengeFrame) {
-        self.put_u8(PATH_CHALLENGE_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_slice(&frame.data);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::EncodeSize;
+    use nom::{Parser, combinator::flat_map};
 
+    use super::be_path_challenge_frame;
+    use crate::{
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
+        varint::{VarInt, be_varint},
+    };
     #[test]
     fn test_path_challenge_frame() {
-        use crate::frame::{FrameType, GetFrameType};
         let frame = super::PathChallengeFrame::from_slice(&[
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         ]);
@@ -83,23 +89,12 @@ mod tests {
 
     #[test]
     fn test_read_path_challenge_frame() {
-        use nom::{Parser, combinator::flat_map};
-
-        use super::be_path_challenge_frame;
-        use crate::varint::be_varint;
-        let buf = vec![
-            super::PATH_CHALLENGE_FRAME_TYPE,
-            0x01,
-            0x02,
-            0x03,
-            0x04,
-            0x05,
-            0x06,
-            0x07,
-            0x08,
-        ];
+        let path_challenge_frame_type = VarInt::from(FrameType::PathChallenge);
+        let mut buf = Vec::new();
+        buf.put_frame_type(FrameType::PathChallenge);
+        buf.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == super::PATH_CHALLENGE_FRAME_TYPE as u64 {
+            if frame_type == path_challenge_frame_type {
                 be_path_challenge_frame
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -118,25 +113,14 @@ mod tests {
 
     #[test]
     fn test_write_path_challenge_frame() {
-        use crate::frame::io::WriteFrame;
         let mut buf = Vec::new();
         let frame = super::PathChallengeFrame::from_slice(&[
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         ]);
         buf.put_frame(&frame);
-        assert_eq!(
-            buf,
-            vec![
-                super::PATH_CHALLENGE_FRAME_TYPE,
-                0x01,
-                0x02,
-                0x03,
-                0x04,
-                0x05,
-                0x06,
-                0x07,
-                0x08
-            ]
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::PathChallenge);
+        expected.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(buf, expected);
     }
 }

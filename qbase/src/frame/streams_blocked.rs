@@ -1,4 +1,5 @@
 use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
     sid::Dir,
     varint::{VarInt, WriteVarInt, be_varint},
 };
@@ -19,8 +20,6 @@ pub enum StreamsBlockedFrame {
     Bi(VarInt),
     Uni(VarInt),
 }
-
-const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 
 impl StreamsBlockedFrame {
     pub fn with(dir: Dir, max_streams: VarInt) -> Self {
@@ -74,11 +73,11 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
     fn put_frame(&mut self, frame: &StreamsBlockedFrame) {
         match frame {
             StreamsBlockedFrame::Bi(max_streams) => {
-                self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);
+                self.put_frame_type(frame.frame_type());
                 self.put_varint(max_streams);
             }
             StreamsBlockedFrame::Uni(max_streams) => {
-                self.put_u8(STREAMS_BLOCKED_FRAME_TYPE | 0x1);
+                self.put_frame_type(frame.frame_type());
                 self.put_varint(max_streams);
             }
         }
@@ -87,9 +86,12 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{STREAMS_BLOCKED_FRAME_TYPE, StreamsBlockedFrame};
+    use super::StreamsBlockedFrame;
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         sid::Dir,
         varint::VarInt,
     };
@@ -114,9 +116,11 @@ mod tests {
         use super::streams_blocked_frame_with_dir;
         use crate::varint::be_varint;
 
-        let buf = vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34];
+        let streams_blocked_bi_type = VarInt::from(FrameType::StreamsBlocked(Dir::Bi));
+        let streams_blocked_uni_type = VarInt::from(FrameType::StreamsBlocked(Dir::Uni));
+        let buf = vec![streams_blocked_bi_type.into_inner() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == STREAMS_BLOCKED_FRAME_TYPE as u64 {
+            if frame_type == streams_blocked_bi_type {
                 streams_blocked_frame_with_dir(Dir::Bi)
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -127,9 +131,9 @@ mod tests {
         assert!(input.is_empty());
         assert_eq!(frame, StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
 
-        let buf = vec![STREAMS_BLOCKED_FRAME_TYPE | 0x1, 0x52, 0x34];
+        let buf = vec![streams_blocked_uni_type.into_inner() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == (STREAMS_BLOCKED_FRAME_TYPE | 0x1) as u64 {
+            if frame_type == streams_blocked_uni_type {
                 streams_blocked_frame_with_dir(Dir::Uni)
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -145,10 +149,15 @@ mod tests {
     fn test_write_streams_blocked_frame() {
         let mut buf = Vec::new();
         buf.put_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
-
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::StreamsBlocked(Dir::Bi));
+        expected.extend_from_slice(&[0x52, 0x34]);
+        assert_eq!(buf, expected);
         let mut buf = Vec::new();
         buf.put_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE + 1, 0x52, 0x34]);
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::StreamsBlocked(Dir::Uni));
+        expected.extend_from_slice(&[0x52, 0x34]);
+        assert_eq!(buf, expected);
     }
 }

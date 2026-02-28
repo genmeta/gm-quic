@@ -1,4 +1,7 @@
-use crate::varint::{VarInt, WriteVarInt, be_varint};
+use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
+    varint::{VarInt, WriteVarInt, be_varint},
+};
 
 /// RETIRE_CONNECTION_ID frame.
 ///
@@ -15,8 +18,6 @@ use crate::varint::{VarInt, WriteVarInt, be_varint};
 pub struct RetireConnectionIdFrame {
     sequence: VarInt,
 }
-
-const RETIRE_CONNECTION_ID_FRAME_TYPE: u8 = 0x19;
 
 impl super::GetFrameType for RetireConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -55,7 +56,7 @@ pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], Retire
 
 impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
     fn put_frame(&mut self, frame: &RetireConnectionIdFrame) {
-        self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.sequence);
     }
 }
@@ -64,7 +65,10 @@ impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
 mod tests {
     use super::{RetireConnectionIdFrame, be_retire_connection_id_frame};
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         varint::VarInt,
     };
 
@@ -93,6 +97,9 @@ mod tests {
         let mut buf = Vec::new();
         let frame = RetireConnectionIdFrame::new(VarInt::from_u32(0x1234));
         buf.put_frame(&frame);
-        assert_eq!(buf, vec![0x19, 0x52, 0x34]);
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::RetireConnectionId);
+        expected.extend_from_slice(&[0x52, 0x34]);
+        assert_eq!(buf, expected);
     }
 }

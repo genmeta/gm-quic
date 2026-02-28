@@ -1,5 +1,5 @@
 use crate::{
-    frame::GetFrameType,
+    frame::{GetFrameType, io::WriteFrameType},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
@@ -56,7 +56,7 @@ pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFra
 
 impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
     fn put_frame(&mut self, frame: &DataBlockedFrame) {
-        self.put_varint(&frame.frame_type().into());
+        self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.limit);
     }
 }

@@ -186,3 +186,17 @@ pub trait WriteDataFrame<F, D: ContinuousData>: bytes::BufMut {
     /// Write a frame and its data to the buffer.
     fn put_data_frame(&mut self, frame: &F, data: &D);
 }
+
+/// A [`bytes::BufMut`] extension trait to write [`FrameType`].
+pub trait WriteFrameType: bytes::BufMut {
+    /// Write a frame type to the buffer.
+    fn put_frame_type(&mut self, frame_type: FrameType);
+}
+
+impl<T: BufMut> WriteFrameType for T {
+    fn put_frame_type(&mut self, frame_type: FrameType) {
+        use crate::varint::WriteVarInt;
+        let fty: VarInt = frame_type.into();
+        self.put_varint(&fty);
+    }
+}

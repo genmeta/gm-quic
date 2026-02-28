@@ -1,10 +1,9 @@
 use crate::{
     cid::{ConnectionId, WriteConnectionId, be_connection_id},
+    frame::{GetFrameType, io::WriteFrameType},
     token::{RESET_TOKEN_SIZE, ResetToken, be_reset_token},
     varint::{VarInt, WriteVarInt, be_varint},
 };
-
-const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
 /// NEW_CONNECTION_ID frame.
 ///
@@ -121,7 +120,7 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
 
 impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
     fn put_frame(&mut self, frame: &NewConnectionIdFrame) {
-        self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.sequence);
         self.put_varint(&frame.retire_prior_to);
         self.put_connection_id(&frame.id);
@@ -134,7 +133,10 @@ mod tests {
     use bytes::{BufMut, BytesMut};
 
     use super::*;
-    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{
+        EncodeSize, FrameType, GetFrameType,
+        io::{WriteFrame, WriteFrameType},
+    };
 
     #[test]
     fn test_new_connection_id_frame() {
@@ -183,7 +185,7 @@ mod tests {
     #[test]
     fn test_invalid_retire_prior_to() {
         let mut buf = BytesMut::new();
-        buf.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        buf.put_frame_type(FrameType::NewConnectionId);
         buf.put_varint(&VarInt::from_u32(1)); // sequence
         buf.put_varint(&VarInt::from_u32(2)); // retire_prior_to > sequence
 
@@ -193,7 +195,7 @@ mod tests {
     #[test]
     fn test_zero_length_connection_id() {
         let mut buf = BytesMut::new();
-        buf.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        buf.put_frame_type(FrameType::NewConnectionId);
         buf.put_varint(&VarInt::from_u32(1));
         buf.put_varint(&VarInt::from_u32(0));
         buf.put_u8(0); // zero length CID
