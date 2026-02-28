@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use nom::{Parser, combinator::map};
 
 use crate::{
-    frame::GetFrameType,
+    frame::{GetFrameType, io::WriteFrameType},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
@@ -257,7 +257,7 @@ pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
 impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
     fn put_frame(&mut self, frame: &AckFrame) {
         let frame_type = frame.frame_type();
-        self.put_varint(&frame_type.into());
+        self.put_frame_type(frame_type);
         self.put_varint(&frame.largest);
         self.put_varint(&frame.delay);
 

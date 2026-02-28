@@ -2,6 +2,7 @@ use std::ops::Deref;
 
 use derive_more::Deref;
 
+use crate::frame::{GetFrameType, io::WriteFrameType};
 /// PATH_RESPONSE Frame.
 ///
 /// ```text
@@ -34,8 +35,6 @@ impl From<super::PathChallengeFrame> for PathResponseFrame {
     }
 }
 
-const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
-
 impl super::GetFrameType for PathResponseFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathResponse
@@ -61,7 +60,7 @@ pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseF
 
 impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
     fn put_frame(&mut self, frame: &PathResponseFrame) {
-        self.put_u8(PATH_RESPONSE_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_slice(&frame.data);
     }
 }
@@ -69,7 +68,10 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
+    use crate::frame::{
+        EncodeSize, FrameType, GetFrameType,
+        io::{WriteFrame, WriteFrameType},
+    };
 
     #[test]
     fn test_path_response_frame() {
@@ -84,20 +86,16 @@ mod tests {
     fn test_read_path_response_frame() {
         use nom::{Parser, combinator::flat_map};
 
-        use crate::varint::be_varint;
-        let buf = vec![
-            super::PATH_RESPONSE_FRAME_TYPE,
-            0x01,
-            0x02,
-            0x03,
-            0x04,
-            0x05,
-            0x06,
-            0x07,
-            0x08,
-        ];
+        use crate::{
+            frame::FrameType,
+            varint::{VarInt, be_varint},
+        };
+        let path_response_frame_type = VarInt::from(FrameType::PathResponse);
+        let mut buf = Vec::new();
+        buf.put_frame_type(FrameType::PathResponse);
+        buf.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == super::PATH_RESPONSE_FRAME_TYPE as u64 {
+            if frame_type == path_response_frame_type {
                 be_path_response_frame
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -118,19 +116,9 @@ mod tests {
         let frame =
             PathResponseFrame::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         buf.put_frame(&frame);
-        assert_eq!(
-            buf,
-            vec![
-                super::PATH_RESPONSE_FRAME_TYPE,
-                0x01,
-                0x02,
-                0x03,
-                0x04,
-                0x05,
-                0x06,
-                0x07,
-                0x08
-            ]
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::PathResponse);
+        expected.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(buf, expected);
     }
 }

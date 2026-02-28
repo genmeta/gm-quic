@@ -1,3 +1,4 @@
+use crate::frame::{GetFrameType, io::WriteFrameType};
 /// PADDING Frame.
 ///
 /// ```text
@@ -10,8 +11,6 @@
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaddingFrame;
-
-const PADDING_FRAME_TYPE: u8 = 0x00;
 
 impl super::GetFrameType for PaddingFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -29,15 +28,21 @@ pub fn be_padding_frame(input: &[u8]) -> nom::IResult<&[u8], PaddingFrame> {
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
-    fn put_frame(&mut self, _: &PaddingFrame) {
-        self.put_u8(PADDING_FRAME_TYPE);
+    fn put_frame(&mut self, frame: &PaddingFrame) {
+        self.put_frame_type(frame.frame_type());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PADDING_FRAME_TYPE, PaddingFrame, be_padding_frame};
-    use crate::frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame};
+    use super::{PaddingFrame, be_padding_frame};
+    use crate::{
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
+        varint::VarInt,
+    };
 
     #[test]
     fn test_padding_frame() {
@@ -51,9 +56,10 @@ mod tests {
         use nom::{Parser, combinator::flat_map};
 
         use crate::varint::be_varint;
-        let buf = vec![PADDING_FRAME_TYPE];
+        let padding_frame_type = VarInt::from(FrameType::Padding);
+        let buf = vec![padding_frame_type.into_inner() as u8];
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == PADDING_FRAME_TYPE as u64 {
+            if frame_type == padding_frame_type {
                 be_padding_frame
             } else {
                 unreachable!("wrong frame type: {}", frame_type)
@@ -69,6 +75,8 @@ mod tests {
     fn test_write_padding_frame() {
         let mut buf = Vec::new();
         buf.put_frame(&PaddingFrame);
-        assert_eq!(buf, vec![PADDING_FRAME_TYPE]);
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::Padding);
+        assert_eq!(buf, expected);
     }
 }

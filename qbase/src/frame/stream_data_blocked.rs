@@ -1,4 +1,5 @@
 use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
     sid::{StreamId, WriteStreamId, be_streamid},
     varint::{VarInt, WriteVarInt, be_varint},
 };
@@ -20,8 +21,6 @@ pub struct StreamDataBlockedFrame {
     stream_id: StreamId,
     maximum_stream_data: VarInt,
 }
-
-const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
 
 impl super::GetFrameType for StreamDataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -75,7 +74,7 @@ pub fn be_stream_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], StreamD
 
 impl<T: bytes::BufMut> super::io::WriteFrame<StreamDataBlockedFrame> for T {
     fn put_frame(&mut self, frame: &StreamDataBlockedFrame) {
-        self.put_u8(STREAM_DATA_BLOCKED_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.maximum_stream_data);
     }
@@ -83,9 +82,12 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamDataBlockedFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{STREAM_DATA_BLOCKED_FRAME_TYPE, StreamDataBlockedFrame};
+    use super::StreamDataBlockedFrame;
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         varint::VarInt,
     };
 
@@ -118,17 +120,9 @@ mod tests {
             VarInt::from_u32(0x1234).into(),
             VarInt::from_u32(0x5678),
         ));
-        assert_eq!(
-            buf,
-            vec![
-                STREAM_DATA_BLOCKED_FRAME_TYPE,
-                0x52,
-                0x34,
-                0x80,
-                0,
-                0x56,
-                0x78
-            ]
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::StreamDataBlocked);
+        expected.extend_from_slice(&[0x52, 0x34, 0x80, 0, 0x56, 0x78]);
+        assert_eq!(buf, expected);
     }
 }

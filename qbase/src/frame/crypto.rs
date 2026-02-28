@@ -3,6 +3,7 @@ use std::ops::Range;
 use nom::Parser;
 
 use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
     util::{ContinuousData, WriteData},
     varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
 };
@@ -25,8 +26,6 @@ pub struct CryptoFrame {
     offset: VarInt,
     length: VarInt,
 }
-
-const CRYPTO_FRAME_TYPE: u8 = 0x06;
 
 impl super::GetFrameType for CryptoFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -120,7 +119,7 @@ where
 {
     fn put_data_frame(&mut self, frame: &CryptoFrame, data: &D) {
         assert_eq!(frame.length.into_inner(), data.len() as u64);
-        self.put_u8(CRYPTO_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.offset);
         self.put_varint(&frame.length);
         self.put_data(data);
@@ -129,9 +128,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CRYPTO_FRAME_TYPE, CryptoFrame};
+    use super::CryptoFrame;
     use crate::{
-        frame::{EncodeSize, GetFrameType, io::WriteDataFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteDataFrame, WriteFrameType},
+        },
         varint::VarInt,
     };
 
@@ -163,20 +165,11 @@ mod tests {
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame::new(VarInt::from_u32(0x1234), VarInt::from_u32(0x5));
         buf.put_data_frame(&frame, b"hello");
-        assert_eq!(
-            buf,
-            bytes::Bytes::from_static(&[
-                CRYPTO_FRAME_TYPE,
-                0x52,
-                0x34,
-                0x05,
-                b'h',
-                b'e',
-                b'l',
-                b'l',
-                b'o'
-            ])
-        );
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::Crypto);
+        expected.extend_from_slice(&[0x52, 0x34, 0x05]);
+        expected.extend_from_slice(b"hello");
+        assert_eq!(buf, bytes::Bytes::from(expected));
     }
 
     #[test]

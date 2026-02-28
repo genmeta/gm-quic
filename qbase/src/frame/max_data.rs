@@ -1,4 +1,7 @@
-use crate::varint::{VarInt, WriteVarInt, be_varint};
+use crate::{
+    frame::{GetFrameType, io::WriteFrameType},
+    varint::{VarInt, WriteVarInt, be_varint},
+};
 
 /// MAX_DATA Frame
 ///
@@ -15,8 +18,6 @@ use crate::varint::{VarInt, WriteVarInt, be_varint};
 pub struct MaxDataFrame {
     max_data: VarInt,
 }
-
-const MAX_DATA_FRAME_TYPE: u8 = 0x10;
 
 impl super::GetFrameType for MaxDataFrame {
     fn frame_type(&self) -> super::FrameType {
@@ -55,16 +56,19 @@ pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
 
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
     fn put_frame(&mut self, frame: &MaxDataFrame) {
-        self.put_u8(MAX_DATA_FRAME_TYPE);
+        self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.max_data);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DATA_FRAME_TYPE, MaxDataFrame};
+    use super::MaxDataFrame;
     use crate::{
-        frame::{EncodeSize, FrameType, GetFrameType, io::WriteFrame},
+        frame::{
+            EncodeSize, FrameType, GetFrameType,
+            io::{WriteFrame, WriteFrameType},
+        },
         varint::VarInt,
     };
 
@@ -82,9 +86,10 @@ mod tests {
 
         use super::be_max_data_frame;
         use crate::varint::be_varint;
-        let buf = vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34];
+        let max_data_frame_type = VarInt::from(FrameType::MaxData);
+        let buf = vec![max_data_frame_type.into_inner() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == MAX_DATA_FRAME_TYPE as u64 {
+            if frame_type == max_data_frame_type {
                 be_max_data_frame
             } else {
                 panic!("wrong frame type: {frame_type}")
@@ -100,6 +105,9 @@ mod tests {
     fn test_write_max_data_frame() {
         let mut buf = Vec::new();
         buf.put_frame(&MaxDataFrame::new(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34]);
+        let mut expected = Vec::new();
+        expected.put_frame_type(FrameType::MaxData);
+        expected.extend_from_slice(&[0x52, 0x34]);
+        assert_eq!(buf, expected);
     }
 }
