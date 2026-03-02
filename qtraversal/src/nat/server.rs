@@ -142,16 +142,10 @@ fn select_change_target(
     match (wants_ip, wants_port) {
         (false, false) => Ok(src),
         (true, false) => {
-            let addr = config.change_address.ok_or_else(|| {
+            // CHANGE_IP: respond from a different IP (complete change_address, port may differ)
+            config.change_address.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::Unsupported, "CHANGE_IP not supported")
-            })?;
-            if addr.port() != local_addr.port() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "CHANGE_IP requires same port on change_address",
-                ));
-            }
-            Ok(addr)
+            })
         }
         (false, true) => {
             let port = config.change_port.ok_or_else(|| {
