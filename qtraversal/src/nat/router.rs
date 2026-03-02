@@ -49,8 +49,11 @@ impl StunRouter {
         self.request_router.pop().await
     }
 
-    pub fn clear(&self) {
-        // TODO: self.request_router.clear();
+    /// Close the router, causing any pending `receive_request()` to return `None`.
+    /// Called by `StunRouterComponent::reinit()` before replacing with a new router,
+    /// so that a running `StunServer` task can detect the rebind and exit cleanly.
+    pub fn close(&self) {
+        self.request_router.close();
         self.response_router.clear();
     }
 
@@ -107,6 +110,8 @@ impl Component for StunRouterComponent {
         if inner.ref_iface.same_io(&iface.downgrade()) {
             return;
         }
+        // Close the old router so any running StunServer task can detect the rebind and exit.
+        inner.router.close();
         *inner = StunRouterComponentInner {
             router: StunRouter::new(),
             ref_iface: iface.downgrade(),

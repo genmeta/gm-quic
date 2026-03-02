@@ -59,15 +59,14 @@ impl Network {
         while let Some((_, EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }))) =
             stream.next().await
         {
-            let is_match = family.is_none_or(|family| match family {
-                Family::V4 => addr.is_ipv4(),
-                Family::V6 => addr.is_ipv6(),
-            });
-            if !is_match {
-                continue;
+            if match family {
+                None => true,
+                Some(Family::V4) => addr.is_ipv4(),
+                Some(Family::V6) => addr.is_ipv6(),
+            } {
+                tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
+                return Some(vec![addr]);
             }
-            tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
-            return Some(vec![addr]);
         }
         None
     }
