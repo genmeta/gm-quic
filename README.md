@@ -94,6 +94,7 @@ The following is a simple example, please refer to the documentation for more de
 
 ```rust
 use std::path::PathBuf;
+use std::sync::Arc;
 use gm_quic::prelude::{handy::ToCertificate, *};
 
 async fn client() -> Result<(), Box<dyn std::error::Error>> {
@@ -107,7 +108,7 @@ async fn client() -> Result<(), Box<dyn std::error::Error>> {
     // roots.add_parsable_certificates(include_bytes!("/path/to/ca.cert").to_certificate()); // Embed at compile time
 
     // Build the QUIC client
-    let quic_client = QuicClient::builder()
+    let quic_client = Arc::new(QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()                                      // Client certificate verification is typically not required
         // .with_parameters(your_parameters)                 // Custom transport parameters
@@ -117,7 +118,7 @@ async fn client() -> Result<(), Box<dyn std::error::Error>> {
         // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
         //     PathBuf::from("/path/to/qlog_dir"),
         // )))                                               // Enable qlog for visualization with qvis tool
-        .build();
+        .build());
 
     // Connect to the server
     let connection = quic_client.connect("localhost").await?;

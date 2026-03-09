@@ -87,6 +87,7 @@ QUIC客户端支持多路径握手，即同时尝试连接到服务器的IPv4和
 
 ```rust
 use std::path::PathBuf;
+use std::sync::Arc;
 use gm_quic::prelude::{handy::ToCertificate, *};
 
 async fn client() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,7 +102,7 @@ async fn client() -> Result<(), Box<dyn std::error::Error>> {
     // roots.add_parsable_certificates(include_bytes!("path/to/your/cert.pem").to_certificate()); // 编译时嵌入
 
     // 构建QUIC客户端
-    let quic_client = QuicClient::builder()
+    let quic_client = Arc::new(QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()                                      // 通常不需要客户端证书验证
         // .with_parameters(your_parameters)                 // 自定义传输参数
@@ -111,7 +112,7 @@ async fn client() -> Result<(), Box<dyn std::error::Error>> {
         // .with_qlog(Arc::new(handy::LegacySeqLogger::new(
         //     PathBuf::from("/path/to/qlog_dir"),
         // )))                                               // 启用qlog，可用qvis工具可视化
-        .build();
+        .build());
 
     // 连接到服务器
     let connection = quic_client.connect("localhost").await?;
