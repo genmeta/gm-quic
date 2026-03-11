@@ -64,7 +64,7 @@ impl Network {
                 Some(Family::V4) => addr.is_ipv4(),
                 Some(Family::V6) => addr.is_ipv6(),
             } {
-                tracing::debug!("resolved first stun agent for {}: {}", stun_server, addr);
+                tracing::trace!("resolved first stun agent for {}: {}", stun_server, addr);
                 return Some(vec![addr]);
             }
         }
