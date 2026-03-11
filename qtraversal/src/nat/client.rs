@@ -149,7 +149,6 @@ pub struct StunClient<I: RefIO + 'static> {
 
     state: ArcClientState,
     tasks: Arc<Mutex<JoinSet<()>>>,
-    nat_started: Arc<AtomicBool>,
 }
 
 pub type ClientLocationData = Result<SocketEndpointAddr, ArcIoError>;
@@ -170,34 +169,20 @@ impl<I: RefIO + 'static> StunClient<I> {
             locations,
             state: ArcClientState::new(),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
-            nat_started: Arc::new(AtomicBool::new(false)),
         };
         tracing::debug!(target: "stun", %stun_agent, "Created new STUN client");
         {
             let mut tasks = client.lock_tasks();
             tasks.spawn(client.keep_alive_task());
+            if !client.ref_iface.iface().bind_uri().is_temporary() {
+                tasks.spawn(client.nat_detect_task());
+            }
         }
         client
     }
 
     fn lock_tasks(&self) -> MutexGuard<'_, JoinSet<()>> {
         self.tasks.lock().expect("StunClient tasks lock poisoned")
-    }
-
-    fn start_nat_detect(&self) {
-        if self.state.get() == ClientState::Closing {
-            return;
-        }
-        if self
-            .nat_started
-            .compare_exchange(false, true, SeqCst, SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let mut tasks = self.lock_tasks();
-        tasks.spawn(self.nat_detect_task());
     }
 
     fn keep_alive_task(&self) -> impl futures::Future<Output = ()> + use<I> {
@@ -226,7 +211,7 @@ impl<I: RefIO + 'static> StunClient<I> {
                     }
                 },
                 Err(error) => {
-                    tracing::debug!(target: "stun", ?error, "Detect outer addr failed");
+                    tracing::trace!(target: "stun", ?error, "Detect outer addr failed");
                 }
             };
             tracing::debug!(target: "stun", "Starting keep alive task");
@@ -332,7 +317,6 @@ impl<I: RefIO + 'static> StunClient<I> {
     }
 
     pub fn poll_nat_type(&self, cx: &mut Context) -> Poll<io::Result<NatType>> {
-        self.start_nat_detect();
         if self.state.get() == ClientState::Closing {
             return Poll::Ready(Err(RebindedError.into()));
         }
@@ -342,12 +326,10 @@ impl<I: RefIO + 'static> StunClient<I> {
     }
 
     pub async fn nat_type(&self) -> io::Result<NatType> {
-        self.start_nat_detect();
         core::future::poll_fn(|cx| self.poll_nat_type(cx)).await
     }
 
     pub fn get_nat_type(&self) -> Option<io::Result<NatType>> {
-        self.start_nat_detect();
         if self.state.get() == ClientState::Closing {
             return Some(Err(RebindedError.into()));
         }
@@ -471,7 +453,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
             agents
                 .into_iter()
                 .filter_map(|agent| {
-                    tracing::debug!(target: "stun", %agent, "Initializing STUN client for agent");
+                    tracing::trace!(target: "stun", %agent, "Initializing STUN client for agent");
                     new_stun_client(agent).map(|client| (agent, client))
                 })
                 .collect(),
