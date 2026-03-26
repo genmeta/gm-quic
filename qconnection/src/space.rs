@@ -15,6 +15,7 @@ use qbase::{
         AssemblePacket, Package, PacketContains, PacketSpace, PacketWriter, ProductHeader,
         header::{GetDcid, GetType, short::OneRttHeader},
         io::{Packages, PadTo20},
+        keys::ArcOneRttKeys,
     },
 };
 use qevent::{
@@ -259,6 +260,7 @@ impl ReceiveFrame<AckFrame> for AckHandshakeSpace {
 
 struct AckDataSpace {
     send_journal: ArcSentJournal<GuaranteedFrame>,
+    one_rtt_keys: ArcOneRttKeys,
     data_streams: DataStreams,
     crypto_stream_outgoing: CryptoStreamOutgoing,
 }
@@ -266,21 +268,24 @@ struct AckDataSpace {
 impl AckDataSpace {
     fn new(
         journal: &Journal<GuaranteedFrame>,
+        one_rtt_keys: ArcOneRttKeys,
         data_streams: &DataStreams,
         crypto_stream: &CryptoStream,
     ) -> Self {
         Self {
             send_journal: journal.of_sent_packets(),
+            one_rtt_keys,
             data_streams: data_streams.clone(),
             crypto_stream_outgoing: crypto_stream.outgoing(),
         }
     }
 }
 
-impl ReceiveFrame<AckFrame> for AckDataSpace {
+impl ReceiveFrame<(AckFrame, Option<u64>)> for AckDataSpace {
     type Output = ();
 
-    fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, ack_input: &(AckFrame, Option<u64>)) -> Result<Self::Output, Error> {
+        let (ack_frame, rcvd_generation) = ack_input;
         let mut rotate_guard = self.send_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
 
@@ -289,7 +294,14 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
             packet_number_space: qbase::Epoch::Data,
             packet_nubers: acked.clone(),
         });
+
+        let one_rtt_pk = self.one_rtt_keys.get_local_keys().map(|(_, pk)| pk);
+
         for pn in acked {
+            if let Some(pk) = &one_rtt_pk {
+                pk.on_packet_acked(pn, ack_frame.largest(), *rcvd_generation)?;
+            }
+
             for frame in rotate_guard.on_packet_acked(pn) {
                 match frame {
                     GuaranteedFrame::Stream(stream_frame) => {

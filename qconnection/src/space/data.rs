@@ -43,7 +43,9 @@ use crate::{
     },
     state,
     termination::Terminator,
-    tx::{PacketWriter, TrivialPacketWriter},
+    tx::{
+        OneRttPacketKeysMeta, OneRttPacketMeta, PacketTimeouts, PacketWriter, TrivialPacketWriter,
+    },
 };
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
@@ -212,20 +214,28 @@ impl path::PacketSpace<OneRttHeader> for DataSpace {
         cc: &ArcCC,
         buffer: &'b mut [u8],
     ) -> Result<PacketWriter<'b, 's, GuaranteedFrame>, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
+        let (hpk, pk_keys) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_generation, key_phase, pk) = pk_keys.update_and_get_local_key();
         let (retran_timeout, expire_timeout) = cc.retransmit_and_expire_time(Epoch::Data);
         PacketWriter::new_short(
             header,
             buffer,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
-            },
-            key_phase,
             self.journal.as_ref(),
-            retran_timeout,
-            expire_timeout,
+            OneRttPacketKeysMeta {
+                keys: DirectionalKeys {
+                    header: hpk,
+                    packet: pk,
+                },
+                meta: OneRttPacketMeta {
+                    key_phase,
+                    key_generation,
+                    packet_keys: pk_keys,
+                },
+            },
+            PacketTimeouts {
+                retran_timeout,
+                expire_timeout,
+            },
         )
     }
 }
@@ -239,16 +249,22 @@ impl PacketSpace<OneRttHeader> for DataSpace {
         header: OneRttHeader,
         buffer: &'a mut [u8],
     ) -> Result<Self::PacketAssembler<'a>, Signals> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
-        let (key_phase, pk) = pk.lock_guard().get_local();
+        let (hpk, pk_keys) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_generation, key_phase, pk) = pk_keys.update_and_get_local_key();
         TrivialPacketWriter::new_short(
             header,
             buffer,
-            DirectionalKeys {
-                header: hpk,
-                packet: pk,
+            OneRttPacketKeysMeta {
+                keys: DirectionalKeys {
+                    header: hpk,
+                    packet: pk,
+                },
+                meta: OneRttPacketMeta {
+                    key_phase,
+                    key_generation,
+                    packet_keys: pk_keys,
+                },
             },
-            key_phase,
             self.journal.as_ref(),
         )
     }
@@ -258,7 +274,7 @@ fn frame_dispathcer(
     space: &DataSpace,
     components: &Components,
     event_broker: &ArcEventBroker,
-) -> impl for<'p> Fn(Frame, Type, &'p Path) + use<> {
+) -> impl for<'p> Fn(Frame, Type, &'p Path, Option<u64>) + use<> {
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
     // 连接级的
     let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded_channel();
@@ -333,6 +349,7 @@ fn frame_dispathcer(
         rcvd_ack_frames,
         AckDataSpace::new(
             &space.journal,
+            space.one_rtt_keys(),
             &components.data_streams,
             &components.crypto_streams[space.epoch()],
         ),
@@ -351,33 +368,38 @@ fn frame_dispathcer(
 
     let event_broker = event_broker.clone();
     let rcvd_joural = space.journal.of_rcvd_packets();
-    let dispathc_v1_frame = move |frame: V1Frame, pty: packet::Type, path: &Path| match frame {
-        V1Frame::Ack(f) => {
-            path.cc().on_ack_rcvd(Epoch::Data, &f);
-            rcvd_joural.on_rcvd_ack(&f);
-            _ = ack_frames_entry.send(f)
-        }
-        V1Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
-        V1Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
-        V1Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
-        V1Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
-        V1Frame::HandshakeDone(f) => {
-            // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
-            _ = handshake_done_frames_entry.send(f)
-        }
-        V1Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
-        V1Frame::Challenge(f) => _ = path.recv_frame(&f),
-        V1Frame::Response(f) => _ = path.recv_frame(&f),
-        V1Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
-        V1Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
-        V1Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-        #[cfg(feature = "unreliable")]
-        V1Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
-        V1Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
-        _ => {}
-    };
-    move |frame, pty, path| match frame {
-        Frame::V1(frame) => dispathc_v1_frame(frame, pty, path),
+    let dispathc_v1_frame =
+        move |frame: V1Frame, pty: packet::Type, path: &Path, key_generation: Option<u64>| {
+            match frame {
+                V1Frame::Ack(f) => {
+                    path.cc().on_ack_rcvd(Epoch::Data, &f);
+                    rcvd_joural.on_rcvd_ack(&f);
+                    _ = ack_frames_entry.send((f, key_generation))
+                }
+                V1Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
+                V1Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
+                V1Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
+                V1Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
+                V1Frame::HandshakeDone(f) => {
+                    // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
+                    _ = handshake_done_frames_entry.send(f)
+                }
+                V1Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
+                V1Frame::Challenge(f) => _ = path.recv_frame(&f),
+                V1Frame::Response(f) => _ = path.recv_frame(&f),
+                V1Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
+                V1Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
+                V1Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                #[cfg(feature = "unreliable")]
+                V1Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
+                V1Frame::Close(f) if matches!(pty, Type::Short(_)) => {
+                    event_broker.emit(Event::Closed(f))
+                }
+                _ => {}
+            }
+        };
+    move |frame, pty, path, key_generation| match frame {
+        Frame::V1(frame) => dispathc_v1_frame(frame, pty, path, key_generation),
         Frame::Traversal(frame) => {
             _ = traversal_frames_entry.send((
                 path.bind_uri().clone(),
@@ -393,7 +415,7 @@ async fn parse_normal_zero_rtt_packet(
     (packet, (bind_uri, pathway, link)): ReceivedZeroRttFrom,
     space: &DataSpace,
     components: &Components,
-    dispatch_frame: impl Fn(Frame, Type, &Path),
+    dispatch_frame: impl Fn(Frame, Type, &Path, Option<u64>),
 ) -> Result<(), Error> {
     let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? else {
         return Ok(());
@@ -416,7 +438,7 @@ async fn parse_normal_zero_rtt_packet(
     };
 
     let packet_contains = read_plain_packet(&packet, |frame| {
-        dispatch_frame(frame, packet.get_type(), &path);
+        dispatch_frame(frame, packet.get_type(), &path, None);
     })?;
 
     space.journal.of_rcvd_packets().on_rcvd_pn(
@@ -433,7 +455,7 @@ async fn parse_normal_one_rtt_packet(
     (packet, (bind_uri, pathway, link)): ReceivedOneRttFrom,
     space: &DataSpace,
     components: &Components,
-    dispatch_frame: impl Fn(Frame, Type, &Path),
+    dispatch_frame: impl Fn(Frame, Type, &Path, Option<u64>),
 ) -> Result<(), Error> {
     let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? else {
         return Ok(());
@@ -459,8 +481,9 @@ async fn parse_normal_one_rtt_packet(
         .quic_handshake
         .discard_spaces_on_server_handshake_done(&components.paths);
 
+    let key_generation = packet.key_generation();
     let packet_contains = read_plain_packet(&packet, |frame| {
-        dispatch_frame(frame, packet.get_type(), &path);
+        dispatch_frame(frame, packet.get_type(), &path, key_generation);
     })?;
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
