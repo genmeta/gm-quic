@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use qbase::{
     Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, CryptoFrame, Frame as V1Frame},
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame},
     net::tx::Signals,
     packet::{
         header::{GetScid, long::InitialHeader},
@@ -30,8 +30,7 @@ use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{self, Path, error::CreatePathFailure},
     space::{
-        AckInitialSpace, Frame, assemble_closing_packet, filter_odcid_packet, pipe,
-        read_plain_packet,
+        AckInitialSpace, assemble_closing_packet, filter_odcid_packet, pipe, read_plain_packet,
     },
     state,
     termination::Terminator,
@@ -155,26 +154,16 @@ fn frame_dispathcer(
 
     let event_broker = event_broker.clone();
     let rcvd_joural = space.journal.of_rcvd_packets();
-    let dispatch_v1_frame = move |frame: V1Frame, path: &Path| match frame {
-        V1Frame::Ack(f) => {
+    move |frame: Frame, path: &Path| match frame {
+        Frame::Ack(f) => {
             path.cc().on_ack_rcvd(Epoch::Initial, &f);
             rcvd_joural.on_rcvd_ack(&f);
             _ = ack_frames_entry.send(f);
         }
-        V1Frame::Close(f) => event_broker.emit(Event::Closed(f)),
-        V1Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-        V1Frame::Padding(_) | V1Frame::Ping(_) => {}
-        _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
-    };
-    move |frame, path| match frame {
-        Frame::V1(frame) => {
-            dispatch_v1_frame(frame, path);
-        }
-        // TODO: improve this
-        Frame::Traversal(frame) => unreachable!(
-            "Traversal frame should not appear in Initial packet: {:?}",
-            frame
-        ),
+        Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+        Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+        Frame::Padding(_) | Frame::Ping(_) => {}
+        _ => unreachable!("unexpected frame: {:?} in initial packet", frame),
     }
 }
 
@@ -275,7 +264,7 @@ fn parse_closing_packet(
     let mut ccf = None;
     _ = read_plain_packet(&packet, |frame| {
         ccf = ccf.take().or(match frame {
-            Frame::V1(V1Frame::Close(ccf)) => Some(ccf),
+            Frame::Close(ccf) => Some(ccf),
             _ => None,
         });
     });

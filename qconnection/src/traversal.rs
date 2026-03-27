@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
-    frame::ReceiveFrame,
+    frame::{ReceiveFrame, TraversalFrame},
     net::{
         addr::{BleEndpontAddr, BoundAddr, EndpointAddr, SocketEndpointAddr},
         route::{Link, Pathway},
@@ -12,10 +12,7 @@ use qbase::{
 };
 use qevent::telemetry::Instrument;
 use qinterface::{bind_uri::BindUri, component::location::AddressEvent};
-use qtraversal::{
-    frame::TraversalFrame,
-    nat::client::{ClientLocationData, StunClientsComponent},
-};
+use qtraversal::nat::client::{ClientLocationData, StunClientsComponent};
 use tracing::Instrument as _;
 
 use super::Components;

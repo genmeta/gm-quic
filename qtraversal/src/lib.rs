@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use qbase::net::addr::SocketEndpointAddr;
 
 pub mod addr;
-pub mod frame;
 mod future;
 pub mod nat;
 pub mod packet;

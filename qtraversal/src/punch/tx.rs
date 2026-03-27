@@ -1,13 +1,9 @@
-use qbase::frame::ReceiveFrame;
+use qbase::frame::{
+    CollisionFrame, KonckFrame, PunchDoneFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
+};
 use tokio::sync::SetOnce;
 
-use crate::{
-    Link,
-    frame::{
-        TraversalFrame, collision::CollisionFrame, konck::KonckFrame, punch_done::PunchDoneFrame,
-        punch_me_now::PunchMeNowFrame,
-    },
-};
+use crate::Link;
 
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<(Link, PunchMeNowFrame)>,

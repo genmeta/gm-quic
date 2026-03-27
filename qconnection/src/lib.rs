@@ -62,7 +62,7 @@ use qbase::{
     cid,
     error::{AppError, Error, ErrorKind, QuicError},
     flow,
-    frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame, TraversalFrame},
     net::{
         addr::EndpointAddr,
         route::{Link, Pathway},
@@ -90,7 +90,6 @@ use qrecovery::{
     journal, recv, reliable, send,
     streams::{self, Ext},
 };
-use qtraversal::frame::TraversalFrame;
 use qunreliable::DatagramFlow;
 #[cfg(feature = "unreliable")]
 use qunreliable::{DatagramReader, DatagramWriter};

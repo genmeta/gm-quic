@@ -14,13 +14,11 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use qbase::{
-    net::{
-        Family,
-        addr::{AddrKind, EndpointAddr, SocketEndpointAddr},
-    },
-    varint::VarInt,
+use qbase::net::{
+    Family,
+    addr::{AddrKind, EndpointAddr, SocketEndpointAddr},
 };
+pub use qbase::net::{NatType, NetFeature};
 use qinterface::{
     Interface, RebindedError, WeakInterface,
     component::{
@@ -740,12 +738,13 @@ async fn detect_nat_type<I: RefIO>(
             visualize_nat_detection!("Result: No response after {retry_times} attempts");
             visualize_nat_detection!("Conclusion: Filters packets based on destination port\n");
         }
+        let nat_type = NatType::from(net_features);
         visualize_nat_detection!(
             "NAT detection completed. Network features: {:?}, NAT Type: {:?}",
             net_features,
-            NatType::from(net_features)
+            nat_type
         );
-        Ok(net_features.into())
+        Ok(nat_type)
     } else {
         // Private IP
         visualize_nat_detection!("Conclusion: Address {local_addr} has private IP.\n");
@@ -781,7 +780,7 @@ async fn detect_nat_type<I: RefIO>(
                 visualize_nat_detection!(
                     "Conclusion: Unable to determine port mapping behavior due to lack of response from third server.\n"
                 );
-                return Ok(net_features.into());
+                return Ok(NatType::from(net_features));
             };
 
             let mapped_addr3 = response.map_addr()?;
@@ -797,7 +796,7 @@ async fn detect_nat_type<I: RefIO>(
             } else {
                 visualize_nat_detection!("Conclusion: The Ports change randomly.\n");
             }
-            Ok(net_features.into())
+            Ok(NatType::from(net_features))
         } else {
             // 不是对称型
             // Open test
@@ -897,84 +896,13 @@ async fn detect_nat_type<I: RefIO>(
                     "Conclusion: Absence of server response may indicates Dynamic NAT behavior\n"
                 );
             }
+            let nat_type = NatType::from(net_features);
             visualize_nat_detection!(
                 "NAT detection completed. Network features: {:?}, NAT Type: {:?}",
                 net_features,
-                NatType::from(net_features)
+                nat_type
             );
-            Ok(net_features.into())
+            Ok(nat_type)
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum NatType {
-    Blocked = 0x00,
-    FullCone = 0x01,
-    RestrictedCone = 0x02,
-    RestrictedPort = 0x03,
-    Symmetric = 0x04,
-    Dynamic = 0x05,
-}
-
-impl From<NatType> for VarInt {
-    fn from(nat_type: NatType) -> Self {
-        VarInt::from(nat_type as u8)
-    }
-}
-
-impl TryFrom<u8> for NatType {
-    type Error = io::Error;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x00 => Ok(NatType::Blocked),
-            0x01 => Ok(NatType::FullCone),
-            0x02 => Ok(NatType::RestrictedCone),
-            0x03 => Ok(NatType::RestrictedPort),
-            0x04 => Ok(NatType::Symmetric),
-            0x05 => Ok(NatType::Dynamic),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Invalid value for NatType",
-            )),
-        }
-    }
-}
-
-impl TryFrom<VarInt> for NatType {
-    type Error = io::Error;
-
-    fn try_from(value: VarInt) -> Result<Self, Self::Error> {
-        Self::try_from(value.into_inner() as u8)
-    }
-}
-
-impl From<NetFeature> for NatType {
-    fn from(value: NetFeature) -> Self {
-        if value.contains(NetFeature::Blocked) {
-            NatType::Blocked
-        } else if value.contains(NetFeature::Symmetric) {
-            NatType::Symmetric
-        } else if value.contains(NetFeature::Dynamic) {
-            NatType::Dynamic
-        } else if value.contains(NetFeature::PortRestricted) {
-            NatType::RestrictedPort
-        } else if value.contains(NetFeature::Restricted) {
-            NatType::RestrictedCone
-        } else {
-            NatType::FullCone
-        }
-    }
-}
-
-bitflags::bitflags! {
-    #[derive(Debug,Clone, Copy, PartialEq, Eq)]
-    struct NetFeature: u8 {
-        const Blocked = 0x01;
-        const Public = 0x02;
-        const Restricted = 0x04;
-        const PortRestricted = 0x08;
-        const Symmetric =0x10;
-        const Dynamic = 0x20;
     }
 }

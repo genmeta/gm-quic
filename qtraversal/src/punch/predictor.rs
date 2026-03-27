@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use qbase::frame::{KonckFrame, TraversalFrame};
 use qinterface::{
     Interface,
     bind_uri::{BindUri, BindUriScheme},
@@ -18,7 +19,6 @@ use qinterface::{
 
 use crate::{
     Link,
-    frame::{TraversalFrame, konck::KonckFrame},
     punch::{scheduler::SCHEDULER, tx::Transaction},
     route::ReceiveAndDeliverPacket,
 };

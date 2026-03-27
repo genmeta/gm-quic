@@ -6,7 +6,7 @@ use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
 use super::varint::VarInt;
-use crate::{packet::r#type::Type, sid::Dir};
+use crate::{net::Family, packet::r#type::Type, sid::Dir};
 
 mod ack;
 mod connection_close;
@@ -30,12 +30,21 @@ mod stream;
 mod stream_data_blocked;
 mod streams_blocked;
 
+mod add_address;
+mod collision;
+mod konck;
+mod punch_done;
+mod punch_me_now;
+mod remove_address;
+
 /// Error module for parsing frames
 pub mod error;
 /// IO module for frame encoding and decoding
 pub mod io;
 
 pub use ack::{AckFrame, Ecn, EcnCounts};
+pub use add_address::AddAddressFrame;
+pub use collision::CollisionFrame;
 pub use connection_close::{AppCloseFrame, ConnectionCloseFrame, Layer, QuicCloseFrame};
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
@@ -43,6 +52,7 @@ pub use datagram::DatagramFrame;
 #[doc(hidden)]
 pub use error::Error;
 pub use handshake_done::HandshakeDoneFrame;
+pub use konck::KonckFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
 pub use max_streams::MaxStreamsFrame;
@@ -52,6 +62,9 @@ pub use padding::PaddingFrame;
 pub use path_challenge::PathChallengeFrame;
 pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
+pub use punch_done::PunchDoneFrame;
+pub use punch_me_now::PunchMeNowFrame;
+pub use remove_address::RemoveAddressFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
@@ -182,6 +195,18 @@ pub enum FrameType {
     HandshakeDone,
     /// DATAGRAM frame, see [`DatagramFrame`].
     Datagram(u8),
+    /// ADD_ADDRESS frame, see [`AddAddressFrame`].
+    AddAddress(Family),
+    /// REMOVE_ADDRESS frame, see [`RemoveAddressFrame`].
+    RemoveAddress,
+    /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
+    PunchMeNow(Family),
+    /// KONCK frame, see [`KonckFrame`].
+    Konck,
+    /// PUNCH_DONE frame, see [`PunchDoneFrame`].
+    PunchDone,
+    /// COLLISION frame, see [`CollisionFrame`].
+    Collision,
 }
 
 #[enum_dispatch]
@@ -246,6 +271,12 @@ impl FrameFeature for FrameType {
             },
             FrameType::HandshakeDone => l,
             FrameType::Datagram(_) => o | l,
+            FrameType::AddAddress(_) => o | l,
+            FrameType::RemoveAddress => o | l,
+            FrameType::PunchMeNow(_) => o | l,
+            FrameType::Konck => o | l,
+            FrameType::PunchDone => o | l,
+            FrameType::Collision => o | l,
         }
     }
 
@@ -266,6 +297,9 @@ impl FrameFeature for FrameType {
             // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
             // add the [`Spec::Con`] for the CONNECTION_CLOSE frame
             FrameType::ConnectionClose(_) => n | c,
+            FrameType::Konck => n,
+            FrameType::PunchDone => n,
+            FrameType::Collision => n,
             _ => 0,
         }
     }
@@ -307,6 +341,14 @@ impl TryFrom<VarInt> for FrameType {
             // The last bit is the length flag bit, 0 the length field is absent and the Datagram Data
             // field extends to the end of the packet, 1 the length field is present.
             ty @ (0x30 | 0x31) => FrameType::Datagram(ty as u8 & 1),
+            0x3d7e90 => FrameType::AddAddress(Family::V4),
+            0x3d7e91 => FrameType::AddAddress(Family::V6),
+            0x3d7e92 => FrameType::PunchMeNow(Family::V4),
+            0x3d7e93 => FrameType::PunchMeNow(Family::V6),
+            0x3d7e94 => FrameType::RemoveAddress,
+            0x3d7e95 => FrameType::Konck,
+            0x3d7e96 => FrameType::PunchDone,
+            0x3d7e97 => FrameType::Collision,
             // May be extension frame
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
@@ -341,6 +383,12 @@ impl From<FrameType> for VarInt {
             FrameType::ConnectionClose(Layer::App) => VarInt::from_u32(0x1d),
             FrameType::HandshakeDone => VarInt::from_u32(0x1e),
             FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
+            FrameType::AddAddress(family) => VarInt::from_u32(0x3d7e90 | family as u32),
+            FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
+            FrameType::PunchMeNow(family) => VarInt::from_u32(0x3d7e92 | family as u32),
+            FrameType::Konck => VarInt::from_u32(0x3d7e95),
+            FrameType::PunchDone => VarInt::from_u32(0x3d7e96),
+            FrameType::Collision => VarInt::from_u32(0x3d7e97),
         }
     }
 }
@@ -395,6 +443,18 @@ pub enum ReliableFrame {
     StreamCtl(StreamCtlFrame),
 }
 
+/// Sum type of all the traversal frames for NAT traversal.
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(EncodeSize, GetFrameType)]
+pub enum TraversalFrame {
+    AddAddress(AddAddressFrame),
+    RemoveAddress(RemoveAddressFrame),
+    PunchMeNow(PunchMeNowFrame),
+    Konck(KonckFrame),
+    PunchDone(PunchDoneFrame),
+    Collision(CollisionFrame),
+}
+
 /// Sum type of all the frames.
 ///
 /// The data frames' body are stored in the second field.
@@ -432,6 +492,8 @@ pub enum Frame<D = Bytes> {
     Crypto(CryptoFrame, D),
     /// DATAGRAM frame and its data, see [`DatagramFrame`].
     Datagram(DatagramFrame, D),
+    /// Traversal frame, see [`TraversalFrame`].
+    Traversal(TraversalFrame),
 }
 
 impl<D> From<ReliableFrame> for Frame<D> {
@@ -518,6 +580,7 @@ impl<D> GetFrameType for Frame<D> {
             Frame::Stream(f, _) => f.frame_type(),
             Frame::Crypto(f, _) => f.frame_type(),
             Frame::Datagram(f, _) => f.frame_type(),
+            Frame::Traversal(f) => f.frame_type(),
         }
     }
 }
@@ -550,6 +613,7 @@ impl<D> EncodeSize for Frame<D> {
             Frame::Stream(f, _) => f.max_encoding_size(),
             Frame::Crypto(f, _) => f.max_encoding_size(),
             Frame::Datagram(f, _) => f.max_encoding_size(),
+            Frame::Traversal(f) => f.max_encoding_size(),
         }
     }
 
@@ -573,6 +637,7 @@ impl<D> EncodeSize for Frame<D> {
             Frame::Stream(f, _) => f.encoding_size(),
             Frame::Crypto(f, _) => f.encoding_size(),
             Frame::Datagram(f, _) => f.encoding_size(),
+            Frame::Traversal(f) => f.encoding_size(),
         }
     }
 }
@@ -663,12 +728,28 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
     }
 }
 
+impl<T: BufMut> WriteFrame<TraversalFrame> for T {
+    fn put_frame(&mut self, frame: &TraversalFrame) {
+        match frame {
+            TraversalFrame::AddAddress(frame) => self.put_frame(frame),
+            TraversalFrame::RemoveAddress(frame) => self.put_frame(frame),
+            TraversalFrame::PunchMeNow(frame) => self.put_frame(frame),
+            TraversalFrame::Konck(frame) => self.put_frame(frame),
+            TraversalFrame::PunchDone(frame) => self.put_frame(frame),
+            TraversalFrame::Collision(frame) => self.put_frame(frame),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use nom::Parser;
 
     use super::*;
     use crate::{
+        net::Family,
         packet::{
             PacketContains,
             r#type::{
@@ -753,23 +834,73 @@ mod tests {
     }
 
     #[test]
-    fn test_extetion_frame_type() {
+    fn test_frame_reader_parses_traversal_frame() {
+        use super::io::WriteFrame;
+
+        let add_address = AddAddressFrame::new(
+            1,
+            "127.0.0.1:4433".parse::<SocketAddr>().unwrap(),
+            2,
+            crate::net::NatType::RestrictedPort,
+        );
+        let expected = add_address;
+        let traversal_frame = TraversalFrame::AddAddress(add_address);
+        let mut buf = bytes::BytesMut::new();
+        buf.put_frame(&traversal_frame);
+
+        let mut reader = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into())));
+        let (frame, frame_type) = reader.next().unwrap().unwrap();
+
+        assert_eq!(frame_type, FrameType::AddAddress(Family::V4));
+        assert_eq!(
+            frame,
+            Frame::Traversal(TraversalFrame::AddAddress(expected))
+        );
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn test_frame_reader_rejects_traversal_frame_in_non_data_packets() {
+        use super::io::WriteFrame;
+
+        let mut buf = bytes::BytesMut::new();
+        buf.put_frame(&TraversalFrame::AddAddress(AddAddressFrame::new(
+            7,
+            "127.0.0.1:8443".parse::<SocketAddr>().unwrap(),
+            4,
+            crate::net::NatType::Dynamic,
+        )));
+
+        for packet_type in [
+            Type::Long(V1(Ver1::INITIAL)),
+            Type::Long(V1(Ver1::HANDSHAKE)),
+        ] {
+            let mut reader = FrameReader::new(buf.clone().freeze(), packet_type);
+            assert_eq!(
+                reader.next().unwrap().unwrap_err(),
+                Error::WrongType(FrameType::AddAddress(Family::V4), packet_type)
+            );
+        }
+    }
+
+    #[test]
+    fn test_manual_unknown_custom_frame_fallback() {
         use crate::varint::WriteVarInt;
 
         #[derive(Debug, Clone, Eq, PartialEq)]
-        struct AddAddressFrame {
+        struct UnknownCustomFrame {
             pub seq_num: VarInt,
             pub tire: VarInt,
             pub nat_type: VarInt,
         }
 
-        fn be_add_address_frame(input: &[u8]) -> nom::IResult<&[u8], AddAddressFrame> {
+        fn be_unknown_custom_frame(input: &[u8]) -> nom::IResult<&[u8], UnknownCustomFrame> {
             use nom::{combinator::verify, sequence::preceded};
             preceded(
                 verify(be_varint, |typ| typ == &VarInt::from_u32(0xff)),
                 (be_varint, be_varint, be_varint),
             )
-            .map(|(seq_num, tire, nat_type)| AddAddressFrame {
+            .map(|(seq_num, tire, nat_type)| UnknownCustomFrame {
                 seq_num,
                 tire,
                 nat_type,
@@ -777,17 +908,17 @@ mod tests {
             .parse(input)
         }
 
-        fn parse_address_frame(input: &[u8]) -> Result<(usize, AddAddressFrame), Error> {
+        fn parse_unknown_custom_frame(input: &[u8]) -> Result<(usize, UnknownCustomFrame), Error> {
             let origin = input.len();
-            let (remain, frame) = be_add_address_frame(input).map_err(|_| {
+            let (remain, frame) = be_unknown_custom_frame(input).map_err(|_| {
                 Error::IncompleteType(format!("Incomplete frame type from input: {input:?}"))
             })?;
             let consumed = origin - remain.len();
             Ok((consumed, frame))
         }
 
-        impl<T: bytes::BufMut> super::io::WriteFrame<AddAddressFrame> for T {
-            fn put_frame(&mut self, frame: &AddAddressFrame) {
+        impl<T: bytes::BufMut> super::io::WriteFrame<UnknownCustomFrame> for T {
+            fn put_frame(&mut self, frame: &UnknownCustomFrame) {
                 self.put_varint(&0xff_u32.into());
                 self.put_varint(&frame.seq_num);
                 self.put_varint(&frame.tire);
@@ -796,18 +927,18 @@ mod tests {
         }
 
         let mut buf = bytes::BytesMut::new();
-        let add_address_frame = AddAddressFrame {
+        let unknown_custom_frame = UnknownCustomFrame {
             seq_num: VarInt::from_u32(0x01),
             tire: VarInt::from_u32(0x02),
             nat_type: VarInt::from_u32(0x03),
         };
-        buf.put_frame(&add_address_frame);
+        buf.put_frame(&unknown_custom_frame);
         buf.put_frame(&PaddingFrame);
         buf.put_frame(&PaddingFrame);
-        buf.put_frame(&add_address_frame);
+        buf.put_frame(&unknown_custom_frame);
         buf.put_varint(&0xfe_u32.into());
         let mut padding_count = 0;
-        let mut add_address_count = 0;
+        let mut unknown_custom_count = 0;
         let mut reader = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into())));
         loop {
             match reader.next() {
@@ -817,11 +948,11 @@ mod tests {
                     padding_count += 1;
                 }
                 Some(Err(_e)) => {
-                    // Parse Extension frame
-                    if let Ok((consum, frame)) = parse_address_frame(&reader) {
+                    // Parse the unknown custom frame manually.
+                    if let Ok((consum, frame)) = parse_unknown_custom_frame(&reader) {
                         reader.advance(consum);
-                        assert_eq!(frame, add_address_frame);
-                        add_address_count += 1;
+                        assert_eq!(frame, unknown_custom_frame);
+                        unknown_custom_count += 1;
                     } else {
                         reader.clear();
                     }
@@ -830,11 +961,11 @@ mod tests {
             };
         }
         assert_eq!(padding_count, 2);
-        assert_eq!(add_address_count, 2);
+        assert_eq!(unknown_custom_count, 2);
     }
 
     #[test]
-    fn test_handless_extension_frame() {
+    fn test_frame_reader_stops_at_unknown_custom_frame() {
         let mut buf = bytes::BytesMut::new();
         buf.put_frame(&PaddingFrame);
         buf.put_frame(&PaddingFrame);
