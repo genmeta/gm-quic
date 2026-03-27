@@ -16,8 +16,11 @@ use thiserror::Error;
 use crate::frame::EncodeSize;
 
 pub mod addr;
+pub mod nat;
 pub mod route;
 pub mod tx;
+
+pub use nat::{NatType, NetFeature};
 
 /// IP protocol family
 ///

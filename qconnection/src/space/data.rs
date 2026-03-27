@@ -3,7 +3,7 @@ use std::sync::Arc;
 use qbase::{
     Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, Frame as V1Frame, ReceiveFrame, SendFrame},
+    frame::{ConnectionCloseFrame, Frame, ReceiveFrame, SendFrame, TraversalFrame},
     net::{
         route::{Link, Pathway},
         tx::Signals,
@@ -30,7 +30,6 @@ use qinterface::{
     component::route::{CipherPacket, PlainPacket},
 };
 use qrecovery::{crypto::CryptoStream, reliable};
-use qtraversal::frame::TraversalFrame;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -38,8 +37,8 @@ use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{self, Path, error::CreatePathFailure},
     space::{
-        AckDataSpace, FlowControlledDataStreams, Frame, assemble_closing_packet,
-        filter_odcid_packet, pipe, read_plain_packet,
+        AckDataSpace, FlowControlledDataStreams, assemble_closing_packet, filter_odcid_packet,
+        pipe, read_plain_packet,
     },
     state,
     termination::Terminator,
@@ -351,33 +350,29 @@ fn frame_dispathcer(
 
     let event_broker = event_broker.clone();
     let rcvd_joural = space.journal.of_rcvd_packets();
-    let dispathc_v1_frame = move |frame: V1Frame, pty: packet::Type, path: &Path| match frame {
-        V1Frame::Ack(f) => {
+    move |frame: Frame, pty: packet::Type, path: &Path| match frame {
+        Frame::Ack(f) => {
             path.cc().on_ack_rcvd(Epoch::Data, &f);
             rcvd_joural.on_rcvd_ack(&f);
             _ = ack_frames_entry.send(f)
         }
-        V1Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
-        V1Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
-        V1Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
-        V1Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
-        V1Frame::HandshakeDone(f) => {
+        Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
+        Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
+        Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
+        Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
+        Frame::HandshakeDone(f) => {
             // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
             _ = handshake_done_frames_entry.send(f)
         }
-        V1Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
-        V1Frame::Challenge(f) => _ = path.recv_frame(&f),
-        V1Frame::Response(f) => _ = path.recv_frame(&f),
-        V1Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
-        V1Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
-        V1Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+        Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
+        Frame::Challenge(f) => _ = path.recv_frame(&f),
+        Frame::Response(f) => _ = path.recv_frame(&f),
+        Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
+        Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
+        Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
         #[cfg(feature = "unreliable")]
-        V1Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
-        V1Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
-        _ => {}
-    };
-    move |frame, pty, path| match frame {
-        Frame::V1(frame) => dispathc_v1_frame(frame, pty, path),
+        Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
+        Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
         Frame::Traversal(frame) => {
             _ = traversal_frames_entry.send((
                 path.bind_uri().clone(),
@@ -386,6 +381,7 @@ fn frame_dispathcer(
                 frame,
             ))
         }
+        _ => {}
     }
 }
 
@@ -486,7 +482,7 @@ fn parse_closing_one_rtt_packet(
     let mut ccf = None;
     _ = read_plain_packet(&packet, |frame| {
         ccf = ccf.take().or(match frame {
-            Frame::V1(V1Frame::Close(ccf)) => Some(ccf),
+            Frame::Close(ccf) => Some(ccf),
             _ => None,
         });
     });

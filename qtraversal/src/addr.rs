@@ -5,14 +5,12 @@ use std::{
 };
 
 use futures::io;
-use qbase::net::addr::SocketEndpointAddr;
+use qbase::{
+    frame::{AddAddressFrame, RemoveAddressFrame},
+    net::{NatType, addr::SocketEndpointAddr},
+};
 use qinterface::bind_uri::BindUri;
 use qresolve::Source;
-
-use crate::{
-    frame::{add_address::AddAddressFrame, remove_address::RemoveAddressFrame},
-    nat::client::NatType,
-};
 
 #[derive(Default)]
 pub struct AddressBook {
@@ -41,7 +39,7 @@ impl AddressBook {
             tracing::debug!(target: "quic", %addr, "Duplicate local address");
             return Err(io::Error::other("Duplicate local address"));
         }
-        let frame = AddAddressFrame::new(self.largest_seq_num, addr, tire, nat_type as u32);
+        let frame = AddAddressFrame::new(self.largest_seq_num, addr, tire, nat_type);
         self.local.insert(self.largest_seq_num, (bind, frame));
         self.largest_seq_num += 1;
         Ok(frame)

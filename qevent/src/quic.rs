@@ -8,8 +8,8 @@ use derive_more::{From, Into, LowerHex};
 use qbase::{
     frame::{
         AckFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize, Frame,
-        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, PingFrame,
-        ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        GetFrameType, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
+        PingFrame, ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame, TraversalFrame,
     },
     net::addr::BoundAddr,
     packet::header::{
@@ -920,6 +920,19 @@ impl<D: ContinuousData> From<&Frame<D>> for QuicFrame {
             Frame::Stream(frame, bytes) => (frame, bytes).into(),
             Frame::Crypto(frame, bytes) => (frame, bytes).into(),
             Frame::Datagram(frame, bytes) => (frame, bytes).into(),
+            Frame::Traversal(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
+        }
+    }
+}
+
+impl From<&TraversalFrame> for QuicFrame {
+    fn from(frame: &TraversalFrame) -> Self {
+        QuicFrame::Unknow {
+            frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+            raw: None,
         }
     }
 }

@@ -4,7 +4,7 @@ pub mod initial;
 
 use std::{borrow::Cow, fmt::Debug, sync::Arc};
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use qbase::{
     error::{Error, QuicError},
     frame::{
@@ -367,14 +367,9 @@ fn filter_odcid_packet<H: GetDcid>(
     Some(packet)
 }
 
-enum Frame {
-    V1(qbase::frame::Frame),
-    Traversal(qtraversal::frame::TraversalFrame),
-}
-
 fn read_plain_packet<H>(
     packet: &PlainPacket<H>,
-    mut dispatch_frame: impl FnMut(Frame),
+    mut dispatch_frame: impl FnMut(qbase::frame::Frame),
 ) -> Result<PacketContains, Error>
 where
     H: GetType,
@@ -382,26 +377,12 @@ where
 {
     let mut frames_collector = QuicFramesCollector::<PacketReceived>::new();
     let mut packet_contains = PacketContains::default();
-    let mut frame_reader = FrameReader::new(packet.body(), packet.get_type());
-    // TODO: 删掉试试
-    #[allow(clippy::while_let_on_iterator)]
-    while let Some(frame_result) = frame_reader.next() {
-        match frame_result {
-            Ok((frame, r#type)) => {
-                frames_collector.extend([&frame]);
-                packet_contains = packet_contains.include(r#type);
-                dispatch_frame(Frame::V1(frame));
-            }
-            // Custom frames could try their own parse here
-            Err(_error) => {
-                let (size, frame, _type) =
-                    qtraversal::frame::io::be_frame(&frame_reader, packet.get_type())
-                        .map_err(QuicError::from)?;
-                frame_reader.advance(size);
-                packet_contains = PacketContains::EffectivePayload;
-                dispatch_frame(Frame::Traversal(frame));
-            }
-        }
+    let frame_reader = FrameReader::new(packet.body(), packet.get_type());
+    for frame_result in frame_reader {
+        let (frame, r#type) = frame_result.map_err(QuicError::from)?;
+        frames_collector.extend([&frame]);
+        packet_contains = packet_contains.include(r#type);
+        dispatch_frame(frame);
     }
 
     packet.log_received(frames_collector);

@@ -11,8 +11,11 @@ use std::{
 
 use dashmap::{DashMap, DashSet, Entry};
 use qbase::{
-    frame::{ReceiveFrame, SendFrame},
-    net::{AddrFamily, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
+    frame::{
+        AddAddressFrame, CollisionFrame, KonckFrame, PunchDoneFrame, PunchMeNowFrame, ReceiveFrame,
+        RemoveAddressFrame, SendFrame, TraversalFrame,
+    },
+    net::{AddrFamily, NatType, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
     packet::{
         Package, PacketSpace, ProductHeader,
         header::short::OneRttHeader,
@@ -34,15 +37,7 @@ use tracing::Instrument as _;
 use crate::{
     Link, PathWay,
     addr::AddressBook,
-    frame::{
-        PunchPair, TraversalFrame, add_address::AddAddressFrame, collision::CollisionFrame,
-        konck::KonckFrame, punch_done::PunchDoneFrame, punch_me_now::PunchMeNowFrame,
-        remove_address::RemoveAddressFrame,
-    },
-    nat::{
-        client::{NatType, StunClientComponent},
-        router::StunRouterComponent,
-    },
+    nat::{client::StunClientComponent, router::StunRouterComponent},
     punch::{
         predictor::{PacketSendFn, PortPredictor},
         tx::Transaction,
@@ -346,12 +341,12 @@ where
 
         let punch_pair = Link::new(*local, *add_address_frame);
         if self.0.punch_history.contains(&punch_pair) {
-            tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local.nat_type(), add_address_frame.nat_type()), "Punch already completed, skipping");
+            tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "Punch already completed, skipping");
             return Ok(());
         }
         match self.0.transaction.entry(punch_pair) {
             Entry::Occupied(_) => {
-                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local.nat_type(), add_address_frame.nat_type()), "Dup transaction for punch pair");
+                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "Dup transaction for punch pair");
                 return Ok(());
             }
             Entry::Vacant(entry) => {
@@ -384,7 +379,7 @@ where
         pathway: PathWay,
         punch_me_now_frame: PunchMeNowFrame,
     ) -> io::Result<()> {
-        let punch_pair = punch_me_now_frame.punch_pair().unwrap().flip();
+        let punch_pair = punch_me_now_frame.link().flip();
         if self.0.punch_history.contains(&punch_pair) {
             tracing::debug!(target: "punch", %punch_pair, "Punch already completed, skipping");
             return Ok(());
@@ -401,7 +396,7 @@ where
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::NotFound, "local address not matche")
                     })?;
-                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_address.nat_type(), punch_me_now_frame.nat_type()), "Received punch me now frame, start passive punch");
+                tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", Some(local_address.nat_type()), Some(punch_me_now_frame.nat_type())), "Received punch me now frame, start passive punch");
                 async move {
                     let result = puncher
                         .punch_passively(bind, &local_address, &punch_me_now_frame, tx)
@@ -1112,51 +1107,73 @@ where
             TraversalFrame::RemoveAddress(remove_address_frame) => {
                 self.recv_remove_address_frame(remove_address_frame);
             }
-            _ => match self.0.transaction.entry(frame.punch_pair().unwrap().flip()) {
-                Entry::Occupied(mut entry) => {
-                    let tx = entry.get_mut().1.clone();
-                    _ = tx.recv_frame(&(*link, frame.clone()));
-                }
-                Entry::Vacant(_) => {
-                    if matches!(frame, TraversalFrame::Konck(_)) {
-                        if let Some(punch_pair) = frame.punch_pair().map(Link::flip) {
-                            let link = *link;
-                            let puncher = self.clone();
-                            let bind = bind.clone();
-                            tracing::debug!(target: "punch", %punch_pair, frame = ?frame, %link, "Received unsolicited punch frame, replying directly with PunchDone");
-                            tokio::spawn(
-                                async move {
-                                    match puncher.0.ifaces.borrow(&bind) {
-                                        Some(iface) => {
-                                            if let Err(error) = puncher
-                                                .0
-                                                .send_packet(
-                                                    &iface,
-                                                    link,
-                                                    DEFAULT_TTL.try_into().unwrap(),
-                                                    TraversalFrame::PunchDone(PunchDoneFrame::new(
-                                                        punch_pair,
-                                                    )),
-                                                )
-                                                .await
-                                            {
-                                                tracing::debug!(target: "punch", %punch_pair, %link, ?error, "Failed to send direct PunchDone for unsolicited frame");
-                                            }
-                                        }
-                                        None => {
-                                            tracing::debug!(target: "punch", %punch_pair, %link, "Interface not found for bind uri: {}", bind);
+            TraversalFrame::Konck(konck_frame) => {
+                let punch_pair = Link::new(konck_frame.src(), konck_frame.dst()).flip();
+                match self.0.transaction.entry(punch_pair) {
+                    Entry::Occupied(mut entry) => {
+                        let tx = entry.get_mut().1.clone();
+                        _ = tx.recv_frame(&(*link, frame.clone()));
+                    }
+                    Entry::Vacant(_) => {
+                        let punch_pair = punch_pair.flip();
+                        let link = *link;
+                        let puncher = self.clone();
+                        let bind = bind.clone();
+                        tracing::debug!(target: "punch", %punch_pair, frame = ?frame, %link, "Received unsolicited punch frame, replying directly with PunchDone");
+                        tokio::spawn(
+                            async move {
+                                match puncher.0.ifaces.borrow(&bind) {
+                                    Some(iface) => {
+                                        if let Err(error) = puncher
+                                            .0
+                                            .send_packet(
+                                                &iface,
+                                                link,
+                                                DEFAULT_TTL.try_into().unwrap(),
+                                                TraversalFrame::PunchDone(PunchDoneFrame::new(
+                                                    punch_pair,
+                                                )),
+                                            )
+                                            .await
+                                        {
+                                            tracing::debug!(target: "punch", %punch_pair, %link, ?error, "Failed to send direct PunchDone for unsolicited frame");
                                         }
                                     }
+                                    None => {
+                                        tracing::debug!(target: "punch", %punch_pair, %link, "Interface not found for bind uri: {}", bind);
+                                    }
                                 }
-                                .instrument_in_current()
-                                .in_current_span(),
-                            );
-                        }
-                    } else {
+                            }
+                            .instrument_in_current()
+                            .in_current_span(),
+                        );
+                    }
+                }
+            }
+            TraversalFrame::PunchDone(punch_done_frame) => {
+                let punch_pair = Link::new(punch_done_frame.src(), punch_done_frame.dst()).flip();
+                match self.0.transaction.entry(punch_pair) {
+                    Entry::Occupied(mut entry) => {
+                        let tx = entry.get_mut().1.clone();
+                        _ = tx.recv_frame(&(*link, frame.clone()));
+                    }
+                    Entry::Vacant(_) => {
                         tracing::debug!(target: "punch", frame = ?frame, "Received unexpected frame");
                     }
                 }
-            },
+            }
+            TraversalFrame::Collision(collision_frame) => {
+                let punch_pair = Link::new(collision_frame.src(), collision_frame.dst()).flip();
+                match self.0.transaction.entry(punch_pair) {
+                    Entry::Occupied(mut entry) => {
+                        let tx = entry.get_mut().1.clone();
+                        _ = tx.recv_frame(&(*link, frame.clone()));
+                    }
+                    Entry::Vacant(_) => {
+                        tracing::debug!(target: "punch", frame = ?frame, "Received unexpected frame");
+                    }
+                }
+            }
         };
 
         Ok(())
