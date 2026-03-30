@@ -13,7 +13,7 @@ members = [
     "gm-quic",
     "h3-shim",
     "qtraversal",
-    "qdns",
+    "qresolve",
 ]
 default-members = [
     "qmacro",
@@ -99,7 +99,7 @@ qevent = { path = "./qevent", version = "0.4.0" }
 qudp = { path = "./qudp", version = "0.4.0" }
 qinterface = { path = "./qinterface", version = "0.4.0" }
 qunreliable = { path = "./qunreliable", version = "0.4.0" }
-qdns = { path = "./qdns", version = "0.4.0" }
+qresolve = { path = "./qresolve", version = "0.4.0" }
 qrecovery = { path = "./qrecovery", version = "0.4.0" }
 qtraversal = { path = "./qtraversal", version = "0.4.0" }
 qcongestion = { path = "./qcongestion", version = "0.4.0" }

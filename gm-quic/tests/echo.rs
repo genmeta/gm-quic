@@ -4,6 +4,7 @@ use gm_quic::{
     prelude::{handy::*, *},
     qbase::param::{ClientParameters, ServerParameters},
     qinterface::{bind_uri::BindUri, component::route::QuicRouter},
+    qresolve::Source,
 };
 use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
@@ -24,7 +25,9 @@ fn single_stream() -> Result<(), BoxError> {
 
         let server_addr = get_server_addr(&listeners);
         let client = launch_test_client(router, client_parameters());
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         listeners.shutdown();
@@ -42,7 +45,9 @@ fn signal_big_stream() -> Result<(), BoxError> {
 
         let server_addr = get_server_addr(&listeners);
         let client = launch_test_client(router, client_parameters());
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         // Use 16x repeat (~58KB) instead of 1024x (~3.7MB) for CI stability
         send_and_verify_echo(&connection, &TEST_DATA.to_vec().repeat(16)).await?;
 
@@ -61,7 +66,9 @@ fn empty_stream() -> Result<(), BoxError> {
 
         let server_addr = get_server_addr(&listeners);
         let client = launch_test_client(router, client_parameters());
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         send_and_verify_echo(&connection, b"").await?;
 
         listeners.shutdown();
@@ -107,7 +114,9 @@ fn shutdown() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
 
         let client = launch_test_client(router, client_parameters());
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         _ = connection.handshaked().await; // 可有可无
 
         assert!(
@@ -141,7 +150,9 @@ fn idle_timeout() -> Result<(), BoxError> {
         let server_addr = get_server_addr(&listeners);
 
         let client = launch_test_client(router, client_parameters());
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         connection.terminated().await;
 
         listeners.shutdown();
@@ -180,7 +191,9 @@ fn double_connections() -> Result<(), BoxError> {
         let mut connections = JoinSet::new();
 
         for conn_idx in 0..2 {
-            let connection = client.connected_to("localhost", [server_addr]).await?;
+            let connection = client
+                .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+                .await?;
             connections.spawn(
                 async move { send_and_verify_echo(&connection, TEST_DATA).await }
                     .instrument(tracing::info_span!("stream", conn_idx)),
@@ -232,7 +245,11 @@ fn parallel_stream() -> Result<(), BoxError> {
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
             tracing::info!(conn_idx, "Starting connection");
-            let connection = Arc::new(client.connected_to("localhost", [server_addr]).await?);
+            let connection = Arc::new(
+                client
+                    .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+                    .await?,
+            );
             tracing::info!(conn_idx, "Connected");
             for stream_idx in 0..PARALLEL_ECHO_STREAMS {
                 let connection = connection.clone();
@@ -287,7 +304,9 @@ fn parallel_big_stream() -> Result<(), BoxError> {
         let test_data = Arc::new(TEST_DATA.to_vec().repeat(4));
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS {
-            let connection = client.connected_to("localhost", [server_addr]).await?;
+            let connection = client
+                .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+                .await?;
             let test_data = test_data.clone();
             big_streams.spawn(
                 async move { send_and_verify_echo(&connection, &test_data).await }
@@ -357,7 +376,11 @@ fn limited_streams() -> Result<(), BoxError> {
         let mut streams = JoinSet::new();
 
         for conn_idx in 0..PARALLEL_ECHO_CONNS / 2 {
-            let connection = Arc::new(client.connected_to("localhost", [server_addr]).await?);
+            let connection = Arc::new(
+                client
+                    .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+                    .await?,
+            );
             for stream_idx in 0..PARALLEL_ECHO_STREAMS / 2 {
                 let connection = connection.clone();
                 streams.spawn(

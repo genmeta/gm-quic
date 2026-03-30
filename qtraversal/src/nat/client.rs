@@ -21,7 +21,6 @@ use qbase::{
     },
     varint::VarInt,
 };
-use qdns::Resolve;
 use qinterface::{
     Interface, RebindedError, WeakInterface,
     component::{
@@ -30,6 +29,7 @@ use qinterface::{
     },
     io::{IO, RefIO},
 };
+use qresolve::Resolve;
 use thiserror::Error;
 use tokio::{sync::Notify, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;

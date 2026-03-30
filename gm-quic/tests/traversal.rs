@@ -13,6 +13,7 @@ use futures::{
 use gm_quic::{
     prelude::{handy::*, *},
     qinterface::{component::location::Locations, manager::InterfaceManager},
+    qresolve::Source,
     qtraversal::nat::client::{NatType, StunClientsComponent},
 };
 use rustls::RootCertStore;
@@ -302,7 +303,10 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
     .await;
 
     // 不会进行绑定，不会出错
-    let connection = client.connected_to("localhost", [server_ep]).await.unwrap();
+    let connection = client
+        .connected_to_with_source("localhost", [(Source::System, server_ep)])
+        .await
+        .unwrap();
     let odcid = connection.origin_dcid().expect("connection failed");
     tracing::info!(%odcid, "connected to server");
     let test_data = Arc::new(TEST_DATA.to_vec());

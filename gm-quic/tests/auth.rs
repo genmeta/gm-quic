@@ -3,6 +3,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 use gm_quic::{
     prelude::{handy::*, *},
     qbase,
+    qresolve::Source,
 };
 use qbase::param::ServerParameters;
 use qconnection::qinterface::{bind_uri::BindUri, component::route::QuicRouter};
@@ -44,7 +45,9 @@ fn client_without_verify() -> Result<(), BoxError> {
             Arc::new(client)
         };
 
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         listeners.shutdown();
@@ -130,7 +133,9 @@ fn auth_client_name() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         send_and_verify_echo(&connection, TEST_DATA).await?;
 
         listeners.shutdown();
@@ -167,7 +172,9 @@ fn auth_client_name_incorrect_name() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         let error = connection.terminated().await;
         // TODO: 偶尔以NoViablePath结束，需要调查原因
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused);
@@ -208,7 +215,9 @@ fn auth_client_refuse() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
 
         let error = connection.terminated().await;
         // TODO: 偶尔以NoViablePath结束，需要调查原因
@@ -250,7 +259,9 @@ fn auth_client_refuse_silently() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
 
         // Silent refuse means server doesn't send CCF, so client should either:
         // 1. Timeout waiting for handshake
@@ -400,7 +411,9 @@ fn sign_and_verify() -> Result<(), BoxError> {
 
             Arc::new(client)
         };
-        let connection = client.connected_to("localhost", [server_addr]).await?;
+        let connection = client
+            .connected_to_with_source("localhost", [(Source::System, server_addr.into())])
+            .await?;
         send_and_verify_echo_with_sign_verify(&connection, TEST_DATA).await?;
 
         listeners.shutdown();

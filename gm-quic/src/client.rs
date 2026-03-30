@@ -20,12 +20,12 @@ use qconnection::{
     self,
     qinterface::{component::location::Locations, io::IO},
 };
-use qdns::Source;
 use qevent::telemetry::QLog;
 use qinterface::{
     BindInterface, Interface, bind_uri::BindUri, component::route::QuicRouter, device::Devices,
     io::ProductIO, manager::InterfaceManager,
 };
+use qresolve::Source;
 use rustls::{
     ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
@@ -245,7 +245,7 @@ impl QuicClient {
     ///
     /// ```no_run
     /// # use gm_quic::prelude::*;
-    /// # use gm_quic::qdns::Source;
+    /// # use gm_quic::qresolve::Source;
     /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let server_addresses: Vec<_> = tokio::net::lookup_host("genmeta.net:443")
     ///     .await?
@@ -336,20 +336,6 @@ impl QuicClient {
     /// If `server_eps` is empty, this is equivalent to calling [`QuicClient::new_connection`]
     /// and the connection will remain idle until paths are added.
     ///
-    /// All endpoints are treated as originating from [`Source::System`].
-    /// Use [`Self::connected_to_with_source`] to supply explicit DNS sources.
-    // TODO: 移除这个方法，强制用户使用带 Source 的版本，避免误用
-    pub async fn connected_to(
-        &self,
-        server_name: impl Into<String>,
-        server_eps: impl IntoIterator<Item = impl Into<EndpointAddr>>,
-    ) -> Result<Connection, ConnectServerError> {
-        let server_eps = server_eps.into_iter().map(|ep| (Source::System, ep.into()));
-        self.connected_to_with_source(server_name, server_eps).await
-    }
-
-    /// Connects to a server using `(Source, EndpointAddr)` pairs.
-    ///
     /// This variant preserves the DNS [`Source`] so that the correct network interface
     /// is selected for each endpoint (e.g., mDNS endpoints bind to the discovering NIC).
     pub async fn connected_to_with_source(
@@ -373,7 +359,7 @@ impl QuicClient {
     /// 1. Parses the server string (e.g., "example.com" or "example.com:443").
     ///    Defaults to port 443 if not specified.
     /// 2. Performs an asynchronous DNS lookup to resolve the hostname to IP addresses.
-    /// 3. Calls [`QuicClient::connected_to`] with the resolved addresses.
+    /// 3. Calls [`QuicClient::connected_to_with_source`] with the resolved addresses.
     ///
     /// The returned [`Connection`] may not have completed the handshake yet.
     /// Asynchronous operations on the connection will wait for the handshake.
