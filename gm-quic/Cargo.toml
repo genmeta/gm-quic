@@ -18,7 +18,7 @@ dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
 qconnection = { workspace = true }
-qdns = { workspace = true }
+qresolve = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

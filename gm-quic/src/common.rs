@@ -21,7 +21,7 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
-use qdns::{Family, Resolve, SystemResolver};
+use qresolve::{Family, Resolve, SystemResolver};
 
 #[derive(Clone)]
 pub struct Network {

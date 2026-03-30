@@ -124,7 +124,7 @@ impl Components {
     }
 
     // 添加对端直通地址，可以直接新建 path
-    pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qdns::Source) {
+    pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qresolve::Source) {
         let addr = match addr {
             EndpointAddr::Socket(addr) => addr,
             _ => return,

@@ -3,7 +3,7 @@
 pub mod prelude {
     pub use ::qconnection;
     pub use qconnection::prelude::*;
-    pub use qdns::Resolve;
+    pub use qresolve::Resolve;
 
     pub use crate::{
         client::{BindInterfaceError, ConnectServerError, QuicClient},
@@ -12,7 +12,7 @@ pub mod prelude {
 
     pub mod handy {
         pub use qconnection::prelude::handy::*;
-        pub use qdns::SystemResolver;
+        pub use qresolve::SystemResolver;
 
         pub use crate::cert::{ToCertificate, ToPrivateKey};
     }
@@ -35,7 +35,7 @@ mod doc {
 }
 
 pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
-pub use ::qdns;
+pub use ::qresolve;
 
 mod cert;
 mod client;

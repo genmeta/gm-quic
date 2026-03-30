@@ -6,8 +6,8 @@ use std::{
 
 use futures::io;
 use qbase::net::addr::SocketEndpointAddr;
-use qdns::Source;
 use qinterface::bind_uri::BindUri;
+use qresolve::Source;
 
 use crate::{
     frame::{add_address::AddAddressFrame, remove_address::RemoveAddressFrame},

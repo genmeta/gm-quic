@@ -306,7 +306,7 @@ where
     pub fn add_peer_endpoint(
         &self,
         endpoint: SocketEndpointAddr,
-        source: qdns::Source,
+        source: qresolve::Source,
     ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.add_peer_endpoint(endpoint, source.clone())?;
@@ -1011,9 +1011,9 @@ where
         bind: &BindUri,
         local: &SocketEndpointAddr,
         remote: &SocketEndpointAddr,
-        source: &qdns::Source,
+        source: &qresolve::Source,
     ) -> io::Result<(BindUri, Link, PathWay)> {
-        if let qdns::Source::Mdns { nic, family } = source {
+        if let qresolve::Source::Mdns { nic, family } = source {
             let matches_iface = bind
                 .as_iface_bind_uri()
                 .is_some_and(|(lf, ln, _)| lf == *family && ln == nic.as_ref());
