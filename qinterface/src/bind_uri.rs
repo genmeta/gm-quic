@@ -305,6 +305,24 @@ impl BindUri {
         self.prop(Self::RELAY_PROP)
     }
 
+    /// Returns a canonical key for reconciliation purposes.
+    ///
+    /// Strips ephemeral query parameters (like `alloc_port_id`) so that two
+    /// `BindUri`s pointing at the same interface/port compare as equal even
+    /// when produced by separate `alloc_port()` calls.
+    pub fn identity_key(&self) -> String {
+        let uri = &self.0;
+        let mut parts = uri.clone().into_parts();
+        parts.path_and_query = parts.path_and_query.map(|pq| {
+            pq.path()
+                .parse()
+                .expect("path portion should always be valid")
+        });
+        Uri::from_parts(parts)
+            .expect("BindUri without query should be valid")
+            .to_string()
+    }
+
     pub fn resolve(&self) -> Result<SocketAddr, TryIntoSocketAddrError> {
         match self.scheme() {
             BindUriScheme::Iface => {
