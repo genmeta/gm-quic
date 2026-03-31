@@ -3,3 +3,8 @@ coverage:
     patch: off
     project: off
   range: "70..100"
+  ignore:
+    - "**/tests/**"
+    - "**/*_test.rs"
+  github_checks:
+    annotations: true

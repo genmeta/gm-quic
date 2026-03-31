@@ -7,7 +7,7 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         header::long::InitialHeader,
-        keys::ArcOneRttPacketKeys,
+        keys::{ArcOneRttPacketKeys, DecryptAttemptResult},
         number::{InvalidPacketNumber, PacketNumber},
     },
 };
@@ -158,6 +158,7 @@ where
             undecoded_pn,
             decoded_pn,
             body_len: body_length,
+            key_generation: None,
         }))
     }
 
@@ -180,6 +181,7 @@ where
                     return Some(Err(invalid_reverse_bits.into()));
                 }
             };
+
         let decoded_pn = match pn_decoder(undecoded_pn) {
             Ok(pn) => pn,
             Err(invalid_pn) => {
@@ -187,24 +189,88 @@ where
                 return None;
             }
         };
-        let pk = pk.lock_guard().get_remote(key_phase, decoded_pn);
-        let body_offset = self.payload_offset + undecoded_pn.size();
-        let body_length = match decrypt_packet(pk.as_ref(), decoded_pn, pkt_buf, body_offset) {
-            Ok(body_length) => body_length,
-            Err(error) => {
-                self.drop_on_decryption_failure(error, decoded_pn);
-                return None;
-            }
-        };
 
-        Some(Ok(PlainPacket {
-            header: self.header,
-            plain: self.payload.freeze(),
-            payload_offset: self.payload_offset,
-            undecoded_pn,
+        let body_offset = self.payload_offset + undecoded_pn.size();
+
+        // Get candidate keys outside the decryption loop
+        let (candidates, next_generation) =
+            pk.get_candidate_keys_for_decryption(decoded_pn, key_phase);
+
+        // Try decrypting with each candidate key
+        for (generation, key) in candidates {
+            let decrypt_result =
+                decrypt_packet(key.as_ref(), decoded_pn, pkt_buf, body_offset).map_err(|_| ());
+            let attempt = pk.record_decrypt_attempt(generation, decoded_pn, decrypt_result);
+
+            match attempt {
+                Ok(DecryptAttemptResult::Success(body_length)) => {
+                    return Some(Ok(PlainPacket {
+                        header: self.header,
+                        plain: self.payload.freeze(),
+                        payload_offset: self.payload_offset,
+                        undecoded_pn,
+                        decoded_pn,
+                        body_len: body_length,
+                        key_generation: Some(generation),
+                    }));
+                }
+                Ok(DecryptAttemptResult::GiveUp) => {
+                    self.drop_on_decryption_failure(
+                        qbase::packet::error::Error::DecryptPacketFailure,
+                        decoded_pn,
+                    );
+                    return None;
+                }
+                Ok(DecryptAttemptResult::ContinueTrying) => continue,
+                Err(e) => return Some(Err(e)),
+            }
+        }
+
+        // Try next generation if available
+        if let Some(generation) = next_generation {
+            let next_key = match pk.resolve_remote_key_for_generation(generation) {
+                Ok(key) => key,
+                Err(e) => return Some(Err(e)),
+            };
+
+            if let Some(key) = next_key {
+                let decrypt_result =
+                    decrypt_packet(key.as_ref(), decoded_pn, pkt_buf, body_offset).map_err(|_| ());
+                let attempt = pk.record_decrypt_attempt(generation, decoded_pn, decrypt_result);
+
+                match attempt {
+                    Ok(DecryptAttemptResult::Success(body_length)) => {
+                        return Some(Ok(PlainPacket {
+                            header: self.header,
+                            plain: self.payload.freeze(),
+                            payload_offset: self.payload_offset,
+                            undecoded_pn,
+                            decoded_pn,
+                            body_len: body_length,
+                            key_generation: Some(generation),
+                        }));
+                    }
+                    Ok(DecryptAttemptResult::GiveUp) => {
+                        self.drop_on_decryption_failure(
+                            qbase::packet::error::Error::DecryptPacketFailure,
+                            decoded_pn,
+                        );
+                        return None;
+                    }
+                    Ok(DecryptAttemptResult::ContinueTrying) => {
+                        // Continue to final failure
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+        }
+
+        // All decryption attempts failed
+        self.drop_on_decryption_failure(
+            qbase::packet::error::Error::DecryptPacketFailure,
             decoded_pn,
-            body_len: body_length,
-        }))
+        );
+        None
     }
 }
 
@@ -232,6 +298,7 @@ pub struct PlainPacket<H> {
     plain: Bytes,
     payload_offset: usize,
     body_len: usize,
+    key_generation: Option<u64>,
 }
 
 impl<H> PlainPacket<H> {
@@ -245,6 +312,10 @@ impl<H> PlainPacket<H> {
 
     pub fn payload_len(&self) -> usize {
         self.undecoded_pn.size() + self.body_len
+    }
+
+    pub fn key_generation(&self) -> Option<u64> {
+        self.key_generation
     }
 
     pub fn body(&self) -> Bytes {

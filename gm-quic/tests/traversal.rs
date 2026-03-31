@@ -310,7 +310,10 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
     // 循环检查直连路径，每秒检查一次
     // 如果没有直连路径，执行 echo 测试确保连接正常
     // 总超时由 run() 函数的 60s 超时控制
+    let mut loop_count = 0;
     loop {
+        loop_count += 1;
+
         // 检查是否有直连路径
         let paths = connection
             .path_context()
@@ -330,6 +333,15 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
         if has_direct {
             tracing::info!("Direct path established: {:?}", paths);
             return;
+        }
+
+        // 每10次循环输出一次调试信息
+        if loop_count % 10 == 0 {
+            tracing::info!(
+                "Still waiting for direct path after {} seconds. Current paths: {:?}",
+                loop_count,
+                paths
+            );
         }
 
         // 没有直连路径，执行 echo 测试确保连接正常
