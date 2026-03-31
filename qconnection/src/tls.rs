@@ -349,7 +349,7 @@ impl ServerTlsSession {
 
                 match self.tls_conn.zero_rtt_keys() {
                     Some(keys) => zero_rtt_keys.set_keys(keys.into()),
-                    None => _ = zero_rtt_keys.invalid(),
+                    None => _ = zero_rtt_keys.invalidate(),
                 }
 
                 Ok(())
