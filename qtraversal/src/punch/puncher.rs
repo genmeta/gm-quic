@@ -1123,7 +1123,7 @@ where
                     ..
                 },
             ) => {
-                let iface = InterfaceManager::global().borrow(bind).ok_or_else(|| {
+                let iface = self.0.ifaces.borrow(bind).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("Interface not found for bind URI: {:?}", bind),
