@@ -11,34 +11,34 @@ use crate::{
     varint::VarInt,
 };
 
-/// KONCK Frame {
+/// PUNCH_KNOCK Frame {
 ///     Type (i) = 0x3d7e95,
 ///     Link,
 /// }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deref)]
-pub struct KonckFrame {
+pub struct PunchKnockFrame {
     #[deref]
     punch_pair: Link<SocketAddr>,
 }
 
-impl KonckFrame {
+impl PunchKnockFrame {
     pub fn new(link: Link<SocketAddr>) -> Self {
         Self { punch_pair: link }
     }
 }
 
-pub(crate) fn be_konck_frame(input: &[u8]) -> nom::IResult<&[u8], KonckFrame> {
+pub(crate) fn be_punch_knock_frame(input: &[u8]) -> nom::IResult<&[u8], PunchKnockFrame> {
     let (input, link) = be_link(input)?;
-    Ok((input, KonckFrame { punch_pair: link }))
+    Ok((input, PunchKnockFrame { punch_pair: link }))
 }
 
-impl GetFrameType for KonckFrame {
+impl GetFrameType for PunchKnockFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::Konck
+        super::FrameType::PunchKnock
     }
 }
 
-impl EncodeSize for KonckFrame {
+impl EncodeSize for PunchKnockFrame {
     fn max_encoding_size(&self) -> usize {
         4 + self.punch_pair.max_encoding_size()
     }
@@ -48,8 +48,8 @@ impl EncodeSize for KonckFrame {
     }
 }
 
-impl<T: bytes::BufMut> WriteFrame<KonckFrame> for T {
-    fn put_frame(&mut self, frame: &KonckFrame) {
+impl<T: bytes::BufMut> WriteFrame<PunchKnockFrame> for T {
+    fn put_frame(&mut self, frame: &PunchKnockFrame) {
         self.put_frame_type(frame.frame_type());
         self.put_link(&frame.punch_pair);
     }

@@ -1,5 +1,5 @@
 use qbase::frame::{
-    CollisionFrame, KonckFrame, PunchDoneFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
+    PunchDoneFrame, PunchKnockFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
 };
 use tokio::sync::SetOnce;
 
@@ -7,8 +7,7 @@ use crate::Link;
 
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<(Link, PunchMeNowFrame)>,
-    collision_frame: SetOnce<(Link, CollisionFrame)>,
-    konck_frame: SetOnce<(Link, KonckFrame)>,
+    konck_frame: SetOnce<(Link, PunchKnockFrame)>,
     punch_done_frame: SetOnce<(Link, PunchDoneFrame)>,
 }
 
@@ -16,7 +15,6 @@ impl Transaction {
     pub fn new() -> Self {
         Self {
             punch_me_now_frame: SetOnce::new(),
-            collision_frame: SetOnce::new(),
             konck_frame: SetOnce::new(),
             punch_done_frame: SetOnce::new(),
         }
@@ -26,7 +24,7 @@ impl Transaction {
         *self.punch_done_frame.wait().await
     }
 
-    pub async fn recv_konck(&self) -> (Link, KonckFrame) {
+    pub async fn recv_konck(&self) -> (Link, PunchKnockFrame) {
         *self.konck_frame.wait().await
     }
 
@@ -43,14 +41,11 @@ impl ReceiveFrame<(Link, TraversalFrame)> for Transaction {
         (link, frame): &(Link, TraversalFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         match frame {
-            TraversalFrame::Konck(konck_frame) => {
+            TraversalFrame::PunchKnock(konck_frame) => {
                 _ = self.konck_frame.set((*link, *konck_frame));
             }
             TraversalFrame::PunchDone(punch_done_frame) => {
                 _ = self.punch_done_frame.set((*link, *punch_done_frame));
-            }
-            TraversalFrame::Collision(collision_frame) => {
-                _ = self.collision_frame.set((*link, *collision_frame));
             }
             TraversalFrame::PunchMeNow(punch_me_now_frame) => {
                 _ = self.punch_me_now_frame.set((*link, *punch_me_now_frame));

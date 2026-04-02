@@ -12,7 +12,7 @@ use std::{
 use dashmap::{DashMap, DashSet, Entry};
 use qbase::{
     frame::{
-        AddAddressFrame, CollisionFrame, KonckFrame, PunchDoneFrame, PunchMeNowFrame, ReceiveFrame,
+        AddAddressFrame, PunchDoneFrame, PunchKnockFrame, PunchMeNowFrame, ReceiveFrame,
         RemoveAddressFrame, SendFrame, TraversalFrame,
     },
     net::{AddrFamily, NatType, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
@@ -195,7 +195,7 @@ where
                 continue;
             }
             let link = Link::new(link.src(), dst);
-            let frame = TraversalFrame::Collision(CollisionFrame::new(punch_pair));
+            let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(punch_pair));
             self.send_packet(iface, link, ttl, frame).await?;
         }
         Ok(())
@@ -521,7 +521,12 @@ where
                 for i in 0..5 {
                     tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending Konck expecting PunchDone or receiving Konck");
                     self.0
-                        .send_packet(&iface, link, KONCK_TTL, Konck(KonckFrame::new(punch_pair)))
+                        .send_packet(
+                            &iface,
+                            link,
+                            KONCK_TTL,
+                            PunchKnock(PunchKnockFrame::new(punch_pair)),
+                        )
                         .await?;
                     let timeout_duration = time * (1 << i);
                     tokio::select! {
@@ -651,7 +656,12 @@ where
                 for i in 0..5 {
                     tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending Konck expecting PunchDone");
                     self.0
-                        .send_packet(&iface, link, KONCK_TTL, Konck(KonckFrame::new(punch_pair)))
+                        .send_packet(
+                            &iface,
+                            link,
+                            KONCK_TTL,
+                            PunchKnock(PunchKnockFrame::new(punch_pair)),
+                        )
                         .await?;
                     let time = Duration::from_millis(KONCK_TIMEOUT_MS);
                     if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
@@ -688,7 +698,7 @@ where
                             &iface,
                             link,
                             COLLISION_TTL,
-                            Konck(KonckFrame::new(punch_pair)),
+                            PunchKnock(PunchKnockFrame::new(punch_pair)),
                         )
                         .await?;
                     if let Ok((_, _)) = timeout(time * (1 << i), tx.recv_punch_done()).await {
@@ -718,7 +728,7 @@ where
                         &iface,
                         link,
                         COLLISION_TTL,
-                        Konck(KonckFrame::new(punch_pair)),
+                        PunchKnock(PunchKnockFrame::new(punch_pair)),
                     )
                     .await?;
                 let time = Duration::from_millis(PUNCH_TIMEOUT_MS);
@@ -956,9 +966,9 @@ where
                     local_nat,
                 );
                 tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting Konck then PunchDone");
-                let konck_frame = KonckFrame::new(punch_pair);
+                let konck_frame = PunchKnockFrame::new(punch_pair);
                 self.0
-                    .send_packet(&iface, link, COLLISION_TTL, Konck(konck_frame))
+                    .send_packet(&iface, link, COLLISION_TTL, PunchKnock(konck_frame))
                     .await?;
                 broker.send_frame([PunchMeNow(punch_me_now)]);
                 let time = PUNCH_TIMEOUT_MS;
@@ -988,7 +998,12 @@ where
                 for i in 0..MAX_RETRIES {
                     tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending Konck expecting PunchDone");
                     self.0
-                        .send_packet(&iface, link, KONCK_TTL, Konck(KonckFrame::new(punch_pair)))
+                        .send_packet(
+                            &iface,
+                            link,
+                            KONCK_TTL,
+                            PunchKnock(PunchKnockFrame::new(punch_pair)),
+                        )
                         .await?;
                     if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
                         tracing::debug!(target: "punch", %punch_pair, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passively punch success, sending punch done");
@@ -1107,7 +1122,7 @@ where
             TraversalFrame::RemoveAddress(remove_address_frame) => {
                 self.recv_remove_address_frame(remove_address_frame);
             }
-            TraversalFrame::Konck(konck_frame) => {
+            TraversalFrame::PunchKnock(konck_frame) => {
                 let punch_pair = Link::new(konck_frame.src(), konck_frame.dst()).flip();
                 match self.0.transaction.entry(punch_pair) {
                     Entry::Occupied(mut entry) => {
@@ -1152,18 +1167,6 @@ where
             }
             TraversalFrame::PunchDone(punch_done_frame) => {
                 let punch_pair = Link::new(punch_done_frame.src(), punch_done_frame.dst()).flip();
-                match self.0.transaction.entry(punch_pair) {
-                    Entry::Occupied(mut entry) => {
-                        let tx = entry.get_mut().1.clone();
-                        _ = tx.recv_frame(&(*link, frame.clone()));
-                    }
-                    Entry::Vacant(_) => {
-                        tracing::debug!(target: "punch", frame = ?frame, "Received unexpected frame");
-                    }
-                }
-            }
-            TraversalFrame::Collision(collision_frame) => {
-                let punch_pair = Link::new(collision_frame.src(), collision_frame.dst()).flip();
                 match self.0.transaction.entry(punch_pair) {
                     Entry::Occupied(mut entry) => {
                         let tx = entry.get_mut().1.clone();
