@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use qbase::frame::{KonckFrame, TraversalFrame};
+use qbase::frame::{PunchKnockFrame, TraversalFrame};
 use qinterface::{
     Interface,
     bind_uri::{BindUri, BindUriScheme},
@@ -307,7 +307,7 @@ impl PortPredictor {
         for iface in interfaces {
             if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) = iface.bound_addr() {
                 let link = Link::new(socket_addr, punch_pair.dst());
-                let frame = TraversalFrame::Konck(KonckFrame::new(punch_pair));
+                let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(punch_pair));
                 if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {
                     successful_sends += 1;
                     successful_interfaces.push(iface.clone());

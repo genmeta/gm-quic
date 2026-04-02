@@ -31,9 +31,8 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 mod add_address;
-mod collision;
-mod konck;
 mod punch_done;
+mod punch_knock;
 mod punch_me_now;
 mod remove_address;
 
@@ -44,7 +43,6 @@ pub mod io;
 
 pub use ack::{AckFrame, Ecn, EcnCounts};
 pub use add_address::AddAddressFrame;
-pub use collision::CollisionFrame;
 pub use connection_close::{AppCloseFrame, ConnectionCloseFrame, Layer, QuicCloseFrame};
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
@@ -52,7 +50,6 @@ pub use datagram::DatagramFrame;
 #[doc(hidden)]
 pub use error::Error;
 pub use handshake_done::HandshakeDoneFrame;
-pub use konck::KonckFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
 pub use max_streams::MaxStreamsFrame;
@@ -63,6 +60,7 @@ pub use path_challenge::PathChallengeFrame;
 pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
 pub use punch_done::PunchDoneFrame;
+pub use punch_knock::PunchKnockFrame;
 pub use punch_me_now::PunchMeNowFrame;
 pub use remove_address::RemoveAddressFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
@@ -201,12 +199,10 @@ pub enum FrameType {
     RemoveAddress,
     /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
     PunchMeNow(Family),
-    /// KONCK frame, see [`KonckFrame`].
-    Konck,
+    /// PUNCH_KNOCK frame, see [`PunchKnockFrame`].
+    PunchKnock,
     /// PUNCH_DONE frame, see [`PunchDoneFrame`].
     PunchDone,
-    /// COLLISION frame, see [`CollisionFrame`].
-    Collision,
 }
 
 #[enum_dispatch]
@@ -274,9 +270,8 @@ impl FrameFeature for FrameType {
             FrameType::AddAddress(_) => o | l,
             FrameType::RemoveAddress => o | l,
             FrameType::PunchMeNow(_) => o | l,
-            FrameType::Konck => o | l,
+            FrameType::PunchKnock => o | l,
             FrameType::PunchDone => o | l,
-            FrameType::Collision => o | l,
         }
     }
 
@@ -297,9 +292,8 @@ impl FrameFeature for FrameType {
             // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
             // add the [`Spec::Con`] for the CONNECTION_CLOSE frame
             FrameType::ConnectionClose(_) => n | c,
-            FrameType::Konck => n,
+            FrameType::PunchKnock => n,
             FrameType::PunchDone => n,
-            FrameType::Collision => n,
             _ => 0,
         }
     }
@@ -346,9 +340,8 @@ impl TryFrom<VarInt> for FrameType {
             0x3d7e92 => FrameType::PunchMeNow(Family::V4),
             0x3d7e93 => FrameType::PunchMeNow(Family::V6),
             0x3d7e94 => FrameType::RemoveAddress,
-            0x3d7e95 => FrameType::Konck,
+            0x3d7e95 => FrameType::PunchKnock,
             0x3d7e96 => FrameType::PunchDone,
-            0x3d7e97 => FrameType::Collision,
             // May be extension frame
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
@@ -386,9 +379,8 @@ impl From<FrameType> for VarInt {
             FrameType::AddAddress(family) => VarInt::from_u32(0x3d7e90 | family as u32),
             FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
             FrameType::PunchMeNow(family) => VarInt::from_u32(0x3d7e92 | family as u32),
-            FrameType::Konck => VarInt::from_u32(0x3d7e95),
+            FrameType::PunchKnock => VarInt::from_u32(0x3d7e95),
             FrameType::PunchDone => VarInt::from_u32(0x3d7e96),
-            FrameType::Collision => VarInt::from_u32(0x3d7e97),
         }
     }
 }
@@ -450,9 +442,8 @@ pub enum TraversalFrame {
     AddAddress(AddAddressFrame),
     RemoveAddress(RemoveAddressFrame),
     PunchMeNow(PunchMeNowFrame),
-    Konck(KonckFrame),
+    PunchKnock(PunchKnockFrame),
     PunchDone(PunchDoneFrame),
-    Collision(CollisionFrame),
 }
 
 /// Sum type of all the frames.
@@ -734,9 +725,8 @@ impl<T: BufMut> WriteFrame<TraversalFrame> for T {
             TraversalFrame::AddAddress(frame) => self.put_frame(frame),
             TraversalFrame::RemoveAddress(frame) => self.put_frame(frame),
             TraversalFrame::PunchMeNow(frame) => self.put_frame(frame),
-            TraversalFrame::Konck(frame) => self.put_frame(frame),
+            TraversalFrame::PunchKnock(frame) => self.put_frame(frame),
             TraversalFrame::PunchDone(frame) => self.put_frame(frame),
-            TraversalFrame::Collision(frame) => self.put_frame(frame),
         }
     }
 }
