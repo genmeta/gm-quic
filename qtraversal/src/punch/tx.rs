@@ -6,7 +6,7 @@ use tokio::sync::SetOnce;
 use crate::Link;
 
 pub(crate) struct Transaction {
-    punch_me_now_frame: SetOnce<(Link, PunchMeNowFrame)>,
+    punch_me_now_frame: SetOnce<PunchMeNowFrame>,
     konck_frame: SetOnce<(Link, PunchKnockFrame)>,
     punch_done_frame: SetOnce<(Link, PunchDoneFrame)>,
 }
@@ -29,7 +29,11 @@ impl Transaction {
     }
 
     pub async fn receive_punch_me_now(&self) -> PunchMeNowFrame {
-        self.punch_me_now_frame.wait().await.1
+        *self.punch_me_now_frame.wait().await
+    }
+
+    pub fn set_punch_me_now(&self, frame: PunchMeNowFrame) {
+        _ = self.punch_me_now_frame.set(frame);
     }
 }
 
@@ -48,7 +52,7 @@ impl ReceiveFrame<(Link, TraversalFrame)> for Transaction {
                 _ = self.punch_done_frame.set((*link, *punch_done_frame));
             }
             TraversalFrame::PunchMeNow(punch_me_now_frame) => {
-                _ = self.punch_me_now_frame.set((*link, *punch_me_now_frame));
+                _ = self.punch_me_now_frame.set(*punch_me_now_frame);
             }
             frame => tracing::debug!(target: "punch", ?frame, "Recv unexpected punch frame type"),
         };

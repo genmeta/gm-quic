@@ -19,7 +19,7 @@ use qinterface::{
 
 use crate::{
     Link,
-    punch::{scheduler::SCHEDULER, tx::Transaction},
+    punch::{SeqPair, scheduler::SCHEDULER, tx::Transaction},
     route::ReceiveAndDeliverPacket,
 };
 
@@ -170,7 +170,7 @@ impl PortPredictor {
 
     pub async fn predict(
         &mut self,
-        punch_pair: Link,
+        punch_pair: SeqPair,
         tx: Arc<Transaction>,
         packet_send_fn: PacketSendFn,
     ) -> io::Result<Option<(BindUri, Interface)>> {
@@ -218,7 +218,7 @@ impl PortPredictor {
 
     async fn allocate_and_probe(
         &mut self,
-        punch_pair: Link,
+        punch_pair: SeqPair,
         packet_send_fn: &PacketSendFn,
         interfaces_count: usize,
     ) -> io::Result<Vec<Interface>> {
@@ -298,7 +298,7 @@ impl PortPredictor {
     async fn send_probe_packets(
         &mut self,
         interfaces: &[Interface],
-        punch_pair: Link,
+        punch_pair: SeqPair,
         packet_send_fn: &PacketSendFn,
     ) -> io::Result<Vec<Interface>> {
         tracing::debug!(target: "punch", %punch_pair, interface_count = interfaces.len(), "Sending packets");
@@ -306,8 +306,8 @@ impl PortPredictor {
         let mut successful_interfaces = Vec::new();
         for iface in interfaces {
             if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) = iface.bound_addr() {
-                let link = Link::new(socket_addr, punch_pair.dst());
-                let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(punch_pair));
+                let link = Link::new(socket_addr, self.dst);
+                let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(punch_pair.local_seq, punch_pair.remote_seq));
                 if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {
                     successful_sends += 1;
                     successful_interfaces.push(iface.clone());
