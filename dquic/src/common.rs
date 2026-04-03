@@ -55,17 +55,10 @@ impl Network {
         stun_server: &str,
         family: Option<Family>,
     ) -> Option<Vec<SocketAddr>> {
-        let stream = match self.resolver.lookup(stun_server).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("lookup_first_agent: resolver failed for {stun_server}: {e}");
-                return None;
-            }
-        };
+        let stream = self.resolver.lookup(stun_server).await.ok()?;
         let mut stream = std::pin::pin!(stream);
-        while let Some((source, ep)) = stream.next().await {
+        while let Some((_source, ep)) = stream.next().await {
             let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = ep else {
-                tracing::info!("lookup_first_agent: skipping non-direct endpoint {ep:?} from {source}");
                 continue;
             };
             if match family {
@@ -73,14 +66,10 @@ impl Network {
                 Some(Family::V4) => addr.is_ipv4(),
                 Some(Family::V6) => addr.is_ipv6(),
             } {
-                tracing::info!("resolved first stun agent for {stun_server}: {addr} (family={family:?})");
+                tracing::trace!("resolved first stun agent for {stun_server}: {addr}");
                 return Some(vec![addr]);
             }
-            tracing::info!(
-                "lookup_first_agent: agent {addr} family mismatch (want {family:?})"
-            );
         }
-        tracing::warn!("lookup_first_agent: no matching agent found for {stun_server} (family={family:?})");
         None
     }
 
@@ -179,14 +168,6 @@ impl Network {
                 .unwrap_or_default(),
             None => vec![],
         };
-
-        tracing::warn!(
-            %bind_uri,
-            stun_server = ?self.stun_server,
-            stun_agents_count = stun_agents.len(),
-            stun_agents = ?stun_agents,
-            "Network::bind diagnostic"
-        );
 
         let factory = self.iface_factory.clone();
         let bind_iface = self.iface_manager.bind(bind_uri, factory).await;
