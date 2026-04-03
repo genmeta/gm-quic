@@ -5,8 +5,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use dquic::prelude::{Connection, StreamId, StreamReader, StreamWriter};
 use futures::Stream;
-use gm_quic::prelude::{Connection, StreamId, StreamReader, StreamWriter};
 use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 
 use crate::{

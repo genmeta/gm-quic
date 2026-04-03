@@ -3,9 +3,7 @@
 
 use std::sync::Arc;
 
-use gm_quic::{
-    prelude::*, qbase::param::ServerParameters, qinterface::component::route::QuicRouter,
-};
+use dquic::{prelude::*, qbase::param::ServerParameters, qinterface::component::route::QuicRouter};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 
 use crate::common::{BoxError, SERVER_CERT, SERVER_KEY, qlogger};

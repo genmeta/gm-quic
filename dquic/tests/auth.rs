@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use gm_quic::{
+use dquic::{
     prelude::{handy::*, *},
     qbase,
     qresolve::Source,

@@ -8,7 +8,7 @@
 
 // use bytes::{Buf, Bytes};
 // use futures::future::BoxFuture;
-// use gm_quic::{DatagramReader, DatagramWriter};
+// use dquic::{DatagramReader, DatagramWriter};
 // use h3_datagram::{
 //     ConnectionErrorIncoming,
 //     datagram::EncodedDatagram,

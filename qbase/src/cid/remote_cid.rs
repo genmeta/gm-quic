@@ -252,7 +252,7 @@ where
 
     /// Apply initial dcid to handshake path.
     ///
-    /// gm-quic implements multi-path handshake feature, the client creates many paths and sends initial packets.
+    /// dquic implements multi-path handshake feature, the client creates many paths and sends initial packets.
     ///
     /// The client and server must negotiate a handshake path and assign the initial dcid to this path
     /// to prevent the unique connection ID from being obtained by an invalid path, causing the connection to fail.

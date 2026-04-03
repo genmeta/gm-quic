@@ -2,9 +2,9 @@ name: Traversal Tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 env:
@@ -14,87 +14,87 @@ jobs:
   nat-detection:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Build Docker image
-      run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
+      - name: Build Docker image
+        run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
 
-    - name: Get NAT detection test list
-      run: |
-        TESTS=$(cargo test --package qtraversal test_detect -- --list | \
-          grep ": test$" | awk '{print $1}' | sed 's/:$//')
-        echo "$TESTS" > /tmp/nat_tests.txt
-        cat /tmp/nat_tests.txt
+      - name: Get NAT detection test list
+        run: |
+          TESTS=$(cargo test --package qtraversal test_detect -- --list | \
+            grep ": test$" | awk '{print $1}' | sed 's/:$//')
+          echo "$TESTS" > /tmp/nat_tests.txt
+          cat /tmp/nat_tests.txt
 
-    - name: Run NAT detection tests serially
-      run: |
-        mapfile -t NAT_TESTS < /tmp/nat_tests.txt
+      - name: Run NAT detection tests serially
+        run: |
+          mapfile -t NAT_TESTS < /tmp/nat_tests.txt
 
-        for test in "${NAT_TESTS[@]}"; do
-          if [ -z "$test" ]; then
-            continue
-          fi
-          echo "========================================"
-          echo "Running NAT detection: $test"
-          echo "========================================"
+          for test in "${NAT_TESTS[@]}"; do
+            if [ -z "$test" ]; then
+              continue
+            fi
+            echo "========================================"
+            echo "Running NAT detection: $test"
+            echo "========================================"
 
-          docker run --rm --privileged \
-            -v ${{ github.workspace }}:/gm-quic \
-            -v /tmp/nat_tests.txt:/tmp/nat_tests.txt:ro \
-            gm-quic-traversal-test:latest \
-            /bin/bash -c "
-              set -e
-              cd /gm-quic
-              bash qtraversal/tools/run_stun.sh
-              cargo test --package qtraversal --no-run
-              echo 'DEBUG: Running test [$test]'
-              ip netns exec nsa cargo test --package qtraversal '$test' -- --nocapture --include-ignored
-            "
+            docker run --rm --privileged \
+              -v ${{ github.workspace }}:/dquic \
+              -v /tmp/nat_tests.txt:/tmp/nat_tests.txt:ro \
+              dquic-traversal-test:latest \
+              /bin/bash -c "
+                set -e
+                cd /dquic
+                bash qtraversal/tools/run_stun.sh
+                cargo test --package qtraversal --no-run
+                echo 'DEBUG: Running test [$test]'
+                ip netns exec nsa cargo test --package qtraversal '$test' -- --nocapture --include-ignored
+              "
 
-          echo "Completed: $test"
-          echo ""
-        done
+            echo "Completed: $test"
+            echo ""
+          done
 
   hole-punching:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Build Docker image
-      run: docker build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
+      - name: Build Docker image
+        run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
 
-    - name: Get hole punching test list
-      run: |
-        TESTS=$(cargo test --test traversal -- --list | \
-          grep ": test$" | awk '{print $1}' | sed 's/:$//')
-        echo "$TESTS" > /tmp/hp_tests.txt
-        cat /tmp/hp_tests.txt
+      - name: Get hole punching test list
+        run: |
+          TESTS=$(cargo test --test traversal -- --list | \
+            grep ": test$" | awk '{print $1}' | sed 's/:$//')
+          echo "$TESTS" > /tmp/hp_tests.txt
+          cat /tmp/hp_tests.txt
 
-    - name: Run hole punching tests serially
-      run: |
-        mapfile -t HP_TESTS < /tmp/hp_tests.txt
+      - name: Run hole punching tests serially
+        run: |
+          mapfile -t HP_TESTS < /tmp/hp_tests.txt
 
-        for test in "${HP_TESTS[@]}"; do
-          if [ -z "$test" ]; then
-            continue
-          fi
-          echo "========================================"
-          echo "Running hole punching: $test"
-          echo "========================================"
+          for test in "${HP_TESTS[@]}"; do
+            if [ -z "$test" ]; then
+              continue
+            fi
+            echo "========================================"
+            echo "Running hole punching: $test"
+            echo "========================================"
 
-          docker run --rm --privileged \
-            -v ${{ github.workspace }}:/gm-quic \
-            -v /tmp/hp_tests.txt:/tmp/hp_tests.txt:ro \
-            gm-quic-traversal-test:latest \
-            /bin/bash -c "
-              set -e
-              cd /gm-quic
-              bash qtraversal/tools/run_stun.sh
-              cargo test --test traversal --no-run
-              echo 'DEBUG: Running test [$test]'
-              ip netns exec nsa cargo test --test traversal '$test' -- --include-ignored --nocapture
-            "
+            docker run --rm --privileged \
+              -v ${{ github.workspace }}:/dquic \
+              -v /tmp/hp_tests.txt:/tmp/hp_tests.txt:ro \
+              dquic-traversal-test:latest \
+              /bin/bash -c "
+                set -e
+                cd /dquic
+                bash qtraversal/tools/run_stun.sh
+                cargo test --test traversal --no-run
+                echo 'DEBUG: Running test [$test]'
+                ip netns exec nsa cargo test --test traversal '$test' -- --include-ignored --nocapture
+              "
 
-          echo "Completed: $test"
-          echo ""
-        done
+            echo "Completed: $test"
+            echo ""
+          done

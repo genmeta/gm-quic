@@ -2,7 +2,7 @@
 name = "qunreliable"
 version = "0.4.0"
 edition.workspace = true
-description = "Datagram transmission of gm-quic"
+description = "Datagram transmission of dquic"
 readme.workspace = true
 repository.workspace = true
 license.workspace = true

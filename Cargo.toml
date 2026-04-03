@@ -10,7 +10,7 @@ members = [
     "qinterface",
     "qunreliable",
     "qconnection",
-    "gm-quic",
+    "dquic",
     "h3-shim",
     "qtraversal",
     "qresolve",
@@ -23,7 +23,7 @@ default-members = [
     "qcongestion",
     "qinterface",
     "qconnection",
-    "gm-quic",
+    "dquic",
     "h3-shim",
     "qtraversal",
 ]
@@ -32,7 +32,7 @@ default-members = [
 version = "0.4.0"
 edition = "2024"
 readme = "README.md"
-repository = "https://github.com/genmeta/gm-quic"
+repository = "https://github.com/genmeta/dquic"
 license = "Apache-2.0"
 keywords = ["async", "quic", "http3"]
 categories = ["network-programming", "asynchronous"]
@@ -104,7 +104,7 @@ qrecovery = { path = "./qrecovery", version = "0.4.0" }
 qtraversal = { path = "./qtraversal", version = "0.4.0" }
 qcongestion = { path = "./qcongestion", version = "0.4.0" }
 qconnection = { path = "./qconnection", version = "0.4.0" }
-gm-quic = { path = "./gm-quic", version = "0.4.0" }
+dquic = { path = "./dquic", version = "0.4.0" }
 h3-shim = { path = "./h3-shim", version = "0.4.0" }
 
 

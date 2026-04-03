@@ -4,22 +4,23 @@
 
 你也可以自己签名密钥，并在运行server/client时通过命令行参数指定自己的密钥
 
-> 我们还有一个对reqwest的[fork](https://github.com/genmeta/reqwest/tree/gm-quic)，其quic实现被替换为为gm-quic。基于reqwest的client用例可以参考[此gist](https://gist.github.com/ealinmen/ed79f3bf95fa91e9475484560fb2744e)
+> 我们还有一个对reqwest的[fork](https://github.com/genmeta/reqwest/tree/dquic)，其quic实现被替换为为dquic。基于reqwest的client用例可以参考[此gist](https://gist.github.com/ealinmen/ed79f3bf95fa91e9475484560fb2744e)
 
 运行之前，推荐设置环境变量`RUST_LOG=info`，以便查看更多的日志信息
-``` shell
+
+```shell
 # 非必需，但是建议
-export RUST_LOG=info 
+export RUST_LOG=info
 ```
 
 ## 运行
 
 所需命令行参数均已预设，你也可以通过`--help`查看帮助，自己指定参数
 
-cd到`gm-quic`目录下，运行以下命令即可
+cd到`dquic`目录下，运行以下命令即可
 
 ```shell
-cd path/to/gm-quic
+cd path/to/dquic
 # 启动Server，默认会加载localhost的自签名证书，因此必须通过localhost来请求
 # server会默认监听[127.0.0.1:4433, [::1]:4433]两个地址，请确保您的机器支持IPv6
 # 如果不支持，请使用-b参数手动绑定监听地址
@@ -37,6 +38,7 @@ cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/exampl
 ```
 
 你也可以指定服务的根目录，或者更改绑定端口
+
 ```shell
 # 设置服务根目录
 cargo run --example=h3-server --package=h3-shim -- --dir=/path/to/www
@@ -49,6 +51,7 @@ cargo run --example=h3-server --package=h3-shim -- -l=127.0.0.1:123456
 ### 找不到文件
 
 如果你遇到类似这样的错误
+
 ```
 failed to read CA certificate: Os { code: 2, kind: NotFound, message: "No such file or directory" }
 failed to read certificate file: Os { code: 2, kind: NotFound, message: "No such file or directory" }

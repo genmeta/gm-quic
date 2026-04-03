@@ -147,7 +147,7 @@ impl<'a> PacketsAssembler<'a> {
 
     /// Return the connection ID that used to send the initial and zero rtt packets.
     ///
-    /// gm-quic implements multi-path handshake feature, the client creates many paths and sends initial packets.
+    /// dquic implements multi-path handshake feature, the client creates many paths and sends initial packets.
     ///
     /// Client will only use origin_dcid to send initial and zero rtt packets.
     ///

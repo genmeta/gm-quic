@@ -6,15 +6,15 @@ use std::{
     time::Duration,
 };
 
-use futures::{
-    FutureExt,
-    future::{BoxFuture, Shared},
-};
-use gm_quic::{
+use dquic::{
     prelude::{handy::*, *},
     qinterface::{component::location::Locations, manager::InterfaceManager},
     qresolve::Source,
     qtraversal::nat::client::{NatType, StunClientsComponent},
+};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
 };
 use rustls::RootCertStore;
 use tokio::task::JoinSet;
@@ -126,11 +126,11 @@ macro_rules! test_punch_pair {
 
 /*
     // in host:
-    sudo docker buildx build -f qtraversal/tools/dockerfile -t gm-quic-traversal-test:latest .
-    sudo docker run -it --rm --privileged -v .:/gm-quic gm-quic-traversal-test:latest
+    sudo docker buildx build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
+    sudo docker run -it --rm --privileged -v .:/dquic dquic-traversal-test:latest
 
     // in contrainer:
-    cd /gm-quic && ./qtraversal/tools/run_stun.sh
+    cd /dquic && ./qtraversal/tools/run_stun.sh
     ip netns exec nsa cargo test --test traversal -- --include-ignored --nocapture
 */
 
@@ -260,7 +260,7 @@ async fn test_punch_case(client_nat: NatType, server_nat: NatType) {
 }
 
 async fn get_stun_data(
-    server_iface: gm_quic::qinterface::Interface,
+    server_iface: dquic::qinterface::Interface,
 ) -> Vec<(SocketEndpointAddr, NatType)> {
     let mut outer_addresses = server_iface
         .with_component(|clients: &StunClientsComponent| {
@@ -351,5 +351,5 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[test]
 fn test_collision_ttl_is_1_in_tests() {
-    assert_eq!(gm_quic::qtraversal::punch::puncher::COLLISION_TTL, 1);
+    assert_eq!(dquic::qtraversal::punch::puncher::COLLISION_TTL, 1);
 }

@@ -3,14 +3,14 @@ FROM docker.io/martenseemann/quic-network-simulator-endpoint:latest
 RUN env
 
 # download and build your QUIC implementation
-COPY . /gm-quic
+COPY . /dquic
 
 # setup rust
 RUN apt-get update && apt-get install -y curl gcc \ 
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y  \ 
     && . "$HOME/.cargo/env" \
     # build the QUIC implementation
-    && cd gm-quic \
+    && cd dquic \
     && cargo build --release --example http-server \
     && cargo build --release --example http-client \
     && cargo build --release --example h3-client \
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y curl gcc \
     && mv target/release/examples/h3-client / \
     && mv target/release/examples/h3-server / \
     # cleanup
-    && cd / && rm -rf /gm-quic \
+    && cd / && rm -rf /dquic \
     && rm -rf $HOME/.cargo/registry \
     && rm -rf $HOME/.cargo/git \
     && rustup self uninstall -y \

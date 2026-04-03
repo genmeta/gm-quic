@@ -58,7 +58,7 @@ pub trait CancelStream {
 /// # Example
 ///
 /// The [`Writer`] is created by the `open_bi_stream`, `open_uni_stream`, or `accept_bi_stream` methods of
-/// `QuicConnection` (in the `gm-quic` crate).
+/// `QuicConnection` (in the `dquic` crate).
 ///
 /// The following example demonstrates how to read and write data on a QUIC stream.
 ///

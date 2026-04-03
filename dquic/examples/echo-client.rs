@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::Parser;
-use gm_quic::prelude::{handy::ToCertificate, *};
+use dquic::prelude::{handy::ToCertificate, *};
 use http::uri::Authority;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};

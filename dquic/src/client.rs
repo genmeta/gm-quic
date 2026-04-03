@@ -244,8 +244,8 @@ impl QuicClient {
     /// ### Example
     ///
     /// ```no_run
-    /// # use gm_quic::prelude::*;
-    /// # use gm_quic::qresolve::Source;
+    /// # use dquic::prelude::*;
+    /// # use dquic::qresolve::Source;
     /// # async fn example(quic_client: &QuicClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let server_addresses: Vec<_> = tokio::net::lookup_host("genmeta.net:443")
     ///     .await?
