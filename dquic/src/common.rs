@@ -167,6 +167,14 @@ impl Network {
             None => vec![],
         };
 
+        tracing::warn!(
+            %bind_uri,
+            stun_server = ?self.stun_server,
+            stun_agents_count = stun_agents.len(),
+            stun_agents = ?stun_agents,
+            "Network::bind diagnostic"
+        );
+
         let factory = self.iface_factory.clone();
         let bind_iface = self.iface_manager.bind(bind_uri, factory).await;
         self.init_iface_components(&bind_iface, stun_server.map(|s| (s, stun_agents)));
