@@ -2,7 +2,7 @@
 name = "h3-shim"
 version = "0.4.0"
 edition.workspace = true
-description = "Shim libray between gm-quic and h3"
+description = "Shim libray between dquic and h3"
 readme.workspace = true
 repository.workspace = true
 license.workspace = true
@@ -18,12 +18,12 @@ h3-datagram = { workspace = true, optional = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
-gm-quic = { workspace = true }
+dquic = { workspace = true }
 tokio = { workspace = true }
 
 [features]
-unreliable = ["dep:h3-datagram", "gm-quic/unreliable"]
-telemetry = ["gm-quic/telemetry"]
+unreliable = ["dep:h3-datagram", "dquic/unreliable"]
+telemetry = ["dquic/telemetry"]
 
 [dev-dependencies]
 base64 = "0.22"

@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use gm_quic::{
+use dquic::{
     prelude::{handy::*, *},
     qbase::{self, param::ClientParameters},
     qinterface::{component::route::QuicRouter, io::IO},

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gm_quic::prelude::{handy::ToCertificate, *};
+use dquic::prelude::{handy::ToCertificate, *};
 use http::{Uri, uri::Parts};
 use qevent::telemetry::handy::{LegacySeqLogger, NoopLogger};
 use tokio::{

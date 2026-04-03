@@ -2,7 +2,7 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
-use gm_quic::{
+use dquic::{
     prelude::*,
     qinterface::{bind_uri::BindUri, io::IO},
 };

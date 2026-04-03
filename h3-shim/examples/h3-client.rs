@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use clap::Parser;
-use gm_quic::prelude::{
+use dquic::prelude::{
     handy::{ToCertificate, client_parameters},
     *,
 };

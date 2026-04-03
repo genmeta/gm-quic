@@ -1,6 +1,6 @@
 use std::{error::Error, sync::Arc};
 
-use gm_quic::qbase;
+use dquic::qbase;
 use h3::quic::{ConnectionErrorIncoming, StreamErrorIncoming};
 use qbase::frame::ResetStreamError;
 

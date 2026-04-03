@@ -8,5 +8,5 @@ pub mod ext;
 #[allow(unused_imports)]
 pub use ext::*;
 pub mod streams;
-pub use gm_quic;
+pub use dquic;
 pub use streams::{BidiStream, RecvStream, SendStream};

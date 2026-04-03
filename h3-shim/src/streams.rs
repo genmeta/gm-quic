@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::Buf;
-use gm_quic::{
+use dquic::{
     prelude::{CancelStream, StopSending, StreamReader, StreamWriter},
     qbase,
 };

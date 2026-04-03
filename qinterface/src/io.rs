@@ -21,7 +21,7 @@ use crate::bind_uri::BindUri;
 /// Provides a unified interface for different network transport implementations.
 /// Note that some implementations may not support all bind address types.
 ///
-/// `gm-quic` uses [`ProductIO`] to create (bind) new [`IO`] instances.
+/// `dquic` uses [`ProductIO`] to create (bind) new [`IO`] instances.
 /// Read its documentation for more information.
 ///
 /// Wrapping a new [`IO`] is easy,

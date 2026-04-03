@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use gm_quic::{
+use dquic::{
     prelude::{handy::*, *},
     qbase::param::{ClientParameters, ServerParameters},
     qinterface::{bind_uri::BindUri, component::route::QuicRouter},

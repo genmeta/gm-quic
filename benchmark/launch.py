@@ -129,7 +129,7 @@ rand_files = RandomFiles()
 ecc_certs = Certs()
 
 quic_go_dir = os.path.join(root, "go-quic-demo")
-gm_quic_dir = os.path.join(root, "..")
+dquic_dir = os.path.join(root, "..")
 tquic_dir = os.path.join(root, "tquic")
 quinn_dir = os.path.join(root, "h3")
 quiche_dir = os.path.join(root, "quiche")
@@ -173,21 +173,21 @@ def go_quic_runner() -> ServerRunner:
     return ServerRunner('quic-go', launch, 4430)
 
 
-def gm_quic_runner() -> ServerRunner:
-    logging.info("Building gm-quic server...")
+def dquic_runner() -> ServerRunner:
+    logging.info("Building dquic server...")
 
-    # git_clone("genmeta", "gm-quic", "main")
+    # git_clone("genmeta", "dquic", "main")
 
     # 编译
     subprocess.run(
         ["cargo", "build", "--release", "--package",
             "h3-shim", "--example", "h3-server"],
-        cwd=gm_quic_dir,
+        cwd=dquic_dir,
         check=True
     )
 
     launch = [
-        os.path.join(gm_quic_dir,
+        os.path.join(dquic_dir,
                      "target", "release", "examples", "h3-server"),
         "-c", ecc_certs.server_cert,
         "-k", ecc_certs.server_key,
@@ -195,24 +195,24 @@ def gm_quic_runner() -> ServerRunner:
         "-l", "[::1]:4431"
     ]
 
-    return ServerRunner('gm-quic', launch, 4431)
+    return ServerRunner('dquic', launch, 4431)
 
 
-def gm_quic_multi_path_runner() -> ServerRunner:
-    logging.info("Building gm-quic server...")
+def dquic_multi_path_runner() -> ServerRunner:
+    logging.info("Building dquic server...")
 
-    # git_clone("genmeta", "gm-quic", "main")
+    # git_clone("genmeta", "dquic", "main")
 
     # 编译
     subprocess.run(
         ["cargo", "build", "--release", "--package",
             "h3-shim", "--example", "h3-server"],
-        cwd=gm_quic_dir,
+        cwd=dquic_dir,
         check=True
     )
 
     launch = [
-        os.path.join(gm_quic_dir,
+        os.path.join(dquic_dir,
                      "target", "release", "examples", "h3-server"),
         "-c", ecc_certs.server_cert,
         "-k", ecc_certs.server_key,
@@ -221,7 +221,7 @@ def gm_quic_multi_path_runner() -> ServerRunner:
         "-l", "127.0.0.1:4435"
     ]
 
-    return ServerRunner('gm-quic-multi-path', launch, 4435)
+    return ServerRunner('dquic-multi-path', launch, 4435)
 
 
 def tquic_runner() -> ServerRunner:
@@ -300,7 +300,7 @@ class H3Client:
     progress: bool
 
     def __init__(self, stress: int = 1024*30, requests: int = 8, progress: bool = False):
-        logging.info("Building gm-quic client")
+        logging.info("Building dquic client")
         subprocess.run(
             [
                 "cargo", "build", "--package", "h3-shim",
@@ -339,7 +339,7 @@ class H3Client:
         try:
             subprocess.run(
                 launch_client,
-                cwd=gm_quic_dir,
+                cwd=dquic_dir,
                 env={**os.environ, "RUST_LOG": "counting"},
                 stdout=client_log,
                 text=True,
@@ -499,11 +499,11 @@ if __name__ == "__main__":
 
     runners = {
         'quic-go': go_quic_runner,
-        'gm-quic': gm_quic_runner,
+        'dquic': dquic_runner,
         'tquic': tquic_runner,
         'quinn': quinn_runner,
         'cf-quiche': cf_quiche_runner,
-        'gm-quic-multi-path': gm_quic_multi_path_runner,
+        'dquic-multi-path': dquic_multi_path_runner,
     }
 
     # Diaplay runners

@@ -1,5 +1,5 @@
 [package]
-name = "gm-quic"
+name = "dquic"
 version = "0.4.0"
 edition.workspace = true
 description = "An IETF quic transport protocol implemented natively using async Rust"
