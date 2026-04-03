@@ -1,14 +1,66 @@
+use std::fmt;
+
 use qbase::frame::{
-    PunchDoneFrame, PunchKnockFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
+    AddAddressFrame, PunchKnockFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
 };
 use tokio::sync::SetOnce;
 
 use crate::Link;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PunchId {
+    pub local_seq: u32,
+    pub remote_seq: u32,
+}
+
+impl PunchId {
+    pub fn new(local_seq: u32, remote_seq: u32) -> Self {
+        Self {
+            local_seq,
+            remote_seq,
+        }
+    }
+
+    pub fn flip(self) -> Self {
+        Self {
+            local_seq: self.remote_seq,
+            remote_seq: self.local_seq,
+        }
+    }
+}
+
+impl fmt::Display for PunchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.local_seq, self.remote_seq)
+    }
+}
+
+pub(crate) trait AsPunchId {
+    fn punch_id(&self) -> PunchId;
+}
+
+impl AsPunchId for PunchKnockFrame {
+    fn punch_id(&self) -> PunchId {
+        PunchId::new(self.local_seq(), self.remote_seq())
+    }
+}
+
+impl AsPunchId for PunchMeNowFrame {
+    fn punch_id(&self) -> PunchId {
+        PunchId::new(self.local_seq(), self.remote_seq())
+    }
+}
+
+impl AsPunchId for (&AddAddressFrame, &AddAddressFrame) {
+    fn punch_id(&self) -> PunchId {
+        PunchId::new(self.0.seq_num(), self.1.seq_num())
+    }
+}
+
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<PunchMeNowFrame>,
     konck_frame: SetOnce<(Link, PunchKnockFrame)>,
-    punch_done_frame: SetOnce<(Link, PunchDoneFrame)>,
+    punch_done_frame: SetOnce<(Link, PunchKnockFrame)>,
 }
 
 impl Transaction {
@@ -20,7 +72,7 @@ impl Transaction {
         }
     }
 
-    pub async fn recv_punch_done(&self) -> (Link, PunchDoneFrame) {
+    pub async fn recv_punch_done(&self) -> (Link, PunchKnockFrame) {
         *self.punch_done_frame.wait().await
     }
 
@@ -45,10 +97,10 @@ impl ReceiveFrame<(Link, TraversalFrame)> for Transaction {
         (link, frame): &(Link, TraversalFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         match frame {
-            TraversalFrame::PunchKnock(konck_frame) => {
-                _ = self.konck_frame.set((*link, *konck_frame));
+            TraversalFrame::PunchKnock(knock_frame) if !knock_frame.is_done() => {
+                _ = self.konck_frame.set((*link, *knock_frame));
             }
-            TraversalFrame::PunchDone(punch_done_frame) => {
+            TraversalFrame::PunchKnock(punch_done_frame) => {
                 _ = self.punch_done_frame.set((*link, *punch_done_frame));
             }
             TraversalFrame::PunchMeNow(punch_me_now_frame) => {

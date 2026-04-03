@@ -5,12 +5,13 @@ use super::{
 use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// PUNCH_KNOCK Frame {
-///     Type (i) = 0x3d7e95,
+///     Type (i) = 0x3d7e95 (Knock) | 0x3d7e96 (Done),
 ///     Local Sequence Number (i),
 ///     Remote Sequence Number (i),
 /// }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PunchKnockFrame {
+    is_done: bool,
     local_seq: VarInt,
     remote_seq: VarInt,
 }
@@ -18,9 +19,22 @@ pub struct PunchKnockFrame {
 impl PunchKnockFrame {
     pub fn new(local_seq: u32, remote_seq: u32) -> Self {
         Self {
+            is_done: false,
             local_seq: VarInt::from_u32(local_seq),
             remote_seq: VarInt::from_u32(remote_seq),
         }
+    }
+
+    pub fn done(local_seq: u32, remote_seq: u32) -> Self {
+        Self {
+            is_done: true,
+            local_seq: VarInt::from_u32(local_seq),
+            remote_seq: VarInt::from_u32(remote_seq),
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.is_done
     }
 
     pub fn local_seq(&self) -> u32 {
@@ -32,21 +46,26 @@ impl PunchKnockFrame {
     }
 }
 
-pub(crate) fn be_punch_knock_frame(input: &[u8]) -> nom::IResult<&[u8], PunchKnockFrame> {
-    let (input, local_seq) = be_varint(input)?;
-    let (input, remote_seq) = be_varint(input)?;
-    Ok((
-        input,
-        PunchKnockFrame {
-            local_seq,
-            remote_seq,
-        },
-    ))
+pub(crate) fn be_punch_knock_frame(
+    is_done: bool,
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], PunchKnockFrame> {
+    move |input: &[u8]| {
+        let (input, local_seq) = be_varint(input)?;
+        let (input, remote_seq) = be_varint(input)?;
+        Ok((
+            input,
+            PunchKnockFrame {
+                is_done,
+                local_seq,
+                remote_seq,
+            },
+        ))
+    }
 }
 
 impl GetFrameType for PunchKnockFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::PunchKnock
+        super::FrameType::PunchKnock(self.is_done)
     }
 }
 
