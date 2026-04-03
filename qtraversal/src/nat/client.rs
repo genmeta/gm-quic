@@ -433,8 +433,15 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
         let new_stun_client = {
             let ref_iface = ref_iface.clone();
             move |agent_addr: SocketAddr| {
-                let local_addr = ref_iface.iface().local_addr().ok()?;
+                let local_addr = match ref_iface.iface().local_addr() {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        tracing::warn!(target: "stun", %agent_addr, error = %e, "failed to get local_addr for stun client");
+                        return None;
+                    }
+                };
                 if local_addr.is_ipv4() != agent_addr.is_ipv4() {
+                    tracing::warn!(target: "stun", %agent_addr, %local_addr, "family mismatch for stun client");
                     return None;
                 }
                 let stun_router = router.clone();
