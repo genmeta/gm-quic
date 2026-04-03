@@ -102,7 +102,7 @@ static SERVER_CASES: LazyLock<HashMap<NatType, TestCase>> = LazyLock::new(|| {
         .collect()
 });
 
-macro_rules! test_punch_pair {
+macro_rules! test_punch_matrix {
     (async fn $test_name:ident = test_punch_case($client:expr, $server:expr) $($tt:tt)*) => {
 
         #[test]
@@ -119,7 +119,7 @@ macro_rules! test_punch_pair {
             });
         }
 
-        test_punch_pair!($($tt)*);
+        test_punch_matrix!($($tt)*);
     };
     () => {}
 }
@@ -134,7 +134,7 @@ macro_rules! test_punch_pair {
     ip netns exec nsa cargo test --test traversal -- --include-ignored --nocapture
 */
 
-test_punch_pair! {
+test_punch_matrix! {
     async fn test_punch_full_cone_to_full_cone = test_punch_case(NatType::FullCone, NatType::FullCone)
     async fn test_punch_full_cone_to_restricted_cone = test_punch_case(NatType::FullCone, NatType::RestrictedCone)
     async fn test_punch_full_cone_to_port_restricted = test_punch_case(NatType::FullCone, NatType::RestrictedPort)

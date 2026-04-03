@@ -19,7 +19,10 @@ use qinterface::{
 
 use crate::{
     Link,
-    punch::{SeqPair, scheduler::SCHEDULER, tx::Transaction},
+    punch::{
+        scheduler::SCHEDULER,
+        tx::{PunchId, Transaction},
+    },
     route::ReceiveAndDeliverPacket,
 };
 
@@ -170,11 +173,11 @@ impl PortPredictor {
 
     pub async fn predict(
         &mut self,
-        punch_pair: SeqPair,
+        punch_id: PunchId,
         tx: Arc<Transaction>,
         packet_send_fn: PacketSendFn,
     ) -> io::Result<Option<(BindUri, Interface)>> {
-        tracing::debug!(target: "punch", %punch_pair, "Starting port prediction");
+        tracing::debug!(target: "punch", %punch_id, "Starting port prediction");
         let interfaces_per_round = INTERFACES_PER_ROUND;
         let max_rounds = MAX_ROUNDS;
         let response_timeout = Duration::from_millis(RESPONSE_TIMEOUT_MS);
@@ -183,7 +186,7 @@ impl PortPredictor {
         while rounds_processed < max_rounds && self.total_created < self.max_total {
             // Allocate and probe interfaces
             if self
-                .allocate_and_probe(punch_pair, &packet_send_fn, interfaces_per_round)
+                .allocate_and_probe(punch_id, &packet_send_fn, interfaces_per_round)
                 .await
                 .is_ok()
             {
@@ -191,7 +194,7 @@ impl PortPredictor {
                 if let Ok((link, _)) =
                     tokio::time::timeout(response_timeout, tx.recv_punch_done()).await
                 {
-                    tracing::debug!(target: "punch", %punch_pair, %link, "Punch done received");
+                    tracing::debug!(target: "punch", %punch_id, %link, "Punch done received");
                     let result = self.claim_interface(link.src().port()).await;
                     if result.is_none() {
                         tracing::warn!(target: "punch", %link, "Could not find interface for punch done");
@@ -210,15 +213,15 @@ impl PortPredictor {
 
         // Cleanup and return
         if let Err(e) = self.cleanup_all_resources().await {
-            tracing::error!(target: "punch", %punch_pair, %e, "Failed to cleanup resources after port prediction");
+            tracing::error!(target: "punch", %punch_id, %e, "Failed to cleanup resources after port prediction");
         }
-        tracing::debug!(target: "punch", %punch_pair, rounds_processed, "Port prediction failed after maximum rounds");
+        tracing::debug!(target: "punch", %punch_id, rounds_processed, "Port prediction failed after maximum rounds");
         last_error.map_or(Ok(None), Err)
     }
 
     async fn allocate_and_probe(
         &mut self,
-        punch_pair: SeqPair,
+        punch_id: PunchId,
         packet_send_fn: &PacketSendFn,
         interfaces_count: usize,
     ) -> io::Result<Vec<Interface>> {
@@ -227,7 +230,7 @@ impl PortPredictor {
         self.recycle_if_full().await?;
 
         let interfaces_count = interfaces_count.min((self.max_total - self.total_created) as usize);
-        tracing::debug!(target: "punch", %punch_pair, interfaces_count, "Allocating interfaces");
+        tracing::debug!(target: "punch", %punch_id, interfaces_count, "Allocating interfaces");
 
         let mut interfaces = Vec::new();
         for _i in 0..interfaces_count {
@@ -248,11 +251,11 @@ impl PortPredictor {
         }
 
         if interfaces.is_empty() {
-            tracing::error!(target: "punch", %punch_pair, interfaces_count, "Failed to create any interfaces");
+            tracing::error!(target: "punch", %punch_id, interfaces_count, "Failed to create any interfaces");
             return Err(io::Error::other("Failed to create any interfaces"));
         }
 
-        self.send_probe_packets(&interfaces, punch_pair, packet_send_fn)
+        self.send_probe_packets(&interfaces, punch_id, packet_send_fn)
             .await
     }
 
@@ -298,16 +301,19 @@ impl PortPredictor {
     async fn send_probe_packets(
         &mut self,
         interfaces: &[Interface],
-        punch_pair: SeqPair,
+        punch_id: PunchId,
         packet_send_fn: &PacketSendFn,
     ) -> io::Result<Vec<Interface>> {
-        tracing::debug!(target: "punch", %punch_pair, interface_count = interfaces.len(), "Sending packets");
+        tracing::debug!(target: "punch", %punch_id, interface_count = interfaces.len(), "Sending packets");
         let mut successful_sends = 0;
         let mut successful_interfaces = Vec::new();
         for iface in interfaces {
             if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) = iface.bound_addr() {
                 let link = Link::new(socket_addr, self.dst);
-                let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(punch_pair.local_seq, punch_pair.remote_seq));
+                let frame = TraversalFrame::PunchKnock(PunchKnockFrame::new(
+                    punch_id.local_seq,
+                    punch_id.remote_seq,
+                ));
                 if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {
                     successful_sends += 1;
                     successful_interfaces.push(iface.clone());
@@ -324,7 +330,7 @@ impl PortPredictor {
                 }
             }
         }
-        tracing::debug!(target: "punch", %punch_pair, successful_sends, 
+        tracing::debug!(target: "punch", %punch_id, successful_sends, 
                       failed_sends = interfaces.len() - successful_sends,
                       total_interfaces = interfaces.len(), "Packet sending completed");
         if successful_sends > 0 || interfaces.is_empty() {
