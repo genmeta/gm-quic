@@ -365,8 +365,8 @@ fn frame_dispathcer(
             _ = handshake_done_frames_entry.send(f)
         }
         Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
-        Frame::Challenge(f) => _ = path.recv_frame(&f),
-        Frame::Response(f) => _ = path.recv_frame(&f),
+        Frame::PathChallenge(f) => _ = path.recv_frame(&f),
+        Frame::PathResponse(f) => _ = path.recv_frame(&f),
         Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
         Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
         Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),

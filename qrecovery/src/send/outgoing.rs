@@ -45,8 +45,8 @@ impl<TX: Clone> Outgoing<TX> {
 
             frame.set_eos_flag(is_eos);
             let strategy = frame.encoding_strategy(origin_len);
-            frame.set_len_flag(strategy.carry_length());
-            packet.put_bytes(0, strategy.padding());
+            frame.set_len_bit(strategy.len_bit());
+            packet.put_bytes(0, strategy.pre_padding());
             (frame, data.as_slice()).dump(packet).unwrap();
 
             (ContinuousData::len(data.as_slice()), is_fresh)

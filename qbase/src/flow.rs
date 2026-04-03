@@ -455,23 +455,17 @@ mod tests {
 
     #[test]
     fn test_recv_controller() {
-        use crate::frame::{Fin, Flags, Len, Offset};
+        use crate::frame::{Fin, Len, Offset};
         let broker = RecvControllerBroker::default();
         let controler = ArcRecvController::new(100, broker.clone());
         let amount = controler
-            .on_new_rcvd(
-                FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)),
-                20,
-            )
+            .on_new_rcvd(FrameType::Stream(Offset::Zero, Len::Omit, Fin::No), 20)
             .unwrap();
         assert_eq!(amount, 20);
         assert_eq!(broker.lock().unwrap().len(), 0);
 
         let amount = controler
-            .on_new_rcvd(
-                FrameType::Stream(Flags(Offset::Zero, Len::Sized, Fin::Yes)),
-                30,
-            )
+            .on_new_rcvd(FrameType::Stream(Offset::Zero, Len::Explicit, Fin::Yes), 30)
             .unwrap();
         assert_eq!(amount, 30);
         // broker should have a MaxDataFrame

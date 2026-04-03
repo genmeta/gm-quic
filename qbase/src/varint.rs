@@ -277,6 +277,14 @@ mod tests {
     use super::{EncodeBytes, VarInt, WriteVarInt};
 
     #[test]
+    fn test_equal() {
+        let val = VarInt(0);
+        assert_eq!(val, 0);
+        assert!(val == 0);
+        assert!(val != 1)
+    }
+
+    #[test]
     fn test_be_varint() {
         {
             let buf = &[0b00000001u8, 0x01][..];

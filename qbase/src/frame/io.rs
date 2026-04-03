@@ -40,8 +40,8 @@ fn complete_frame(
         }
         FrameType::DataBlocked => map(be_data_blocked_frame, Frame::DataBlocked).parse(input),
         FrameType::MaxData => map(be_max_data_frame, Frame::MaxData).parse(input),
-        FrameType::PathChallenge => map(be_path_challenge_frame, Frame::Challenge).parse(input),
-        FrameType::PathResponse => map(be_path_response_frame, Frame::Response).parse(input),
+        FrameType::PathChallenge => map(be_path_challenge_frame, Frame::PathChallenge).parse(input),
+        FrameType::PathResponse => map(be_path_response_frame, Frame::PathResponse).parse(input),
         FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
         FrameType::NewToken => map(be_new_token_frame, Frame::NewToken).parse(input),
         FrameType::Ack(ecn) => map(ack_frame_with_ecn(ecn), Frame::Ack).parse(input),
@@ -76,8 +76,8 @@ fn complete_frame(
                 Ok((&input[len..], Frame::Crypto(frame, data)))
             }
         }
-        FrameType::Stream(flags) => {
-            let (input, frame) = stream_frame_with_flag(flags)(input)?;
+        FrameType::Stream(offset, len, fin) => {
+            let (input, frame) = stream_frame_with_flag(offset, len, fin)(input)?;
             let start = raw.len() - input.len();
             let len = frame.len();
             if input.len() < len {
@@ -170,49 +170,29 @@ where
     for<'b> &'b mut B: crate::util::WriteData<D>,
 {
     fn put_frame(&mut self, frame: &Frame<D>) {
+        #[inline(always)]
+        fn put<F, B: WriteFrame<F> + ?Sized>(buf: &mut B, frame: &F) {
+            buf.put_frame(frame);
+        }
         let mut buf = self;
         match frame {
-            Frame::Padding(f) => <&mut B as WriteFrame<PaddingFrame>>::put_frame(&mut buf, f),
-            Frame::Ping(f) => <&mut B as WriteFrame<PingFrame>>::put_frame(&mut buf, f),
-            Frame::Ack(f) => <&mut B as WriteFrame<AckFrame>>::put_frame(&mut buf, f),
-            Frame::Close(f) => <&mut B as WriteFrame<ConnectionCloseFrame>>::put_frame(&mut buf, f),
-            Frame::NewToken(f) => <&mut B as WriteFrame<NewTokenFrame>>::put_frame(&mut buf, f),
-            Frame::MaxData(f) => <&mut B as WriteFrame<MaxDataFrame>>::put_frame(&mut buf, f),
-            Frame::DataBlocked(f) => {
-                <&mut B as WriteFrame<DataBlockedFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::NewConnectionId(f) => {
-                <&mut B as WriteFrame<NewConnectionIdFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::RetireConnectionId(f) => {
-                <&mut B as WriteFrame<RetireConnectionIdFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::HandshakeDone(f) => {
-                <&mut B as WriteFrame<HandshakeDoneFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Challenge(f) => {
-                <&mut B as WriteFrame<PathChallengeFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Response(f) => <&mut B as WriteFrame<PathResponseFrame>>::put_frame(&mut buf, f),
-            Frame::StreamCtl(f) => <&mut B as WriteFrame<StreamCtlFrame>>::put_frame(&mut buf, f),
+            Frame::Padding(f) => put(&mut buf, f),
+            Frame::Ping(f) => put(&mut buf, f),
+            Frame::Ack(f) => put(&mut buf, f),
+            Frame::Close(f) => put(&mut buf, f),
+            Frame::NewToken(f) => put(&mut buf, f),
+            Frame::MaxData(f) => put(&mut buf, f),
+            Frame::DataBlocked(f) => put(&mut buf, f),
+            Frame::NewConnectionId(f) => put(&mut buf, f),
+            Frame::RetireConnectionId(f) => put(&mut buf, f),
+            Frame::HandshakeDone(f) => put(&mut buf, f),
+            Frame::PathChallenge(f) => put(&mut buf, f),
+            Frame::PathResponse(f) => put(&mut buf, f),
+            Frame::StreamCtl(f) => put(&mut buf, f),
             Frame::Stream(f, d) => buf.put_data_frame(f, d),
             Frame::Crypto(f, d) => buf.put_data_frame(f, d),
             Frame::Datagram(f, d) => buf.put_data_frame(f, d),
-            Frame::Traversal(TraversalFrame::AddAddress(f)) => {
-                <&mut B as WriteFrame<AddAddressFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Traversal(TraversalFrame::RemoveAddress(f)) => {
-                <&mut B as WriteFrame<RemoveAddressFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Traversal(TraversalFrame::PunchMeNow(f)) => {
-                <&mut B as WriteFrame<PunchMeNowFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Traversal(TraversalFrame::PunchKnock(f)) => {
-                <&mut B as WriteFrame<PunchKnockFrame>>::put_frame(&mut buf, f)
-            }
-            Frame::Traversal(TraversalFrame::PunchDone(f)) => {
-                <&mut B as WriteFrame<PunchDoneFrame>>::put_frame(&mut buf, f)
-            }
+            Frame::Traversal(f) => put(&mut buf, f),
         }
     }
 }

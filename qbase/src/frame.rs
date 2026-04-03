@@ -66,9 +66,7 @@ pub use remove_address::RemoveAddressFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
-pub use stream::{
-    EncodingStrategy, Fin, Flags, Len, Offset, STREAM_FRAME_MAX_ENCODING_SIZE, StreamFrame,
-};
+pub use stream::{EncodingStrategy, Fin, Len, Offset, STREAM_FRAME_MAX_ENCODING_SIZE, StreamFrame};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
@@ -166,7 +164,7 @@ pub enum FrameType {
     /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken,
     /// STREAM frame, see [`StreamFrame`].
-    Stream(Flags),
+    Stream(Offset, Len, Fin),
     /// MAX_DATA frame, see [`MaxDataFrame`].
     MaxData,
     /// MAX_STREAM_DATA frame, see [`MaxStreamDataFrame`].
@@ -243,7 +241,7 @@ impl FrameFeature for FrameType {
             FrameType::StopSending => o | l,
             FrameType::Crypto => i | h | l,
             FrameType::NewToken => l,
-            FrameType::Stream(_) => o | l,
+            FrameType::Stream(..) => o | l,
             FrameType::MaxData => o | l,
             FrameType::MaxStreamData => o | l,
             FrameType::MaxStreams(_) => o | l,
@@ -285,7 +283,7 @@ impl FrameFeature for FrameType {
         match self {
             FrameType::Padding => n | p,
             FrameType::Ack(_) => n | c,
-            FrameType::Stream(_) => f,
+            FrameType::Stream(..) => f,
             FrameType::NewConnectionId => p,
             FrameType::PathChallenge => p,
             FrameType::PathResponse => p,
@@ -314,7 +312,7 @@ impl TryFrom<VarInt> for FrameType {
             0x06 => FrameType::Crypto,
             0x07 => FrameType::NewToken,
             // The last three bits are the offset, length, and fin flag bits respectively.
-            ty @ 0x08..=0x0f => FrameType::Stream(Flags::from(ty as u8)),
+            ty @ 0x08..=0x0f => FrameType::Stream(Offset::from(ty), Len::from(ty), Fin::from(ty)),
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
@@ -359,7 +357,12 @@ impl From<FrameType> for VarInt {
             FrameType::StopSending => VarInt::from_u32(0x05),
             FrameType::Crypto => VarInt::from_u32(0x06),
             FrameType::NewToken => VarInt::from_u32(0x07),
-            FrameType::Stream(flags) => VarInt::from(0x08 | u8::from(flags)),
+            FrameType::Stream(offset, len, fin) => {
+                let offset: u8 = offset.into();
+                let len: u8 = len.into();
+                let fin: u8 = fin.into();
+                VarInt::from(0x08u8 | offset | len | fin)
+            }
             FrameType::MaxData => VarInt::from_u32(0x10),
             FrameType::MaxStreamData => VarInt::from_u32(0x11),
             FrameType::MaxStreams(Dir::Bi) => VarInt::from_u32(0x12),
@@ -377,8 +380,8 @@ impl From<FrameType> for VarInt {
             FrameType::HandshakeDone => VarInt::from_u32(0x1e),
             FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
             FrameType::AddAddress(family) => VarInt::from_u32(0x3d7e90 | family as u32),
-            FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
             FrameType::PunchMeNow(family) => VarInt::from_u32(0x3d7e92 | family as u32),
+            FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
             FrameType::PunchKnock => VarInt::from_u32(0x3d7e95),
             FrameType::PunchDone => VarInt::from_u32(0x3d7e96),
         }
@@ -472,9 +475,9 @@ pub enum Frame<D = Bytes> {
     /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
     /// PATH_CHALLENGE frame, see [`PathChallengeFrame`].
-    Challenge(PathChallengeFrame),
+    PathChallenge(PathChallengeFrame),
     /// PATH_RESPONSE frame, see [`PathResponseFrame`].
-    Response(PathResponseFrame),
+    PathResponse(PathResponseFrame),
     /// Stream control frame, see [`StreamCtlFrame`].
     StreamCtl(StreamCtlFrame),
     /// STREAM frame and its data, see [`StreamFrame`].
@@ -565,8 +568,8 @@ impl<D> GetFrameType for Frame<D> {
             Frame::NewConnectionId(f) => f.frame_type(),
             Frame::RetireConnectionId(f) => f.frame_type(),
             Frame::HandshakeDone(f) => f.frame_type(),
-            Frame::Challenge(f) => f.frame_type(),
-            Frame::Response(f) => f.frame_type(),
+            Frame::PathChallenge(f) => f.frame_type(),
+            Frame::PathResponse(f) => f.frame_type(),
             Frame::StreamCtl(f) => f.frame_type(),
             Frame::Stream(f, _) => f.frame_type(),
             Frame::Crypto(f, _) => f.frame_type(),
@@ -598,8 +601,8 @@ impl<D> EncodeSize for Frame<D> {
             Frame::NewConnectionId(f) => f.max_encoding_size(),
             Frame::RetireConnectionId(f) => f.max_encoding_size(),
             Frame::HandshakeDone(f) => f.max_encoding_size(),
-            Frame::Challenge(f) => f.max_encoding_size(),
-            Frame::Response(f) => f.max_encoding_size(),
+            Frame::PathChallenge(f) => f.max_encoding_size(),
+            Frame::PathResponse(f) => f.max_encoding_size(),
             Frame::StreamCtl(f) => f.max_encoding_size(),
             Frame::Stream(f, _) => f.max_encoding_size(),
             Frame::Crypto(f, _) => f.max_encoding_size(),
@@ -622,8 +625,8 @@ impl<D> EncodeSize for Frame<D> {
             Frame::NewConnectionId(f) => f.encoding_size(),
             Frame::RetireConnectionId(f) => f.encoding_size(),
             Frame::HandshakeDone(f) => f.encoding_size(),
-            Frame::Challenge(f) => f.encoding_size(),
-            Frame::Response(f) => f.encoding_size(),
+            Frame::PathChallenge(f) => f.encoding_size(),
+            Frame::PathResponse(f) => f.encoding_size(),
             Frame::StreamCtl(f) => f.encoding_size(),
             Frame::Stream(f, _) => f.encoding_size(),
             Frame::Crypto(f, _) => f.encoding_size(),
@@ -757,7 +760,7 @@ mod tests {
             FrameType::Padding,
             FrameType::Ping,
             FrameType::Ack(Ecn::None),
-            FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)),
+            FrameType::Stream(Offset::Zero, Len::Omit, Fin::No),
             FrameType::MaxData,
             FrameType::ConnectionClose(Layer::Quic),
             FrameType::HandshakeDone,
@@ -779,7 +782,7 @@ mod tests {
                 .contain(Spec::CongestionControlFree)
         );
         assert!(
-            FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No))
+            FrameType::Stream(Offset::Zero, Len::Omit, Fin::No)
                 .specs()
                 .contain(Spec::FlowControlled)
         );
@@ -792,7 +795,7 @@ mod tests {
         assert!(FrameType::Padding.belongs_to(initial));
         assert!(FrameType::Ping.belongs_to(initial));
         assert!(FrameType::Ack(Ecn::None).belongs_to(initial));
-        assert!(!FrameType::Stream(Flags(Offset::Zero, Len::Omit, Fin::No)).belongs_to(initial));
+        assert!(!FrameType::Stream(Offset::Zero, Len::Omit, Fin::No).belongs_to(initial));
     }
 
     #[test]
