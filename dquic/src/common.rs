@@ -55,19 +55,32 @@ impl Network {
         stun_server: &str,
         family: Option<Family>,
     ) -> Option<Vec<SocketAddr>> {
-        let mut stream = self.resolver.lookup(stun_server).await.ok()?;
-        while let Some((_, EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }))) =
-            stream.next().await
-        {
+        let stream = match self.resolver.lookup(stun_server).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("lookup_first_agent: resolver failed for {stun_server}: {e}");
+                return None;
+            }
+        };
+        let mut stream = std::pin::pin!(stream);
+        while let Some((source, ep)) = stream.next().await {
+            let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = ep else {
+                tracing::info!("lookup_first_agent: skipping non-direct endpoint {ep:?} from {source}");
+                continue;
+            };
             if match family {
                 None => true,
                 Some(Family::V4) => addr.is_ipv4(),
                 Some(Family::V6) => addr.is_ipv6(),
             } {
-                tracing::trace!("resolved first stun agent for {}: {}", stun_server, addr);
+                tracing::info!("resolved first stun agent for {stun_server}: {addr} (family={family:?})");
                 return Some(vec![addr]);
             }
+            tracing::info!(
+                "lookup_first_agent: agent {addr} family mismatch (want {family:?})"
+            );
         }
+        tracing::warn!("lookup_first_agent: no matching agent found for {stun_server} (family={family:?})");
         None
     }
 
