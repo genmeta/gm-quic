@@ -264,7 +264,7 @@ mod tests {
         frame::{
             EncodeSize, FrameType, GetFrameType,
             io::{WriteFrame, WriteFrameType},
-            stream::{Fin, Flags, Len, Offset},
+            stream::{Fin, Len, Offset},
         },
         varint::VarInt,
     };
@@ -308,7 +308,7 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let frame = ConnectionCloseFrame::new_quic(
             ErrorKind::FlowControl,
-            FrameType::Stream(Flags(Offset::NonZero, Len::Sized, Fin::No)).into(),
+            FrameType::Stream(Offset::NonZero, Len::Explicit, Fin::No).into(),
             "wrong",
         );
         buf.put_frame(&frame);

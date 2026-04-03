@@ -26,8 +26,8 @@ impl From<Offset> for u8 {
     }
 }
 
-impl From<u8> for Offset {
-    fn from(value: u8) -> Self {
+impl From<u64> for Offset {
+    fn from(value: u64) -> Self {
         match value & 0x04 {
             0 => Offset::Zero,
             _ => Offset::NonZero,
@@ -39,7 +39,7 @@ impl From<u8> for Offset {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Len {
     /// Length field is present
-    Sized,
+    Explicit,
     /// Length field is omitted (extends to end of packet)
     Omit,
 }
@@ -47,17 +47,17 @@ pub enum Len {
 impl From<Len> for u8 {
     fn from(length: Len) -> u8 {
         match length {
-            Len::Sized => 0x02,
+            Len::Explicit => 0x02,
             Len::Omit => 0,
         }
     }
 }
 
-impl From<u8> for Len {
-    fn from(value: u8) -> Self {
+impl From<u64> for Len {
+    fn from(value: u64) -> Self {
         match value & 0x02 {
             0 => Len::Omit,
-            _ => Len::Sized,
+            _ => Len::Explicit,
         }
     }
 }
@@ -80,8 +80,8 @@ impl From<Fin> for u8 {
     }
 }
 
-impl From<u8> for Fin {
-    fn from(value: u8) -> Self {
+impl From<u64> for Fin {
+    fn from(value: u64) -> Self {
         match value & 0x01 {
             0 => Fin::No,
             _ => Fin::Yes,
@@ -89,57 +89,6 @@ impl From<u8> for Fin {
     }
 }
 
-/// Stream flags combining offset, length, and fin
-/// TODO: 移除
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct Flags(pub Offset, pub Len, pub Fin);
-
-impl Flags {
-    /// Check if the offset flag is set
-    pub fn has_offset(&self) -> bool {
-        self.0 == Offset::NonZero
-    }
-
-    /// Set the offset flag
-    pub fn with_offset(&mut self) {
-        self.0 = Offset::NonZero;
-    }
-
-    /// Check if the length flag is set
-    pub fn has_length(&self) -> bool {
-        self.1 == Len::Sized
-    }
-
-    /// Set the length flag
-    pub fn with_length(&mut self) {
-        self.1 = Len::Sized;
-    }
-
-    /// Check if the fin flag is set
-    pub fn is_fin(&self) -> bool {
-        self.2 == Fin::Yes
-    }
-
-    /// Set the fin flag
-    pub fn fin(&mut self) {
-        self.2 = Fin::Yes;
-    }
-}
-
-impl From<Flags> for u8 {
-    fn from(flags: Flags) -> u8 {
-        let offset_bit: u8 = flags.0.into();
-        let length_bit: u8 = flags.1.into();
-        let fin_bit: u8 = flags.2.into();
-        offset_bit | length_bit | fin_bit
-    }
-}
-
-impl From<u8> for Flags {
-    fn from(value: u8) -> Self {
-        Flags(Offset::from(value), Len::from(value), Fin::from(value))
-    }
-}
 /// STREAM frame.
 ///
 /// ```text
@@ -164,14 +113,20 @@ pub struct StreamFrame {
     id: StreamId,
     offset: VarInt,
     length: usize,
-    flag: Flags,
+    len_bit: Len,
+    fin_bit: Fin,
 }
 
 pub const STREAM_FRAME_MAX_ENCODING_SIZE: usize = 1 + 8 + 8 + 8;
 
 impl GetFrameType for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::Stream(self.flag)
+        let offset = if self.offset == 0 {
+            Offset::Zero
+        } else {
+            Offset::NonZero
+        };
+        super::FrameType::Stream(offset, self.len_bit, self.fin_bit)
     }
 }
 
@@ -187,7 +142,7 @@ impl super::EncodeSize for StreamFrame {
             } else {
                 0
             }
-            + if self.flag.has_length() {
+            + if self.len_bit == Len::Explicit {
                 VarInt::from_u64(self.length as u64)
                     .expect("msg length must be less than 2^62")
                     .encoding_size()
@@ -200,19 +155,19 @@ impl super::EncodeSize for StreamFrame {
 /// Efficient strategies for encoding stream frames
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodingStrategy {
-    carry_length: bool,
-    padding: usize,
+    len_bit: Len,
+    pre_padding: usize,
 }
 
 impl EncodingStrategy {
     /// Cound the stream frame carry its data's length.
-    pub fn carry_length(&self) -> bool {
-        self.carry_length
+    pub fn len_bit(&self) -> Len {
+        self.len_bit
     }
 
     /// How many padding frames should be put before the stream frame.
-    pub fn padding(&self) -> usize {
-        self.padding
+    pub fn pre_padding(&self) -> usize {
+        self.pre_padding
     }
 }
 
@@ -225,15 +180,8 @@ impl StreamFrame {
             offset: VarInt::from_u64(offset)
                 .expect("offset of stream frame must be less than 2^62"),
             length,
-            flag: Flags(
-                if offset != 0 {
-                    Offset::NonZero
-                } else {
-                    Offset::Zero
-                },
-                Len::Omit,
-                Fin::No,
-            ),
+            len_bit: Len::Omit,
+            fin_bit: Fin::No,
         }
     }
 
@@ -244,7 +192,7 @@ impl StreamFrame {
 
     /// Return whether this stream frame is the end of the stream.
     pub fn is_fin(&self) -> bool {
-        self.flag.is_fin()
+        self.fin_bit == Fin::Yes
     }
 
     /// Return the offset of this stream frame.
@@ -270,19 +218,15 @@ impl StreamFrame {
     /// Set the end of stream flag of this stream frame.
     pub fn set_eos_flag(&mut self, is_eos: bool) {
         if is_eos {
-            self.flag.2 = Fin::Yes;
+            self.fin_bit = Fin::Yes;
         } else {
-            self.flag.2 = Fin::No;
+            self.fin_bit = Fin::No;
         }
     }
 
-    /// Set the length flag of this stream frame.
-    pub fn set_len_flag(&mut self, with_len: bool) {
-        if with_len {
-            self.flag.1 = Len::Sized;
-        } else {
-            self.flag.1 = Len::Omit;
-        }
+    /// Set the length bit of this stream frame.
+    pub fn set_len_bit(&mut self, len_bit: Len) {
+        self.len_bit = len_bit;
     }
 
     /// Returns the most efficient stream frame encoding strategy.
@@ -297,7 +241,7 @@ impl StreamFrame {
     /// advantage of GSO features.
     pub fn encoding_strategy(&self, capacity: usize) -> EncodingStrategy {
         // this method is used to determine the encoding strategy of the stream frame
-        debug_assert!(!self.flag.has_length());
+        debug_assert_eq!(self.len_bit, Len::Omit);
 
         let encoding_size_without_length = self.encoding_size() + self.length;
         assert!(encoding_size_without_length <= capacity);
@@ -307,24 +251,26 @@ impl StreamFrame {
             .encoding_size();
 
         let remaining = capacity - encoding_size_without_length;
-
         if remaining >= len_encoding_size {
             let remaining = remaining - len_encoding_size;
+            // TODO: It doesn't make sense, STREAM_FRAME_MAX_ENCODING_SIZE is 25 bytes
+            // but the minium stream size can be as small as 3 bytes
+            // with stream id less than 64 and offset 0 and without length
             if remaining < STREAM_FRAME_MAX_ENCODING_SIZE {
                 EncodingStrategy {
-                    carry_length: true,
-                    padding: remaining,
+                    len_bit: Len::Explicit,
+                    pre_padding: remaining,
                 }
             } else {
                 EncodingStrategy {
-                    carry_length: true,
-                    padding: 0,
+                    len_bit: Len::Explicit,
+                    pre_padding: 0,
                 }
             }
         } else {
             EncodingStrategy {
-                carry_length: false,
-                padding: remaining,
+                len_bit: Len::Omit,
+                pre_padding: remaining,
             }
         }
     }
@@ -347,15 +293,19 @@ impl StreamFrame {
 
 /// Return a parser for a stream frame with the given flag,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
-pub fn stream_frame_with_flag(flag: Flags) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
+pub fn stream_frame_with_flag(
+    offset: Offset,
+    len: Len,
+    fin: Fin,
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
     move |input| {
         let (remain, id) = be_streamid(input)?;
-        let (remain, offset) = if flag.has_offset() {
+        let (remain, offset) = if offset == Offset::NonZero {
             be_varint(remain)?
         } else {
             (remain, VarInt::default())
         };
-        let (remain, length) = if flag.has_length() {
+        let (remain, length) = if len == Len::Explicit {
             let (remain, length) = be_varint(remain)?;
             (remain, length.into_inner() as usize)
         } else {
@@ -373,7 +323,8 @@ pub fn stream_frame_with_flag(flag: Flags) -> impl Fn(&[u8]) -> nom::IResult<&[u
                 id,
                 offset,
                 length,
-                flag,
+                len_bit: len,
+                fin_bit: fin,
             },
         ))
     }
@@ -391,7 +342,7 @@ where
         if frame.offset.into_inner() != 0 {
             self.put_varint(&frame.offset);
         }
-        if frame.flag.has_length() {
+        if frame.len_bit == Len::Explicit {
             // Generally, a data frame will not exceed 4GB.
             self.put_varint(&VarInt::from_u32(frame.length as u32));
         }
@@ -416,11 +367,12 @@ mod tests {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
-            flag: Flags(Offset::NonZero, Len::Sized, Fin::No),
+            len_bit: Len::Explicit,
+            fin_bit: Fin::No,
         };
         assert_eq!(
             stream_frame.frame_type(),
-            FrameType::Stream(Flags(Offset::NonZero, Len::Sized, Fin::No))
+            FrameType::Stream(Offset::NonZero, Len::Explicit, Fin::No)
         );
         assert_eq!(stream_frame.max_encoding_size(), 1 + 8 + 8 + 8);
         assert_eq!(stream_frame.encoding_size(), 1 + 2 + 2 + 1);
@@ -435,9 +387,9 @@ mod tests {
         let input = raw.as_ref();
         let (input, frame) = flat_map(be_varint, |frame_type| {
             let stream_frame_type: VarInt =
-                FrameType::Stream(Flags(Offset::NonZero, Len::Sized, Fin::No)).into();
+                FrameType::Stream(Offset::NonZero, Len::Explicit, Fin::No).into();
             assert_eq!(frame_type, stream_frame_type);
-            stream_frame_with_flag(Flags(Offset::NonZero, Len::Sized, Fin::No))
+            stream_frame_with_flag(Offset::NonZero, Len::Explicit, Fin::No)
         })
         .parse(input)
         .unwrap();
@@ -454,7 +406,8 @@ mod tests {
                 id: VarInt::from_u32(0x1234).into(),
                 offset: VarInt::from_u32(0x1234),
                 length: 11,
-                flag: Flags(Offset::NonZero, Len::Sized, Fin::No),
+                len_bit: Len::Explicit,
+                fin_bit: Fin::No,
             }
         );
     }
@@ -468,9 +421,9 @@ mod tests {
         let input = raw.as_ref();
         let (input, frame) = flat_map(be_varint, |frame_type| {
             let stream_frame_type: VarInt =
-                FrameType::Stream(Flags(Offset::NonZero, Len::Omit, Fin::No)).into();
+                FrameType::Stream(Offset::NonZero, Len::Omit, Fin::No).into();
             assert_eq!(frame_type, stream_frame_type);
-            stream_frame_with_flag(Flags(Offset::NonZero, Len::Omit, Fin::No))
+            stream_frame_with_flag(Offset::NonZero, Len::Omit, Fin::No)
         })
         .parse(input)
         .unwrap();
@@ -487,7 +440,8 @@ mod tests {
                 id: VarInt::from_u32(0x1234).into(),
                 offset: VarInt::from_u32(0x1234),
                 length: 11,
-                flag: Flags(Offset::NonZero, Len::Omit, Fin::No),
+                len_bit: Len::Omit,
+                fin_bit: Fin::No,
             }
         );
     }
@@ -499,7 +453,8 @@ mod tests {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
-            flag: Flags(Offset::Zero, Len::Sized, Fin::Yes),
+            len_bit: Len::Explicit,
+            fin_bit: Fin::Yes,
         };
         buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
@@ -518,7 +473,8 @@ mod tests {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
-            flag: Flags(Offset::Zero, Len::Omit, Fin::Yes),
+            len_bit: Len::Omit,
+            fin_bit: Fin::Yes,
         };
         buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
@@ -536,7 +492,8 @@ mod tests {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
-            flag: Flags(Offset::NonZero, Len::Sized, Fin::Yes),
+            len_bit: Len::Explicit,
+            fin_bit: Fin::Yes,
         };
         buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
@@ -555,7 +512,8 @@ mod tests {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
-            flag: Flags(Offset::NonZero, Len::Sized, Fin::No),
+            len_bit: Len::Explicit,
+            fin_bit: Fin::No,
         };
         buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
