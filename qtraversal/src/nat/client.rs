@@ -350,6 +350,7 @@ impl<I: RefIO + 'static> StunClient<I> {
         if self.state.set(ClientState::Closing) == ClientState::Closing {
             return Poll::Ready(());
         }
+        self.lock_tasks().abort_all();
         while ready!(self.lock_tasks().poll_join_next(cx)).is_some() {}
         self.nat_type.clear();
         self.outer_addr.clear();
@@ -536,6 +537,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
 
     pub fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(task) = self.task.as_mut() {
+            task.abort();
             _ = ready!(task.poll_unpin(cx));
             self.task.take();
         }
