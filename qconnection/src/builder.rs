@@ -520,7 +520,7 @@ impl PendingConnection {
             CryptoStream::new(self.tx_wakers.clone()),
         ];
 
-        let metrics = Arc::new(qbase::metric::ConnectionMetrics::new());
+        let metrics = Arc::new(qbase::metric::ConnectionMetrics::default());
 
         let (data_streams, flow_ctrl, datagram_flow) = match self.role {
             Role::Client => init_stream_and_datagram(
