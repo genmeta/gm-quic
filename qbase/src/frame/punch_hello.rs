@@ -4,37 +4,37 @@ use super::{
 };
 use crate::varint::{VarInt, WriteVarInt, be_varint};
 
-/// PUNCH_KNOCK Frame {
-///     Type (i) = 0x3d7e95 (Knock) | 0x3d7e96 (Done),
+/// PUNCH_Hello Frame {
+///     Type (i) = 0x3d7e95 (Hello) | 0x3d7e96 (Done),
 ///     Local Sequence Number (i),
 ///     Remote Sequence Number (i),
 /// }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PunchKnockFrame {
-    is_done: bool,
+pub struct PunchHelloFrame {
+    done: bool,
     local_seq: VarInt,
     remote_seq: VarInt,
 }
 
-impl PunchKnockFrame {
+impl PunchHelloFrame {
     pub fn new(local_seq: u32, remote_seq: u32) -> Self {
         Self {
-            is_done: false,
+            done: false,
             local_seq: VarInt::from_u32(local_seq),
             remote_seq: VarInt::from_u32(remote_seq),
         }
     }
 
-    pub fn done(local_seq: u32, remote_seq: u32) -> Self {
+    pub fn new_done(local_seq: u32, remote_seq: u32) -> Self {
         Self {
-            is_done: true,
+            done: true,
             local_seq: VarInt::from_u32(local_seq),
             remote_seq: VarInt::from_u32(remote_seq),
         }
     }
 
-    pub fn is_done(&self) -> bool {
-        self.is_done
+    pub fn done(&self) -> bool {
+        self.done
     }
 
     pub fn local_seq(&self) -> u32 {
@@ -46,16 +46,16 @@ impl PunchKnockFrame {
     }
 }
 
-pub(crate) fn be_punch_knock_frame(
+pub(crate) fn be_punch_hello_frame(
     is_done: bool,
-) -> impl Fn(&[u8]) -> nom::IResult<&[u8], PunchKnockFrame> {
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], PunchHelloFrame> {
     move |input: &[u8]| {
         let (input, local_seq) = be_varint(input)?;
         let (input, remote_seq) = be_varint(input)?;
         Ok((
             input,
-            PunchKnockFrame {
-                is_done,
+            PunchHelloFrame {
+                done: is_done,
                 local_seq,
                 remote_seq,
             },
@@ -63,13 +63,13 @@ pub(crate) fn be_punch_knock_frame(
     }
 }
 
-impl GetFrameType for PunchKnockFrame {
+impl GetFrameType for PunchHelloFrame {
     fn frame_type(&self) -> super::FrameType {
-        super::FrameType::PunchKnock(self.is_done)
+        super::FrameType::PunchHello(self.done)
     }
 }
 
-impl EncodeSize for PunchKnockFrame {
+impl EncodeSize for PunchHelloFrame {
     fn max_encoding_size(&self) -> usize {
         4 + 8 + 8
     }
@@ -81,8 +81,8 @@ impl EncodeSize for PunchKnockFrame {
     }
 }
 
-impl<T: bytes::BufMut> WriteFrame<PunchKnockFrame> for T {
-    fn put_frame(&mut self, frame: &PunchKnockFrame) {
+impl<T: bytes::BufMut> WriteFrame<PunchHelloFrame> for T {
+    fn put_frame(&mut self, frame: &PunchHelloFrame) {
         self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.local_seq);
         self.put_varint(&frame.remote_seq);

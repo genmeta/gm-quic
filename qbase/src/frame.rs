@@ -31,7 +31,7 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 mod add_address;
-mod punch_knock;
+mod punch_hello;
 mod punch_me_now;
 mod remove_address;
 
@@ -58,7 +58,7 @@ pub use padding::PaddingFrame;
 pub use path_challenge::PathChallengeFrame;
 pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
-pub use punch_knock::PunchKnockFrame;
+pub use punch_hello::PunchHelloFrame;
 pub use punch_me_now::PunchMeNowFrame;
 pub use remove_address::RemoveAddressFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
@@ -195,9 +195,9 @@ pub enum FrameType {
     RemoveAddress,
     /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
     PunchMeNow(Family),
-    /// PUNCH_KNOCK frame, see [`PunchKnockFrame`].
-    /// `false` for Knock (0x3d7e95), `true` for Done (0x3d7e96).
-    PunchKnock(bool),
+    /// PUNCH_HELLO frame, see [`PunchHelloFrame`].
+    /// `false` for Hello (0x3d7e95), `true` for Done (0x3d7e96).
+    PunchHello(bool),
 }
 
 #[enum_dispatch]
@@ -265,7 +265,7 @@ impl FrameFeature for FrameType {
             FrameType::AddAddress(_) => o | l,
             FrameType::RemoveAddress => o | l,
             FrameType::PunchMeNow(_) => o | l,
-            FrameType::PunchKnock(_) => o | l,
+            FrameType::PunchHello(_) => o | l,
         }
     }
 
@@ -286,7 +286,7 @@ impl FrameFeature for FrameType {
             // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
             // add the [`Spec::Con`] for the CONNECTION_CLOSE frame
             FrameType::ConnectionClose(_) => n | c,
-            FrameType::PunchKnock(_) => n,
+            FrameType::PunchHello(_) => n,
             _ => 0,
         }
     }
@@ -333,8 +333,8 @@ impl TryFrom<VarInt> for FrameType {
             0x3d7e92 => FrameType::PunchMeNow(Family::V4),
             0x3d7e93 => FrameType::PunchMeNow(Family::V6),
             0x3d7e94 => FrameType::RemoveAddress,
-            0x3d7e95 => FrameType::PunchKnock(false),
-            0x3d7e96 => FrameType::PunchKnock(true),
+            0x3d7e95 => FrameType::PunchHello(false),
+            0x3d7e96 => FrameType::PunchHello(true),
             // May be extension frame
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
@@ -376,7 +376,7 @@ impl From<FrameType> for VarInt {
             FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
             FrameType::AddAddress(family) => VarInt::from_u32(0x3d7e90 | family as u32),
             FrameType::PunchMeNow(family) => VarInt::from_u32(0x3d7e92 | family as u32),
-            FrameType::PunchKnock(is_done) => VarInt::from_u32(0x3d7e95 | is_done as u32),
+            FrameType::PunchHello(is_done) => VarInt::from_u32(0x3d7e95 | is_done as u32),
             FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
         }
     }
@@ -439,7 +439,7 @@ pub enum TraversalFrame {
     AddAddress(AddAddressFrame),
     RemoveAddress(RemoveAddressFrame),
     PunchMeNow(PunchMeNowFrame),
-    PunchKnock(PunchKnockFrame),
+    PunchHello(PunchHelloFrame),
 }
 
 /// Sum type of all the frames.
@@ -721,7 +721,7 @@ impl<T: BufMut> WriteFrame<TraversalFrame> for T {
             TraversalFrame::AddAddress(frame) => self.put_frame(frame),
             TraversalFrame::RemoveAddress(frame) => self.put_frame(frame),
             TraversalFrame::PunchMeNow(frame) => self.put_frame(frame),
-            TraversalFrame::PunchKnock(frame) => self.put_frame(frame),
+            TraversalFrame::PunchHello(frame) => self.put_frame(frame),
         }
     }
 }

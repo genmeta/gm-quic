@@ -7,7 +7,7 @@ use super::{
     max_data::be_max_data_frame, max_stream_data::be_max_stream_data_frame,
     max_streams::max_streams_frame_with_dir, new_connection_id::be_new_connection_id_frame,
     new_token::be_new_token_frame, path_challenge::be_path_challenge_frame,
-    path_response::be_path_response_frame, punch_knock::be_punch_knock_frame,
+    path_response::be_path_response_frame, punch_hello::be_punch_hello_frame,
     punch_me_now::be_punch_me_now_frame, remove_address::be_remove_address_frame,
     reset_stream::be_reset_stream_frame, retire_connection_id::be_retire_connection_id_frame,
     stop_sending::be_stop_sending_frame, stream::stream_frame_with_flag,
@@ -119,8 +119,8 @@ fn complete_frame(
             Frame::Traversal(TraversalFrame::PunchMeNow(f))
         })
         .parse(input),
-        FrameType::PunchKnock(is_done) => map(be_punch_knock_frame(is_done), |f| {
-            Frame::Traversal(TraversalFrame::PunchKnock(f))
+        FrameType::PunchHello(is_done) => map(be_punch_hello_frame(is_done), |f| {
+            Frame::Traversal(TraversalFrame::PunchHello(f))
         })
         .parse(input),
     }
