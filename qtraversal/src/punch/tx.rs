@@ -1,7 +1,7 @@
 use std::fmt;
 
 use qbase::frame::{
-    AddAddressFrame, PunchKnockFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
+    AddAddressFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
 };
 use tokio::sync::SetOnce;
 
@@ -39,7 +39,7 @@ pub(crate) trait AsPunchId {
     fn punch_id(&self) -> PunchId;
 }
 
-impl AsPunchId for PunchKnockFrame {
+impl AsPunchId for PunchHelloFrame {
     fn punch_id(&self) -> PunchId {
         PunchId::new(self.local_seq(), self.remote_seq())
     }
@@ -59,25 +59,25 @@ impl AsPunchId for (&AddAddressFrame, &AddAddressFrame) {
 
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<PunchMeNowFrame>,
-    konck_frame: SetOnce<(Link, PunchKnockFrame)>,
-    punch_done_frame: SetOnce<(Link, PunchKnockFrame)>,
+    puncn_hello_frame: SetOnce<(Link, PunchHelloFrame)>,
+    punch_done_frame: SetOnce<(Link, PunchHelloFrame)>,
 }
 
 impl Transaction {
     pub fn new() -> Self {
         Self {
             punch_me_now_frame: SetOnce::new(),
-            konck_frame: SetOnce::new(),
+            puncn_hello_frame: SetOnce::new(),
             punch_done_frame: SetOnce::new(),
         }
     }
 
-    pub async fn recv_punch_done(&self) -> (Link, PunchKnockFrame) {
+    pub async fn recv_punch_done(&self) -> (Link, PunchHelloFrame) {
         *self.punch_done_frame.wait().await
     }
 
-    pub async fn recv_konck(&self) -> (Link, PunchKnockFrame) {
-        *self.konck_frame.wait().await
+    pub async fn recv_punch_hello(&self) -> (Link, PunchHelloFrame) {
+        *self.puncn_hello_frame.wait().await
     }
 
     pub async fn receive_punch_me_now(&self) -> PunchMeNowFrame {
@@ -97,10 +97,10 @@ impl ReceiveFrame<(Link, TraversalFrame)> for Transaction {
         (link, frame): &(Link, TraversalFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         match frame {
-            TraversalFrame::PunchKnock(knock_frame) if !knock_frame.is_done() => {
-                _ = self.konck_frame.set((*link, *knock_frame));
+            TraversalFrame::PunchHello(frame) if !frame.done() => {
+                _ = self.puncn_hello_frame.set((*link, *frame));
             }
-            TraversalFrame::PunchKnock(punch_done_frame) => {
+            TraversalFrame::PunchHello(punch_done_frame) => {
                 _ = self.punch_done_frame.set((*link, *punch_done_frame));
             }
             TraversalFrame::PunchMeNow(punch_me_now_frame) => {
