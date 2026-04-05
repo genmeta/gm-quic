@@ -118,7 +118,7 @@ impl<TX> ReadySender<TX> {
 
         // Update metrics when application writes data
         if let Some(metrics) = &self.metrics {
-            metrics.add_pending_send(data_len);
+            metrics.new_pending(data_len);
         }
 
         self.tx_wakers.wake_all_by(Signals::WRITTEN);
@@ -272,7 +272,7 @@ impl<TX> SendingSender<TX> {
 
         // Update metrics when application writes data
         if let Some(metrics) = &self.metrics {
-            metrics.add_pending_send(data_len);
+            metrics.new_pending(data_len);
         }
 
         self.tx_wakers.wake_all_by(Signals::WRITTEN);
