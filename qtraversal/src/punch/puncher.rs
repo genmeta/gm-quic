@@ -63,7 +63,7 @@ const COLLISION_TIMEOUT_MS: u64 = 3000;
 
 // Quantity
 const MAX_RETRIES: usize = 5;
-const COLLISION_PORTS: u32 = 400;
+const COLLISION_PORTS: u32 = 800;
 const BIRTHDAY_ATTACK_PORTS: u32 = 300;
 
 pub struct ArcPuncher<TX, PH, S>(Arc<Puncher<TX, PH, S>>);
