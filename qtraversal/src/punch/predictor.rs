@@ -225,15 +225,16 @@ impl PortPredictor {
         packet_send_fn: &PacketSendFn,
         interfaces_count: usize,
     ) -> io::Result<Vec<Interface>> {
-        // Recycle expired and over-limit interfaces before allocating new ones
+        // Recycle expired interfaces before allocating new ones
         self.recycle_expired_interfaces().await?;
-        self.recycle_if_full().await?;
 
         let interfaces_count = interfaces_count.min((self.max_total - self.total_created) as usize);
         tracing::debug!(target: "punch", %punch_id, interfaces_count, "Allocating interfaces");
 
         let mut interfaces = Vec::new();
         for _i in 0..interfaces_count {
+            // Ensure we stay within the concurrent socket limit before each creation
+            self.recycle_if_full().await?;
             match self.create_single_interface().await {
                 Ok((bind_uri, iface)) => {
                     if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) =
