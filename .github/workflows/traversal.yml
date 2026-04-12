@@ -2,7 +2,7 @@ name: Traversal Tests
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "build/*"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -19,11 +19,22 @@ jobs:
       - name: Build Docker image
         run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
 
-      - name: Get NAT detection test list
+      - name: Create cargo cache volume
+        run: docker volume create cargo-cache
+
+      - name: Compile tests and get NAT detection test list
         run: |
-          TESTS=$(cargo test --package qtraversal test_detect -- --list | \
-            grep ": test$" | awk '{print $1}' | sed 's/:$//')
-          echo "$TESTS" > /tmp/nat_tests.txt
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/dquic \
+            -v cargo-cache:/usr/local/cargo/registry \
+            dquic-traversal-test:latest \
+            /bin/bash -c "
+              set -e
+              cd /dquic
+              cargo build --example stun_server --release
+              cargo test --package qtraversal test_detect --no-run
+              cargo test --package qtraversal test_detect -- --list
+            " | grep ": test$" | awk '{print $1}' | sed 's/:$//' > /tmp/nat_tests.txt
           cat /tmp/nat_tests.txt
 
       - name: Run NAT detection tests serially
@@ -40,13 +51,12 @@ jobs:
 
             docker run --rm --privileged \
               -v ${{ github.workspace }}:/dquic \
-              -v /tmp/nat_tests.txt:/tmp/nat_tests.txt:ro \
+              -v cargo-cache:/usr/local/cargo/registry \
               dquic-traversal-test:latest \
               /bin/bash -c "
                 set -e
                 cd /dquic
                 bash qtraversal/tools/run_stun.sh
-                cargo test --package qtraversal --no-run
                 echo 'DEBUG: Running test [$test]'
                 ip netns exec nsa cargo test --package qtraversal '$test' -- --nocapture --include-ignored
               "
@@ -63,11 +73,22 @@ jobs:
       - name: Build Docker image
         run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
 
-      - name: Get hole punching test list
+      - name: Create cargo cache volume
+        run: docker volume create cargo-cache
+
+      - name: Compile tests and get hole punching test list
         run: |
-          TESTS=$(cargo test --test traversal -- --list | \
-            grep ": test$" | awk '{print $1}' | sed 's/:$//')
-          echo "$TESTS" > /tmp/hp_tests.txt
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/dquic \
+            -v cargo-cache:/usr/local/cargo/registry \
+            dquic-traversal-test:latest \
+            /bin/bash -c "
+              set -e
+              cd /dquic
+              cargo build --example stun_server --release
+              cargo test --test traversal --no-run
+              cargo test --test traversal -- --list
+            " | grep ": test$" | awk '{print $1}' | sed 's/:$//' > /tmp/hp_tests.txt
           cat /tmp/hp_tests.txt
 
       - name: Run hole punching tests serially
@@ -84,13 +105,12 @@ jobs:
 
             docker run --rm --privileged \
               -v ${{ github.workspace }}:/dquic \
-              -v /tmp/hp_tests.txt:/tmp/hp_tests.txt:ro \
+              -v cargo-cache:/usr/local/cargo/registry \
               dquic-traversal-test:latest \
               /bin/bash -c "
                 set -e
                 cd /dquic
                 bash qtraversal/tools/run_stun.sh
-                cargo test --test traversal --no-run
                 echo 'DEBUG: Running test [$test]'
                 ip netns exec nsa cargo test --test traversal '$test' -- --include-ignored --nocapture
               "
