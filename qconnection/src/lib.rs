@@ -505,7 +505,10 @@ impl ConnectionState {
         };
         if let Err(error) = validate {
             core_conn.event_broker.emit(Event::Failed(error.clone()));
-            *conn = Err(core_conn.clone().enter_closing(error.into()));
+            let termination = core_conn.clone().enter_closing(error.into());
+            let error = termination.error();
+            *conn = Err(termination);
+            return Err(error);
         }
         Ok(())
     }
