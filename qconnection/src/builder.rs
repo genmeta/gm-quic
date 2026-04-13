@@ -475,7 +475,7 @@ impl PendingConnection {
         let group_id = GroupID::from(self.origin_dcid);
         let qlog_span = self.qlogger.new_trace(self.role.into(), group_id.clone());
         let tracing_span =
-            tracing::info_span!(parent: None, "connection", role = %self.role, odcid = %group_id);
+            tracing::debug_span!(parent: None, "connection", role = %self.role, odcid = %group_id);
         let _span = (qlog_span.enter(), tracing_span.clone().entered());
 
         tracing::debug!(parameters=?self.parameters, "Starting new connection");

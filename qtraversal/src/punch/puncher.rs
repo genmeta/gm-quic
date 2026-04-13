@@ -1166,7 +1166,7 @@ where
                         let link = *link;
                         let puncher = self.clone();
                         let bind = bind.clone();
-                        tracing::debug!(target: "punch", %punch_id, frame = ?hello_frame, %link, "Received unsolicited punch frame, replying directly with Hello(Done)");
+                        tracing::trace!(target: "punch", %punch_id, frame = ?hello_frame, %link, "Received unsolicited punch frame, replying directly with Hello(Done)");
                         tokio::spawn(
                             async move {
                                 match puncher.0.ifaces.borrow(&bind) {
