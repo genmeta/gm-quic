@@ -187,7 +187,7 @@ impl<I: RefIO + 'static> StunClient<I> {
         let outer_addr = self.outer_addr.clone();
         let stun_agent = self.stun_agent;
         let stun_router = self.stun_router.clone();
-        tracing::info!(target: "stun", %stun_agent, "Starting STUN client keep alive task");
+        tracing::debug!(target: "stun", %stun_agent, "Starting STUN client keep alive task");
         let ref_iface = self.ref_iface.clone();
         let bind_uri = ref_iface.iface().bind_uri();
 
@@ -199,7 +199,7 @@ impl<I: RefIO + 'static> StunClient<I> {
             let log_detect_result = |detect_result: &io::Result<SocketAddr>| match &detect_result {
                 Ok(new_outer_addr) => match outer_addr.try_get().as_deref().cloned() {
                     Some(Ok(old_outer)) if old_outer == *new_outer_addr => {
-                        tracing::debug!(target: "stun", %new_outer_addr,  "Keep alive, outer addr unchanged");
+                        tracing::trace!(target: "stun", %new_outer_addr,  "Keep alive, outer addr unchanged");
                     }
                     Some(old_state) => {
                         tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
@@ -212,7 +212,7 @@ impl<I: RefIO + 'static> StunClient<I> {
                     tracing::trace!(target: "stun", ?error, "Detect outer addr failed");
                 }
             };
-            tracing::debug!(target: "stun", "Starting keep alive task");
+            tracing::trace!(target: "stun", "Starting keep alive task");
             loop {
                 let detect_result = detect_outer_addr(
                     ref_iface.clone(),

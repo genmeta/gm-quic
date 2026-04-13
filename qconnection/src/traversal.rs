@@ -146,7 +146,7 @@ impl Components {
             EndpointAddr::Socket(addr) => addr,
             _ => return,
         };
-        tracing::info!(target: "quic", %addr, ?source, "Add peer endpoint");
+        tracing::debug!(target: "quic", %addr, ?source, "Add peer endpoint");
         match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
                 ways.into_iter().for_each(|way| {

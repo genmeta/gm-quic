@@ -213,7 +213,7 @@ struct Binding {
 impl Binding {
     fn new(io: Box<dyn IO>, id: UniqueId) -> Self {
         let bind_uri = io.bind_uri();
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             parent: None,
             "interface",
             %bind_uri,
@@ -308,7 +308,7 @@ impl BindInterface {
 
             ready!(context.factory.poll_rebind(cx, &mut binding.io));
             binding.id = context.ifaces.bind_id_generator.generate();
-            binding.span = tracing::info_span!(
+            binding.span = tracing::debug_span!(
                 parent: None,
                 "interface",
                 bind_uri = %binding.io.bind_uri(),
