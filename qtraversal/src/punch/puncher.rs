@@ -59,11 +59,13 @@ const KNOCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
 const PUNCH_ME_NOW_TIMEOUT_MS: u64 = 1000;
 const COLLISION_TIMEOUT_MS: u64 = 3000;
+const PUNCH_DONE_CONFIRM_INTERVAL_MS: u64 = 30;
 
 // Quantity
 const MAX_RETRIES: usize = 5;
 const COLLISION_PORTS: u32 = 800;
 const BIRTHDAY_ATTACK_PORTS: u32 = 300;
+const PUNCH_DONE_CONFIRM_RETRIES: usize = 3;
 
 pub struct ArcPuncher<TX, PH, S>(Arc<Puncher<TX, PH, S>>);
 
@@ -170,6 +172,31 @@ where
         iface
             .sendmmsg(&[io::IoSlice::new(&buffer[..sent_bytes])], hdr)
             .await
+    }
+
+    async fn send_direct_punch_done_with_retry(
+        &self,
+        iface: &(impl IO + ?Sized),
+        link: Link,
+        punch_id: PunchId,
+    ) where
+        PunchDoneFrame: for<'b> Package<S::PacketAssembler<'b>>,
+        PadTo20: for<'b> Package<S::PacketAssembler<'b>>,
+    {
+        for attempt in 0..PUNCH_DONE_CONFIRM_RETRIES {
+            _ = self
+                .send_packet(
+                    iface,
+                    link,
+                    HELLO_TTL,
+                    PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                )
+                .await;
+
+            if attempt + 1 < PUNCH_DONE_CONFIRM_RETRIES {
+                tokio::time::sleep(Duration::from_millis(PUNCH_DONE_CONFIRM_INTERVAL_MS)).await;
+            }
+        }
     }
 
     async fn collision(
@@ -575,13 +602,8 @@ where
                         Ok((link, _)) = async { Ok::<_, io::Error>(tx.recv_punch_hello().await) } => {
                             tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending direct PunchDone confirmation");
                             self.0
-                                .send_packet(
-                                    &iface,
-                                    link,
-                                    HELLO_TTL,
-                                    PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                                )
-                                .await?;
+                                .send_direct_punch_done_with_retry(&iface, link, punch_id)
+                                .await;
                             break Ok(());
                         }
                         _ = tx.recv_punch_done() =>
@@ -773,13 +795,8 @@ where
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending direct PunchDone confirmation");
                     self.0
-                        .send_packet(
-                            &iface,
-                            link,
-                            HELLO_TTL,
-                            PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                        )
-                        .await?;
+                        .send_direct_punch_done_with_retry(&iface, link, punch_id)
+                        .await;
                     tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success with collision");
                     return Ok(());
                 }
@@ -890,13 +907,8 @@ where
                         Ok((link, _)) = async { Ok::<_, io::Error>(tx.recv_punch_hello().await) } => {
                             tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending direct PunchDone confirmation");
                             self.0
-                                .send_packet(
-                                    &iface,
-                                    link,
-                                    HELLO_TTL,
-                                    PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                                )
-                                .await?;
+                                .send_direct_punch_done_with_retry(&iface, link, punch_id)
+                                .await;
                             return Ok(());
                         }
                         _ = tx.recv_punch_done() =>
@@ -1192,17 +1204,9 @@ where
                 let link = *link;
                 tokio::spawn(
                     async move {
-                        if let Err(error) = puncher
-                            .send_packet(
-                                &iface,
-                                link,
-                                HELLO_TTL,
-                                PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                            )
-                            .await
-                        {
-                            tracing::warn!(target: "punch", %link, %punch_id, %error, "Failed to send direct PunchDone for unsolicited PunchHello");
-                        }
+                        puncher
+                            .send_direct_punch_done_with_retry(&iface, link, punch_id)
+                            .await;
                     }
                     .instrument_in_current()
                     .in_current_span(),
