@@ -9,7 +9,7 @@ use qbase::{
     frame::{
         AckFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeSize, Frame,
         GetFrameType, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
-        PingFrame, ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame, TraversalFrame,
+        PingFrame, ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
     net::addr::BoundAddr,
     packet::header::{
@@ -791,6 +791,22 @@ impl From<&ReliableFrame> for QuicFrame {
                 }
             }
             ReliableFrame::HandshakeDone(_handshake_done_frame) => QuicFrame::HandshakeDone {},
+            ReliableFrame::AddAddress(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
+            ReliableFrame::RemoveAddress(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
+            ReliableFrame::PunchMeNow(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
+            ReliableFrame::PunchDone(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
             ReliableFrame::StreamCtl(stream_ctl_frame) => QuicFrame::from(stream_ctl_frame),
         }
     }
@@ -911,6 +927,9 @@ impl<D: ContinuousData> From<&Frame<D>> for QuicFrame {
             Frame::NewConnectionId(frame) => (&ReliableFrame::from(*frame)).into(),
             Frame::RetireConnectionId(frame) => (&ReliableFrame::from(*frame)).into(),
             Frame::HandshakeDone(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::AddAddress(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::RemoveAddress(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::PunchMeNow(frame) => (&ReliableFrame::from(*frame)).into(),
             Frame::PathChallenge(frame) => frame.into(),
             Frame::PathResponse(frame) => frame.into(),
             Frame::StreamCtl(frame) => frame.into(),
@@ -920,19 +939,14 @@ impl<D: ContinuousData> From<&Frame<D>> for QuicFrame {
             Frame::Stream(frame, bytes) => (frame, bytes).into(),
             Frame::Crypto(frame, bytes) => (frame, bytes).into(),
             Frame::Datagram(frame, bytes) => (frame, bytes).into(),
-            Frame::Traversal(frame) => QuicFrame::Unknow {
+            Frame::PunchHello(frame) => QuicFrame::Unknow {
                 frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
                 raw: None,
             },
-        }
-    }
-}
-
-impl From<&TraversalFrame> for QuicFrame {
-    fn from(frame: &TraversalFrame) -> Self {
-        QuicFrame::Unknow {
-            frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
-            raw: None,
+            Frame::PunchDone(frame) => QuicFrame::Unknow {
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                raw: None,
+            },
         }
     }
 }

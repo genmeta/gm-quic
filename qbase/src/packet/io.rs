@@ -361,6 +361,8 @@ frame_packages! {
     impl<Target: WriteFrame<Self>> Package<Target> for PathResponseFrame {}
     impl<Target: WriteFrame<Self>> Package<Target> for StreamCtlFrame {}
     impl<Target: WriteFrame<Self>> Package<Target> for ReliableFrame {}
+    impl<Target: WriteFrame<Self>> Package<Target> for PunchHelloFrame {}
+    impl<Target: WriteFrame<Self>> Package<Target> for PunchDoneFrame {}
     impl<Target: WriteDataFrame<Self, D>, D: ContinuousData> Package<Target> for (StreamFrame, D) {}
     impl<Target: WriteDataFrame<Self, D>, D: ContinuousData> Package<Target> for (CryptoFrame, D) {}
     impl<Target: WriteDataFrame<Self, D>, D: ContinuousData> Package<Target> for (DatagramFrame, D) {}

@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
-    frame::{ReceiveFrame, TraversalFrame},
+    frame::{PunchHelloFrame, ReceiveFrame, ReliableFrame},
     net::{
         addr::{BleEndpontAddr, BoundAddr, EndpointAddr, SocketEndpointAddr},
         route::{Link, Pathway},
@@ -18,11 +18,11 @@ use tracing::Instrument as _;
 use super::Components;
 use crate::CidRegistry;
 
-impl ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for Components {
+impl ReceiveFrame<(BindUri, Pathway, Link, ReliableFrame)> for Components {
     type Output = ();
     fn recv_frame(
         &self,
-        frame: &(BindUri, Pathway, Link, TraversalFrame),
+        frame: &(BindUri, Pathway, Link, ReliableFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         let Ok(pathway) = frame.1.try_into() else {
             return Ok(());
@@ -31,7 +31,27 @@ impl ReceiveFrame<(BindUri, Pathway, Link, TraversalFrame)> for Components {
             return Ok(());
         };
         let bind_uri = frame.0.clone();
-        let frame: TraversalFrame = frame.3.clone();
+        let frame: ReliableFrame = frame.3.clone();
+
+        self.puncher.recv_frame(&(bind_uri, pathway, link, frame))
+    }
+}
+
+impl ReceiveFrame<(BindUri, Pathway, Link, PunchHelloFrame)> for Components {
+    type Output = ();
+
+    fn recv_frame(
+        &self,
+        frame: &(BindUri, Pathway, Link, PunchHelloFrame),
+    ) -> Result<Self::Output, qbase::error::Error> {
+        let Ok(pathway) = frame.1.try_into() else {
+            return Ok(());
+        };
+        let Ok(link) = frame.2.try_into() else {
+            return Ok(());
+        };
+        let bind_uri = frame.0.clone();
+        let frame = frame.3;
 
         self.puncher.recv_frame(&(bind_uri, pathway, link, frame))
     }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use qbase::{
     Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, Frame, ReceiveFrame, SendFrame, TraversalFrame},
+    frame::{ConnectionCloseFrame, Frame, ReceiveFrame, ReliableFrame, SendFrame},
     net::{
         route::{Link, Pathway},
         tx::Signals,
@@ -29,7 +29,7 @@ use qinterface::{
     bind_uri::BindUri,
     component::route::{CipherPacket, PlainPacket},
 };
-use qrecovery::{crypto::CryptoStream, reliable};
+use qrecovery::crypto::CryptoStream;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -52,8 +52,6 @@ pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, (BindUri, Pathway, Link));
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 pub type ReceivedOneRttFrom = (CipherOneRttPacket, (BindUri, Pathway, Link));
-
-pub type ArcTraversalFrameDeque = reliable::ArcReliableFrameDeque<TraversalFrame>;
 
 pub struct DataSpace {
     zero_rtt_keys: ArcZeroRttKeys,
@@ -134,14 +132,12 @@ impl DataSpace {
         crypto_stream: CryptoStream,
         streams: DataStreams,
         reliable_frames: ArcReliableFrameDeque,
-        traversal_frames: ArcTraversalFrameDeque,
     ) -> DataTracker {
         DataTracker {
             journal: self.journal.clone(),
             crypto_stream,
             streams,
             reliable_frames,
-            traversal_frames,
         }
     }
 }
@@ -272,7 +268,8 @@ fn frame_dispathcer(
     let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded_channel();
     #[cfg(feature = "unreliable")]
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
-    let (traversal_frames_entry, rcvd_traversal_frames) = mpsc::unbounded_channel();
+    let (punch_frames_entry, rcvd_punch_frames) = mpsc::unbounded_channel();
+    let (punch_hello_frames_entry, rcvd_punch_hello_frames) = mpsc::unbounded_channel();
 
     let flow_controlled_data_streams = FlowControlledDataStreams::new(
         components.data_streams.clone(),
@@ -342,12 +339,12 @@ fn frame_dispathcer(
         components.token_registry.clone(),
         event_broker.clone(),
     );
+    pipe(rcvd_punch_frames, components.clone(), event_broker.clone());
     pipe(
-        rcvd_traversal_frames,
+        rcvd_punch_hello_frames,
         components.clone(),
         event_broker.clone(),
     );
-
     let event_broker = event_broker.clone();
     let rcvd_joural = space.journal.of_rcvd_packets();
     move |frame: Frame, pty: packet::Type, path: &Path| match frame {
@@ -373,12 +370,44 @@ fn frame_dispathcer(
         #[cfg(feature = "unreliable")]
         Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
         Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
-        Frame::Traversal(frame) => {
-            _ = traversal_frames_entry.send((
+        Frame::AddAddress(frame) => {
+            _ = punch_frames_entry.send((
+                path.bind_uri().clone(),
+                *path.pathway(),
+                *path.link(),
+                ReliableFrame::AddAddress(frame),
+            ))
+        }
+        Frame::RemoveAddress(frame) => {
+            _ = punch_frames_entry.send((
+                path.bind_uri().clone(),
+                *path.pathway(),
+                *path.link(),
+                ReliableFrame::RemoveAddress(frame),
+            ))
+        }
+        Frame::PunchMeNow(frame) => {
+            _ = punch_frames_entry.send((
+                path.bind_uri().clone(),
+                *path.pathway(),
+                *path.link(),
+                ReliableFrame::PunchMeNow(frame),
+            ))
+        }
+        Frame::PunchHello(frame) => {
+            _ = punch_hello_frames_entry.send((
                 path.bind_uri().clone(),
                 *path.pathway(),
                 *path.link(),
                 frame,
+            ))
+        }
+        Frame::PunchDone(frame) => {
+            _ = punch_frames_entry.send((
+                path.bind_uri().clone(),
+                *path.pathway(),
+                *path.link(),
+                ReliableFrame::PunchDone(frame),
             ))
         }
         _ => {}
@@ -569,7 +598,6 @@ pub struct DataTracker {
     crypto_stream: CryptoStream,
     streams: DataStreams,
     reliable_frames: ArcReliableFrameDeque,
-    traversal_frames: ArcTraversalFrameDeque,
 }
 
 impl Feedback for DataTracker {
@@ -592,10 +620,6 @@ impl Feedback for DataTracker {
                     GuaranteedFrame::Reliable(frame) => {
                         may_lost_frames.extend([&frame]);
                         self.reliable_frames.send_frame([frame]);
-                    }
-                    GuaranteedFrame::Traversal(frame) => {
-                        // may_lost_frames.extend([&frame]);
-                        self.traversal_frames.send_frame([frame]);
                     }
                 };
             }

@@ -258,7 +258,6 @@ impl Components {
             .outgoing()
             .package(Epoch::Handshake);
         let one_rtt_packages = Packages((
-            Repeat(self.traversal_frames.clone()),
             self.crypto_streams[Epoch::Data]
                 .outgoing()
                 .package(Epoch::Data),
