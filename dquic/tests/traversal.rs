@@ -350,6 +350,6 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[test]
-fn test_collision_ttl_is_1_in_tests() {
-    assert_eq!(dquic::qtraversal::punch::puncher::COLLISION_TTL, 1);
+fn test_knock_ttl_is_1_in_tests() {
+    assert_eq!(dquic::qtraversal::punch::puncher::KNOCK_TTL, 1);
 }
