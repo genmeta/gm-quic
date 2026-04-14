@@ -46,7 +46,7 @@ pub mod qudp {
 
     impl Display for BindFailed {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Failed to bind UdpSocketController")
+            write!(f, "failed to bind UdpSocketController")
         }
     }
 

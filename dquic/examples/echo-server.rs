@@ -128,7 +128,7 @@ async fn serve_echo(listeners: Arc<QuicListeners>) -> Result<(), ListenersShutdo
     async fn handle_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
         io::copy(&mut reader, &mut writer).await?;
         writer.shutdown().await?;
-        tracing::debug!("Stream copy done");
+        tracing::debug!("stream copy done");
 
         io::Result::Ok(())
     }

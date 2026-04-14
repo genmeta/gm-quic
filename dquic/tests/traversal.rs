@@ -337,7 +337,7 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
         }
 
         // 没有直连路径，执行 echo 测试确保连接正常
-        tracing::debug!("No direct path yet, verifying connection with echo test");
+        tracing::debug!("no direct path yet, verifying connection with echo test");
         send_and_verify_echo(&connection, &test_data)
             .await
             .expect("echo test failed");

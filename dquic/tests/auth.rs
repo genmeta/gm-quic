@@ -329,13 +329,13 @@ async fn echo_stream_with_sign_verify(
     reader.read_to_end(&mut message).await.unwrap();
     let Message { data, sign } = postcard::from_bytes(&message).unwrap();
     remote_agent.verify(SIGNATURE_SCHEME, &data, &sign).unwrap();
-    tracing::debug!("Message received and verified");
+    tracing::debug!("message received and verified");
 
     let sign = local_agent.sign(SIGNATURE_SCHEME, &data).unwrap();
     let message = postcard::to_stdvec(&Message { data, sign }).unwrap();
     writer.write_all(&message).await.unwrap();
     writer.shutdown().await.unwrap();
-    tracing::debug!("Signed echo sent");
+    tracing::debug!("signed echo sent");
 }
 
 pub async fn serve_echo_with_sign_verify(listeners: Arc<QuicListeners>) {

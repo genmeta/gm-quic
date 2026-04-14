@@ -91,10 +91,10 @@ async fn run(options: Options) -> Result<(), Error> {
     };
 
     let client_builder = if options.skip_verify {
-        tracing::warn!("Skip server verify");
+        tracing::warn!("skip server verify");
         QuicClient::builder().without_verifier()
     } else {
-        tracing::info!("Soad ca certs");
+        tracing::info!("load ca certs");
         let mut roots = rustls::RootCertStore::empty();
         roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
         roots

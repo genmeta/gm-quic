@@ -430,6 +430,7 @@ impl QuicListeners {
                 }
             }
         };
+        // Task completes after a single accept-notify cycle; no explicit join needed.
         tokio::spawn(try_accept_connection.in_current_span());
     }
 }

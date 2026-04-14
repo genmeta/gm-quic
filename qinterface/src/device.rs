@@ -319,7 +319,7 @@ impl Devices {
         });
 
         if let Err(initial_watcher_error) = &watcher {
-            tracing::warn!(target: "interface", "Failed to start interfaces watcher: {initial_watcher_error}");
+            tracing::warn!(target: "interface", "failed to start interfaces watcher: {initial_watcher_error}");
         }
 
         Self {

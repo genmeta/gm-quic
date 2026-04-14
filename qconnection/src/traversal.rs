@@ -117,6 +117,7 @@ impl Components {
                 }
             }
         };
+        // Terminates when the connection is closed or the observer channel drops.
         tokio::spawn(future.instrument_in_current().in_current_span());
     }
 

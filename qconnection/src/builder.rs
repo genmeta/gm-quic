@@ -610,6 +610,7 @@ fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
         }
     };
 
+    // Terminates when the QUIC connection closes and the event broker shuts down.
     tokio::spawn(task.instrument_in_current().in_current_span());
 }
 
