@@ -155,7 +155,7 @@ async fn serve_files(connection: Connection) -> Result<(), Error> {
     async fn serve_file(mut reader: StreamReader, mut writer: StreamWriter) -> Result<(), Error> {
         let mut request = String::new();
         reader.read_to_string(&mut request).await?;
-        tracing::info!("Received request: {request}");
+        tracing::info!("received request: {request}");
 
         // HTTP/0.9 is very simple - just a GET request with a path
         let serve = async {
@@ -172,7 +172,7 @@ async fn serve_files(connection: Connection) -> Result<(), Error> {
         };
 
         if let Err(error) = serve.await {
-            tracing::warn!("Failed to serve request: {}", error);
+            tracing::warn!("failed to serve request: {}", error);
         }
 
         _ = writer.shutdown().await;

@@ -99,7 +99,7 @@ fn main() {
         .init();
 
     // 测试日志是否工作
-    tracing::info!("Tracing initialized successfully");
+    tracing::info!("tracing initialized successfully");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -168,11 +168,11 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + 
                 .await
             {
                 Ok(h3_conn) => {
-                    tracing::info!("Accept a new quic connection");
+                    tracing::info!("accept a new quic connection");
                     h3_conn
                 }
                 Err(error) => {
-                    tracing::error!("Failed to establish h3 connection: {}", error);
+                    tracing::error!("failed to establish h3 connection: {}", error);
                     continue;
                 }
             };
@@ -200,7 +200,7 @@ async fn handle_connection<T>(
                 };
                 tokio::spawn(async move {
                     if let Err(e) = handle_request.await {
-                        tracing::error!("Handling request failed: {}", e);
+                        tracing::error!("handling request failed: {}", e);
                     }
                 });
             }
@@ -226,7 +226,7 @@ where
             match File::open(&to_serve).await {
                 Ok(file) => (StatusCode::OK, Some(file)),
                 Err(e) => {
-                    tracing::error!("Failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
+                    tracing::error!("failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
                     (StatusCode::NOT_FOUND, None)
                 }
             }

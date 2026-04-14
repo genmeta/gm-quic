@@ -17,6 +17,7 @@ use qbase::{
     util::{UniqueId, UniqueIdGenerator},
 };
 use tokio::sync::SetOnce;
+use tracing::Instrument as _;
 
 use crate::{
     BindInterface, Interface, RebindedError, WeakBindInterface,
@@ -168,6 +169,8 @@ mod spawn_on_drop {
         task::{Context, Poll, ready},
     };
 
+    use tracing::Instrument;
+
     pub(crate) struct SpawnOnDrop<F: Future<Output: Send + 'static> + Unpin + Send + 'static> {
         pub(crate) future: Option<F>,
     }
@@ -198,7 +201,8 @@ mod spawn_on_drop {
     impl<F: Future<Output: Send + 'static> + Unpin + Send + 'static> Drop for SpawnOnDrop<F> {
         fn drop(&mut self) {
             if let Some(future) = self.future.take() {
-                tokio::spawn(future);
+                // Best-effort: schedule the must-complete future before it is dropped.
+                tokio::spawn(future.in_current_span());
             }
         }
     }
@@ -542,7 +546,8 @@ impl InterfaceContext {
 impl Drop for InterfaceContext {
     fn drop(&mut self) {
         if !{ self.binding().is_dropping() } {
-            tokio::spawn(InterfaceContext::drop(self));
+            // Best-effort: schedule async cleanup before the context is dropped.
+            tokio::spawn(InterfaceContext::drop(self).in_current_span());
         }
     }
 }
