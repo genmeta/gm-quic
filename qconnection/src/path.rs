@@ -114,7 +114,6 @@ impl Components {
                         self.crypto_streams[Epoch::Data].clone(),
                         self.data_streams.clone(),
                         self.reliable_frames.clone(),
-                        self.traversal_frames.clone(),
                     )),
                 ],
                 self.quic_handshake.status(),

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use qbase::frame::{PunchHelloFrame, TraversalFrame};
+use qbase::frame::PunchHelloFrame;
 use qinterface::{
     Interface,
     bind_uri::{BindUri, BindUriScheme},
@@ -40,7 +40,7 @@ pub type PacketSendFn = Arc<
             &Interface,
             Link,
             u8,
-            TraversalFrame,
+            PunchHelloFrame,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>>
         + Send
@@ -311,10 +311,7 @@ impl PortPredictor {
         for iface in interfaces {
             if let Ok(qbase::net::addr::BoundAddr::Internet(socket_addr)) = iface.bound_addr() {
                 let link = Link::new(socket_addr, self.dst);
-                let frame = TraversalFrame::PunchHello(PunchHelloFrame::new(
-                    punch_id.local_seq,
-                    punch_id.remote_seq,
-                ));
+                let frame = PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq);
                 if packet_send_fn(iface, link, PACKET_TTL, frame).await.is_ok() {
                     successful_sends += 1;
                     successful_interfaces.push(iface.clone());

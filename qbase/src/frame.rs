@@ -31,6 +31,7 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 mod add_address;
+mod punch_done;
 mod punch_hello;
 mod punch_me_now;
 mod remove_address;
@@ -58,6 +59,7 @@ pub use padding::PaddingFrame;
 pub use path_challenge::PathChallengeFrame;
 pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
+pub use punch_done::PunchDoneFrame;
 pub use punch_hello::PunchHelloFrame;
 pub use punch_me_now::PunchMeNowFrame;
 pub use remove_address::RemoveAddressFrame;
@@ -196,8 +198,9 @@ pub enum FrameType {
     /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
     PunchMeNow(Family),
     /// PUNCH_HELLO frame, see [`PunchHelloFrame`].
-    /// `false` for Hello (0x3d7e95), `true` for Done (0x3d7e96).
-    PunchHello(bool),
+    PunchHello,
+    /// PUNCH_DONE frame, see [`PunchDoneFrame`].
+    PunchDone,
 }
 
 #[enum_dispatch]
@@ -265,7 +268,8 @@ impl FrameFeature for FrameType {
             FrameType::AddAddress(_) => o | l,
             FrameType::RemoveAddress => o | l,
             FrameType::PunchMeNow(_) => o | l,
-            FrameType::PunchHello(_) => o | l,
+            FrameType::PunchHello => o | l,
+            FrameType::PunchDone => o | l,
         }
     }
 
@@ -286,7 +290,8 @@ impl FrameFeature for FrameType {
             // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
             // add the [`Spec::Con`] for the CONNECTION_CLOSE frame
             FrameType::ConnectionClose(_) => n | c,
-            FrameType::PunchHello(_) => n,
+            FrameType::PunchHello => n,
+            FrameType::PunchDone => n,
             _ => 0,
         }
     }
@@ -333,8 +338,8 @@ impl TryFrom<VarInt> for FrameType {
             0x3d7e92 => FrameType::PunchMeNow(Family::V4),
             0x3d7e93 => FrameType::PunchMeNow(Family::V6),
             0x3d7e94 => FrameType::RemoveAddress,
-            0x3d7e95 => FrameType::PunchHello(false),
-            0x3d7e96 => FrameType::PunchHello(true),
+            0x3d7e95 => FrameType::PunchHello,
+            0x3d7e96 => FrameType::PunchDone,
             // May be extension frame
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
@@ -376,8 +381,9 @@ impl From<FrameType> for VarInt {
             FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
             FrameType::AddAddress(family) => VarInt::from_u32(0x3d7e90 | family as u32),
             FrameType::PunchMeNow(family) => VarInt::from_u32(0x3d7e92 | family as u32),
-            FrameType::PunchHello(is_done) => VarInt::from_u32(0x3d7e95 | is_done as u32),
             FrameType::RemoveAddress => VarInt::from_u32(0x3d7e94),
+            FrameType::PunchHello => VarInt::from_u32(0x3d7e95),
+            FrameType::PunchDone => VarInt::from_u32(0x3d7e96),
         }
     }
 }
@@ -428,18 +434,16 @@ pub enum ReliableFrame {
     RetireConnectionId(RetireConnectionIdFrame),
     /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
+    /// ADD_ADDRESS frame, see [`AddAddressFrame`].
+    AddAddress(AddAddressFrame),
+    /// REMOVE_ADDRESS frame, see [`RemoveAddressFrame`].
+    RemoveAddress(RemoveAddressFrame),
+    /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
+    PunchMeNow(PunchMeNowFrame),
+    /// PUNCH_DONE frame, see [`PunchDoneFrame`].
+    PunchDone(PunchDoneFrame),
     /// STREAM control frame, see [`StreamCtlFrame`].
     StreamCtl(StreamCtlFrame),
-}
-
-/// Sum type of all the traversal frames for NAT traversal.
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(EncodeSize, GetFrameType)]
-pub enum TraversalFrame {
-    AddAddress(AddAddressFrame),
-    RemoveAddress(RemoveAddressFrame),
-    PunchMeNow(PunchMeNowFrame),
-    PunchHello(PunchHelloFrame),
 }
 
 /// Sum type of all the frames.
@@ -479,8 +483,16 @@ pub enum Frame<D = Bytes> {
     Crypto(CryptoFrame, D),
     /// DATAGRAM frame and its data, see [`DatagramFrame`].
     Datagram(DatagramFrame, D),
-    /// Traversal frame, see [`TraversalFrame`].
-    Traversal(TraversalFrame),
+    /// ADD_ADDRESS frame, see [`AddAddressFrame`].
+    AddAddress(AddAddressFrame),
+    /// REMOVE_ADDRESS frame, see [`RemoveAddressFrame`].
+    RemoveAddress(RemoveAddressFrame),
+    /// PUNCH_ME_NOW frame, see [`PunchMeNowFrame`].
+    PunchMeNow(PunchMeNowFrame),
+    /// PUNCH_HELLO frame, see [`PunchHelloFrame`].
+    PunchHello(PunchHelloFrame),
+    /// PUNCH_DONE frame, see [`PunchDoneFrame`].
+    PunchDone(PunchDoneFrame),
 }
 
 impl<D> From<ReliableFrame> for Frame<D> {
@@ -501,6 +513,12 @@ impl<D> From<ReliableFrame> for Frame<D> {
             ReliableFrame::HandshakeDone(handshake_done_frame) => {
                 Frame::HandshakeDone(handshake_done_frame)
             }
+            ReliableFrame::AddAddress(add_address_frame) => Frame::AddAddress(add_address_frame),
+            ReliableFrame::RemoveAddress(remove_address_frame) => {
+                Frame::RemoveAddress(remove_address_frame)
+            }
+            ReliableFrame::PunchMeNow(punch_me_now_frame) => Frame::PunchMeNow(punch_me_now_frame),
+            ReliableFrame::PunchDone(punch_done_frame) => Frame::PunchDone(punch_done_frame),
             ReliableFrame::StreamCtl(stream_frame) => Frame::StreamCtl(stream_frame),
         }
     }
@@ -540,6 +558,16 @@ impl<'f, D> TryFrom<&'f Frame<D>> for ReliableFrame {
             Frame::HandshakeDone(handshake_done_frame) => {
                 Ok(ReliableFrame::HandshakeDone(*handshake_done_frame))
             }
+            Frame::AddAddress(add_address_frame) => {
+                Ok(ReliableFrame::AddAddress(*add_address_frame))
+            }
+            Frame::RemoveAddress(remove_address_frame) => {
+                Ok(ReliableFrame::RemoveAddress(*remove_address_frame))
+            }
+            Frame::PunchMeNow(punch_me_now_frame) => {
+                Ok(ReliableFrame::PunchMeNow(*punch_me_now_frame))
+            }
+            Frame::PunchDone(punch_done_frame) => Ok(ReliableFrame::PunchDone(*punch_done_frame)),
             Frame::StreamCtl(stream_frame) => Ok(ReliableFrame::StreamCtl(*stream_frame)),
             frame => Err(frame),
         }
@@ -567,7 +595,11 @@ impl<D> GetFrameType for Frame<D> {
             Frame::Stream(f, _) => f.frame_type(),
             Frame::Crypto(f, _) => f.frame_type(),
             Frame::Datagram(f, _) => f.frame_type(),
-            Frame::Traversal(f) => f.frame_type(),
+            Frame::AddAddress(f) => f.frame_type(),
+            Frame::RemoveAddress(f) => f.frame_type(),
+            Frame::PunchMeNow(f) => f.frame_type(),
+            Frame::PunchHello(f) => f.frame_type(),
+            Frame::PunchDone(f) => f.frame_type(),
         }
     }
 }
@@ -600,7 +632,11 @@ impl<D> EncodeSize for Frame<D> {
             Frame::Stream(f, _) => f.max_encoding_size(),
             Frame::Crypto(f, _) => f.max_encoding_size(),
             Frame::Datagram(f, _) => f.max_encoding_size(),
-            Frame::Traversal(f) => f.max_encoding_size(),
+            Frame::AddAddress(f) => f.max_encoding_size(),
+            Frame::RemoveAddress(f) => f.max_encoding_size(),
+            Frame::PunchMeNow(f) => f.max_encoding_size(),
+            Frame::PunchHello(f) => f.max_encoding_size(),
+            Frame::PunchDone(f) => f.max_encoding_size(),
         }
     }
 
@@ -624,7 +660,11 @@ impl<D> EncodeSize for Frame<D> {
             Frame::Stream(f, _) => f.encoding_size(),
             Frame::Crypto(f, _) => f.encoding_size(),
             Frame::Datagram(f, _) => f.encoding_size(),
-            Frame::Traversal(f) => f.encoding_size(),
+            Frame::AddAddress(f) => f.encoding_size(),
+            Frame::RemoveAddress(f) => f.encoding_size(),
+            Frame::PunchMeNow(f) => f.encoding_size(),
+            Frame::PunchHello(f) => f.encoding_size(),
+            Frame::PunchDone(f) => f.encoding_size(),
         }
     }
 }
@@ -710,18 +750,11 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
             ReliableFrame::NewConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::RetireConnectionId(frame) => self.put_frame(frame),
             ReliableFrame::HandshakeDone(frame) => self.put_frame(frame),
+            ReliableFrame::AddAddress(frame) => self.put_frame(frame),
+            ReliableFrame::RemoveAddress(frame) => self.put_frame(frame),
+            ReliableFrame::PunchMeNow(frame) => self.put_frame(frame),
+            ReliableFrame::PunchDone(frame) => self.put_frame(frame),
             ReliableFrame::StreamCtl(frame) => self.put_frame(frame),
-        }
-    }
-}
-
-impl<T: BufMut> WriteFrame<TraversalFrame> for T {
-    fn put_frame(&mut self, frame: &TraversalFrame) {
-        match frame {
-            TraversalFrame::AddAddress(frame) => self.put_frame(frame),
-            TraversalFrame::RemoveAddress(frame) => self.put_frame(frame),
-            TraversalFrame::PunchMeNow(frame) => self.put_frame(frame),
-            TraversalFrame::PunchHello(frame) => self.put_frame(frame),
         }
     }
 }
@@ -819,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_reader_parses_traversal_frame() {
+    fn test_frame_reader_parses_add_address_frame() {
         use super::io::WriteFrame;
 
         let add_address = AddAddressFrame::new(
@@ -829,27 +862,23 @@ mod tests {
             crate::net::NatType::RestrictedPort,
         );
         let expected = add_address;
-        let traversal_frame = TraversalFrame::AddAddress(add_address);
         let mut buf = bytes::BytesMut::new();
-        buf.put_frame(&traversal_frame);
+        buf.put_frame(&ReliableFrame::AddAddress(add_address));
 
         let mut reader = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into())));
         let (frame, frame_type) = reader.next().unwrap().unwrap();
 
         assert_eq!(frame_type, FrameType::AddAddress(Family::V4));
-        assert_eq!(
-            frame,
-            Frame::Traversal(TraversalFrame::AddAddress(expected))
-        );
+        assert_eq!(frame, Frame::AddAddress(expected));
         assert!(reader.next().is_none());
     }
 
     #[test]
-    fn test_frame_reader_rejects_traversal_frame_in_non_data_packets() {
+    fn test_frame_reader_rejects_add_address_frame_in_non_data_packets() {
         use super::io::WriteFrame;
 
         let mut buf = bytes::BytesMut::new();
-        buf.put_frame(&TraversalFrame::AddAddress(AddAddressFrame::new(
+        buf.put_frame(&ReliableFrame::AddAddress(AddAddressFrame::new(
             7,
             "127.0.0.1:8443".parse::<SocketAddr>().unwrap(),
             4,

@@ -50,10 +50,7 @@ use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::ArcPathContexts,
     space::{
-        Spaces,
-        data::{ArcTraversalFrameDeque, DataSpace},
-        handshake::HandshakeSpace,
-        initial::InitialSpace,
+        Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace,
         spawn_deliver_and_parse,
     },
     state::ArcConnState,
@@ -283,8 +280,6 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
 
         let tx_wakers = ArcSendWakers::default();
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
-        let traversal_frames =
-            ArcTraversalFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
         let quic_router_registry = self
             .quic_router
             .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
@@ -340,7 +335,6 @@ impl ConnectionFoundation<ClientFoundation, TlsClientConfig> {
             streams_ctrl: self.streams_ctrl,
             specific: SpecificComponents::Client {},
             qlogger: Arc::new(NoopLogger),
-            traversal_frames,
         }
     }
 }
@@ -358,8 +352,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
 
         let tx_wakers = ArcSendWakers::default();
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
-        let traversal_frames =
-            ArcTraversalFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
         let quic_router_registry = self
             .quic_router
             .registry_on_issuing_scid(rcvd_pkt_q.clone(), reliable_frames.clone());
@@ -405,7 +397,6 @@ impl ConnectionFoundation<ServerFoundation, TlsServerConfig> {
                 using_odcid: Arc::new(AtomicBool::new(true)),
             },
             qlogger: Arc::new(NoopLogger),
-            traversal_frames,
         }
     }
 }
@@ -433,7 +424,6 @@ pub struct PendingConnection {
     streams_ctrl: Box<dyn ControlStreamsConcurrency>,
     specific: SpecificComponents,
     qlogger: Arc<dyn QLog>,
-    traversal_frames: ArcTraversalFrameDeque,
 }
 
 fn init_stream_and_datagram<LR: IntoRole, RR: IntoRole>(
@@ -544,7 +534,7 @@ impl PendingConnection {
             ),
         };
         let puncher = ArcPuncher::new(
-            self.traversal_frames.clone(),
+            self.reliable_frames.clone(),
             PunchTransaction::new(cid_registry.clone()),
             spaces.data().clone(),
             self.interfaces.clone(),
@@ -569,7 +559,6 @@ impl PendingConnection {
             spaces,
             crypto_streams,
             reliable_frames: self.reliable_frames,
-            traversal_frames: self.traversal_frames,
             data_streams,
             flow_ctrl,
             datagram_flow,

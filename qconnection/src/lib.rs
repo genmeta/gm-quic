@@ -62,7 +62,7 @@ use qbase::{
     cid,
     error::{AppError, Error, ErrorKind, QuicError},
     flow,
-    frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame, TraversalFrame},
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame, ReliableFrame, StreamFrame},
     net::{
         addr::EndpointAddr,
         route::{Link, Pathway},
@@ -101,7 +101,7 @@ use tracing::Instrument as _;
 
 use crate::{
     path::{CreatePathFailure, PathDeactivated},
-    space::data::{ArcTraversalFrameDeque, DataSpace},
+    space::data::DataSpace,
     termination::Terminator,
     tls::{ArcTlsHandshake, LocalAgent, RemoteAgent},
     traversal::PunchTransaction,
@@ -109,14 +109,13 @@ use crate::{
 
 /// The kind of frame which guaratend to be received by peer.
 ///
-/// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
+/// The bundle of [`StreamFrame`], [`CryptoFrame`], and [`ReliableFrame`].
 #[derive(Debug, Clone, From, Eq, PartialEq)]
 #[enum_dispatch(EncodeSize, FrameFeture)]
 pub enum GuaranteedFrame {
     Stream(StreamFrame),
     Crypto(CryptoFrame),
     Reliable(ReliableFrame),
-    Traversal(TraversalFrame),
 }
 
 impl<'f, D> TryFrom<&'f Frame<D>> for GuaranteedFrame {
@@ -129,14 +128,6 @@ impl<'f, D> TryFrom<&'f Frame<D>> for GuaranteedFrame {
             Err(Frame::Stream(stream, _data)) => Self::Stream(*stream),
             Err(frame) => return Err(frame),
         })
-    }
-}
-
-impl<'f> TryFrom<&'f TraversalFrame> for GuaranteedFrame {
-    type Error = &'f TraversalFrame;
-
-    fn try_from(frame: &'f TraversalFrame) -> Result<Self, Self::Error> {
-        Err(frame)
     }
 }
 
@@ -164,7 +155,7 @@ pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
 pub type ArcPuncher =
-    qtraversal::punch::puncher::ArcPuncher<ArcTraversalFrameDeque, PunchTransaction, DataSpace>;
+    qtraversal::punch::puncher::ArcPuncher<ArcReliableFrameDeque, PunchTransaction, DataSpace>;
 
 #[derive(Clone)]
 pub struct Components {
@@ -184,7 +175,6 @@ pub struct Components {
     spaces: Spaces,
     crypto_streams: [CryptoStream; 3],
     reliable_frames: ArcReliableFrameDeque,
-    traversal_frames: ArcTraversalFrameDeque,
     data_streams: DataStreams,
     flow_ctrl: FlowController,
     datagram_flow: DatagramFlow,

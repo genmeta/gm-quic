@@ -7,11 +7,11 @@ use super::{
     max_data::be_max_data_frame, max_stream_data::be_max_stream_data_frame,
     max_streams::max_streams_frame_with_dir, new_connection_id::be_new_connection_id_frame,
     new_token::be_new_token_frame, path_challenge::be_path_challenge_frame,
-    path_response::be_path_response_frame, punch_hello::be_punch_hello_frame,
-    punch_me_now::be_punch_me_now_frame, remove_address::be_remove_address_frame,
-    reset_stream::be_reset_stream_frame, retire_connection_id::be_retire_connection_id_frame,
-    stop_sending::be_stop_sending_frame, stream::stream_frame_with_flag,
-    stream_data_blocked::be_stream_data_blocked_frame,
+    path_response::be_path_response_frame, punch_done::be_punch_done_frame,
+    punch_hello::be_punch_hello_frame, punch_me_now::be_punch_me_now_frame,
+    remove_address::be_remove_address_frame, reset_stream::be_reset_stream_frame,
+    retire_connection_id::be_retire_connection_id_frame, stop_sending::be_stop_sending_frame,
+    stream::stream_frame_with_flag, stream_data_blocked::be_stream_data_blocked_frame,
     streams_blocked::streams_blocked_frame_with_dir, *,
 };
 use crate::util::ContinuousData;
@@ -107,22 +107,15 @@ fn complete_frame(
                 }
             }
         }
-        FrameType::AddAddress(family) => map(be_add_address_frame(family), |f| {
-            Frame::Traversal(TraversalFrame::AddAddress(f))
-        })
-        .parse(input),
-        FrameType::RemoveAddress => map(be_remove_address_frame, |f| {
-            Frame::Traversal(TraversalFrame::RemoveAddress(f))
-        })
-        .parse(input),
-        FrameType::PunchMeNow(family) => map(be_punch_me_now_frame(family), |f| {
-            Frame::Traversal(TraversalFrame::PunchMeNow(f))
-        })
-        .parse(input),
-        FrameType::PunchHello(is_done) => map(be_punch_hello_frame(is_done), |f| {
-            Frame::Traversal(TraversalFrame::PunchHello(f))
-        })
-        .parse(input),
+        FrameType::AddAddress(family) => {
+            map(be_add_address_frame(family), Frame::AddAddress).parse(input)
+        }
+        FrameType::RemoveAddress => map(be_remove_address_frame, Frame::RemoveAddress).parse(input),
+        FrameType::PunchMeNow(family) => {
+            map(be_punch_me_now_frame(family), Frame::PunchMeNow).parse(input)
+        }
+        FrameType::PunchHello => map(be_punch_hello_frame, Frame::PunchHello).parse(input),
+        FrameType::PunchDone => map(be_punch_done_frame, Frame::PunchDone).parse(input),
     }
 }
 
@@ -179,6 +172,11 @@ where
             Frame::NewToken(f) => put(&mut buf, f),
             Frame::MaxData(f) => put(&mut buf, f),
             Frame::DataBlocked(f) => put(&mut buf, f),
+            Frame::AddAddress(f) => put(&mut buf, f),
+            Frame::RemoveAddress(f) => put(&mut buf, f),
+            Frame::PunchMeNow(f) => put(&mut buf, f),
+            Frame::PunchHello(f) => put(&mut buf, f),
+            Frame::PunchDone(f) => put(&mut buf, f),
             Frame::NewConnectionId(f) => put(&mut buf, f),
             Frame::RetireConnectionId(f) => put(&mut buf, f),
             Frame::HandshakeDone(f) => put(&mut buf, f),
@@ -188,7 +186,6 @@ where
             Frame::Stream(f, d) => buf.put_data_frame(f, d),
             Frame::Crypto(f, d) => buf.put_data_frame(f, d),
             Frame::Datagram(f, d) => buf.put_data_frame(f, d),
-            Frame::Traversal(f) => put(&mut buf, f),
         }
     }
 }
@@ -211,52 +208,5 @@ impl<T: BufMut> WriteFrameType for T {
         use crate::varint::WriteVarInt;
         let fty: VarInt = frame_type.into();
         self.put_varint(&fty);
-    }
-}
-
-impl crate::packet::RecordFrame<TraversalFrame, crate::util::NonData>
-    for crate::packet::PacketProperties
-{
-    #[inline]
-    fn record_frame(&mut self, frame: &TraversalFrame) {
-        self.add_frame(frame);
-    }
-}
-
-impl<Target> crate::packet::Package<Target> for TraversalFrame
-where
-    Target: WriteFrame<TraversalFrame>
-        + crate::packet::RecordFrame<TraversalFrame, crate::util::NonData>
-        + ?Sized,
-{
-    fn dump(&mut self, target: &mut Target) -> Result<(), crate::net::tx::Signals> {
-        if !(target.remaining_mut() >= self.max_encoding_size()
-            || target.remaining_mut() >= self.encoding_size())
-        {
-            return Err(crate::net::tx::Signals::CONGESTION);
-        }
-        let frame = self.clone();
-        target.record_frame(&frame);
-        target.put_frame(&frame);
-        Ok(())
-    }
-}
-
-impl<Target> crate::packet::Package<Target> for &TraversalFrame
-where
-    Target: WriteFrame<TraversalFrame>
-        + crate::packet::RecordFrame<TraversalFrame, crate::util::NonData>
-        + ?Sized,
-{
-    fn dump(&mut self, target: &mut Target) -> Result<(), crate::net::tx::Signals> {
-        if !(target.remaining_mut() >= self.max_encoding_size()
-            || target.remaining_mut() >= self.encoding_size())
-        {
-            return Err(crate::net::tx::Signals::CONGESTION);
-        }
-        let frame = (*self).clone();
-        target.record_frame(&frame);
-        target.put_frame(&frame);
-        Ok(())
     }
 }

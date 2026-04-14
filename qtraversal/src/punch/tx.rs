@@ -1,7 +1,7 @@
 use std::fmt;
 
 use qbase::frame::{
-    AddAddressFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame, TraversalFrame,
+    AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame,
 };
 use tokio::sync::SetOnce;
 
@@ -45,6 +45,12 @@ impl AsPunchId for PunchHelloFrame {
     }
 }
 
+impl AsPunchId for PunchDoneFrame {
+    fn punch_id(&self) -> PunchId {
+        PunchId::new(self.local_seq(), self.remote_seq())
+    }
+}
+
 impl AsPunchId for PunchMeNowFrame {
     fn punch_id(&self) -> PunchId {
         PunchId::new(self.local_seq(), self.remote_seq())
@@ -60,7 +66,7 @@ impl AsPunchId for (&AddAddressFrame, &AddAddressFrame) {
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<PunchMeNowFrame>,
     puncn_hello_frame: SetOnce<(Link, PunchHelloFrame)>,
-    punch_done_frame: SetOnce<(Link, PunchHelloFrame)>,
+    punch_done_frame: SetOnce<(Link, PunchDoneFrame)>,
 }
 
 impl Transaction {
@@ -72,7 +78,7 @@ impl Transaction {
         }
     }
 
-    pub async fn recv_punch_done(&self) -> (Link, PunchHelloFrame) {
+    pub async fn recv_punch_done(&self) -> (Link, PunchDoneFrame) {
         *self.punch_done_frame.wait().await
     }
 
@@ -89,25 +95,38 @@ impl Transaction {
     }
 }
 
-impl ReceiveFrame<(Link, TraversalFrame)> for Transaction {
+impl ReceiveFrame<(Link, PunchHelloFrame)> for Transaction {
     type Output = ();
 
     fn recv_frame(
         &self,
-        (link, frame): &(Link, TraversalFrame),
+        (link, frame): &(Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        match frame {
-            TraversalFrame::PunchHello(frame) if !frame.done() => {
-                _ = self.puncn_hello_frame.set((*link, *frame));
-            }
-            TraversalFrame::PunchHello(punch_done_frame) => {
-                _ = self.punch_done_frame.set((*link, *punch_done_frame));
-            }
-            TraversalFrame::PunchMeNow(punch_me_now_frame) => {
-                _ = self.punch_me_now_frame.set(*punch_me_now_frame);
-            }
-            frame => tracing::debug!(target: "punch", ?frame, "Recv unexpected punch frame type"),
-        };
+        _ = self.puncn_hello_frame.set((*link, *frame));
+        Ok(())
+    }
+}
+
+impl ReceiveFrame<(Link, PunchDoneFrame)> for Transaction {
+    type Output = ();
+
+    fn recv_frame(
+        &self,
+        (link, frame): &(Link, PunchDoneFrame),
+    ) -> Result<Self::Output, qbase::error::Error> {
+        _ = self.punch_done_frame.set((*link, *frame));
+        Ok(())
+    }
+}
+
+impl ReceiveFrame<(Link, PunchMeNowFrame)> for Transaction {
+    type Output = ();
+
+    fn recv_frame(
+        &self,
+        (_link, frame): &(Link, PunchMeNowFrame),
+    ) -> Result<Self::Output, qbase::error::Error> {
+        _ = self.punch_me_now_frame.set(*frame);
         Ok(())
     }
 }
