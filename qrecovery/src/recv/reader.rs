@@ -260,7 +260,7 @@ impl<TX> Drop for Reader<TX> {
                         r.stream_id(),
                     );
                     #[cfg(not(debug_assertions))]
-                    tracing::warn!(
+                    tracing::debug!(
                         target: "quic",
                         "The receiving {} is not stopped with error before dropped!",
                         r.stream_id(),
