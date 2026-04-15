@@ -49,6 +49,7 @@ type StunClient<I = WeakInterface> = crate::nat::client::StunClient<I>;
 
 // TTL
 const HELLO_TTL: u8 = 64;
+const DEFAULT_PROBE_ID: u32 = 0;
 #[cfg(any(test, feature = "test-ttl"))]
 pub const KNOCK_TTL: u8 = 1;
 #[cfg(not(any(test, feature = "test-ttl")))]
@@ -59,13 +60,10 @@ const KNOCK_TIMEOUT_MS: u64 = 100;
 const PUNCH_TIMEOUT_MS: u64 = 3000;
 const PUNCH_ME_NOW_TIMEOUT_MS: u64 = 1000;
 const COLLISION_TIMEOUT_MS: u64 = 3000;
-const PUNCH_DONE_CONFIRM_INTERVAL_MS: u64 = 30;
 
 // Quantity
 const MAX_RETRIES: usize = 5;
 const COLLISION_PORTS: u32 = 800;
-const BIRTHDAY_ATTACK_PORTS: u32 = 300;
-const PUNCH_DONE_CONFIRM_RETRIES: usize = 3;
 
 pub struct ArcPuncher<TX, PH, S>(Arc<Puncher<TX, PH, S>>);
 
@@ -174,31 +172,6 @@ where
             .await
     }
 
-    async fn send_direct_punch_done_with_retry(
-        &self,
-        iface: &(impl IO + ?Sized),
-        link: Link,
-        punch_id: PunchId,
-    ) where
-        PunchDoneFrame: for<'b> Package<S::PacketAssembler<'b>>,
-        PadTo20: for<'b> Package<S::PacketAssembler<'b>>,
-    {
-        for attempt in 0..PUNCH_DONE_CONFIRM_RETRIES {
-            _ = self
-                .send_packet(
-                    iface,
-                    link,
-                    HELLO_TTL,
-                    PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                )
-                .await;
-
-            if attempt + 1 < PUNCH_DONE_CONFIRM_RETRIES {
-                tokio::time::sleep(Duration::from_millis(PUNCH_DONE_CONFIRM_INTERVAL_MS)).await;
-            }
-        }
-    }
-
     async fn collision(
         &self,
         iface: &Interface,
@@ -221,7 +194,8 @@ where
                 continue;
             }
             let link = Link::new(link.src(), dst);
-            let frame = PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq);
+            let frame =
+                PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq, DEFAULT_PROBE_ID);
             self.send_packet(iface, link, ttl, frame).await?;
         }
         Ok(())
@@ -282,11 +256,16 @@ where
                         dynamic_iface(&bind_uri, &ifaces, &iface_factory, &quic_router, &stun_servers)
                             .await?;
                     let dynamic_bind = iface.bind_uri();
+                    let outer = stun_client.outer_addr().await.inspect_err(|error| {
+                        tracing::warn!(target: "punch", %error, bind_uri = %dynamic_bind, "Failed to detect outer address for dynamic interface, unbinding");
+                        let ifaces = ifaces.clone();
+                        let dynamic_bind = dynamic_bind.clone();
+                        tokio::spawn(async move { ifaces.unbind(dynamic_bind).await });
+                    })?;
                     puncher
                         .0
                         .punch_ifaces
                         .insert(dynamic_bind.clone(), iface.clone());
-                    let outer = stun_client.outer_addr().await?;
 
                     let mut address_book = puncher.0.address_book.lock().unwrap();
                     let frame =
@@ -422,7 +401,7 @@ where
                 let (bind, local_address) = address_book
                     .get_local_address(&punch_me_now_frame.remote_seq())
                     .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "local address not matche")
+                        io::Error::new(io::ErrorKind::NotFound, "local address not matched")
                     })?;
                 tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local_address.nat_type()), Some(punch_me_now_frame.nat_type())), "Received punch me now frame, start passive punch");
                 async move {
@@ -442,16 +421,17 @@ where
 
         match self.0.transaction.entry(punch_id) {
             Entry::Occupied(mut entry) => {
-                let (task, tx) = entry.get_mut();
                 if pathway.local() < pathway.remote() {
-                    task.abort();
-                    // 创建被动打洞
                     let (task, tx) = crate_punch_task()?;
+                    tx.store_punch_me_now(punch_me_now_frame);
+                    let old_task = entry.get().0.clone();
+                    old_task.abort();
                     entry.insert((task, tx.clone()));
                     tracing::debug!(target: "punch", %punch_id, "New passive transaction for punch");
                 } else {
+                    let tx = entry.get().1.clone();
                     tracing::debug!(target: "punch", %punch_id, "Using existing active transaction to respond to PunchMeNow");
-                    tx.set_punch_me_now(punch_me_now_frame);
+                    tx.store_punch_me_now(punch_me_now_frame);
                 }
             }
             Entry::Vacant(entry) => {
@@ -551,7 +531,11 @@ where
                             &iface,
                             link,
                             HELLO_TTL,
-                            PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                            PunchHelloFrame::new(
+                                punch_id.local_seq,
+                                punch_id.remote_seq,
+                                DEFAULT_PROBE_ID,
+                            ),
                         )
                         .await?;
                     let timeout_duration = time * (1 << i);
@@ -559,14 +543,12 @@ where
                         _ = tokio::time::sleep(timeout_duration) => {
                             // continue loop
                         }
-                        _ = tx.recv_punch_hello() => {
+                        Ok((_, punch_hello)) = async { Ok::<_, io::Error>(tx.wait_punch_hello().await) } => {
                             tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Received Hello, sending broker PunchDone confirmation");
-                            broker.send_frame([ReliableFrame::PunchDone(
-                                PunchDoneFrame::new(punch_id.local_seq, punch_id.remote_seq),
-                            )]);
+                            broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.recv_punch_done() => {
+                        _ = tx.next_punch_done() => {
                             tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
                             return Ok(());
                         }
@@ -593,20 +575,21 @@ where
                     iface.bound_addr()?.try_into().expect("Must be SocketAddr"),
                     link.dst(),
                 );
+                let mut collided = false;
                 let result: io::Result<()> = loop {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(PUNCH_TIMEOUT_MS))=>
                             break Err(io::Error::new(io::ErrorKind::TimedOut, "Punch timeout")),
-                        _ = tx.receive_punch_me_now() =>
-                            self.0.collision(&iface, link, punch_id, KNOCK_TTL).await?,
-                        Ok((link, _)) = async { Ok::<_, io::Error>(tx.recv_punch_hello().await) } => {
-                            tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending direct PunchDone confirmation");
-                            self.0
-                                .send_direct_punch_done_with_retry(&iface, link, punch_id)
-                                .await;
+                        _ = tx.wait_punch_me_now(), if !collided => {
+                            collided = true;
+                            self.0.collision(&iface, link, punch_id, KNOCK_TTL).await?;
+                        }
+                        Ok((link, punch_hello)) = async { Ok::<_, io::Error>(tx.wait_punch_hello().await) } => {
+                            tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending broker PunchDone confirmation");
+                            broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             break Ok(());
                         }
-                        _ = tx.recv_punch_done() =>
+                        _ = tx.next_punch_done() =>
                             break Ok(()),
                     };
                 };
@@ -626,7 +609,7 @@ where
 
                 if timeout(
                     Duration::from_millis(COLLISION_TIMEOUT_MS),
-                    tx.receive_punch_me_now(),
+                    tx.wait_punch_me_now(),
                 )
                 .await
                 .is_ok()
@@ -638,7 +621,6 @@ where
                         self.0.quic_router.clone(),
                         bind_uri.clone(),
                         link.dst(),
-                        BIRTHDAY_ATTACK_PORTS,
                     )?;
 
                     // Create packet send function
@@ -655,7 +637,7 @@ where
                     {
                         Ok(Some((bind_uri, iface))) => {
                             tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %bind_uri, "Birthday attack succeeded");
-                            self.0.punch_ifaces.insert(bind_uri, iface);
+                            self.0.punch_ifaces.insert(bind_uri.clone(), iface);
                             return Ok(());
                         }
                         Ok(None) => {
@@ -677,7 +659,7 @@ where
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
                 if timeout(
                     Duration::from_millis(PUNCH_ME_NOW_TIMEOUT_MS),
-                    tx.receive_punch_me_now(),
+                    tx.wait_punch_me_now(),
                 )
                 .await
                 .is_err()
@@ -695,11 +677,15 @@ where
                             &iface,
                             link,
                             HELLO_TTL,
-                            PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                            PunchHelloFrame::new(
+                                punch_id.local_seq,
+                                punch_id.remote_seq,
+                                DEFAULT_PROBE_ID,
+                            ),
                         )
                         .await?;
                     let time = Duration::from_millis(KNOCK_TIMEOUT_MS);
-                    if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
+                    if (timeout(time * (1 << i), tx.next_punch_done()).await).is_ok() {
                         tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
                         return Ok(());
                     }
@@ -733,12 +719,27 @@ where
                             &iface,
                             link,
                             HELLO_TTL,
-                            PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                            PunchHelloFrame::new(
+                                punch_id.local_seq,
+                                punch_id.remote_seq,
+                                DEFAULT_PROBE_ID,
+                            ),
                         )
                         .await?;
-                    if let Ok((_, _)) = timeout(time * (1 << i), tx.recv_punch_done()).await {
-                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
-                        return Ok(());
+                    let timeout_duration = time * (1 << i);
+                    tokio::select! {
+                        _ = tokio::time::sleep(timeout_duration) => {
+                            // continue loop
+                        }
+                        Ok((_, punch_hello)) = async { Ok::<_, io::Error>(tx.wait_punch_hello().await) } => {
+                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Received Hello, sending broker PunchDone confirmation");
+                            broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
+                            return Ok(());
+                        }
+                        _ = tx.next_punch_done() => {
+                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
+                            return Ok(());
+                        }
                     }
                 }
                 // Punch failed, remove the interface
@@ -763,15 +764,18 @@ where
                         &iface,
                         link,
                         HELLO_TTL,
-                        PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                        PunchHelloFrame::new(
+                            punch_id.local_seq,
+                            punch_id.remote_seq,
+                            DEFAULT_PROBE_ID,
+                        ),
                     )
                     .await?;
                 let time = Duration::from_millis(PUNCH_TIMEOUT_MS);
-                if timeout(time, tx.recv_punch_hello()).await.is_ok() {
+                if let Ok((_, punch_hello)) = timeout(time, tx.wait_punch_hello()).await {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending broker PunchDone confirmation");
-                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::new(
-                        punch_id.local_seq,
-                        punch_id.remote_seq,
+                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
+                        &punch_hello,
                     ))]);
                     tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Actively punch success");
                     return Ok(());
@@ -790,13 +794,13 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting Hello then Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
                 let time = PUNCH_TIMEOUT_MS;
-                if let Ok((link, ..)) =
-                    timeout(Duration::from_millis(time), tx.recv_punch_hello()).await
+                if let Ok((link, punch_hello)) =
+                    timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
                 {
-                    tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending direct PunchDone confirmation");
-                    self.0
-                        .send_direct_punch_done_with_retry(&iface, link, punch_id)
-                        .await;
+                    tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending broker PunchDone confirmation");
+                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
+                        &punch_hello,
+                    ))]);
                     tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success with collision");
                     return Ok(());
                 }
@@ -815,7 +819,6 @@ where
                     self.0.quic_router.clone(),
                     bind_uri.clone(),
                     link.dst(),
-                    BIRTHDAY_ATTACK_PORTS,
                 )?;
                 // Create packet send function
                 let puncher_ref = self.0.clone();
@@ -835,7 +838,7 @@ where
                 {
                     Ok(Some((bind_uri, iface))) => {
                         tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %bind_uri, "Birthday attack succeeded for Dynamic strategy");
-                        self.0.punch_ifaces.insert(bind_uri, iface);
+                        self.0.punch_ifaces.insert(bind_uri.clone(), iface);
                         return Ok(());
                     }
                     Ok(None) => {
@@ -898,20 +901,21 @@ where
                     .borrow(&bind)
                     .ok_or_else(|| io::Error::other("No interface found"))?;
                 let time = PUNCH_TIMEOUT_MS;
+                let mut collided = false;
                 loop {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(time))=>
                             return Err(io::Error::new(io::ErrorKind::TimedOut, "Punch timeout")),
-                        _ = tx.receive_punch_me_now() =>
-                            self.0.collision(&iface, link, punch_id, KNOCK_TTL).await?,
-                        Ok((link, _)) = async { Ok::<_, io::Error>(tx.recv_punch_hello().await) } => {
-                            tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending direct PunchDone confirmation");
-                            self.0
-                                .send_direct_punch_done_with_retry(&iface, link, punch_id)
-                                .await;
+                        _ = tx.wait_punch_me_now(), if !collided => {
+                            collided = true;
+                            self.0.collision(&iface, link, punch_id, KNOCK_TTL).await?;
+                        }
+                        Ok((link, punch_hello)) = async { Ok::<_, io::Error>(tx.wait_punch_hello().await) } => {
+                            tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Received Hello, sending broker PunchDone confirmation");
+                            broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.recv_punch_done() =>
+                        _ = tx.next_punch_done() =>
                                 return Ok::<(), io::Error>(()),
                     };
                 }
@@ -934,13 +938,12 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting Hello then Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
                 let time = PUNCH_TIMEOUT_MS;
-                if let Ok((link, _)) =
-                    tokio::time::timeout(Duration::from_millis(time), tx.recv_punch_hello()).await
+                if let Ok((link, punch_hello)) =
+                    tokio::time::timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending broker PunchDone confirmation");
-                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::new(
-                        punch_id.local_seq,
-                        punch_id.remote_seq,
+                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
+                        &punch_hello,
                     ))]);
                     return Ok(());
                 }
@@ -954,7 +957,6 @@ where
                     self.0.quic_router.clone(),
                     bind.clone(),
                     link.dst(),
-                    BIRTHDAY_ATTACK_PORTS,
                 )?;
 
                 // Create packet send function
@@ -971,7 +973,7 @@ where
                 {
                     Ok(Some((bind_uri, iface))) => {
                         tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %bind_uri, "Birthday attack succeeded");
-                        self.0.punch_ifaces.insert(bind_uri, iface);
+                        self.0.punch_ifaces.insert(bind_uri.clone(), iface);
                         return Ok(());
                     }
                     Ok(None) => {
@@ -998,19 +1000,18 @@ where
                 );
                 tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Sending PunchMeNow expecting Hello then Hello(Done)");
                 let punch_hello_frame =
-                    PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq);
+                    PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq, DEFAULT_PROBE_ID);
                 self.0
                     .send_packet(&iface, link, HELLO_TTL, punch_hello_frame)
                     .await?;
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
                 let time = PUNCH_TIMEOUT_MS;
-                if let Ok((link, _)) =
-                    tokio::time::timeout(Duration::from_millis(time), tx.recv_punch_hello()).await
+                if let Ok((link, punch_hello)) =
+                    tokio::time::timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "Sending broker PunchDone confirmation");
-                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::new(
-                        punch_id.local_seq,
-                        punch_id.remote_seq,
+                    broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
+                        &punch_hello,
                     ))]);
                     return Ok(());
                 }
@@ -1030,12 +1031,27 @@ where
                             &iface,
                             link,
                             HELLO_TTL,
-                            PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq),
+                            PunchHelloFrame::new(
+                                punch_id.local_seq,
+                                punch_id.remote_seq,
+                                DEFAULT_PROBE_ID,
+                            ),
                         )
                         .await?;
-                    if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
-                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passively punch success");
-                        return Ok(());
+                    let timeout_duration = time * (1 << i);
+                    tokio::select! {
+                        _ = tokio::time::sleep(timeout_duration) => {
+                            // continue loop
+                        }
+                        Ok((_, punch_hello)) = async { Ok::<_, io::Error>(tx.wait_punch_hello().await) } => {
+                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Received Hello, sending broker PunchDone confirmation");
+                            broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
+                            return Ok(());
+                        }
+                        _ = tx.next_punch_done() => {
+                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passively punch success");
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -1184,7 +1200,7 @@ where
 
     fn recv_frame(
         &self,
-        (bind, pathway, link, frame): &(BindUri, PathWay, Link, PunchHelloFrame),
+        (_bind, pathway, link, frame): &(BindUri, PathWay, Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "Received punch hello frame");
         let punch_id = frame.punch_id().flip();
@@ -1194,23 +1210,10 @@ where
                 _ = tx.recv_frame(&(*link, *frame));
             }
             Entry::Vacant(_) => {
-                tracing::trace!(target: "punch", %punch_id, frame = ?frame, %link, "Received unsolicited punch hello, replying with direct PunchDone");
-                let Some(iface) = self.0.ifaces.borrow(bind) else {
-                    tracing::warn!(target: "punch", %bind, %link, %punch_id, "No interface found for unsolicited PunchHello response");
-                    return Ok(());
-                };
-
-                let puncher = self.0.clone();
-                let link = *link;
-                tokio::spawn(
-                    async move {
-                        puncher
-                            .send_direct_punch_done_with_retry(&iface, link, punch_id)
-                            .await;
-                    }
-                    .instrument_in_current()
-                    .in_current_span(),
-                );
+                tracing::trace!(target: "punch", %punch_id, frame = ?frame, %link, "Received unsolicited punch hello, replying with broker PunchDone");
+                self.0
+                    .broker
+                    .send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(frame))]);
             }
         }
 
