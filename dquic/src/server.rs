@@ -1,5 +1,14 @@
-use std::{collections::HashMap, fmt::Debug, io, ops::Deref, pin::pin, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    io,
+    ops::{Deref, DerefMut},
+    pin::pin,
+    sync::Arc,
+    time::Duration,
+};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures::StreamExt;
 use qbase::{
@@ -22,9 +31,8 @@ use qinterface::{
 };
 use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
-    pki_types::CertificateDer,
     server::{NoClientAuth, ResolvesServerCert, danger::ClientCertVerifier},
-    sign::{CertifiedKey, SigningKey},
+    sign::CertifiedKey,
 };
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -88,7 +96,7 @@ impl ResolvesServerCert for VirtualHosts {
     fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<CertifiedKey>> {
         self.0
             .get(client_hello.server_name()?)
-            .map(|server| server.certified_key().clone())
+            .map(|server| server.certified_key())
     }
 }
 
@@ -96,14 +104,14 @@ pub struct Server {
     network: common::Network,
     bind_ifaces: DashMap<BindUri, BindInterface>,
     // todo: [update] change to LocalAgent
-    certified_key: Arc<CertifiedKey>,
+    certified_key: ArcSwap<CertifiedKey>,
 }
 
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server")
             .field("bind_ifaces", &self.bind_ifaces)
-            .field("certified_key", &self.certified_key)
+            .field("certified_key", &self.certified_key())
             .finish()
     }
 }
@@ -133,20 +141,16 @@ impl Server {
         self.bind_ifaces.remove(bind_uri).map(|entry| entry.1)
     }
 
-    pub fn certified_key(&self) -> &Arc<CertifiedKey> {
-        &self.certified_key
+    pub fn certified_key(&self) -> Arc<CertifiedKey> {
+        self.certified_key.load_full()
     }
 
-    pub fn cert(&self) -> &[CertificateDer<'static>] {
-        &self.certified_key().cert
-    }
-
-    pub fn key(&self) -> &Arc<dyn SigningKey> {
-        &self.certified_key().key
-    }
-
-    pub fn ocsp(&self) -> Option<&[u8]> {
-        self.certified_key().ocsp.as_deref()
+    pub fn update_ocsp(&self, ocsp: Option<Vec<u8>>) {
+        self.certified_key.rcu(|current| CertifiedKey {
+            cert: current.cert.clone(),
+            key: current.key.clone(),
+            ocsp: ocsp.clone(),
+        });
     }
 }
 
@@ -251,7 +255,7 @@ impl QuicListeners {
         let server = Server {
             network: self.network.clone(),
             bind_ifaces: DashMap::with_capacity(bind_uris.size_hint().0),
-            certified_key,
+            certified_key: ArcSwap::new(certified_key),
         };
         server.bind(bind_uris).await;
         server_entry.insert(server);
@@ -278,6 +282,14 @@ impl QuicListeners {
     /// Get the server by its name.
     pub fn get_server<'l>(&'l self, server_name: &str) -> Option<impl Deref<Target = Server> + 'l> {
         self.servers.get(server_name)
+    }
+
+    /// Get a mutable reference to the server by its name.
+    pub fn get_server_mut<'l>(
+        &'l self,
+        server_name: &str,
+    ) -> Option<impl DerefMut<Target = Server> + 'l> {
+        self.servers.get_mut(server_name)
     }
 
     pub fn servers(&self) -> Vec<String> {

@@ -39,6 +39,7 @@ categories = ["network-programming", "asynchronous"]
 rust-version = "1.88.0"
 
 [workspace.dependencies]
+arc-swap = "1"
 async-trait = "0.1.88"
 bitflags = "2"
 bon = "3"
