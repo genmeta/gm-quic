@@ -681,6 +681,22 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         self.map_tls(|tls_config_builder| tls_config_builder.with_webpki_verifier(verifier))
     }
 
+    /// Replace the default server certificate verifier with a custom one.
+    ///
+    /// This exposes rustls' low-level custom verifier hook. The provided
+    /// verifier becomes fully responsible for server certificate validation,
+    /// including any WebPKI, OCSP, pinning, or private PKI checks you require.
+    pub fn with_custom_server_cert_verifier(
+        self,
+        verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
+        self.map_tls(|tls_config_builder| {
+            tls_config_builder
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+        })
+    }
+
     /// Dangerously disable server certificate verification.
     pub fn without_verifier(self) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         #[derive(Debug)]
