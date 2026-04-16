@@ -30,7 +30,10 @@ use derive_more::Deref;
 pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,
-    frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
+    frame::{
+        StreamCtlFrame, StreamFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::tx::ArcSendWakers,
     param::{ArcParameters, core::Parameters},
     role::Role,

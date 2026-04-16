@@ -11,8 +11,9 @@ use qbase::{
     error::{Error, ErrorKind, QuicError},
     flow::ArcSendControler,
     frame::{
-        DataBlockedFrame, FrameType, GetFrameType, ReceiveFrame, ResetStreamFrame,
-        STREAM_FRAME_MAX_ENCODING_SIZE, SendFrame, StreamCtlFrame, StreamFrame,
+        DataBlockedFrame, FrameType, GetFrameType, ResetStreamFrame,
+        STREAM_FRAME_MAX_ENCODING_SIZE, StreamCtlFrame, StreamFrame,
+        io::{ReceiveFrame, SendFrame},
     },
     net::tx::{ArcSendWakers, Signals},
     packet::Package,

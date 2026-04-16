@@ -7,7 +7,7 @@ use rand::RngExt;
 
 use crate::{
     error::{ErrorKind, QuicError},
-    frame::{GetFrameType, NewTokenFrame, ReceiveFrame},
+    frame::{GetFrameType, NewTokenFrame, io::ReceiveFrame},
 };
 
 pub const RESET_TOKEN_SIZE: usize = 16;

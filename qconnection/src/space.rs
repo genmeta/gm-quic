@@ -9,7 +9,7 @@ use qbase::{
     error::{Error, QuicError},
     frame::{
         AckFrame, ConnectionCloseFrame, CryptoFrame, FrameFeature, FrameReader, GetFrameType,
-        ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
+        ReliableFrame, StreamCtlFrame, StreamFrame, io::ReceiveFrame,
     },
     packet::{
         AssemblePacket, Package, PacketContent, PacketSpace, PacketWriter, ProductHeader,

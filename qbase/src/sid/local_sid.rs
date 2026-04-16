@@ -6,7 +6,10 @@ use std::{
 
 use super::{Dir, Role, StreamId};
 use crate::{
-    frame::{MaxStreamsFrame, ReceiveFrame, SendFrame, StreamsBlockedFrame},
+    frame::{
+        MaxStreamsFrame, StreamsBlockedFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::tx::{ArcSendWakers, Signals},
     sid::MAX_STREAMS_LIMIT,
     varint::VarInt,

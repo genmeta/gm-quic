@@ -8,7 +8,7 @@ use std::{
 use bytes::Bytes;
 use futures::Stream;
 use qbase::{
-    frame::{MaxStreamDataFrame, SendFrame, StopSendingFrame},
+    frame::{MaxStreamDataFrame, StopSendingFrame, io::SendFrame},
     varint::VARINT_MAX,
 };
 use qevent::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};

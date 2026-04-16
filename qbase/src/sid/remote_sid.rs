@@ -4,7 +4,10 @@ use thiserror::Error;
 
 use super::{ControlStreamsConcurrency, Dir, Role, StreamId};
 use crate::{
-    frame::{MaxStreamsFrame, ReceiveFrame, SendFrame, StreamsBlockedFrame},
+    frame::{
+        MaxStreamsFrame, StreamsBlockedFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     varint::VarInt,
 };
 

@@ -8,7 +8,10 @@ use dashmap::DashMap;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
-    frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
+    frame::{
+        NewConnectionIdFrame, RetireConnectionIdFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::{
         addr::BoundAddr,
         route::{Link, Pathway},

@@ -1,4 +1,12 @@
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
+
 use bytes::Bytes;
+use futures::FutureExt;
+use thiserror::Error;
 
 use super::{
     ack::ack_frame_with_ecn, add_address::be_add_address_frame,
@@ -208,5 +216,103 @@ impl<T: BufMut> WriteFrameType for T {
         use crate::varint::WriteVarInt;
         let fty: VarInt = frame_type.into();
         self.put_varint(&fty);
+    }
+}
+
+/// Some modules that need send specific frames can implement `SendFrame` trait directly.
+///
+/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
+/// But additional processing is required to ensure that the frames in the buffer are eventually
+/// sent to the peer.
+pub trait SendFrame<T> {
+    /// Need send the frames to the peer
+    fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I);
+}
+
+/// Some modules that need receive specific frames can implement `ReceiveFrame` trait directly.
+///
+/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
+/// But additional processing is required to ensure that the frames in the buffer are eventually
+/// delivered to the corresponding modules.
+pub trait ReceiveFrame<T> {
+    type Output;
+
+    /// Receive the frames from the peer
+    fn recv_frame(&self, frame: &T) -> Result<Self::Output, crate::error::Error>;
+}
+
+#[derive(Debug, Default)]
+pub enum Receiving<F> {
+    #[default]
+    Pending,
+    Waiting(Waker),
+    Rcvd(F),
+    Read,
+    Reset,
+}
+
+impl<F> Receiving<F> {
+    pub fn reset(&mut self) {
+        if let Self::Waiting(waker) = std::mem::replace(self, Self::Reset) {
+            waker.wake();
+        }
+    }
+}
+
+impl<F> ReceiveFrame<F> for Receiving<F> {
+    type Output = ();
+
+    fn recv_frame(&self, _frame: &F) -> Result<Self::Output, crate::error::Error> {
+        todo!(
+            "Pending的时候，变为Rcvd；Waiting的时候，唤醒waker，变为Rcvd；Rcvd，打印debug；Reset，打印warn"
+        )
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Reset")]
+pub struct ResetError;
+
+impl<F: Unpin> Future for Receiving<F> {
+    type Output = Result<Option<F>, ResetError>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let state = self.get_mut();
+        match std::mem::take(state) {
+            Self::Pending => Poll::Pending,
+            Self::Waiting(waker) => {
+                *state = Self::Waiting(waker);
+                Poll::Pending
+            }
+            Self::Rcvd(frame) => {
+                *state = Self::Read;
+                Poll::Ready(Ok(Some(frame)))
+            }
+            Self::Read => {
+                *state = Self::Read;
+                Poll::Ready(Ok(None))
+            }
+            Self::Reset => {
+                *state = Self::Reset;
+                Poll::Ready(Err(ResetError))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ArcReceiving<F>(Arc<Mutex<Receiving<F>>>);
+
+impl<F> ArcReceiving<F> {
+    pub fn reset(&self) {
+        self.0.lock().unwrap().reset();
+    }
+}
+
+impl<F: Unpin> Future for ArcReceiving<F> {
+    type Output = Result<Option<F>, ResetError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.lock().unwrap().poll_unpin(cx)
     }
 }

@@ -7,7 +7,7 @@ use std::{
 use bytes::Bytes;
 use qbase::{
     error::Error,
-    frame::{ResetStreamError, ResetStreamFrame, SendFrame, StreamFrame},
+    frame::{ResetStreamError, ResetStreamFrame, StreamFrame, io::SendFrame},
     net::tx::{ArcSendWakers, Signals},
     sid::StreamId,
     varint::{VARINT_MAX, VarInt},

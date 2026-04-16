@@ -5,7 +5,7 @@ use std::{
 };
 
 use qbase::{
-    frame::{EncodeSize, FrameFeature, SendFrame},
+    frame::{EncodeSize, FrameFeature, io::SendFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::Package,
 };
@@ -18,7 +18,7 @@ use qbase::{
 ///
 /// # Example
 /// ```rust, no_run
-/// use qbase::frame::{HandshakeDoneFrame, SendFrame, ReliableFrame};
+/// use qbase::frame::{HandshakeDoneFrame, ReliableFrame, io::SendFrame};
 /// use qrecovery::reliable::ArcReliableFrameDeque;
 /// # let data_wakers = Default::default();
 /// let mut reliable_frame_deque = ArcReliableFrameDeque::<ReliableFrame>::with_capacity_and_wakers(10, data_wakers);

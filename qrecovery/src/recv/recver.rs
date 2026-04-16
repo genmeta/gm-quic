@@ -8,8 +8,8 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind, QuicError},
     frame::{
-        GetFrameType, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, SendFrame,
-        StopSendingFrame, StreamFrame,
+        GetFrameType, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, StopSendingFrame,
+        StreamFrame, io::SendFrame,
     },
     sid::StreamId,
     varint::{VARINT_MAX, VarInt},

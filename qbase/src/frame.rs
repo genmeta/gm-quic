@@ -669,28 +669,6 @@ impl<D> EncodeSize for Frame<D> {
     }
 }
 
-/// Some modules that need send specific frames can implement `SendFrame` trait directly.
-///
-/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
-/// But additional processing is required to ensure that the frames in the buffer are eventually
-/// sent to the peer.
-pub trait SendFrame<T> {
-    /// Need send the frames to the peer
-    fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I);
-}
-
-/// Some modules that need receive specific frames can implement `ReceiveFrame` trait directly.
-///
-/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
-/// But additional processing is required to ensure that the frames in the buffer are eventually
-/// delivered to the corresponding modules.
-pub trait ReceiveFrame<T> {
-    type Output;
-
-    /// Receive the frames from the peer
-    fn recv_frame(&self, frame: &T) -> Result<Self::Output, crate::error::Error>;
-}
-
 /// Reads frames from a buffer until the packet buffer is empty.
 #[derive(Deref, DerefMut)]
 pub struct FrameReader {

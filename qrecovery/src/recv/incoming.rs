@@ -3,7 +3,7 @@ use std::ops::DerefMut;
 use bytes::Bytes;
 use qbase::{
     error::{Error, QuicError},
-    frame::{MaxStreamDataFrame, ResetStreamFrame, SendFrame, StopSendingFrame, StreamFrame},
+    frame::{MaxStreamDataFrame, ResetStreamFrame, StopSendingFrame, StreamFrame, io::SendFrame},
 };
 
 use super::recver::{ArcRecver, Recver};
