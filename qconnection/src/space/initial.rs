@@ -220,14 +220,14 @@ async fn parse_normal_packet(
         return Ok(());
     };
 
-    let packet_contains = read_plain_packet(&packet, |frame| dispatch_frame(frame, &path))?;
+    let packet_content = read_plain_packet(&packet, |frame| dispatch_frame(frame, &path))?;
 
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
-        packet_contains.ack_eliciting(),
+        packet_content.is_ack_eliciting(),
         path.cc().get_pto(Epoch::Initial),
     );
-    path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_contains);
+    path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_content);
 
     // Negotiate handshake path
     if paths.assign_handshake_path(&path, remote_cids, *packet.scid()) {

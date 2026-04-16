@@ -769,7 +769,7 @@ mod tests {
     use crate::{
         net::Family,
         packet::{
-            PacketContains,
+            PacketContent,
             r#type::{
                 Type,
                 long::{Type::V1, Ver1},
@@ -989,7 +989,7 @@ mod tests {
 
         let mut padding_count = 0;
         let _ = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into()))).try_fold(
-            PacketContains::default(),
+            PacketContent::default(),
             |packet_contains, frame| {
                 let (frame, frame_type) = frame?;
 

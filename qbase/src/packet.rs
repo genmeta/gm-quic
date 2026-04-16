@@ -100,23 +100,23 @@ impl GetType for DataPacket {
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub enum PacketContains {
+pub enum PacketContent {
     #[default]
     NonAckEliciting,
     JustPing,
     EffectivePayload,
 }
-// TODO: PacketContent.include(frame_type) -> PacketContent
-impl PacketContains {
+
+impl PacketContent {
     pub fn include(self, frame_type: FrameType) -> Self {
         match frame_type {
-            FrameType::Ping if self != PacketContains::EffectivePayload => Self::JustPing,
+            FrameType::Ping if self != PacketContent::EffectivePayload => Self::JustPing,
             fty if !fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
             _ => self,
         }
     }
 
-    pub fn ack_eliciting(self) -> bool {
+    pub fn is_ack_eliciting(self) -> bool {
         self != Self::NonAckEliciting
     }
 }
