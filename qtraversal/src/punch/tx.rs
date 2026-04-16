@@ -1,9 +1,9 @@
-use std::{collections::VecDeque, fmt, sync::Mutex};
+use std::fmt;
 
 use qbase::frame::{
     AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame,
 };
-use tokio::sync::{Notify, SetOnce};
+use tokio::sync::SetOnce;
 
 use crate::Link;
 
@@ -66,8 +66,7 @@ impl AsPunchId for (&AddAddressFrame, &AddAddressFrame) {
 pub(crate) struct Transaction {
     punch_me_now_frame: SetOnce<PunchMeNowFrame>,
     punch_hello_frame: SetOnce<(Link, PunchHelloFrame)>,
-    punch_done_queue: Mutex<VecDeque<(Link, PunchDoneFrame)>>,
-    punch_done_notify: Notify,
+    punch_done_frame: SetOnce<(Link, PunchDoneFrame)>,
 }
 
 impl Transaction {
@@ -75,23 +74,16 @@ impl Transaction {
         Self {
             punch_me_now_frame: SetOnce::new(),
             punch_hello_frame: SetOnce::new(),
-            punch_done_queue: Mutex::new(VecDeque::new()),
-            punch_done_notify: Notify::new(),
+            punch_done_frame: SetOnce::new(),
         }
     }
 
-    pub async fn next_punch_done(&self) -> (Link, PunchDoneFrame) {
-        loop {
-            let notified = self.punch_done_notify.notified();
-            if let Some(frame) = self.try_next_punch_done() {
-                return frame;
-            }
-            notified.await;
-        }
+    pub async fn wait_punch_done(&self) -> (Link, PunchDoneFrame) {
+        *self.punch_done_frame.wait().await
     }
 
-    pub fn try_next_punch_done(&self) -> Option<(Link, PunchDoneFrame)> {
-        self.punch_done_queue.lock().unwrap().pop_front()
+    pub fn try_punch_done(&self) -> Option<(Link, PunchDoneFrame)> {
+        self.punch_done_frame.get().copied()
     }
 
     pub async fn wait_punch_hello(&self) -> (Link, PunchHelloFrame) {
@@ -126,11 +118,7 @@ impl ReceiveFrame<(Link, PunchDoneFrame)> for Transaction {
         &self,
         (link, frame): &(Link, PunchDoneFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        self.punch_done_queue
-            .lock()
-            .unwrap()
-            .push_back((*link, *frame));
-        self.punch_done_notify.notify_one();
+        _ = self.punch_done_frame.set((*link, *frame));
         Ok(())
     }
 }
