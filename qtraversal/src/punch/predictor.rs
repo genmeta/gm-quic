@@ -245,23 +245,23 @@ impl PortPredictor {
         true
     }
 
-    fn drain_and_claim(&mut self, tx: &Transaction) -> io::Result<Option<(BindUri, Interface)>> {
-        while let Some((link, frame)) = tx.try_next_punch_done() {
-            let probe_id = frame.probe_id();
-            tracing::debug!(target: "punch", %link, probe_id, "Punch done received");
-            if let Some(result) = self.claim_probe(probe_id) {
-                if let Err(error) = self.release_quota(1) {
-                    tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
-                }
-                return Ok(Some(result));
-            }
-            tracing::debug!(target: "punch", %link, probe_id, "Ignoring punch done for inactive probe");
-        }
-        Ok(None)
+    fn check_and_claim(&mut self, tx: &Transaction) -> Option<(BindUri, Interface)> {
+        let (_, frame) = tx.try_punch_done()?;
+        let probe_id = frame.probe_id();
+        tracing::debug!(target: "punch", probe_id, "PunchDone received, attempting to claim probe");
+        self.claim_probe(probe_id)
     }
 
-    async fn evict_for_capacity(&mut self, incoming: usize) -> io::Result<()> {
+    async fn evict_for_capacity(
+        &mut self,
+        incoming: usize,
+        tx: &Transaction,
+    ) -> io::Result<Option<(BindUri, Interface)>> {
         while self.probes.len().saturating_add(incoming) > MAX_CONCURRENT_SOCKETS {
+            // Before evicting, check if punchDone has arrived for any active probe
+            if let Some(result) = self.check_and_claim(tx) {
+                return Ok(Some(result));
+            }
             let Some(generation) = self.probes.oldest_generation_id() else {
                 break;
             };
@@ -274,7 +274,7 @@ impl PortPredictor {
             }
             tracing::debug!(target: "punch", generation, released, active_probes = self.probes.len(), "Evicted oldest generation");
         }
-        Ok(())
+        Ok(None)
     }
 
     fn claim_probe(&mut self, probe_id: u32) -> Option<(BindUri, Interface)> {
@@ -302,21 +302,33 @@ impl PortPredictor {
         let mut consecutive_empty = 0u32;
 
         while self.probes_created < MAX_PROBES {
-            // CHECK: drain all arrived PunchDone before doing more work
-            if let Some(result) = self.drain_and_claim(tx.as_ref())? {
+            // CHECK: if punchDone has been received for an active probe, claim it
+            if let Some(result) = self.check_and_claim(tx.as_ref()) {
+                if let Err(error) = self.release_quota(1) {
+                    tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                }
                 return self.finalize(result).await;
             }
 
             // ACT: scatter a generation of probes (pure producer, no early exit)
-            match self.scatter_probes(punch_id, &packet_send_fn).await {
-                Ok(0) => {
+            match self
+                .scatter_probes(punch_id, tx.as_ref(), &packet_send_fn)
+                .await
+            {
+                Ok((_, Some(result))) => {
+                    if let Err(error) = self.release_quota(1) {
+                        tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                    }
+                    return self.finalize(result).await;
+                }
+                Ok((0, None)) => {
                     consecutive_empty += 1;
                     if consecutive_empty >= 3 {
                         tracing::warn!(target: "punch", %punch_id, "3 consecutive empty scatter rounds, aborting");
                         break;
                     }
                 }
-                Ok(_) => consecutive_empty = 0,
+                Ok((_, None)) => consecutive_empty = 0,
                 Err(error) => {
                     tracing::warn!(target: "punch", %punch_id, %error, "Failed to scatter probes, aborting");
                     break;
@@ -324,23 +336,25 @@ impl PortPredictor {
             }
 
             // WAIT: give the current generation time to receive PunchDone
-            if let Ok((link, frame)) =
-                tokio::time::timeout(GENERATION_WAIT, tx.next_punch_done()).await
-            {
-                let probe_id = frame.probe_id();
-                tracing::debug!(target: "punch", %link, probe_id, "Punch done received during wait");
-                if let Some(result) = self.claim_probe(probe_id) {
-                    if let Err(error) = self.release_quota(1) {
-                        tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
-                    }
-                    return self.finalize(result).await;
+            // Only block if no PunchDone has arrived yet
+            if tx.try_punch_done().is_none() {
+                tokio::time::timeout(GENERATION_WAIT, tx.wait_punch_done())
+                    .await
+                    .ok();
+            }
+            if let Some(result) = self.check_and_claim(tx.as_ref()) {
+                if let Err(error) = self.release_quota(1) {
+                    tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
                 }
-                tracing::debug!(target: "punch", %link, probe_id, "Ignoring punch done for inactive probe during wait");
+                return self.finalize(result).await;
             }
         }
 
-        // Final drain before giving up
-        if let Some(result) = self.drain_and_claim(tx.as_ref())? {
+        // Final check before giving up
+        if let Some(result) = self.check_and_claim(tx.as_ref()) {
+            if let Err(error) = self.release_quota(1) {
+                tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+            }
             return self.finalize(result).await;
         }
 
@@ -354,12 +368,15 @@ impl PortPredictor {
     async fn scatter_probes(
         &mut self,
         punch_id: PunchId,
+        tx: &Transaction,
         packet_send_fn: &PacketSendFn,
-    ) -> io::Result<usize> {
+    ) -> io::Result<(usize, Option<(BindUri, Interface)>)> {
         let granted = self.acquire_quota(INTERFACES_PER_ROUND as u32).await? as usize;
         tracing::debug!(target: "punch", %punch_id, granted, "Batch quota acquired");
 
-        self.evict_for_capacity(granted).await?;
+        if let Some(result) = self.evict_for_capacity(granted, tx).await? {
+            return Ok((0, Some(result)));
+        }
 
         let generation = self.generation;
         self.generation += 1;
@@ -390,7 +407,7 @@ impl PortPredictor {
         }
 
         if pending_probes.is_empty() {
-            return Ok(0);
+            return Ok((0, None));
         }
 
         // Send probes and register results
@@ -409,7 +426,7 @@ impl PortPredictor {
         }
 
         tracing::debug!(target: "punch", %punch_id, generation, successful_sends, "Probes scattered");
-        Ok(successful_sends)
+        Ok((successful_sends, None))
     }
 
     async fn create_interface(&mut self) -> io::Result<(BindUri, Interface)> {

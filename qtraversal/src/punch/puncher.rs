@@ -548,7 +548,7 @@ where
                             broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.next_punch_done() => {
+                        _ = tx.wait_punch_done() => {
                             tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
                             return Ok(());
                         }
@@ -589,7 +589,7 @@ where
                             broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             break Ok(());
                         }
-                        _ = tx.next_punch_done() =>
+                        _ = tx.wait_punch_done() =>
                             break Ok(()),
                     };
                 };
@@ -685,7 +685,7 @@ where
                         )
                         .await?;
                     let time = Duration::from_millis(KNOCK_TIMEOUT_MS);
-                    if (timeout(time * (1 << i), tx.next_punch_done()).await).is_ok() {
+                    if (timeout(time * (1 << i), tx.wait_punch_done()).await).is_ok() {
                         tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
                         return Ok(());
                     }
@@ -736,7 +736,7 @@ where
                             broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.next_punch_done() => {
+                        _ = tx.wait_punch_done() => {
                             tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
                             return Ok(());
                         }
@@ -915,7 +915,7 @@ where
                             broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.next_punch_done() =>
+                        _ = tx.wait_punch_done() =>
                                 return Ok::<(), io::Error>(()),
                     };
                 }
@@ -1048,7 +1048,7 @@ where
                             broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&punch_hello))]);
                             return Ok(());
                         }
-                        _ = tx.next_punch_done() => {
+                        _ = tx.wait_punch_done() => {
                             tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passively punch success");
                             return Ok(());
                         }
