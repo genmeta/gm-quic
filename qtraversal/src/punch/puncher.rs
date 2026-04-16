@@ -12,8 +12,9 @@ use std::{
 use dashmap::{DashMap, DashSet, Entry};
 use qbase::{
     frame::{
-        AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame,
-        ReliableFrame, RemoveAddressFrame, SendFrame,
+        AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, ReliableFrame,
+        RemoveAddressFrame,
+        io::{ReceiveFrame, SendFrame},
     },
     net::{AddrFamily, NatType, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
     packet::{

@@ -2,7 +2,10 @@ use std::{ops::Deref, sync::Arc};
 
 use qbase::{
     error::Error,
-    frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
+    frame::{
+        HandshakeDoneFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     role::Role,
 };
 use qcongestion::HandshakeStatus;

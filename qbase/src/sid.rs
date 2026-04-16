@@ -5,7 +5,7 @@ use super::{
     varint::{VarInt, WriteVarInt, be_varint},
 };
 use crate::{
-    frame::{SendFrame, StreamsBlockedFrame},
+    frame::{StreamsBlockedFrame, io::SendFrame},
     net::tx::ArcSendWakers,
     role::Role,
 };

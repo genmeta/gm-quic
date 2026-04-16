@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
-    frame::{PunchHelloFrame, ReceiveFrame, ReliableFrame},
+    frame::{PunchHelloFrame, ReliableFrame, io::ReceiveFrame},
     net::{
         addr::{BleEndpontAddr, BoundAddr, EndpointAddr, SocketEndpointAddr},
         route::{Link, Pathway},

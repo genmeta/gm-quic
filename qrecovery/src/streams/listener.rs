@@ -8,7 +8,7 @@ use std::{
 
 use qbase::{
     error::Error as QuicError,
-    frame::{ResetStreamFrame, SendFrame},
+    frame::{ResetStreamFrame, io::SendFrame},
     param::{ArcParameters, ParameterId},
     sid::StreamId,
 };

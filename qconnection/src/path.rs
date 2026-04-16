@@ -9,7 +9,7 @@ use std::{
 use qbase::{
     Epoch,
     error::Error,
-    frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
+    frame::{PathChallengeFrame, PathResponseFrame, io::ReceiveFrame},
     net::{
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,

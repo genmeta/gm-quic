@@ -3,7 +3,10 @@ use std::sync::Arc;
 use qbase::{
     Epoch, GetEpoch,
     error::{Error, QuicError},
-    frame::{ConnectionCloseFrame, Frame, ReceiveFrame, ReliableFrame, SendFrame},
+    frame::{
+        ConnectionCloseFrame, Frame, ReliableFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::{
         route::{Link, Pathway},
         tx::Signals,

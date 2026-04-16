@@ -1,7 +1,7 @@
 use std::fmt;
 
 use qbase::frame::{
-    AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, ReceiveFrame,
+    AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, io::ReceiveFrame,
 };
 use tokio::sync::SetOnce;
 

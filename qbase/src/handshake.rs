@@ -5,7 +5,10 @@ use std::sync::{
 
 use crate::{
     error::{Error, ErrorKind, QuicError},
-    frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
+    frame::{
+        HandshakeDoneFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     role::Role,
 };
 
@@ -210,7 +213,7 @@ mod tests {
     use super::*;
     use crate::{
         error::ErrorKind,
-        frame::{ReceiveFrame, SendFrame},
+        frame::io::{ReceiveFrame, SendFrame},
         util::ArcAsyncDeque,
     };
 

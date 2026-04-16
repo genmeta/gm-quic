@@ -7,7 +7,10 @@ use std::{
 use super::ConnectionId;
 use crate::{
     error::{Error, ErrorKind, QuicError},
-    frame::{GetFrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
+    frame::{
+        GetFrameType, NewConnectionIdFrame, RetireConnectionIdFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::tx::{ArcSendWaker, Signals},
     token::ResetToken,
     util::IndexDeque,

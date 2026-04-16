@@ -224,7 +224,7 @@ mod recv {
     use bytes::{BufMut, Bytes};
     use qbase::{
         error::Error,
-        frame::{CryptoFrame, ReceiveFrame},
+        frame::{CryptoFrame, io::ReceiveFrame},
         varint::VARINT_MAX,
     };
     use tokio::io::{AsyncRead, ReadBuf};
@@ -347,7 +347,7 @@ impl CryptoStream {
 #[cfg(test)]
 mod tests {
     use qbase::{
-        frame::{CryptoFrame, ReceiveFrame},
+        frame::{CryptoFrame, io::ReceiveFrame},
         varint::VarInt,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

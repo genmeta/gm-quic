@@ -4,8 +4,8 @@ use super::{ConnectionId, GenUniqueCid, RetireCid};
 use crate::{
     error::{Error, ErrorKind, QuicError},
     frame::{
-        FrameType, GetFrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame,
-        SendFrame,
+        FrameType, GetFrameType, NewConnectionIdFrame, RetireConnectionIdFrame,
+        io::{ReceiveFrame, SendFrame},
     },
     token::ResetToken,
     util::IndexDeque,

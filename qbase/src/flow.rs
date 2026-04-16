@@ -5,7 +5,10 @@ use std::{
 
 use crate::{
     error::{Error, ErrorFrameType, ErrorKind, QuicError},
-    frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
+    frame::{
+        DataBlockedFrame, FrameType, MaxDataFrame,
+        io::{ReceiveFrame, SendFrame},
+    },
     net::tx::{ArcSendWakers, Signals},
     varint::VarInt,
 };

@@ -6,7 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::Sink;
-use qbase::frame::{ResetStreamFrame, SendFrame};
+use qbase::frame::{ResetStreamFrame, io::SendFrame};
 use tokio::io::{self, AsyncWrite};
 
 use super::sender::{ArcSender, Sender};

@@ -6,7 +6,7 @@ use std::io;
 
 use qbase::{
     error::Error,
-    frame::{DatagramFrame, ReceiveFrame},
+    frame::{DatagramFrame, io::ReceiveFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::Package,
 };
