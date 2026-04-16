@@ -200,19 +200,14 @@ async fn parse_normal_packet(
     // It may have already been verified using tokens in the Handshake space
     path.grant_anti_amplification();
 
-    let packet_contains = read_plain_packet(&packet, |frame| dispatch_frame(frame, &path))?;
+    let packet_content = read_plain_packet(&packet, |frame| dispatch_frame(frame, &path))?;
 
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
-        packet_contains.ack_eliciting(),
+        packet_content.is_ack_eliciting(),
         path.cc().get_pto(Epoch::Handshake),
     );
-    path.on_packet_rcvd(
-        Epoch::Handshake,
-        packet.pn(),
-        packet.size(),
-        packet_contains,
-    );
+    path.on_packet_rcvd(Epoch::Handshake, packet.pn(), packet.size(), packet_content);
 
     Result::<(), Error>::Ok(())
 }

@@ -14,7 +14,7 @@ use qbase::{
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
-    packet::PacketContains,
+    packet::PacketContent,
     param::ParameterId,
     time::{ArcDeferIdleTimer, ArcMaxIdleTimer, MaxIdleTimer},
 };
@@ -242,20 +242,20 @@ impl Path {
         epoch: Epoch,
         pn: u64,
         size: usize,
-        packet_contains: PacketContains,
+        packet_content: PacketContent,
     ) {
         self.anti_amplifier.on_rcvd(size);
         if size > 0 {
             self.status.release_anti_amplification_limit();
         }
-        if packet_contains.ack_eliciting() {
+        if packet_content.is_ack_eliciting() {
             self.heartbeat.renew_on_effective_communicated();
         }
         if epoch == Epoch::Data {
             self.max_idle_timer.renew_on_received_1rtt();
         }
         self.cc()
-            .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
+            .on_pkt_rcvd(epoch, pn, packet_content.is_ack_eliciting());
     }
 
     pub fn grant_anti_amplification(&self) {

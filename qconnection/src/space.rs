@@ -12,7 +12,7 @@ use qbase::{
         ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
     packet::{
-        AssemblePacket, Package, PacketContains, PacketSpace, PacketWriter, ProductHeader,
+        AssemblePacket, Package, PacketContent, PacketSpace, PacketWriter, ProductHeader,
         header::{GetDcid, GetType, short::OneRttHeader},
         io::{Packages, PadTo20},
     },
@@ -370,21 +370,21 @@ fn filter_odcid_packet<H: GetDcid>(
 fn read_plain_packet<H>(
     packet: &PlainPacket<H>,
     mut dispatch_frame: impl FnMut(qbase::frame::Frame),
-) -> Result<PacketContains, Error>
+) -> Result<PacketContent, Error>
 where
     H: GetType,
     PacketHeaderBuilder: for<'a> From<&'a H>,
 {
     let mut frames_collector = QuicFramesCollector::<PacketReceived>::new();
-    let mut packet_contains = PacketContains::default();
+    let mut packet_content = PacketContent::default();
     let frame_reader = FrameReader::new(packet.body(), packet.get_type());
     for frame_result in frame_reader {
         let (frame, r#type) = frame_result.map_err(QuicError::from)?;
         frames_collector.extend([&frame]);
-        packet_contains = packet_contains.include(r#type);
+        packet_content = packet_content.include(r#type);
         dispatch_frame(frame);
     }
 
     packet.log_received(frames_collector);
-    Ok(packet_contains)
+    Ok(packet_content)
 }

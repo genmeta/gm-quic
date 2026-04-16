@@ -440,16 +440,16 @@ async fn parse_normal_zero_rtt_packet(
         return Ok(());
     };
 
-    let packet_contains = read_plain_packet(&packet, |frame| {
+    let packet_content = read_plain_packet(&packet, |frame| {
         dispatch_frame(frame, packet.get_type(), &path);
     })?;
 
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
-        packet_contains.ack_eliciting(),
+        packet_content.is_ack_eliciting(),
         path.cc().get_pto(Epoch::Data),
     );
-    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
+    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_content);
 
     Result::<(), Error>::Ok(())
 }
@@ -484,15 +484,15 @@ async fn parse_normal_one_rtt_packet(
         .quic_handshake
         .discard_spaces_on_server_handshake_done(&components.paths);
 
-    let packet_contains = read_plain_packet(&packet, |frame| {
+    let packet_content = read_plain_packet(&packet, |frame| {
         dispatch_frame(frame, packet.get_type(), &path);
     })?;
     space.journal.of_rcvd_packets().on_rcvd_pn(
         packet.pn(),
-        packet_contains.ack_eliciting(),
+        packet_content.is_ack_eliciting(),
         path.cc().get_pto(Epoch::Data),
     );
-    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
+    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_content);
 
     Result::<(), Error>::Ok(())
 }
