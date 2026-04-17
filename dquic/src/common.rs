@@ -1,8 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, stream::FuturesUnordered};
 use qconnection::{
-    prelude::{AddrKind, EndpointAddr, SocketEndpointAddr, handy},
+    prelude::handy,
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -21,7 +21,7 @@ use qconnection::{
         route::{ForwardersComponent, ReceiveAndDeliverPacketComponent},
     },
 };
-use qresolve::{Family, Resolve, SystemResolver};
+use qresolve::{Resolve, SystemResolver};
 
 #[derive(Clone)]
 pub struct Network {
@@ -49,30 +49,6 @@ impl Default for Network {
 }
 
 impl Network {
-    /// 只取第一个可用的 STUN agent 即返回，后续由 StunClientsComponent 自动补充到 MIN_AGENTS
-    async fn lookup_first_agent(
-        &self,
-        stun_server: &str,
-        family: Option<Family>,
-    ) -> Option<Vec<SocketAddr>> {
-        let stream = self.resolver.lookup(stun_server).await.ok()?;
-        let mut stream = std::pin::pin!(stream);
-        while let Some((_source, ep)) = stream.next().await {
-            let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = ep else {
-                continue;
-            };
-            if match family {
-                None => true,
-                Some(Family::V4) => addr.is_ipv4(),
-                Some(Family::V6) => addr.is_ipv6(),
-            } {
-                tracing::trace!("resolved first stun agent for {stun_server}: {addr}");
-                return Some(vec![addr]);
-            }
-        }
-        None
-    }
-
     fn init_iface_components(
         &self,
         bind_iface: &BindInterface,
@@ -156,22 +132,14 @@ impl Network {
             self.stun_server.clone()
         };
 
-        let family = match bind_uri.addr_kind() {
-            AddrKind::Internet(family) => Some(family),
-            _ => None,
-        };
-
-        let stun_agents = match &stun_server {
-            Some(server) => self
-                .lookup_first_agent(server.as_ref(), family)
-                .await
-                .unwrap_or_default(),
-            None => vec![],
-        };
+        // STUN agent 的 DNS 解析推迟到 StunClientsComponent 的后台任务（它会在
+        // clients < MIN_AGENTS 时自动触发 lookup，且自带超时保护）。bind 自身
+        // 不再在关键路径上等待 DNS，避免 resolver 挂起导致整个绑定流程锁死。
+        let stun_agent = stun_server.map(|server| (server, Vec::<SocketAddr>::new()));
 
         let factory = self.iface_factory.clone();
         let bind_iface = self.iface_manager.bind(bind_uri, factory).await;
-        self.init_iface_components(&bind_iface, stun_server.map(|s| (s, stun_agents)));
+        self.init_iface_components(&bind_iface, stun_agent);
 
         bind_iface
     }
@@ -180,6 +148,12 @@ impl Network {
         &self,
         bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
     ) -> impl Stream<Item = BindInterface> {
-        stream::iter(bind_uris).then(async |bind_uri| self.bind(bind_uri.into()).await)
+        bind_uris
+            .into_iter()
+            .map(|bind_uri| {
+                let network = self.clone();
+                async move { network.bind(bind_uri.into()).await }
+            })
+            .collect::<FuturesUnordered<_>>()
     }
 }
