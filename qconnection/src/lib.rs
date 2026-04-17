@@ -519,9 +519,9 @@ impl Drop for ConnectionState {
         let _span = self.tracing_span.enter();
         if self.validate().is_ok() && self.application_close("", 0).is_ok() {
             #[cfg(debug_assertions)]
-            tracing::warn!(target: "quic", "Connection is still active when dropped, close it automatically.");
+            tracing::warn!(target: "quic", "connection is still active when dropped, close it automatically.");
             #[cfg(not(debug_assertions))]
-            tracing::debug!(target: "quic", "Connection is still active when dropped, close it automatically.");
+            tracing::debug!(target: "quic", "connection is still active when dropped, close it automatically.");
         }
     }
 }

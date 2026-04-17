@@ -168,7 +168,7 @@ impl<I: RefIO + 'static> StunClient<I> {
             state: ArcClientState::new(),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         };
-        tracing::debug!(target: "stun", %stun_agent, "Created new STUN client");
+        tracing::debug!(target: "stun", %stun_agent, "created new STUN client");
         {
             let mut tasks = client.lock_tasks();
             tasks.spawn(client.keep_alive_task());
@@ -187,7 +187,7 @@ impl<I: RefIO + 'static> StunClient<I> {
         let outer_addr = self.outer_addr.clone();
         let stun_agent = self.stun_agent;
         let stun_router = self.stun_router.clone();
-        tracing::debug!(target: "stun", %stun_agent, "Starting STUN client keep alive task");
+        tracing::debug!(target: "stun", %stun_agent, "starting STUN client keep alive task");
         let ref_iface = self.ref_iface.clone();
         let bind_uri = ref_iface.iface().bind_uri();
 
@@ -202,10 +202,10 @@ impl<I: RefIO + 'static> StunClient<I> {
                         tracing::trace!(target: "stun", %new_outer_addr,  "Keep alive, outer addr unchanged");
                     }
                     Some(old_state) => {
-                        tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "Keep alive, outer addr changed");
+                        tracing::debug!(target: "stun", ?old_state, %new_outer_addr, "keep alive, outer addr changed");
                     }
                     None => {
-                        tracing::debug!(target: "stun", %new_outer_addr, "Detected outer addr");
+                        tracing::debug!(target: "stun", %new_outer_addr, "detected outer addr");
                     }
                 },
                 Err(error) => {
@@ -297,7 +297,7 @@ impl<I: RefIO + 'static> StunClient<I> {
         // Note: 原来的逻辑是 nat 探测会新建 iface，但是有的服务器只能开放指定端口，所以还是用监听的端口进行探测
         // 又因为Dynamic 总是会新建 iface 进行打洞，所以这里污染了影响不会很大
         let task = async move {
-            tracing::debug!(target: "stun", "Starting NAT type detection");
+            tracing::debug!(target: "stun", "starting NAT type detection");
             let timeout = Duration::from_millis(100);
             _ = nat_type.assign(
                 detect_nat_type(ref_iface, stun_router, stun_agent, 30, timeout)
@@ -507,7 +507,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                                 let mut clients = lock_clients();
                                 if clients.contains_key(&addr) { continue }
                                 if let Some(client) = new_stun_client(addr) {
-                                    tracing::debug!(target: "stun", %addr, "Discovered new STUN agent");
+                                    tracing::debug!(target: "stun", %addr, "discovered new STUN agent");
                                     clients.insert(addr, client);
                                     !should_lookup_agents(&clients)
                                 } else { false }
@@ -655,7 +655,7 @@ macro_rules! visualize_nat_detection {
         if VISUALIZE_NAT_DETECTION.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!($($tt)*);
         } else {
-            tracing::debug!(target: "stun", $($tt)*);
+            tracing::trace!(target: "stun", $($tt)*);
         }
     }};
 }

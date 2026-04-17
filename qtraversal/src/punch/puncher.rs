@@ -184,7 +184,7 @@ where
         PadTo20: for<'b> Package<S::PacketAssembler<'b>>,
         TraversalFrame: for<'b> Package<S::PacketAssembler<'b>>,
     {
-        tracing::debug!(target: "punch", %punch_id, %link, ttl, "Starting collision attack");
+        tracing::debug!(target: "punch", %punch_id, %link, ttl, "starting collision attack");
         let mut random_ports = HashSet::new();
         let dst = link.dst();
         let ip = dst.ip();
@@ -344,12 +344,12 @@ where
 
         let punch_id = (&local, &add_address_frame).punch_id();
         if self.0.punch_history.contains(&punch_id) {
-            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "Punch already completed, skipping");
+            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "punch already completed, skipping");
             return Ok(());
         }
         match self.0.transaction.entry(punch_id) {
             Entry::Occupied(_) => {
-                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "Dup transaction for punch");
+                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local.nat_type()), Some(add_address_frame.nat_type())), "dup transaction for punch");
                 return Ok(());
             }
             Entry::Vacant(entry) => {
@@ -384,7 +384,7 @@ where
     ) -> io::Result<()> {
         let punch_id = punch_me_now_frame.punch_id().flip();
         if self.0.punch_history.contains(&punch_id) {
-            tracing::debug!(target: "punch", %punch_id, "Punch already completed, skipping");
+            tracing::debug!(target: "punch", %punch_id, "punch already completed, skipping");
             return Ok(());
         }
 
@@ -399,7 +399,7 @@ where
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::NotFound, "local address not matche")
                     })?;
-                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local_address.nat_type()), Some(punch_me_now_frame.nat_type())), "Received punch me now frame, start passive punch");
+                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", Some(local_address.nat_type()), Some(punch_me_now_frame.nat_type())), "received punch me now frame, start passive punch");
                 async move {
                     let result = puncher
                         .punch_passively(bind, &local_address, &punch_me_now_frame, tx)
@@ -452,7 +452,7 @@ where
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let link = Link::new(bind_addr, *remote.deref());
         let punch_id = (local, remote).punch_id();
-        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Starting active punch");
+        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "starting active punch");
 
         let mut punch_me_now = PunchMeNowFrame::new(
             local.seq_num(),
@@ -544,12 +544,12 @@ where
                             return Ok(());
                         }
                         _ = tx.recv_punch_done() => {
-                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
+                            tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch success");
                             return Ok(());
                         }
                     }
                 }
-                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch failed");
+                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch failed");
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
             }
             // 2. Local Dynamic, Remote Symmetric -> New Interface & Birthday Attack
@@ -632,7 +632,7 @@ where
                             tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Birthday attack completed without success");
                         }
                         Err(e) => {
-                            tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "Birthday attack failed");
+                            tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "birthday attack failed");
                         }
                     }
                 }
@@ -673,12 +673,12 @@ where
                         .await?;
                     let time = Duration::from_millis(KNOCK_TIMEOUT_MS);
                     if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
-                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
+                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch success");
                         return Ok(());
                     }
                 }
 
-                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch failed");
+                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch failed");
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
             }
             // 5. Local Dynamic
@@ -713,7 +713,7 @@ where
                         )
                         .await?;
                     if let Ok((_, _)) = timeout(time * (1 << i), tx.recv_punch_done()).await {
-                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success");
+                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch success");
                         return Ok(());
                     }
                 }
@@ -752,10 +752,10 @@ where
                         punch_id.local_seq,
                         punch_id.remote_seq,
                     ))]);
-                    tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Actively punch success, sent punch done");
+                    tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "actively punch success, sent punch done");
                     return Ok(());
                 }
-                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch failed");
+                tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch failed");
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
             }
             // 7. Local RestrictedPort, Remote Symmetric -> Birthday Attack (Hold Hole)
@@ -786,7 +786,7 @@ where
                             )),
                         )
                         .await?;
-                    tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Punch success with collision");
+                    tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch success with collision");
                     return Ok(());
                 }
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
@@ -831,7 +831,7 @@ where
                         tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Birthday attack completed without success for Dynamic strategy");
                     }
                     Err(e) => {
-                        tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "Birthday attack failed for Dynamic strategy");
+                        tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "birthday attack failed for Dynamic strategy");
                     }
                 }
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "punch timeout"));
@@ -852,7 +852,7 @@ where
         let remote_nat = remote_address.nat_type();
         let local_nat = local_address.nat_type();
         let punch_id = PunchId::new(local_address.seq_num(), remote_address.local_seq());
-        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Starting passive punch");
+        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "starting passive punch");
         let socket_addr = SocketAddr::try_from(bind.clone())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         if local_nat == Blocked
@@ -970,7 +970,7 @@ where
                         tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Birthday attack completed without success");
                     }
                     Err(e) => {
-                        tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "Birthday attack failed");
+                        tracing::warn!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %e, "birthday attack failed");
                     }
                 }
             }
@@ -1036,7 +1036,7 @@ where
                         )
                         .await?;
                     if (timeout(time * (1 << i), tx.recv_punch_done()).await).is_ok() {
-                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "Passively punch success, sending punch done");
+                        tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "passively punch success, sending punch done");
                         broker.send_frame([PunchHello(PunchHelloFrame::new_done(
                             punch_id.local_seq,
                             punch_id.remote_seq,
@@ -1144,7 +1144,7 @@ where
         &self,
         (bind, pathway, link, frame): &(BindUri, PathWay, Link, TraversalFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "Received traversal frame");
+        tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "received traversal frame");
         match frame {
             TraversalFrame::AddAddress(add_address_frame) => {
                 _ = self.recv_add_address_frame(*add_address_frame);
@@ -1184,7 +1184,7 @@ where
                                             )
                                             .await
                                         {
-                                            tracing::debug!(target: "punch", %punch_id, %link, ?error, "Failed to send direct Hello(Done) for unsolicited frame");
+                                            tracing::debug!(target: "punch", %punch_id, %link, ?error, "failed to send direct Hello(Done) for unsolicited frame");
                                         }
                                     }
                                     None => {

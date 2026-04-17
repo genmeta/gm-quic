@@ -478,7 +478,7 @@ impl PendingConnection {
             tracing::debug_span!(parent: None, "connection", role = %self.role, odcid = %group_id);
         let _span = (qlog_span.enter(), tracing_span.clone().entered());
 
-        tracing::debug!(parameters=?self.parameters, "Starting new connection");
+        tracing::trace!(parameters=?self.parameters, "starting new connection");
 
         let conn_state = ArcConnState::new();
         let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
@@ -667,9 +667,9 @@ fn tls_fin_handler(
         if parameters.role() == Role::Client {
             if zero_rtt_rejected {
                 debug_assert_eq!(parameters.role(), Role::Client);
-                tracing::debug!(target: "quic", "0-RTT is not enabled, or not accepted by the server.");
+                tracing::trace!(target: "quic", "0-RTT is not enabled, or not accepted by the server.");
             } else {
-                tracing::debug!(target: "quic", "0-RTT is enabled and accepted by the server.");
+                tracing::trace!(target: "quic", "0-RTT is enabled and accepted by the server.");
             }
         }
 
