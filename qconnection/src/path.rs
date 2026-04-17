@@ -307,8 +307,8 @@ impl Drop for Path {
 impl ReceiveFrame<PathChallengeFrame> for Path {
     type Output = ();
 
-    fn recv_frame(&self, frame: &PathChallengeFrame) -> Result<Self::Output, Error> {
-        self.response_sndbuf.write((*frame).into());
+    fn recv_frame(&self, frame: PathChallengeFrame) -> Result<Self::Output, Error> {
+        self.response_sndbuf.write(frame.into());
         Ok(())
     }
 }
@@ -316,8 +316,8 @@ impl ReceiveFrame<PathChallengeFrame> for Path {
 impl ReceiveFrame<PathResponseFrame> for Path {
     type Output = ();
 
-    fn recv_frame(&self, frame: &PathResponseFrame) -> Result<Self::Output, Error> {
-        self.response_rcvbuf.write(*frame);
+    fn recv_frame(&self, frame: PathResponseFrame) -> Result<Self::Output, Error> {
+        self.response_rcvbuf.write(frame);
         Ok(())
     }
 }

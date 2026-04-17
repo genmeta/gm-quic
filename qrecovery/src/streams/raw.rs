@@ -404,7 +404,7 @@ where
     /// Actually calls the [`Incoming::recv_data`] method of the corresponding stream.
     pub fn recv_data(
         &self,
-        (stream_frame, body): &(StreamFrame, bytes::Bytes),
+        (stream_frame, body): (StreamFrame, bytes::Bytes),
     ) -> Result<usize, QuicError> {
         let sid = stream_frame.stream_id();
         // 对方必须是发送端，才能发送此帧
@@ -447,7 +447,7 @@ where
     /// Actually calls the corresponding method of the corresponding stream for the corresponding frame type.
     pub fn recv_stream_control(
         &self,
-        stream_ctl_frame: &StreamCtlFrame,
+        stream_ctl_frame: StreamCtlFrame,
     ) -> Result<usize, QuicError> {
         let mut sync_fresh_data = 0;
         match stream_ctl_frame {

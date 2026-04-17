@@ -104,9 +104,9 @@ impl ReceiveFrame<(Link, PunchHelloFrame)> for Transaction {
 
     fn recv_frame(
         &self,
-        (link, frame): &(Link, PunchHelloFrame),
+        (link, frame): (Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        _ = self.punch_hello_frame.set((*link, *frame));
+        _ = self.punch_hello_frame.set((link, frame));
         Ok(())
     }
 }
@@ -116,9 +116,9 @@ impl ReceiveFrame<(Link, PunchDoneFrame)> for Transaction {
 
     fn recv_frame(
         &self,
-        (link, frame): &(Link, PunchDoneFrame),
+        (link, frame): (Link, PunchDoneFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        _ = self.punch_done_frame.set((*link, *frame));
+        _ = self.punch_done_frame.set((link, frame));
         Ok(())
     }
 }
@@ -128,9 +128,9 @@ impl ReceiveFrame<(Link, PunchMeNowFrame)> for Transaction {
 
     fn recv_frame(
         &self,
-        (_link, frame): &(Link, PunchMeNowFrame),
+        (_link, frame): (Link, PunchMeNowFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        _ = self.punch_me_now_frame.set(*frame);
+        _ = self.punch_me_now_frame.set(frame);
         Ok(())
     }
 }

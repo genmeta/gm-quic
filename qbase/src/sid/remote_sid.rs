@@ -131,10 +131,10 @@ where
         }
     }
 
-    fn recv_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
+    fn recv_streams_blocked_frame(&mut self, frame: StreamsBlockedFrame) {
         let (dir, max_streams) = match frame {
-            StreamsBlockedFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
-            StreamsBlockedFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
+            StreamsBlockedFrame::Bi(max) => (Dir::Bi, max.into_inner()),
+            StreamsBlockedFrame::Uni(max) => (Dir::Uni, max.into_inner()),
         };
         if let Some(max_streams) = self.ctrl.on_streams_blocked(dir, max_streams) {
             self.max[dir as usize] = max_streams;
@@ -222,7 +222,7 @@ where
     }
 
     #[inline]
-    pub fn recv_streams_blocked_frame(&self, frame: &StreamsBlockedFrame) {
+    pub fn recv_streams_blocked_frame(&self, frame: StreamsBlockedFrame) {
         self.0.lock().unwrap().recv_streams_blocked_frame(frame);
     }
 }
@@ -233,7 +233,7 @@ where
 {
     type Output = ();
 
-    fn recv_frame(&self, frame: &StreamsBlockedFrame) -> Result<Self::Output, crate::error::Error> {
+    fn recv_frame(&self, frame: StreamsBlockedFrame) -> Result<Self::Output, crate::error::Error> {
         self.recv_streams_blocked_frame(frame);
         Ok(())
     }

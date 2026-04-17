@@ -331,7 +331,7 @@ where
         Ok(())
     }
 
-    fn recv_remove_address_frame(&self, remove_address_frame: &RemoveAddressFrame) {
+    fn recv_remove_address_frame(&self, remove_address_frame: RemoveAddressFrame) {
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.remove_remote_address(remove_address_frame.deref().into_inner() as u32);
     }
@@ -1154,15 +1154,15 @@ where
 
     fn recv_frame(
         &self,
-        (_bind, pathway, link, frame): &(BindUri, PathWay, Link, ReliableFrame),
+        (_bind, pathway, link, frame): (BindUri, PathWay, Link, ReliableFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "received reliable punch frame");
         match frame {
             ReliableFrame::AddAddress(add_address_frame) => {
-                _ = self.recv_add_address_frame(*add_address_frame);
+                _ = self.recv_add_address_frame(add_address_frame);
             }
             ReliableFrame::PunchMeNow(punch_me_now_frame) => {
-                _ = self.recv_punch_me_now(*pathway, *punch_me_now_frame);
+                _ = self.recv_punch_me_now(pathway, punch_me_now_frame);
             }
             ReliableFrame::RemoveAddress(remove_address_frame) => {
                 self.recv_remove_address_frame(remove_address_frame);
@@ -1172,7 +1172,7 @@ where
                 match self.0.transaction.entry(punch_id) {
                     Entry::Occupied(mut entry) => {
                         let tx = entry.get_mut().1.clone();
-                        _ = tx.recv_frame(&(*link, *frame));
+                        _ = tx.recv_frame((link, frame));
                     }
                     Entry::Vacant(_) => {
                         tracing::debug!(target: "punch", %punch_id, frame = ?frame, %link, "received unexpected punch done frame");
@@ -1201,20 +1201,20 @@ where
 
     fn recv_frame(
         &self,
-        (_bind, pathway, link, frame): &(BindUri, PathWay, Link, PunchHelloFrame),
+        (_bind, pathway, link, frame): (BindUri, PathWay, Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         tracing::debug!(target: "punch", %pathway, %link, frame = ?frame, "received punch hello frame");
         let punch_id = frame.punch_id().flip();
         match self.0.transaction.entry(punch_id) {
             Entry::Occupied(mut entry) => {
                 let tx = entry.get_mut().1.clone();
-                _ = tx.recv_frame(&(*link, *frame));
+                _ = tx.recv_frame((link, frame));
             }
             Entry::Vacant(_) => {
                 tracing::trace!(target: "punch", %punch_id, frame = ?frame, %link, "received unsolicited punch hello, replying with broker PunchDone");
                 self.0
                     .broker
-                    .send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(frame))]);
+                    .send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(&frame))]);
             }
         }
 

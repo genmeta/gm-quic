@@ -238,7 +238,7 @@ pub trait ReceiveFrame<T> {
     type Output;
 
     /// Receive the frames from the peer
-    fn recv_frame(&self, frame: &T) -> Result<Self::Output, crate::error::Error>;
+    fn recv_frame(&self, frame: T) -> Result<Self::Output, crate::error::Error>;
 }
 
 #[derive(Debug, Default)]
@@ -252,20 +252,23 @@ pub enum Receiving<F> {
 }
 
 impl<F> Receiving<F> {
-    pub fn reset(&mut self) {
+    fn recv_frame(&mut self, frame: F) {
+        match std::mem::take(self) {
+            Self::Pending => {
+                *self = Self::Rcvd(frame);
+            }
+            Self::Waiting(waker) => {
+                waker.wake();
+                *self = Self::Rcvd(frame);
+            }
+            _ => (),
+        }
+    }
+
+    fn reset(&mut self) {
         if let Self::Waiting(waker) = std::mem::replace(self, Self::Reset) {
             waker.wake();
         }
-    }
-}
-
-impl<F> ReceiveFrame<F> for Receiving<F> {
-    type Output = ();
-
-    fn recv_frame(&self, _frame: &F) -> Result<Self::Output, crate::error::Error> {
-        todo!(
-            "Pending的时候，变为Rcvd；Waiting的时候，唤醒waker，变为Rcvd；Rcvd，打印debug；Reset，打印warn"
-        )
     }
 }
 
@@ -306,6 +309,15 @@ pub struct ArcReceiving<F>(Arc<Mutex<Receiving<F>>>);
 impl<F> ArcReceiving<F> {
     pub fn reset(&self) {
         self.0.lock().unwrap().reset();
+    }
+}
+
+impl<F> ReceiveFrame<F> for ArcReceiving<F> {
+    type Output = ();
+
+    fn recv_frame(&self, frame: F) -> Result<Self::Output, crate::error::Error> {
+        self.0.lock().unwrap().recv_frame(frame);
+        Ok(())
     }
 }
 

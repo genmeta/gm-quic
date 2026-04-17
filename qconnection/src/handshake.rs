@@ -89,7 +89,7 @@ where
 {
     type Output = ();
 
-    fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
+    fn recv_frame(&self, frame: HandshakeDoneFrame) -> Result<(), Error> {
         if self.handshake.inner.recv_frame(frame)? {
             self.handshake.inform_cc.handshake_confirmed();
             self.paths.discard_initial_and_handshake_space();

@@ -80,7 +80,7 @@ impl ReceiveFrame<(DatagramFrame, Bytes)> for DatagramFlow {
     type Output = ();
 
     #[inline]
-    fn recv_frame(&self, (frame, body): &(DatagramFrame, Bytes)) -> Result<Self::Output, Error> {
-        self.incoming.recv_datagram(frame, body.clone())
+    fn recv_frame(&self, (frame, body): (DatagramFrame, Bytes)) -> Result<Self::Output, Error> {
+        self.incoming.recv_datagram(frame, body)
     }
 }

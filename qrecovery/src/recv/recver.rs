@@ -179,7 +179,7 @@ impl<TX> Recv<TX> {
 
     pub(super) fn recv(
         &mut self,
-        stream_frame: &StreamFrame,
+        stream_frame: StreamFrame,
         body: Bytes,
     ) -> Result<usize, QuicError> {
         let data_start = stream_frame.offset();
@@ -271,7 +271,7 @@ impl<TX> SizeKnown<TX> {
 
     pub(super) fn recv(
         &mut self,
-        stream_frame: &StreamFrame,
+        stream_frame: StreamFrame,
         data: Bytes,
     ) -> Result<usize, QuicError> {
         let data_start = stream_frame.offset();
