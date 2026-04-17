@@ -233,7 +233,7 @@ impl PortPredictor {
     async fn release_interface(&mut self, bind_uri: BindUri) {
         self.ifaces.unbind(bind_uri).await;
         if let Err(error) = self.release_quota(1) {
-            tracing::warn!(target: "punch", %error, "Failed to release quota for interface");
+            tracing::warn!(target: "punch", %error, "failed to release quota for interface");
         }
     }
 
@@ -248,7 +248,7 @@ impl PortPredictor {
     fn check_and_claim(&mut self, tx: &Transaction) -> Option<(BindUri, Interface)> {
         let (_, frame) = tx.try_punch_done()?;
         let probe_id = frame.probe_id();
-        tracing::debug!(target: "punch", probe_id, "PunchDone received, attempting to claim probe");
+        tracing::debug!(target: "punch", probe_id, "punchDone received, attempting to claim probe");
         self.claim_probe(probe_id)
     }
 
@@ -272,7 +272,7 @@ impl PortPredictor {
                     released += 1;
                 }
             }
-            tracing::debug!(target: "punch", generation, released, active_probes = self.probes.len(), "Evicted oldest generation");
+            tracing::debug!(target: "punch", generation, released, active_probes = self.probes.len(), "evicted oldest generation");
         }
         Ok(None)
     }
@@ -287,7 +287,7 @@ impl PortPredictor {
         result: (BindUri, Interface),
     ) -> io::Result<Option<(BindUri, Interface)>> {
         if let Err(error) = self.release_all().await {
-            tracing::warn!(target: "punch", %error, "Failed to cleanup remaining probes after success");
+            tracing::warn!(target: "punch", %error, "failed to cleanup remaining probes after success");
         }
         Ok(Some(result))
     }
@@ -298,14 +298,14 @@ impl PortPredictor {
         tx: Arc<Transaction>,
         packet_send_fn: PacketSendFn,
     ) -> io::Result<Option<(BindUri, Interface)>> {
-        tracing::debug!(target: "punch", %punch_id, "Starting port prediction");
+        tracing::debug!(target: "punch", %punch_id, "starting port prediction");
         let mut consecutive_empty = 0u32;
 
         while self.probes_created < MAX_PROBES {
             // CHECK: if punchDone has been received for an active probe, claim it
             if let Some(result) = self.check_and_claim(tx.as_ref()) {
                 if let Err(error) = self.release_quota(1) {
-                    tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                    tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
                 }
                 return self.finalize(result).await;
             }
@@ -317,7 +317,7 @@ impl PortPredictor {
             {
                 Ok((_, Some(result))) => {
                     if let Err(error) = self.release_quota(1) {
-                        tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                        tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
                     }
                     return self.finalize(result).await;
                 }
@@ -330,7 +330,7 @@ impl PortPredictor {
                 }
                 Ok((_, None)) => consecutive_empty = 0,
                 Err(error) => {
-                    tracing::warn!(target: "punch", %punch_id, %error, "Failed to scatter probes, aborting");
+                    tracing::warn!(target: "punch", %punch_id, %error, "failed to scatter probes, aborting");
                     break;
                 }
             }
@@ -344,7 +344,7 @@ impl PortPredictor {
             }
             if let Some(result) = self.check_and_claim(tx.as_ref()) {
                 if let Err(error) = self.release_quota(1) {
-                    tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                    tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
                 }
                 return self.finalize(result).await;
             }
@@ -353,15 +353,15 @@ impl PortPredictor {
         // Final check before giving up
         if let Some(result) = self.check_and_claim(tx.as_ref()) {
             if let Err(error) = self.release_quota(1) {
-                tracing::warn!(target: "punch", %error, "Failed to release quota for claimed probe");
+                tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
             }
             return self.finalize(result).await;
         }
 
         if let Err(e) = self.release_all().await {
-            tracing::error!(target: "punch", %punch_id, %e, "Failed to cleanup resources");
+            tracing::error!(target: "punch", %punch_id, %e, "failed to cleanup resources");
         }
-        tracing::debug!(target: "punch", %punch_id, probes_created = self.probes_created, "Port prediction finished without match");
+        tracing::debug!(target: "punch", %punch_id, probes_created = self.probes_created, "port prediction finished without match");
         Ok(None)
     }
 
@@ -372,7 +372,7 @@ impl PortPredictor {
         packet_send_fn: &PacketSendFn,
     ) -> io::Result<(usize, Option<(BindUri, Interface)>)> {
         let granted = self.acquire_quota(INTERFACES_PER_ROUND as u32).await? as usize;
-        tracing::debug!(target: "punch", %punch_id, granted, "Batch quota acquired");
+        tracing::debug!(target: "punch", %punch_id, granted, "batch quota acquired");
 
         if let Some(result) = self.evict_for_capacity(granted, tx).await? {
             return Ok((0, Some(result)));
@@ -381,7 +381,7 @@ impl PortPredictor {
         let generation = self.generation;
         self.generation += 1;
         self.probes_created += granted as u32;
-        tracing::debug!(target: "punch", %punch_id, generation, granted, "Scattering probe generation");
+        tracing::debug!(target: "punch", %punch_id, generation, granted, "scattering probe generation");
 
         // Create interfaces
         let mut pending_probes = Vec::with_capacity(granted);
@@ -390,7 +390,7 @@ impl PortPredictor {
                 Ok(result) => result,
                 Err(_) => {
                     if let Err(error) = self.release_quota(1) {
-                        tracing::warn!(target: "punch", %error, "Failed to release unused quota");
+                        tracing::warn!(target: "punch", %error, "failed to release unused quota");
                     }
                     continue;
                 }
@@ -425,7 +425,7 @@ impl PortPredictor {
             }
         }
 
-        tracing::debug!(target: "punch", %punch_id, generation, successful_sends, "Probes scattered");
+        tracing::debug!(target: "punch", %punch_id, generation, successful_sends, "probes scattered");
         Ok((successful_sends, None))
     }
 
@@ -462,7 +462,7 @@ impl PortPredictor {
                 }
             }
         }
-        tracing::warn!(target: "punch", bind_uri = %self.bind_uri, dst = %self.dst, "Failed to create interface after 10 attempts");
+        tracing::warn!(target: "punch", bind_uri = %self.bind_uri, dst = %self.dst, "failed to create interface after 10 attempts");
         Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "Failed to bind port after max retries",
@@ -471,17 +471,17 @@ impl PortPredictor {
 
     async fn release_all(&mut self) -> io::Result<()> {
         tracing::debug!(target: "punch", active_probes = self.probes.len(), 
-                      "Starting resource cleanup");
+                      "starting resource cleanup");
         let probe_ids = self.probes.pending_probe_ids();
         for probe_id in probe_ids {
             self.release_probe(probe_id).await;
         }
         if self.quota_held > 0 {
             let orphaned = self.quota_held;
-            tracing::warn!(target: "punch", orphaned, "Releasing orphaned quota without pending probes");
+            tracing::warn!(target: "punch", orphaned, "releasing orphaned quota without pending probes");
             self.release_quota(orphaned)?;
         }
-        tracing::debug!(target: "punch", "Resource cleanup completed");
+        tracing::debug!(target: "punch", "resource cleanup completed");
         Ok(())
     }
 
@@ -516,7 +516,7 @@ impl Drop for PortPredictor {
                     .unwrap()
                     .release_port(quota_held, self.dst, self.device.clone())
         {
-            tracing::warn!(target: "punch", %error, quota_held, "Failed to release predictor quota during drop");
+            tracing::warn!(target: "punch", %error, quota_held, "failed to release predictor quota during drop");
         }
 
         let bind_uris = self.probes.drain_bind_uris();

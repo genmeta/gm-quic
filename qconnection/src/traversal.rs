@@ -127,7 +127,7 @@ impl Components {
             EndpointAddr::Socket(addr) => addr,
             _ => return,
         };
-        tracing::debug!(target: "quic", bind_uri = %bind, %addr,"Add local endpoint");
+        tracing::trace!(target: "quic", bind_uri = %bind, %addr,"add local endpoint");
         match self.puncher.add_local_endpoint(bind, addr) {
             Ok(ways) => {
                 let ways: Vec<(BindUri, qtraversal::Link, qtraversal::PathWay)> = ways;
@@ -147,7 +147,7 @@ impl Components {
             EndpointAddr::Socket(addr) => addr,
             _ => return,
         };
-        tracing::debug!(target: "quic", %addr, ?source, "Add peer endpoint");
+        tracing::trace!(target: "quic", %addr, ?source, "add peer endpoint");
         match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
                 ways.into_iter().for_each(|way| {
