@@ -2,7 +2,8 @@
 name = "qtraversal"
 version.workspace = true
 edition.workspace = true
-readme.workspace = true
+description = "NAT traversal utilities for QUIC, a part of dquic"
+readme = "README.md"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
