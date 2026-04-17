@@ -42,10 +42,10 @@ x509-parser = { workspace = true }
 [target.'cfg(any(unix, windows))'.dependencies]
 qinterface = { workspace = true, features = ["qudp"] }
 
-# features: unreliable
-qunreliable = { workspace = true, optional = true }
+# features: datagram
+qdatagram = { workspace = true, optional = true }
 
 [features]
-default = ["unreliable"]
-unreliable = ["dep:qunreliable"]
+default = ["datagram"]
+datagram = ["dep:qdatagram"]
 telemetry = ["qevent/telemetry"]

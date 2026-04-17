@@ -34,7 +34,7 @@ mod doc {
     // mod en {}
 }
 
-pub use ::qconnection::{self, qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
+pub use ::qconnection::{self, qbase, qdatagram, qevent, qinterface, qrecovery, qtraversal};
 pub use ::qresolve;
 
 mod cert;
