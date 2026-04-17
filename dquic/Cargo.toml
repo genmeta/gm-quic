@@ -43,9 +43,9 @@ x509-parser = { workspace = true }
 # console-subscriber = "0.4"
 
 [features]
-default = ["unreliable"]
+default = ["datagram"]
 telemetry = ["qconnection/telemetry"]
-unreliable = ["qconnection/unreliable"]
+datagram = ["qconnection/datagram"]
 
 [dev-dependencies.tracing-subscriber]
 workspace = true

@@ -269,7 +269,7 @@ fn frame_dispathcer(
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
     let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded_channel();
     let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded_channel();
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
     let (punch_frames_entry, rcvd_punch_frames) = mpsc::unbounded_channel();
     let (punch_hello_frames_entry, rcvd_punch_hello_frames) = mpsc::unbounded_channel();
@@ -322,7 +322,7 @@ fn frame_dispathcer(
         flow_controlled_data_streams,
         event_broker.clone(),
     );
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     pipe(
         rcvd_datagram_frames,
         components.datagram_flow.clone(),
@@ -370,7 +370,7 @@ fn frame_dispathcer(
         Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
         Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
         Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-        #[cfg(feature = "unreliable")]
+        #[cfg(feature = "datagram")]
         Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
         Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
         Frame::AddAddress(frame) => {

@@ -24,12 +24,12 @@
 
 //     fn send_datagram_handler(&self) -> Self::SendDatagramHandler {
 //         let conn = self.deref().clone();
-//         DatagramSender::Pending(Box::pin(async move { conn.unreliable_writer().await }))
+//         DatagramSender::Pending(Box::pin(async move { conn.datagram_writer().await }))
 //     }
 
 //     fn recv_datagram_handler(&self) -> Self::RecvDatagramHandler {
 //         let conn = self.deref().clone();
-//         DatagramReceiver::Pending(Box::pin(async move { conn.unreliable_reader() }))
+//         DatagramReceiver::Pending(Box::pin(async move { conn.datagram_reader() }))
 //     }
 // }
 

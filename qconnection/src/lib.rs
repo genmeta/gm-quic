@@ -19,13 +19,13 @@ pub mod prelude {
         sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
+    #[cfg(feature = "datagram")]
+    pub use qdatagram::{DatagramReader, DatagramWriter};
     pub use qinterface::{
         bind_uri::BindUri,
         io::{IO, IoExt},
     };
     pub use qrecovery::{recv::StopSending, send::CancelStream, streams::error::StreamError};
-    #[cfg(feature = "unreliable")]
-    pub use qunreliable::{DatagramReader, DatagramWriter};
 
     pub mod handy {
         pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
@@ -52,7 +52,7 @@ use std::{
     sync::{Arc, RwLock, atomic::AtomicBool},
 };
 
-pub use ::{qbase, qevent, qinterface, qrecovery, qtraversal, qunreliable};
+pub use ::{qbase, qdatagram, qevent, qinterface, qrecovery, qtraversal};
 use derive_more::From;
 use enum_dispatch::enum_dispatch;
 use events::{ArcEventBroker, EmitEvent, Event};
@@ -73,6 +73,9 @@ use qbase::{
     time::ArcDeferIdleTimer,
     token::ArcTokenRegistry,
 };
+use qdatagram::DatagramFlow;
+#[cfg(feature = "datagram")]
+use qdatagram::{DatagramReader, DatagramWriter};
 use qevent::{
     quic::{Owner, connectivity::ConnectionClosed},
     telemetry::Instrument,
@@ -90,9 +93,6 @@ use qrecovery::{
     journal, recv, reliable, send,
     streams::{self, Ext},
 };
-use qunreliable::DatagramFlow;
-#[cfg(feature = "unreliable")]
-use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use state::ArcConnState;
 use termination::Termination;
@@ -264,15 +264,15 @@ impl Components {
             .in_current_span()
     }
 
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     #[deprecated]
-    pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
+    pub fn datagram_reader(&self) -> io::Result<DatagramReader> {
         self.datagram_flow.reader()
     }
 
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     #[deprecated]
-    pub fn unreliable_writer(&self) -> Impl_Future![io::Result<DatagramWriter>] {
+    pub fn datagram_writer(&self) -> Impl_Future![io::Result<DatagramWriter>] {
         let params = self.parameters.clone();
         let datagram_flow = self.datagram_flow.clone();
         async move {
@@ -579,21 +579,21 @@ impl Connection {
             .map(|result| result?)
     }
 
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     #[deprecated]
     #[allow(deprecated)]
-    pub fn unreliable_reader(&self) -> Result<io::Result<DatagramReader>, Error> {
+    pub fn datagram_reader(&self) -> Result<io::Result<DatagramReader>, Error> {
         self.0
-            .try_map_components(|core_conn| core_conn.unreliable_reader())
+            .try_map_components(|core_conn| core_conn.datagram_reader())
     }
 
-    #[cfg(feature = "unreliable")]
+    #[cfg(feature = "datagram")]
     #[deprecated]
     #[allow(deprecated)]
-    pub async fn unreliable_writer(&self) -> Result<io::Result<DatagramWriter>, Error> {
+    pub async fn datagram_writer(&self) -> Result<io::Result<DatagramWriter>, Error> {
         Ok(self
             .0
-            .try_map_components(|core_conn| core_conn.unreliable_writer())?
+            .try_map_components(|core_conn| core_conn.datagram_writer())?
             .await)
     }
 

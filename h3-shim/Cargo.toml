@@ -22,7 +22,7 @@ dquic = { workspace = true }
 tokio = { workspace = true }
 
 [features]
-unreliable = ["dep:h3-datagram", "dquic/unreliable"]
+datagram = ["dep:h3-datagram", "dquic/datagram"]
 telemetry = ["dquic/telemetry"]
 
 [dev-dependencies]

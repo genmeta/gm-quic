@@ -8,7 +8,7 @@ members = [
     "qcongestion",
     "qudp",
     "qinterface",
-    "qunreliable",
+    "qdatagram",
     "qconnection",
     "dquic",
     "h3-shim",
@@ -98,7 +98,7 @@ qbase = { path = "./qbase", version = "0.4.0" }
 qevent = { path = "./qevent", version = "0.4.0" }
 qudp = { path = "./qudp", version = "0.4.0" }
 qinterface = { path = "./qinterface", version = "0.4.0" }
-qunreliable = { path = "./qunreliable", version = "0.4.0" }
+qdatagram = { path = "./qdatagram", version = "0.4.0" }
 qresolve = { path = "./qresolve", version = "0.4.0" }
 qrecovery = { path = "./qrecovery", version = "0.4.0" }
 qtraversal = { path = "./qtraversal", version = "0.4.0" }

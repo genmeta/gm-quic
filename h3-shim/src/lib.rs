@@ -2,9 +2,9 @@ pub mod conn;
 mod error;
 pub mod pool;
 pub use conn::{OpenStreams, QuicConnection};
-#[cfg(feature = "unreliable")]
+#[cfg(feature = "datagram")]
 pub mod ext;
-#[cfg(feature = "unreliable")]
+#[cfg(feature = "datagram")]
 #[allow(unused_imports)]
 pub use ext::*;
 pub mod streams;

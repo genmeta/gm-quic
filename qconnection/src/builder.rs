@@ -18,6 +18,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenProvider, TokenSink},
 };
 use qcongestion::HandshakeStatus;
+use qdatagram::DatagramFlow;
 use qevent::{
     GroupID,
     quic::{
@@ -36,7 +37,6 @@ use qinterface::{
 };
 use qrecovery::crypto::CryptoStream;
 use qtraversal::punch::puncher::ArcPuncher;
-use qunreliable::DatagramFlow;
 use rustls::{
     ClientConfig as TlsClientConfig, ServerConfig as TlsServerConfig, crypto::CryptoProvider,
 };

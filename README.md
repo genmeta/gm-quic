@@ -56,7 +56,7 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qrecovery**: The reliable transport part of QUIC, encompassing the state machine evolution of the sender/receiver, and the internal logic interaction between the application layer and the transport layer.
 - **qcongestion**: Congestion control in QUIC, which abstracts a unified congestion control interface and implements BBRv1. In the future, it will also implement more transport control algorithms such as Cubic and others.
 - **qinterface**: QUIC's packet routing and definition of the underlying I/O interface (`QuicIO`) enable dquic to run in various environments. Contains an optional qudp-based `QuicIO` implementation
-- **qunreliable**: The extension for unreliable datagram transmission based on QUIC offers transmission control mechanisms and enhanced security compared to directly sending unreliable datagrams over UDP. See [RFC 9221][3].
+- **qdatagram**: The extension for unreliable datagram transmission based on QUIC offers transmission control mechanisms and enhanced security compared to directly sending unreliable datagrams over UDP. See [RFC 9221][3].
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
 - **dquic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance.
