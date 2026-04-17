@@ -1,4 +1,4 @@
-name: Traversal Tests
+name: Traversal
 
 on:
   push:
@@ -16,8 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image with cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: qtraversal/tools/dockerfile
+          tags: dquic-traversal-test:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Create cargo cache volume
         run: docker volume create cargo-cache
@@ -65,13 +75,23 @@ jobs:
             echo ""
           done
 
-  hole-punching:
+  punch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -f qtraversal/tools/dockerfile -t dquic-traversal-test:latest .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image with cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: qtraversal/tools/dockerfile
+          tags: dquic-traversal-test:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Create cargo cache volume
         run: docker volume create cargo-cache
