@@ -36,7 +36,7 @@ impl ClientHandshake {
     /// it marks the completion of the client handshake.
     ///
     /// Return whether it is the first time to receive the HANDSHAKE_DONE frame.
-    pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) -> bool {
+    pub fn recv_handshake_done_frame(&self, _frame: HandshakeDoneFrame) -> bool {
         !self.done.swap(true, Ordering::AcqRel)
     }
 }
@@ -194,7 +194,7 @@ where
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
     ///
     /// Return whether it is the first time to receive the HANDSHAKE_DONE frame(for client).
-    fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<bool, Error> {
+    fn recv_frame(&self, frame: HandshakeDoneFrame) -> Result<bool, Error> {
         match self {
             Handshake::Client(h) => Ok(h.recv_handshake_done_frame(frame)),
             _ => Err(QuicError::with_default_fty(
@@ -231,7 +231,7 @@ mod tests {
         let handshake = Handshake::<HandshakeDoneFrameTx>::new_client();
         assert!(!handshake.is_handshake_done());
 
-        let ret = handshake.recv_frame(&HandshakeDoneFrame);
+        let ret = handshake.recv_frame(HandshakeDoneFrame);
         assert!(ret.is_ok());
         assert!(handshake.is_handshake_done());
     }
@@ -241,11 +241,11 @@ mod tests {
         let handshake = Handshake::<HandshakeDoneFrameTx>::new_client();
         assert!(!handshake.is_handshake_done());
 
-        assert!(handshake.recv_frame(&HandshakeDoneFrame).unwrap());
+        assert!(handshake.recv_frame(HandshakeDoneFrame).unwrap());
         assert!(handshake.is_handshake_done());
 
         // recv_frame will only return `true` once when handshake first done
-        assert!(!handshake.recv_frame(&HandshakeDoneFrame).unwrap());
+        assert!(!handshake.recv_frame(HandshakeDoneFrame).unwrap());
         assert!(handshake.is_handshake_done());
     }
 
@@ -267,7 +267,7 @@ mod tests {
         let handshake = Handshake::new_server(HandshakeDoneFrameTx::default());
         assert!(!handshake.is_handshake_done());
 
-        let ret = handshake.recv_frame(&HandshakeDoneFrame);
+        let ret = handshake.recv_frame(HandshakeDoneFrame);
         assert_eq!(
             ret,
             Err(QuicError::with_default_fty(

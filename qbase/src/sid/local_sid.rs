@@ -68,10 +68,10 @@ where
 
     /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
     /// update the maximum stream ID that can be opened locally in the given direction.
-    fn recv_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
+    fn recv_max_streams_frame(&mut self, frame: MaxStreamsFrame) {
         let (dir, val) = match frame {
-            MaxStreamsFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
-            MaxStreamsFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
+            MaxStreamsFrame::Bi(max) => (Dir::Bi, max.into_inner()),
+            MaxStreamsFrame::Uni(max) => (Dir::Uni, max.into_inner()),
         };
         self.increase_limit(dir, val);
     }
@@ -182,7 +182,7 @@ where
     /// Therefore, it mainly depends on the peer's attitude
     /// and is subject to the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`)
     /// received from peer.
-    pub fn recv_max_streams_frame(&self, frame: &MaxStreamsFrame) {
+    pub fn recv_max_streams_frame(&self, frame: MaxStreamsFrame) {
         self.0.lock().unwrap().recv_max_streams_frame(frame);
     }
 
@@ -229,7 +229,7 @@ where
 {
     type Output = ();
 
-    fn recv_frame(&self, frame: &MaxStreamsFrame) -> Result<Self::Output, crate::error::Error> {
+    fn recv_frame(&self, frame: MaxStreamsFrame) -> Result<Self::Output, crate::error::Error> {
         self.recv_max_streams_frame(frame);
         Ok(())
     }
@@ -268,13 +268,13 @@ mod tests {
             StreamsBlockedFrameTx::default(),
             ArcSendWakers::default(),
         );
-        local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0)));
+        local.recv_max_streams_frame(MaxStreamsFrame::Bi(VarInt::from_u32(0)));
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending,);
         assert!(!local.0.lock().unwrap().wakers[0].is_empty());
 
-        local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(1)));
+        local.recv_max_streams_frame(MaxStreamsFrame::Bi(VarInt::from_u32(1)));
         let _ = local.0.lock().unwrap().wakers[0].pop_front();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
         assert!(!local.0.lock().unwrap().wakers[0].is_empty());
 
-        local.recv_max_streams_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(2)));
+        local.recv_max_streams_frame(MaxStreamsFrame::Uni(VarInt::from_u32(2)));
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Uni),
             Poll::Ready(Some(StreamId(2)))

@@ -22,7 +22,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, ReliableFrame)> for Components {
     type Output = ();
     fn recv_frame(
         &self,
-        frame: &(BindUri, Pathway, Link, ReliableFrame),
+        frame: (BindUri, Pathway, Link, ReliableFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         let Ok(pathway) = frame.1.try_into() else {
             return Ok(());
@@ -33,7 +33,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, ReliableFrame)> for Components {
         let bind_uri = frame.0.clone();
         let frame: ReliableFrame = frame.3.clone();
 
-        self.puncher.recv_frame(&(bind_uri, pathway, link, frame))
+        self.puncher.recv_frame((bind_uri, pathway, link, frame))
     }
 }
 
@@ -42,7 +42,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, PunchHelloFrame)> for Components {
 
     fn recv_frame(
         &self,
-        frame: &(BindUri, Pathway, Link, PunchHelloFrame),
+        frame: (BindUri, Pathway, Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
         let Ok(pathway) = frame.1.try_into() else {
             return Ok(());
@@ -53,7 +53,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, PunchHelloFrame)> for Components {
         let bind_uri = frame.0.clone();
         let frame = frame.3;
 
-        self.puncher.recv_frame(&(bind_uri, pathway, link, frame))
+        self.puncher.recv_frame((bind_uri, pathway, link, frame))
     }
 }
 

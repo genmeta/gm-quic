@@ -289,8 +289,8 @@ mod recv {
     impl ReceiveFrame<(CryptoFrame, Bytes)> for CryptoStreamIncoming {
         type Output = ();
 
-        fn recv_frame(&self, (frame, data): &(CryptoFrame, Bytes)) -> Result<Self::Output, Error> {
-            self.0.lock().unwrap().recv(frame.offset(), data.clone());
+        fn recv_frame(&self, (frame, data): (CryptoFrame, Bytes)) -> Result<Self::Output, Error> {
+            self.0.lock().unwrap().recv(frame.offset(), data);
             Ok(())
         }
     }
@@ -365,7 +365,7 @@ mod tests {
 
         crypto_stream
             .incoming()
-            .recv_frame(&(
+            .recv_frame((
                 CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(11)),
                 bytes::Bytes::copy_from_slice(b"hello world"),
             ))

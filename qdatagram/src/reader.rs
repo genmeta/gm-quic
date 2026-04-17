@@ -67,7 +67,7 @@ impl DatagramIncoming {
     /// If the connection is closing or closed, the new datagram will be ignored.
     ///
     /// If the application is waiting for the data to be read, the task will be woken up when the datagram is received.
-    pub fn recv_datagram(&self, frame: &DatagramFrame, data: bytes::Bytes) -> Result<(), Error> {
+    pub fn recv_datagram(&self, frame: DatagramFrame, data: bytes::Bytes) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
         let reader = guard.as_mut().map_err(|e| e.clone())?;
         if (frame.encoding_size() + data.len()) > reader.local_max_size {
@@ -280,7 +280,7 @@ mod tests {
 
         incoming
             .recv_datagram(
-                &DatagramFrame::new(false, VarInt::from_u32(11)),
+                DatagramFrame::new(false, VarInt::from_u32(11)),
                 Bytes::from_static(b"hello world"),
             )
             .unwrap();

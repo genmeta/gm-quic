@@ -98,7 +98,7 @@ where
     /// Return the reset token of this [`NewConnectionIdFrame`] if it is valid.
     fn recv_new_cid_frame(
         &mut self,
-        frame: &NewConnectionIdFrame,
+        frame: NewConnectionIdFrame,
     ) -> Result<Option<ResetToken>, Error> {
         let seq = frame.sequence();
         let retire_prior_to = frame.retire_prior_to();
@@ -303,7 +303,7 @@ where
 {
     type Output = Option<ResetToken>;
 
-    fn recv_frame(&self, frame: &NewConnectionIdFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, frame: NewConnectionIdFrame) -> Result<Self::Output, Error> {
         self.0.lock().unwrap().recv_new_cid_frame(frame)
     }
 }
@@ -511,7 +511,7 @@ mod tests {
 
         let new_dcid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame::new(new_dcid, VarInt::from_u32(1), VarInt::from_u32(0));
-        assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
+        assert!(remote_cids.recv_new_cid_frame(frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 2);
 
         assert!(matches!(
@@ -550,7 +550,7 @@ mod tests {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
             let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(seq), VarInt::from_u32(0));
-            _ = guard.recv_new_cid_frame(&frame);
+            _ = guard.recv_new_cid_frame(frame);
         }
 
         let cid_apply1 = guard.apply_dcid();
@@ -630,7 +630,7 @@ mod tests {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
             let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(seq), VarInt::from_u32(0));
-            _ = guard.recv_new_cid_frame(&frame);
+            _ = guard.recv_new_cid_frame(frame);
         }
 
         guard.retire_prior_to(4);

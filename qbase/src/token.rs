@@ -91,7 +91,7 @@ impl Deref for ArcTokenRegistry {
 impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     type Output = ();
 
-    fn recv_frame(&self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
+    fn recv_frame(&self, frame: NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
         match self.deref() {
             TokenRegistry::Client((server_name, client)) => {
                 client.sink(server_name, frame.token().to_vec());

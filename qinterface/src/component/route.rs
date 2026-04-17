@@ -271,7 +271,7 @@ where
 {
     type Output = ();
 
-    fn recv_frame(&self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, frame: RetireConnectionIdFrame) -> Result<Self::Output, Error> {
         self.issued_cids.recv_frame(frame)
     }
 }

@@ -28,7 +28,7 @@ where
     /// [`Reader`]: crate::recv::Reader
     pub fn recv_data(
         &self,
-        stream_frame: &StreamFrame,
+        stream_frame: StreamFrame,
         body: Bytes,
     ) -> Result<(bool, usize), QuicError> {
         let mut recver = self.0.recver();
@@ -39,7 +39,7 @@ where
             match receiving_state {
                 Recver::Recv(r) => {
                     if stream_frame.is_fin() {
-                        let mut size_known = r.determin_size(stream_frame)?;
+                        let mut size_known = r.determin_size(&stream_frame)?;
                         fresh_data = size_known.recv(stream_frame, body)?;
                         if size_known.is_all_rcvd() {
                             is_into_rcvd = true;
@@ -68,7 +68,7 @@ where
     ///
     /// If all data sent by the peer has not been received, receiving a stream reset frame will cause
     /// any read calls to return an error, received data will be discarded.
-    pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<usize, QuicError> {
+    pub fn recv_reset(&self, reset_frame: ResetStreamFrame) -> Result<usize, QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut sync_fresh_data = 0;
         let mut recver = self.0.recver();
@@ -76,12 +76,12 @@ where
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) => {
-                    sync_fresh_data = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(*reset_frame);
+                    sync_fresh_data = r.recv_reset(&reset_frame)?;
+                    *receiving_state = Recver::ResetRcvd(reset_frame);
                 }
                 Recver::SizeKnown(r) => {
-                    r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(*reset_frame);
+                    r.recv_reset(&reset_frame)?;
+                    *receiving_state = Recver::ResetRcvd(reset_frame);
                 }
                 _ => unreachable!(),
             }

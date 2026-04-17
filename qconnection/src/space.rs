@@ -130,7 +130,7 @@ fn pipe<F: Send + Debug + 'static>(
     tokio::spawn(
         async move {
             while let Some(f) = source.recv().await {
-                if let Err(Error::Quic(e)) = destination.recv_frame(&f) {
+                if let Err(Error::Quic(e)) = destination.recv_frame(f) {
                     broker.emit(Event::Failed(e));
                     break;
                 }
@@ -158,11 +158,11 @@ impl FlowControlledDataStreams {
 impl ReceiveFrame<(StreamFrame, Bytes)> for FlowControlledDataStreams {
     type Output = ();
 
-    fn recv_frame(&self, data_frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, data_frame: (StreamFrame, Bytes)) -> Result<Self::Output, Error> {
+        let frame_type = data_frame.0.frame_type();
         match self.streams.recv_data(data_frame) {
             Ok(new_data_size) => {
-                self.flow_ctrl
-                    .on_new_rcvd(data_frame.0.frame_type(), new_data_size)?;
+                self.flow_ctrl.on_new_rcvd(frame_type, new_data_size)?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -173,7 +173,7 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for FlowControlledDataStreams {
 impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
     type Output = ();
 
-    fn recv_frame(&self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, frame: StreamCtlFrame) -> Result<Self::Output, Error> {
         match self.streams.recv_stream_control(frame) {
             Ok(new_data_size) => {
                 self.flow_ctrl
@@ -202,9 +202,9 @@ impl AckInitialSpace {
 impl ReceiveFrame<AckFrame> for AckInitialSpace {
     type Output = ();
 
-    fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, ack_frame: AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
-        rotate_guard.update_largest(ack_frame)?;
+        rotate_guard.update_largest(&ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
         qevent::event!(PacketsAcked {
@@ -238,9 +238,9 @@ impl AckHandshakeSpace {
 impl ReceiveFrame<AckFrame> for AckHandshakeSpace {
     type Output = ();
 
-    fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, ack_frame: AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
-        rotate_guard.update_largest(ack_frame)?;
+        rotate_guard.update_largest(&ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
         qevent::event!(PacketsAcked {
@@ -266,12 +266,12 @@ struct AckDataSpace {
 impl AckDataSpace {
     fn new(
         journal: &Journal<GuaranteedFrame>,
-        data_streams: &DataStreams,
+        data_streams: DataStreams,
         crypto_stream: &CryptoStream,
     ) -> Self {
         Self {
             send_journal: journal.of_sent_packets(),
-            data_streams: data_streams.clone(),
+            data_streams,
             crypto_stream_outgoing: crypto_stream.outgoing(),
         }
     }
@@ -280,9 +280,9 @@ impl AckDataSpace {
 impl ReceiveFrame<AckFrame> for AckDataSpace {
     type Output = ();
 
-    fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, ack_frame: AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
-        rotate_guard.update_largest(ack_frame)?;
+        rotate_guard.update_largest(&ack_frame)?;
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
         qevent::event!(PacketsAcked {

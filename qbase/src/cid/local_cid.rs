@@ -99,7 +99,7 @@ where
 
     /// Receive a [`RetireConnectionIdFrame`] from the peer,
     /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
-    fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
+    fn recv_retire_cid_frame(&mut self, frame: RetireConnectionIdFrame) -> Result<(), Error> {
         let seq = frame.sequence();
         if seq >= self.cid_deque.largest() {
             return Err(QuicError::new(
@@ -255,7 +255,7 @@ where
     /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
     fn recv_frame(
         &self,
-        frame: &RetireConnectionIdFrame,
+        frame: RetireConnectionIdFrame,
     ) -> Result<Self::Output, crate::error::Error> {
         self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
@@ -331,7 +331,7 @@ mod tests {
         let issued_cid2 = *local_cids.issued_cids.frames()[0].connection_id();
 
         let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(1));
-        let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
+        let cid2 = local_cids.recv_retire_cid_frame(retire_frame);
         assert!(cid2.is_ok());
         assert!(
             !local_cids
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(local_cids.issued_cids.frames().len(), 2);
 
         let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(0));
-        let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
+        let cid1 = local_cids.recv_retire_cid_frame(retire_frame);
         assert!(cid1.is_ok());
         assert!(
             !local_cids
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(local_cids.issued_cids.frames().len(), 3);
 
         let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(2));
-        let cid3 = local_cids.recv_retire_cid_frame(&retire_frame);
+        let cid3 = local_cids.recv_retire_cid_frame(retire_frame);
         assert!(cid3.is_ok());
     }
 }
