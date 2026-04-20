@@ -124,26 +124,26 @@ pub trait PacketSpace<H> {
 
 // Target -> Target
 pub trait Package<Target: ?Sized> {
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals>;
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals>;
 }
 
 impl<Target: BufMut + ?Sized, P: Package<Target> + ?Sized> Package<Target> for &mut P {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         P::dump(self, target)
     }
 }
 
 impl<Target: BufMut + ?Sized, P: Package<Target> + ?Sized> Package<Target> for Box<P> {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         P::dump(self, target)
     }
 }
 
 impl<Target: BufMut + ?Sized, P: Package<Target>> Package<Target> for Option<P> {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         self.take()
             .map_or_else(|| Err(Signals::empty()), |mut package| package.dump(target))
     }
@@ -151,34 +151,38 @@ impl<Target: BufMut + ?Sized, P: Package<Target>> Package<Target> for Option<P> 
 
 impl<Target: BufMut + ?Sized, P: Package<Target>> Package<Target> for [P] {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         let origin = target.remaining_mut();
         let mut signals = Signals::empty();
+        let mut packet_content = PacketContent::default();
         for package in self {
-            if let Err(s) = package.dump(target) {
-                signals |= s
+            match package.dump(target) {
+                Ok(content) => packet_content.add(content),
+                Err(s) => signals |= s,
             }
         }
 
         (origin != target.remaining_mut())
-            .then_some(())
+            .then_some(packet_content)
             .ok_or(signals)
     }
 }
 
 impl<Target: BufMut + ?Sized, P: Package<Target>, const N: usize> Package<Target> for [P; N] {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         let origin = target.remaining_mut();
         let mut signals = Signals::empty();
+        let mut packet_content = PacketContent::default();
         for package in self {
-            if let Err(s) = package.dump(target) {
-                signals |= s
+            match package.dump(target) {
+                Ok(content) => packet_content.add(content),
+                Err(s) => signals |= s,
             }
         }
 
         (origin != target.remaining_mut())
-            .then_some(())
+            .then_some(packet_content)
             .ok_or(signals)
     }
 }
@@ -190,15 +194,15 @@ where
     P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
 {
     #[inline]
-    fn dump(&mut self, target: &mut P) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut P) -> Result<PacketContent, Signals> {
         let packet = target.as_ref();
         match packet.payload_len() + packet.tag_len() {
             _ if packet.is_empty() => Err(Signals::empty()),
             len if len < 20 => {
                 target.put_bytes(0, 20 - len);
-                Ok(())
+                Ok(PacketContent::NonAckEliciting)
             }
-            _ => Ok(()),
+            _ => Ok(PacketContent::NonAckEliciting),
         }
     }
 }
@@ -210,15 +214,15 @@ where
     P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
 {
     #[inline]
-    fn dump(&mut self, target: &mut P) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut P) -> Result<PacketContent, Signals> {
         let packet = target.as_ref();
         match packet.payload_len() + packet.tag_len() {
             _ if packet.is_empty() => Err(Signals::empty()),
             len if len < packet.buffer().len() => {
                 target.put_bytes(0, packet.remaining_mut());
-                Ok(())
+                Ok(PacketContent::NonAckEliciting)
             }
-            _ => Ok(()),
+            _ => Ok(PacketContent::NonAckEliciting),
         }
     }
 }
@@ -230,7 +234,7 @@ where
     P: AsRef<PacketWriter<'b>> + BufMut + ?Sized,
 {
     #[inline]
-    fn dump(&mut self, target: &mut P) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut P) -> Result<PacketContent, Signals> {
         if target.as_ref().is_probe_new_path() {
             return PadToFull.dump(target);
         }
@@ -243,16 +247,18 @@ pub struct Repeat<P>(pub P);
 
 impl<Target: ?Sized + BufMut, P: Package<Target>> Package<Target> for Repeat<P> {
     #[inline]
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         let origin = target.remaining_mut();
+        let mut packet_content = PacketContent::default();
         let signals = loop {
-            if let Err(signals) = self.0.dump(target) {
-                break signals;
+            match self.0.dump(target) {
+                Ok(content) => packet_content.add(content),
+                Err(signals) => break signals,
             }
         };
 
         (origin != target.remaining_mut())
-            .then_some(())
+            .then_some(packet_content)
             .ok_or(signals)
     }
 }
@@ -269,20 +275,22 @@ macro_rules! impl_package_for_tuple {
     (@imp $($t:ident)*) => {
         impl<Target: BufMut + ?Sized, $($t: Package<Target>),*> Package<Target> for Packages<($($t,)*)> {
             #[inline]
-            fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+            fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
                 let origin = target.remaining_mut();
                 let mut signals = Signals::empty();
+                let mut packet_content = PacketContent::default();
 
                 #[allow(non_snake_case)]
                 let ($($t,)*) = &mut self.0;
 
                 $( #[allow(non_snake_case)]
-                if let Err(s) = $t.dump(target) {
-                    signals |= s;
+                match $t.dump(target) {
+                    Ok(content) => packet_content.add(content),
+                    Err(s) => signals |= s,
                 } )*
 
                 (origin != target.remaining_mut())
-                    .then_some(())
+                    .then_some(packet_content)
                     .ok_or(signals)
             }
         }
@@ -301,7 +309,7 @@ macro_rules! frame_packages {
             Target: BufMut + RecordFrame<Frame<NonData>, NonData> + ?Sized,
         {
             #[inline]
-            fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+            fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
                 if !(target.remaining_mut() >= self.max_encoding_size()
                     || target.remaining_mut() >= self.encoding_size())
                 {
@@ -310,7 +318,7 @@ macro_rules! frame_packages {
                 let frame = self.clone().into();
                 target.record_frame(&frame);
                 target.put_frame(&frame);
-                Ok(())
+                Ok(PacketContent::from(self.frame_type()))
             }
         }
     };
@@ -327,7 +335,7 @@ macro_rules! frame_packages {
             for<'b> &'b mut Target: WriteData<D>,
         {
             #[inline]
-            fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+            fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
                 let (frame, data) = self;
                 if !(target.remaining_mut() >= frame.max_encoding_size()
                     || target.remaining_mut() >= frame.encoding_size())
@@ -337,7 +345,7 @@ macro_rules! frame_packages {
                 let frame = (frame.clone(), data.clone()).into();
                 target.record_frame(&frame);
                 target.put_frame(&frame);
-                Ok(())
+                Ok(PacketContent::from(frame.frame_type()))
             }
         }
     };
@@ -703,7 +711,10 @@ unsafe impl BufMut for PacketWriter<'_> {
 
 pub trait AssemblePacket: BufMut {
     #[inline]
-    fn assemble_packet(&mut self, package: &mut dyn Package<Self>) -> Result<(), Signals> {
+    fn assemble_packet(
+        &mut self,
+        package: &mut dyn Package<Self>,
+    ) -> Result<PacketContent, Signals> {
         package.dump(self)
     }
 

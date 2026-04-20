@@ -12,7 +12,7 @@ use qbase::{
     frame::PingFrame,
     net::tx::{ArcSendWaker, Signals},
     packet::{
-        AssemblePacket, Package, PacketProperties, ProductHeader,
+        AssemblePacket, Package, PacketContent, PacketProperties, ProductHeader,
         header::{
             long::{HandshakeHeader, InitialHeader, ZeroRttHeader, io::LongHeaderBuilder},
             short::OneRttHeader,
@@ -213,6 +213,7 @@ impl<'a> PacketsAssembler<'a> {
         space: &'s Space,
         data_sources: P,
         buffer: &'b mut [u8],
+        packet_content: &mut PacketContent,
     ) -> Result<usize, Signals>
     where
         Self: ProductHeader<H>,
@@ -222,7 +223,7 @@ impl<'a> PacketsAssembler<'a> {
     {
         let buffer = self.constraints.constrain(buffer);
         let mut packet = space.new_packet(self.new_header()?, self.cc, buffer)?;
-        packet.assemble_packet(&mut Packages((data_sources, PadTo20)))?;
+        packet_content.add(packet.assemble_packet(&mut Packages((data_sources, PadTo20)))?);
         let (sent_bytes, props) = packet.encrypt_and_protect_packet();
         self.commit(sent_bytes, props);
         Result::<_, Signals>::Ok(sent_bytes)
@@ -314,7 +315,7 @@ impl Burst {
             one_rtt: one_rtt_data_sources,
         }: &mut DataSources,
         mut buffer: &mut [u8],
-    ) -> Result<usize, BurstError> {
+    ) -> Result<(usize, PacketContent), BurstError> {
         let Self {
             path,
             spaces,
@@ -327,6 +328,7 @@ impl Burst {
         let data_space = spaces.data().as_ref();
 
         let origin = buffer.remaining_mut();
+        let mut packet_content = PacketContent::default();
 
         let mut assembler = self.assembler()?;
         let mut signals = Signals::empty();
@@ -339,6 +341,7 @@ impl Burst {
             initial_space,
             &mut Packages((ack_package(initial_space, &path.cc), initial_data_sources)),
             buffer,
+            &mut packet_content,
         ) {
             Ok(bytes_sent) => buffer = buffer[bytes_sent..].as_mut(),
             Err(s) => signals |= s,
@@ -351,6 +354,7 @@ impl Burst {
                 data_space,
                 zero_rtt_data_sources,
                 buffer,
+                &mut packet_content,
             ) {
                 Ok(bytes_sent) => buffer = buffer[bytes_sent..].as_mut(),
                 Err(s) => signals |= s,
@@ -364,6 +368,7 @@ impl Burst {
                 handshake_data_sources,
             )),
             buffer,
+            &mut packet_content,
         ) {
             Ok(bytes_sent) => buffer = buffer[bytes_sent..].as_mut(),
             Err(s) => signals |= s,
@@ -382,6 +387,7 @@ impl Burst {
                         PadProbe,
                     )),
                     buffer,
+                    &mut packet_content,
                 )
             } else {
                 assembler.assemble::<OneRttHeader, _, _>(
@@ -394,6 +400,7 @@ impl Burst {
                         PadProbe,
                     )),
                     buffer,
+                    &mut packet_content,
                 )
             };
 
@@ -406,12 +413,12 @@ impl Burst {
         if loaded_initial {
             assert!(buffer.remaining_mut() != origin);
             buffer.put_bytes(0, buffer.remaining_mut());
-            return Ok(origin);
+            return Ok((origin, packet_content));
         }
 
         let sent_bytes = origin - buffer.remaining_mut();
         (sent_bytes > 0)
-            .then_some(sent_bytes)
+            .then_some((sent_bytes, packet_content))
             .ok_or(BurstError::Signals(signals))
     }
 }
@@ -424,7 +431,7 @@ impl<Target: ?Sized> Package<Target> for PingSource
 where
     PingFrame: Package<Target>,
 {
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         if self.need_send_ack_eliciting > 0 {
             return PingFrame.dump(target);
         }
@@ -441,11 +448,12 @@ fn ping_package(cc: &ArcCC, epoch: Epoch) -> PingSource {
 }
 
 impl Burst {
-    fn load_ping(&self, buffer: &mut [u8]) -> Result<usize, BurstError> {
+    fn load_ping(&self, buffer: &mut [u8]) -> Result<(usize, PacketContent), BurstError> {
         let Self { spaces, path, .. } = self;
 
         let mut assembler = self.assembler()?;
         let mut signals = Signals::empty();
+        let mut packet_content = PacketContent::default();
 
         for &epoch in Epoch::iter().rev() {
             let result = match epoch {
@@ -456,6 +464,7 @@ impl Burst {
                         spaces.data().as_ref(),
                         &mut Packages((ack_package, ping_package, PadToFull)),
                         buffer,
+                        &mut packet_content,
                     )
                 }
                 Epoch::Handshake => {
@@ -465,6 +474,7 @@ impl Burst {
                         spaces.handshake().as_ref(),
                         &mut Packages((ack_package, ping_package, PadToFull)),
                         buffer,
+                        &mut packet_content,
                     )
                 }
                 Epoch::Initial => {
@@ -474,12 +484,13 @@ impl Burst {
                         spaces.initial().as_ref(),
                         &mut Packages((ack_package, ping_package, PadToFull)),
                         buffer,
+                        &mut packet_content,
                     )
                 }
             };
 
             match result {
-                Ok(sent_bytes) => return Ok(sent_bytes),
+                Ok(sent_bytes) => return Ok((sent_bytes, packet_content)),
                 Err(s) => signals |= s,
             }
         }
@@ -487,15 +498,19 @@ impl Burst {
         Err(BurstError::Signals(signals))
     }
 
-    fn load_heartbeat(&self, buffer: &mut [u8]) -> Result<usize, BurstError> {
+    fn load_heartbeat(&self, buffer: &mut [u8]) -> Result<(usize, PacketContent), BurstError> {
         let Self { spaces, path, .. } = self;
-
         let mut assembler = self.assembler()?;
-        Ok(assembler.assemble::<OneRttHeader, _, _>(
+        let mut packet_content = PacketContent::default();
+        match assembler.assemble::<OneRttHeader, _, _>(
             spaces.data().as_ref(),
-            &path.heartbeat,
+            &path.heartbeat_sndbuf,
             buffer,
-        )?)
+            &mut packet_content,
+        ) {
+            Ok(sent_bytes) => Ok((sent_bytes, packet_content)),
+            Err(s) => Err(BurstError::Signals(s)),
+        }
     }
 
     pub async fn burst<'b>(
@@ -532,8 +547,8 @@ impl Burst {
                 let buffer = &mut segment[..buffer_size][reversed_size..];
 
                 self.load_spaces(data_sources, buffer)
-                    .inspect(|_| {
-                        self.path.heartbeat.renew_on_effective_communicated();
+                    .inspect(|(_, packet_content)| {
+                        self.path.idle_timer.on_sent(*packet_content);
                     })
                     .or_else(|error| match error {
                         BurstError::Signals(signals) => {
@@ -553,7 +568,7 @@ impl Burst {
                         }
                         e @ BurstError::PathDeactived => Err(e),
                     })
-                    .map(|packet_size| {
+                    .map(|(packet_size, _)| {
                         if reversed_size > 0 {
                             let (mut header, payload) = segment.split_at_mut(reversed_size);
                             let forward_hdr = ForwardHeader::new(

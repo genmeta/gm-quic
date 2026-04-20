@@ -7,7 +7,7 @@ use bytes::BufMut;
 use qbase::{
     frame::AckFrame,
     net::tx::Signals,
-    packet::{InvalidPacketNumber, Package, PacketNumber, PacketWriter},
+    packet::{InvalidPacketNumber, Package, PacketContent, PacketNumber, PacketWriter},
     util::{IndexDeque, IndexError},
     varint::{VARINT_MAX, VarInt},
 };
@@ -375,7 +375,7 @@ where
     Target: AsRef<PacketWriter<'r>> + ?Sized,
     AckFrame: Package<Target>,
 {
-    fn dump(&mut self, target: &mut Target) -> Result<(), Signals> {
+    fn dump(&mut self, target: &mut Target) -> Result<PacketContent, Signals> {
         self.need_ack
             .or_else(|| self.journal.need_ack())
             .ok_or(Signals::TRANSPORT)
@@ -389,7 +389,7 @@ where
             })?
             .dump(target)
             .unwrap();
-        Ok(())
+        Ok(PacketContent::NonAckEliciting)
     }
 }
 

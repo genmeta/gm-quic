@@ -9,14 +9,14 @@ use std::{
 use qbase::{
     Epoch,
     error::Error,
-    frame::{PathChallengeFrame, PathResponseFrame, io::ReceiveFrame},
+    frame::{PathChallengeFrame, PathResponseFrame, PingFrame, io::ReceiveFrame},
     net::{
         route::{Link, PacketHeader, Pathway},
         tx::ArcSendWaker,
     },
     packet::PacketContent,
     param::ParameterId,
-    time::{ArcDeferIdleTimer, ArcMaxIdleTimer, MaxIdleTimer},
+    time::ArcIdleTimer,
 };
 use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qevent::{quic::connectivity::PathAssigned, telemetry::Instrument};
@@ -54,8 +54,8 @@ pub struct Path {
     cc: ArcCC,
     dcid_cell: ArcDcidCell,
     anti_amplifier: AntiAmplifier,
-    max_idle_timer: ArcMaxIdleTimer,
-    heartbeat: ArcHeartbeat,
+    idle_timer: ArcIdleTimer,
+    heartbeat_sndbuf: SendBuffer<PingFrame>,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
@@ -97,8 +97,7 @@ impl Components {
                 pathway,
                 dcid_cell,
                 max_ack_delay,
-                self.parameters.max_idle_timer(),
-                self.defer_idle_timer.clone(),
+                self.idle_config.timer(),
                 [
                     Arc::new(
                         self.spaces
@@ -197,8 +196,7 @@ impl Path {
         pathway: Pathway,
         dcid_cell: ArcDcidCell,
         max_ack_delay: Duration,
-        max_idle_timer: MaxIdleTimer,
-        defer_idle_timer: ArcDeferIdleTimer,
+        idle_timer: ArcIdleTimer,
         feedbacks: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
     ) -> Self {
@@ -222,8 +220,8 @@ impl Path {
             validated: AtomicBool::new(false),
             active: AtomicBool::new(true),
             anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
-            max_idle_timer: ArcMaxIdleTimer::from(max_idle_timer),
-            heartbeat: ArcHeartbeat::new(defer_idle_timer, Duration::from_secs(1)),
+            idle_timer,
+            heartbeat_sndbuf: SendBuffer::new(tx_waker.clone()),
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
@@ -248,12 +246,7 @@ impl Path {
         if size > 0 {
             self.status.release_anti_amplification_limit();
         }
-        if packet_content.is_ack_eliciting() {
-            self.heartbeat.renew_on_effective_communicated();
-        }
-        if epoch == Epoch::Data {
-            self.max_idle_timer.renew_on_received_1rtt();
-        }
+        self.idle_timer.on_rcvd(packet_content);
         self.cc()
             .on_pkt_rcvd(epoch, pn, packet_content.is_ack_eliciting());
     }

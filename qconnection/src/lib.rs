@@ -70,7 +70,7 @@ use qbase::{
     param::{ArcParameters, ParameterId},
     role::Role,
     sid::StreamId,
-    time::ArcDeferIdleTimer,
+    time::ArcIdleConfig,
     token::ArcTokenRegistry,
 };
 use qdatagram::DatagramFlow;
@@ -164,7 +164,7 @@ pub struct Components {
     locations: Arc<Locations>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     conn_state: ArcConnState,
-    defer_idle_timer: ArcDeferIdleTimer,
+    idle_config: ArcIdleConfig,
     paths: ArcPathContexts,
     send_lock: ArcSendLock,
     tls_handshake: ArcTlsHandshake,

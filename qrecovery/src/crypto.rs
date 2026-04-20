@@ -12,7 +12,7 @@ mod send {
         Epoch,
         frame::CryptoFrame,
         net::tx::{ArcSendWakers, Signals},
-        packet::Package,
+        packet::{Package, PacketContent},
         varint::{VARINT_MAX, VarInt},
     };
     use tokio::io::AsyncWrite;
@@ -191,12 +191,12 @@ mod send {
         P: BufMut + ?Sized,
         for<'b> (CryptoFrame, &'b [Bytes]): Package<P>,
     {
-        fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
+        fn dump(&mut self, packet: &mut P) -> Result<PacketContent, Signals> {
             let force = self.first_load;
             match self.outgoing.try_load_data_into(packet, force) {
                 Ok(()) => {
                     self.first_load = false;
-                    Ok(())
+                    Ok(PacketContent::EffectivePayload)
                 }
                 Err(signals) => Err(signals),
             }

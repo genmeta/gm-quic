@@ -16,7 +16,7 @@ use qbase::{
         io::{ReceiveFrame, SendFrame},
     },
     net::tx::{ArcSendWakers, Signals},
-    packet::Package,
+    packet::{Package, PacketContent},
     param::{ArcParameters, ParameterId, core::Parameters},
     role::Role,
     sid::{
@@ -598,9 +598,10 @@ where
     for<'a> (StreamFrame, &'a [Bytes]): Package<P>,
 {
     #[inline]
-    fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
+    fn dump(&mut self, packet: &mut P) -> Result<PacketContent, Signals> {
         self.data_stream
-            .try_load_data_into_once(packet, &self.flow_ctrl, self.zero_rtt)
+            .try_load_data_into_once(packet, &self.flow_ctrl, self.zero_rtt)?;
+        Ok(PacketContent::EffectivePayload)
     }
 }
 

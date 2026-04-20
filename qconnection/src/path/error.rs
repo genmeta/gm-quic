@@ -1,5 +1,5 @@
 use derive_more::From;
-use qbase::{error::Error as QuicError, time::IdleTimedOut};
+use qbase::{error::Error as QuicError, time::TimeOut};
 use qcongestion::TooManyPtos;
 use qinterface::bind_uri::BindUri;
 use thiserror::Error;
@@ -19,7 +19,7 @@ pub enum PathDeactivated {
     #[error("Path validation failed")]
     Invalid(#[source] ValidateFailure),
     #[error(transparent)]
-    Idle(IdleTimedOut),
+    Idle(TimeOut),
     #[error("Lost path state")]
     Lost(#[source] TooManyPtos),
     #[error("Failed to send packets on path")]

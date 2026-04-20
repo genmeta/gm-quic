@@ -11,7 +11,6 @@ use crate::{
     error::{Error, ErrorKind, QuicError},
     frame::FrameType,
     role::Role,
-    time::MaxIdleTimer,
 };
 
 pub mod core;
@@ -462,11 +461,6 @@ impl ArcParameters {
             parameters.poll_ready(cx).map(|()| Ok(parameters))
         })
         .await
-    }
-
-    #[inline]
-    pub fn max_idle_timer(&self) -> MaxIdleTimer {
-        MaxIdleTimer::new(self)
     }
 
     // /// Sets the retry source connection ID in the server
