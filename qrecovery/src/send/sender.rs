@@ -174,6 +174,13 @@ impl<TX> ReadySender<TX> {
             waker.wake();
         }
     }
+
+    pub(super) fn be_stopped(&mut self) -> u64 {
+        self.wake_all();
+        // ReadyState: no data is sent
+        debug_assert_eq!(self.sndbuf.sent(), 0);
+        self.sndbuf.sent()
+    }
 }
 
 /// 状态升级，ReaderSender => SendingSender
@@ -459,6 +466,10 @@ pub struct DataSentSender<TX> {
 }
 
 impl<TX> DataSentSender<TX> {
+    pub(super) fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
     pub(super) fn pick_up<P>(
         &'_ mut self,
         predicate: P,
