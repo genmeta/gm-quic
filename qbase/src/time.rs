@@ -1,214 +1,190 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use thiserror::Error;
-use tokio::{
-    sync::SetOnce,
-    time::{Duration, Instant},
-};
+use tokio::time::{Duration, Instant};
 
-use crate::param::ArcParameters;
+use crate::{frame::PingFrame, packet::PacketContent};
+
+#[derive(Debug, Error)]
+#[error("Path has been idle for too long")]
+pub struct TimeOut;
 
 #[derive(Debug)]
-struct DeferIdleTimer {
+pub struct IdleConfig {
+    max_idle_timeout: Duration,
     defer_idle_timeout: Duration,
-    last_effective_comm: Option<Instant>,
+    heartbeat_interval: Duration,
 }
 
-impl DeferIdleTimer {
-    /// Creates a new `ArcDeferIdleTimer` with the specified defer idle timeout.
-    fn new(defer_idle_timeout: Duration) -> Self {
-        Self {
-            defer_idle_timeout,
-            last_effective_comm: None,
+impl IdleConfig {
+    fn suitable_heartbeat_interval(max_idle_timeout: Duration) -> Duration {
+        if max_idle_timeout == Duration::ZERO {
+            Duration::from_secs(30)
+        } else {
+            (max_idle_timeout / 2)
+                .max(Duration::from_secs(1))
+                .min(Duration::from_secs(30))
         }
     }
 
-    /// Resets the timer to the current time after effective communication.
-    ///
-    /// Effective communication is defined as sending or receiving a packet with a valid payload,
-    /// which does not include packets that only contain Padding, Ping, or Ack.
-    fn renew(&mut self) {
-        // Even if the timer is expired, it can be updated to the current time
-        // within the max idle timeout.
-        self.last_effective_comm = Some(Instant::now());
+    // Creates a new `IdleTimer` with the specified maximum idle timeout and defer idle timeout.
+    pub fn new(max_idle_timeout: Duration, defer_idle_timeout: Duration) -> Self {
+        let heartbeat_interval = Self::suitable_heartbeat_interval(max_idle_timeout);
+        Self {
+            max_idle_timeout,
+            defer_idle_timeout,
+            heartbeat_interval,
+        }
     }
 
-    fn is_idle_lasted_for(&self, duration: Duration) -> bool {
-        self.last_effective_comm
-            .is_some_and(|last| last.elapsed() >= duration)
+    // Each endpoint advertises a max_idle_timeout, but the effective value at an endpoint
+    // is computed as the minimum of the two advertised values (or the sole advertised value,
+    // if only one endpoint advertises a non-zero value).
+    //
+    // Idle timeout is disabled when both endpoints omit this transport parameter or specify a value of 0.
+    pub fn negotiate_max_idle_timeout(&mut self, max_idle_timeout: Duration) {
+        match (self.max_idle_timeout, max_idle_timeout) {
+            (_, Duration::ZERO) => (),
+            (Duration::ZERO, remote) => self.max_idle_timeout = remote,
+            (local, remote) => self.max_idle_timeout = local.min(remote),
+        }
+        self.heartbeat_interval = Self::suitable_heartbeat_interval(self.max_idle_timeout);
     }
 
-    /// Returns true if the timer has expired.
-    ///
-    /// When sending a heartbeat packet that includes a ping, this method should be called first.
-    /// If it returns true, sending a ping packet is prohibited.
-    fn is_expired(&self) -> bool {
-        self.elapsed() >= self.defer_idle_timeout
-    }
-
-    fn elapsed(&self) -> Duration {
-        self.last_effective_comm
-            .map_or(Duration::ZERO, |last| last.elapsed())
+    // Sets the interval for sending heartbeat packets.
+    pub fn set_heartbeat_interval(&mut self, interval: Duration) {
+        self.heartbeat_interval = interval;
     }
 }
 
-/// A shared timer for connection-level defer idle timeout.
-///
-/// It is not necessary to set a timer task to check for timeouts,
-/// because its timeout event is not critical.
-/// After restricting the sending of ping packets, the `MaxIdleTimer`
-/// will check for a timeout and automatically delete the path if it occurs.
 #[derive(Debug, Clone)]
-pub struct ArcDeferIdleTimer(Arc<Mutex<DeferIdleTimer>>);
+pub struct ArcIdleConfig(Arc<RwLock<IdleConfig>>);
 
-impl ArcDeferIdleTimer {
-    /// Creates a new `ArcDeferIdleTimer` with the specified defer idle timeout.
-    pub fn new(defer_idle_timeout: Duration) -> Self {
-        Self(Arc::new(Mutex::new(DeferIdleTimer::new(
+impl ArcIdleConfig {
+    // Creates a new `ArcIdleConfig` with the specified maximum idle timeout and defer idle timeout.
+    pub fn new(max_idle_timeout: Duration, defer_idle_timeout: Duration) -> Self {
+        ArcIdleConfig(Arc::new(RwLock::new(IdleConfig::new(
+            max_idle_timeout,
             defer_idle_timeout,
         ))))
     }
 
-    /// Resets the timer to the current time after effective communication.
-    ///
-    /// Effective communication is defined as sending or receiving a packet with a valid payload,
-    /// which does not include packets that only contain Padding, Ping, or Ack.
-    pub fn renew_on_effective_communicated(&self) {
-        self.0.lock().unwrap().renew()
+    // Each endpoint advertises a max_idle_timeout, but the effective value at an endpoint
+    // is computed as the minimum of the two advertised values (or the sole advertised value,
+    // if only one endpoint advertises a non-zero value).
+    //
+    // Idle timeout is disabled when both endpoints omit this transport parameter or specify a value of 0.
+    pub fn negotiate_max_idle_timeout(&self, max_idle_timeout: Duration) {
+        self.0
+            .write()
+            .unwrap()
+            .negotiate_max_idle_timeout(max_idle_timeout);
     }
 
-    pub fn is_idle_lasted_for(&self, duration: Duration) -> bool {
-        self.0.lock().unwrap().is_idle_lasted_for(duration)
+    // Sets the interval for sending heartbeat packets.
+    pub fn set_heartbeat_interval(&self, interval: Duration) {
+        self.0.write().unwrap().set_heartbeat_interval(interval);
     }
 
-    /// Returns true if the timer has expired.
-    ///
-    /// When sending a heartbeat packet that includes a ping, this method should be called first.
-    /// If it returns true, sending a ping packet is prohibited.
-    pub fn is_expired(&self) -> bool {
-        self.0.lock().unwrap().is_expired()
+    pub fn timer(&self) -> ArcIdleTimer {
+        ArcIdleTimer(Arc::new(Mutex::new(IdleTimer {
+            idle_config: self.clone(),
+            heartbeat_times: 0,
+            last_effective_comm: None,
+            idle_begin_at: None,
+        })))
+    }
+
+    fn defer_idle_timeout(&self) -> Duration {
+        self.0.read().unwrap().defer_idle_timeout
+    }
+
+    fn heartbeat_interval(&self) -> Duration {
+        self.0.read().unwrap().heartbeat_interval
+    }
+
+    fn timeout_after(&self, idle_at: Instant) -> bool {
+        let max_idle_timeout = self.0.read().unwrap().max_idle_timeout;
+        max_idle_timeout != Duration::ZERO && idle_at.elapsed() > max_idle_timeout
     }
 }
 
-/// A maximum idle timer for each path.
+// A timer for each path to determine when to send heartbeat packets
+// and when to delete the path due to idle timeout.
 #[derive(Debug)]
-pub struct MaxIdleTimer {
-    max_idle_timeout: Arc<SetOnce<Duration>>,
-    last_rcvd_time: Option<Instant>,
+pub struct IdleTimer {
+    idle_config: ArcIdleConfig,
+    heartbeat_times: u32,
+    last_effective_comm: Option<Instant>,
+    idle_begin_at: Option<Instant>,
 }
 
-#[derive(Debug, Error)]
-#[error("Path has been idle for too long({} ms)", self.idle_for.as_millis())]
-pub struct IdleTimedOut {
-    last_rcvd_time: Option<Instant>,
-    idle_for: Duration,
-}
-
-impl IdleTimedOut {
-    pub fn last_rcvd_time(&self) -> Option<Instant> {
-        self.last_rcvd_time
+impl IdleTimer {
+    // Updates the timer when a packet is sent.
+    pub fn on_sent(&mut self, packet_content: PacketContent) {
+        if packet_content == PacketContent::EffectivePayload {
+            self.last_effective_comm = Some(Instant::now());
+            self.heartbeat_times = 0;
+            self.idle_begin_at = None;
+        }
     }
 
-    pub fn idle_for(&self) -> Duration {
-        self.idle_for
+    // Updates the timer when a packet is received.
+    pub fn on_rcvd(&mut self, packet_content: PacketContent) {
+        if packet_content == PacketContent::EffectivePayload {
+            self.last_effective_comm = Some(Instant::now());
+            self.heartbeat_times = 0;
+            self.idle_begin_at = None;
+        }
+        if self.idle_begin_at.is_some() {
+            self.idle_begin_at = Some(Instant::now());
+        }
     }
-}
 
-impl MaxIdleTimer {
-    /// Creates a new `MaxIdleTimer` with the specified parameters.
-    pub(crate) fn new(parameters: &ArcParameters) -> Self {
-        let max_idle_timeout = Arc::new(SetOnce::new());
-        if let Some(time) = parameters
-            .lock_guard()
-            .ok()
-            .and_then(|p| p.negotiated_max_idle_timeout())
+    // Checks health of the path and
+    // determines whether a heartbeat packet needs to be sent.
+    pub fn health(&mut self) -> Result<Option<PingFrame>, TimeOut> {
+        if let Some(t) = self.last_effective_comm {
+            let elapsed = t.elapsed();
+            if elapsed > self.idle_config.defer_idle_timeout() {
+                if self.idle_begin_at.is_none() {
+                    self.idle_begin_at = Some(Instant::now());
+                    return Ok(Some(PingFrame)); // heartbeat for the last time
+                }
+            } else if elapsed > self.idle_config.heartbeat_interval() * (self.heartbeat_times + 1) {
+                self.heartbeat_times += 1;
+                return Ok(Some(PingFrame));
+            }
+        }
+        if self
+            .idle_begin_at
+            .is_some_and(|t| self.idle_config.timeout_after(t))
         {
-            max_idle_timeout
-                .set(time)
-                .expect("Set will only be called once");
-        } else {
-            let parameters = parameters.clone();
-            let max_idle_timeout = max_idle_timeout.clone();
-            tokio::spawn(async move {
-                let Ok(parameters) = parameters.remote_ready().await else {
-                    return;
-                };
-                let time = parameters
-                    .negotiated_max_idle_timeout()
-                    .expect("Remote parameters has been ready");
-                max_idle_timeout
-                    .set(time)
-                    .expect("Set will only be called here");
-            });
+            return Err(TimeOut);
         }
-        Self {
-            max_idle_timeout,
-            last_rcvd_time: None,
-        }
-    }
-
-    /// Resets the timer to the current time upon receiving a packet.
-    pub fn renew_on_received_1rtt(&mut self) {
-        self.last_rcvd_time = Some(Instant::now());
-    }
-
-    /// Returns err if the path has been idle for too long.
-    ///
-    /// Every time the path task wakes up, it needs to check this timer.
-    pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
-        let Some(max_idle_timeout) = self.max_idle_timeout.get().copied() else {
-            return Ok(());
-        };
-        let max_idle_timeout = max_idle_timeout.max(pto * 3);
-
-        let Some(last_rcvd_time) = self.last_rcvd_time else {
-            return Ok(());
-        };
-
-        let since_last_rcvd = last_rcvd_time.elapsed();
-
-        if since_last_rcvd >= max_idle_timeout {
-            return Err(IdleTimedOut {
-                last_rcvd_time: Some(last_rcvd_time),
-                idle_for: since_last_rcvd,
-            });
-        }
-
-        Ok(())
+        Ok(None)
     }
 }
 
+// A shared timer for each path to determine when to send heartbeat packets
+// and when to delete the path due to idle timeout.
 #[derive(Debug, Clone)]
-pub struct ArcMaxIdleTimer(Arc<Mutex<MaxIdleTimer>>);
+pub struct ArcIdleTimer(Arc<Mutex<IdleTimer>>);
 
-impl From<MaxIdleTimer> for ArcMaxIdleTimer {
-    fn from(timer: MaxIdleTimer) -> Self {
-        ArcMaxIdleTimer(Arc::new(Mutex::new(timer)))
-    }
-}
-
-impl ArcMaxIdleTimer {
-    /// Resets the timer to the current time upon receiving a packet.
-    pub fn renew_on_received_1rtt(&self) {
-        self.0.lock().unwrap().renew_on_received_1rtt();
+impl ArcIdleTimer {
+    // Updates the timer when a packet is sent.
+    pub fn on_sent(&self, packet_content: PacketContent) {
+        self.0.lock().unwrap().on_sent(packet_content);
     }
 
-    /// Returns err if the path has been idle for too long.
-    pub fn run_out(&self, pto: Duration) -> Result<(), IdleTimedOut> {
-        self.0.lock().unwrap().run_out(pto)
+    // Updates the timer when a packet is received.
+    pub fn on_rcvd(&self, packet_content: PacketContent) {
+        self.0.lock().unwrap().on_rcvd(packet_content);
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_defer_idle_timer() {
-        let timer = ArcDeferIdleTimer::new(Duration::from_millis(100));
-        timer.renew_on_effective_communicated();
-        assert!(!timer.is_expired());
-        std::thread::sleep(Duration::from_millis(150));
-        assert!(timer.is_expired());
+    // Checks health of the path and
+    // determines whether a heartbeat packet needs to be sent.
+    pub fn health(&self) -> Result<Option<PingFrame>, TimeOut> {
+        self.0.lock().unwrap().health()
     }
 }

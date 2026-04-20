@@ -1,117 +1,16 @@
 use std::{
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     task::{Context, Poll},
-    time::Duration,
 };
 
 use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
-    frame::PingFrame,
     net::tx::{ArcSendWaker, Signals},
-    packet::Package,
-    time::ArcDeferIdleTimer,
+    packet::{Package, PacketContent},
     util::ArcAsyncDeque,
 };
-use tokio::time::Instant;
-
-#[derive(Debug)]
-struct Heartbeat {
-    defer_idle_timer: ArcDeferIdleTimer,
-    triggered_heartbeat: bool,
-    last_heartbeat: Option<Instant>,
-    interval: Duration,
-}
-
-impl Heartbeat {
-    fn new(defer_idle_timer: ArcDeferIdleTimer, interval: Duration) -> Self {
-        Self {
-            defer_idle_timer,
-            triggered_heartbeat: false,
-            last_heartbeat: None,
-            interval,
-        }
-    }
-
-    fn need_trigger(&mut self) -> bool {
-        if self.triggered_heartbeat {
-            return false;
-        }
-        let idle_too_long = self.defer_idle_timer.is_idle_lasted_for(self.interval);
-        let is_defer_idle_timeout_run_out = self.defer_idle_timer.is_expired();
-        if !idle_too_long || is_defer_idle_timeout_run_out {
-            self.triggered_heartbeat = false;
-            return false;
-        }
-
-        // 如果self.last_heartbeat为None，或者已经超过了interval，则需要发送心跳包
-        if self
-            .last_heartbeat
-            .is_none_or(|last| last.elapsed() >= self.interval)
-        {
-            self.triggered_heartbeat = true;
-            return true;
-        }
-
-        false
-    }
-
-    fn try_load_heartbeat_into<P: ?Sized>(&mut self, packet: &mut P) -> Result<(), Signals>
-    where
-        PingFrame: Package<P>,
-    {
-        if !self.triggered_heartbeat {
-            return Err(Signals::TRANSPORT);
-        }
-        PingFrame.dump(packet)?;
-        self.last_heartbeat = Some(Instant::now());
-        self.triggered_heartbeat = false;
-        Ok(())
-    }
-
-    fn on_effective_communicated(&mut self) {
-        self.defer_idle_timer.renew_on_effective_communicated();
-        self.triggered_heartbeat = false;
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ArcHeartbeat(Arc<Mutex<Heartbeat>>);
-
-impl ArcHeartbeat {
-    pub fn new(defer_idle_timer: ArcDeferIdleTimer, interval: Duration) -> Self {
-        Self(Arc::new(Mutex::new(Heartbeat::new(
-            defer_idle_timer,
-            interval,
-        ))))
-    }
-
-    pub fn need_trigger(&self) -> bool {
-        self.0.lock().unwrap().need_trigger()
-    }
-
-    fn try_load_heartbeat_into<P: ?Sized>(&self, packet: &mut P) -> Result<(), Signals>
-    where
-        PingFrame: Package<P>,
-    {
-        self.0.lock().unwrap().try_load_heartbeat_into(packet)
-    }
-
-    pub fn renew_on_effective_communicated(&self) {
-        self.0.lock().unwrap().on_effective_communicated();
-    }
-}
-
-impl<P: ?Sized> Package<P> for &ArcHeartbeat
-where
-    PingFrame: Package<P>,
-{
-    #[inline]
-    fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
-        self.try_load_heartbeat_into(packet)
-    }
-}
 
 /// A buffer that contains a single frame to be sent.
 ///
@@ -162,8 +61,9 @@ where
     for<'a> &'a F: Package<P>,
 {
     #[inline]
-    fn dump(&mut self, into: &mut P) -> Result<(), Signals> {
-        self.try_load_frames_into(into)
+    fn dump(&mut self, into: &mut P) -> Result<PacketContent, Signals> {
+        self.try_load_frames_into(into)?;
+        Ok(PacketContent::EffectivePayload)
     }
 }
 

@@ -7,7 +7,7 @@ use std::{
 use qbase::{
     frame::{EncodeSize, FrameFeature, io::SendFrame},
     net::tx::{ArcSendWakers, Signals},
-    packet::Package,
+    packet::{Package, PacketContent},
 };
 
 /// A deque for data space to send reliable frames.
@@ -76,8 +76,9 @@ impl<F, P: ?Sized> Package<P> for ArcReliableFrameDeque<F>
 where
     for<'a> &'a F: Package<P>,
 {
-    fn dump(&mut self, packet: &mut P) -> Result<(), Signals> {
-        self.try_load_frames_into(packet)
+    fn dump(&mut self, packet: &mut P) -> Result<PacketContent, Signals> {
+        self.try_load_frames_into(packet)?;
+        Ok(PacketContent::EffectivePayload)
     }
 }
 

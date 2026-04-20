@@ -108,16 +108,40 @@ pub enum PacketContent {
 }
 
 impl PacketContent {
-    pub fn include(self, frame_type: FrameType) -> Self {
+    pub fn from_frame_type(frame_type: FrameType) -> Self {
         match frame_type {
-            FrameType::Ping if self != PacketContent::EffectivePayload => Self::JustPing,
+            FrameType::Ping => Self::JustPing,
             fty if !fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
-            _ => self,
+            _ => Self::NonAckEliciting,
+        }
+    }
+
+    pub fn add_frame_type(&mut self, frame_type: FrameType) {
+        match frame_type {
+            FrameType::Ping if *self == PacketContent::NonAckEliciting => *self = Self::JustPing,
+            fty if !fty.specs().contain(Spec::NonAckEliciting) => *self = Self::EffectivePayload,
+            _ => (),
+        }
+    }
+
+    pub fn add(&mut self, content: PacketContent) {
+        match content {
+            PacketContent::EffectivePayload => *self = PacketContent::EffectivePayload,
+            PacketContent::JustPing if *self == PacketContent::NonAckEliciting => {
+                *self = PacketContent::JustPing
+            }
+            _ => {}
         }
     }
 
     pub fn is_ack_eliciting(self) -> bool {
         self != Self::NonAckEliciting
+    }
+}
+
+impl From<FrameType> for PacketContent {
+    fn from(frame_type: FrameType) -> Self {
+        Self::from_frame_type(frame_type)
     }
 }
 

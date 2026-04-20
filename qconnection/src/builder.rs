@@ -14,7 +14,7 @@ use qbase::{
     sid::{
         ControlStreamsConcurrency, ProductStreamsConcurrencyController, handy::DemandConcurrency,
     },
-    time::ArcDeferIdleTimer,
+    time::ArcIdleConfig,
     token::{ArcTokenRegistry, TokenProvider, TokenSink},
 };
 use qcongestion::HandshakeStatus;
@@ -543,12 +543,16 @@ impl PendingConnection {
             self.stun_servers.clone(),
         );
 
+        let max_idle_timeout = self
+            .parameters
+            .get_local(ParameterId::MaxIdleTimeout)
+            .expect("Duration::ZERO if not specified");
         let components = Components {
             interfaces: self.interfaces,
             locations: self.locations,
             rcvd_pkt_q: self.rcvd_pkt_q,
             conn_state,
-            defer_idle_timer: ArcDeferIdleTimer::new(self.defer_idle_timeout),
+            idle_config: ArcIdleConfig::new(max_idle_timeout, self.defer_idle_timeout),
             paths: ArcPathContexts::new(self.tx_wakers.clone(), event_broker.clone()),
             send_lock: self.send_lock,
             tls_handshake: ArcTlsHandshake::new(self.tls_session),
@@ -599,6 +603,7 @@ fn spawn_tls_handshake(components: &Components, tx_wakers: ArcSendWakers) {
             components.flow_ctrl.clone(),
             components.spaces.data().journal().clone(),
             components.cid_registry.local.clone(),
+            components.idle_config.clone(),
             tx_wakers,
         ),
     );
@@ -620,6 +625,7 @@ fn tls_fin_handler(
     flow_ctrl: FlowController,
     data_journal: DataJournal,
     local_cids: ArcLocalCids,
+    idle_config: ArcIdleConfig,
     tx_wakers: ArcSendWakers,
 ) -> impl FnOnce(&TlsHandshakeInfo) -> Result<(), Error> + Send {
     fn apply_parameters<Role: IntoRole>(
@@ -628,6 +634,7 @@ fn tls_fin_handler(
         // datagram_flow
         data_journal: &DataJournal,
         local_cids: &ArcLocalCids,
+        idle_config: &ArcIdleConfig,
         zero_rtt_rejected: bool,
         remote_parameters: Arc<qbase::param::core::Parameters<Role>>,
     ) -> Result<(), Error> {
@@ -651,6 +658,11 @@ fn tls_fin_handler(
             remote_parameters
                 .get(ParameterId::MaxAckDelay)
                 .expect("unreachable: default value will be got if the value unset"),
+        );
+        idle_config.negotiate_max_idle_timeout(
+            remote_parameters
+                .get(ParameterId::MaxIdleTimeout)
+                .expect("Duration::ZERO if not specified"),
         );
 
         Ok(())
@@ -689,6 +701,7 @@ fn tls_fin_handler(
                     &flow_ctrl,
                     &data_journal,
                     &local_cids,
+                    &idle_config,
                     zero_rtt_rejected,
                     remote_parameters,
                 )?;
@@ -708,6 +721,7 @@ fn tls_fin_handler(
                     &flow_ctrl,
                     &data_journal,
                     &local_cids,
+                    &idle_config,
                     zero_rtt_rejected,
                     remote_parameters,
                 )?;

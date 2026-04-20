@@ -373,7 +373,7 @@ where
     for frame_result in frame_reader {
         let (frame, r#type) = frame_result.map_err(QuicError::from)?;
         frames_collector.extend([&frame]);
-        packet_content = packet_content.include(r#type);
+        packet_content.add_frame_type(r#type);
         dispatch_frame(frame);
     }
 
