@@ -160,12 +160,8 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for FlowControlledDataStreams {
 
     fn recv_frame(&self, data_frame: (StreamFrame, Bytes)) -> Result<Self::Output, Error> {
         let frame_type = data_frame.0.frame_type();
-        match self.streams.recv_data(data_frame) {
-            Ok(new_data_size) => {
-                self.flow_ctrl.on_new_rcvd(frame_type, new_data_size)?;
-            }
-            Err(e) => return Err(e.into()),
-        }
+        let new_data_size = self.streams.recv_data(data_frame)?;
+        self.flow_ctrl.on_new_rcvd(frame_type, new_data_size)?;
         Ok(())
     }
 }
@@ -174,13 +170,9 @@ impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
     type Output = ();
 
     fn recv_frame(&self, frame: StreamCtlFrame) -> Result<Self::Output, Error> {
-        match self.streams.recv_stream_control(frame) {
-            Ok(new_data_size) => {
-                self.flow_ctrl
-                    .on_new_rcvd(frame.frame_type(), new_data_size)?;
-            }
-            Err(e) => return Err(e.into()),
-        }
+        let new_data_size = self.streams.recv_stream_control(frame)?;
+        self.flow_ctrl
+            .on_new_rcvd(frame.frame_type(), new_data_size)?;
         Ok(())
     }
 }

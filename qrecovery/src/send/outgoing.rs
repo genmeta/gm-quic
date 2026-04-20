@@ -195,30 +195,39 @@ impl<TX> Outgoing<TX> {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state {
-                Sender::Ready(_) => {
-                    unreachable!("never send data before recv data");
-                }
-                Sender::Sending(s) => {
-                    let final_size = s.be_stopped();
-                    let reset = ResetStreamError::new(
-                        VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
-                        VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-                    );
-                    *sending_state = Sender::ResetSent(reset);
-                    Some(final_size)
-                }
-                Sender::DataSent(s) => {
-                    let final_size = s.be_stopped();
-                    let reset = ResetStreamError::new(
-                        VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
-                        VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-                    );
-                    *sending_state = Sender::ResetSent(reset);
-                    Some(final_size)
-                }
-                _ => None,
-            },
+            Ok(sending_state) => {
+                // THINK: sending_state.stream_id() -> StreamId, sending_state.state() -> GranularStreamStates
+                let (stream_id, old_state, final_size) = match sending_state {
+                    Sender::Ready(s) => {
+                        (s.stream_id(), GranularStreamStates::Ready, s.be_stopped())
+                    }
+                    Sender::Sending(s) => {
+                        (s.stream_id(), GranularStreamStates::Send, s.be_stopped())
+                    }
+                    Sender::DataSent(s) => (
+                        s.stream_id(),
+                        GranularStreamStates::DataSent,
+                        s.be_stopped(),
+                    ),
+                    _ => return None,
+                };
+                let reset = ResetStreamError::new(
+                    // TODO: many places in the codebase perform VarInt -> u64 -> VarInt conversion
+                    //  which is redundant and may cause bugs, consider refactor call-chain.
+                    VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
+                    VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+                );
+
+                qevent::event!(StreamStateUpdated {
+                    stream_id: stream_id.id(),
+                    stream_type: stream_id.dir(),
+                    old: old_state,
+                    new: GranularStreamStates::ResetReceived,
+                    stream_side: StreamSide::Sending
+                });
+                *sending_state = Sender::ResetSent(reset);
+                Some(final_size)
+            }
             Err(_) => None,
         }
     }
@@ -226,6 +235,7 @@ impl<TX> Outgoing<TX> {
     /// Called When the [`RESET_STREAM frame`] previously sent to the peer is acknowledged
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
+    // TODO: stream id not from stream state, consider refactor. (many other places in qrecovery)
     pub fn on_reset_acked(&self, sid: StreamId) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
