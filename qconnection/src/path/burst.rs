@@ -12,7 +12,7 @@ use qbase::{
     frame::PingFrame,
     net::tx::{ArcSendWaker, Signals},
     packet::{
-        AssemblePacket, Package, PacketContent, PacketProperties, ProductHeader,
+        AssemblePacket, Package, PacketContent, PacketInfo, ProductHeader,
         header::{
             long::{HandshakeHeader, InitialHeader, ZeroRttHeader, io::LongHeaderBuilder},
             short::OneRttHeader,
@@ -166,16 +166,15 @@ impl<'a> PacketsAssembler<'a> {
         }
     }
 
-    pub fn commit(&mut self, sent_bytes: usize, packet_props: PacketProperties) {
-        self.constraints
-            .commit(sent_bytes, packet_props.in_flight());
+    pub fn commit(&mut self, sent_bytes: usize, pkt_info: PacketInfo) {
+        self.constraints.commit(sent_bytes, pkt_info.in_flight());
         self.cc.on_pkt_sent(
-            packet_props.epoch().expect("todo"),
-            packet_props.packet_number(),
-            packet_props.ack_eliciting(),
+            pkt_info.epoch().expect("todo"),
+            pkt_info.packet_number(),
+            pkt_info.ack_eliciting(),
             sent_bytes,
-            packet_props.in_flight(),
-            packet_props.largest_ack(),
+            pkt_info.in_flight(),
+            pkt_info.largest_ack(),
         );
     }
 }

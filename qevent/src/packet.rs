@@ -8,7 +8,7 @@ use qbase::{
             EncodeHeader, GetDcid, GetScid, GetType, io::WriteHeader, long::LongHeader,
             short::OneRttHeader,
         },
-        io::{AssemblePacket, PacketProperties, PacketWriter as BasePacketWriter},
+        io::{AssemblePacket, PacketInfo, PacketWriter as BasePacketWriter},
         keys::DirectionalKeys,
         number::PacketNumber,
         signal::KeyPhaseBit,
@@ -165,7 +165,7 @@ where
 
 impl<'b> AssemblePacket for PacketWriter<'b> {
     #[inline]
-    fn encrypt_and_protect_packet(self) -> (usize, PacketProperties) {
+    fn encrypt_and_protect_packet(self) -> (usize, PacketInfo) {
         self.logger.log_sent(&self.writer);
         self.writer.encrypt_and_protect_packet()
     }

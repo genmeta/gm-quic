@@ -102,11 +102,11 @@ impl PunchMeNowFrame {
     }
 
     pub fn local_seq(&self) -> u32 {
-        self.local_seq.into_inner() as u32
+        self.local_seq.into_u64() as u32
     }
 
     pub fn remote_seq(&self) -> u32 {
-        self.remote_seq.into_inner() as u32
+        self.remote_seq.into_u64() as u32
     }
 
     pub fn nat_type(&self) -> NatType {
@@ -122,7 +122,7 @@ impl PunchMeNowFrame {
     }
 
     pub fn tire(&self) -> u32 {
-        self.tire.into_inner() as u32
+        self.tire.into_u64() as u32
     }
 }
 

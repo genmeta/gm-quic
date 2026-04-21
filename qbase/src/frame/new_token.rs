@@ -67,10 +67,7 @@ pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
         combinator::{flat_map, map},
     };
     flat_map(be_varint, |length| {
-        map(
-            take(length.into_inner() as usize),
-            NewTokenFrame::from_slice,
-        )
+        map(take(length.into_u64() as usize), NewTokenFrame::from_slice)
     })
     .parse(input)
 }

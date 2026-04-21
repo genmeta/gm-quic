@@ -448,7 +448,7 @@ impl PacketLayout {
 }
 
 #[derive(Debug, CopyGetters)]
-pub struct PacketProperties {
+pub struct PacketInfo {
     #[getset(get_copy = "pub")]
     packet_type: Type,
     #[getset(get_copy = "pub")]
@@ -474,7 +474,7 @@ pub struct PacketProperties {
     largest_ack: Option<u64>,
 }
 
-impl PacketProperties {
+impl PacketInfo {
     pub fn new(ty: Type, pn: u64) -> Self {
         Self {
             packet_type: ty,
@@ -524,7 +524,7 @@ pub trait RecordFrame<F, D: ContinuousData> {
     fn record_frame(&mut self, frame: &F);
 }
 
-impl<D: ContinuousData> RecordFrame<Frame<D>, D> for PacketProperties {
+impl<D: ContinuousData> RecordFrame<Frame<D>, D> for PacketInfo {
     fn record_frame(&mut self, frame: &Frame<D>) {
         debug_assert!(
             frame.belongs_to(self.packet_type(),),
@@ -546,18 +546,18 @@ impl<D: ContinuousData> RecordFrame<Frame<D>, D> for PacketProperties {
 
 impl<F, D: ContinuousData> RecordFrame<F, D> for PacketWriter<'_>
 where
-    PacketProperties: RecordFrame<F, D>,
+    PacketInfo: RecordFrame<F, D>,
 {
     #[inline]
     fn record_frame(&mut self, frame: &F) {
-        self.props.record_frame(frame);
+        self.pkt_info.record_frame(frame);
     }
 }
 
 pub struct PacketWriter<'b> {
     keys: Keys,
     layout: PacketLayout,
-    props: PacketProperties,
+    pkt_info: PacketInfo,
     buffer: &'b mut [u8],
 }
 
@@ -593,7 +593,7 @@ impl<'b> PacketWriter<'b> {
                 end: buffer.len() - keys.packet.tag_len(),
             },
             keys: Keys::LongHeaderPacket { keys },
-            props: PacketProperties::new(header.get_type(), actual_pn),
+            pkt_info: PacketInfo::new(header.get_type(), actual_pn),
             buffer,
         })
     }
@@ -622,7 +622,7 @@ impl<'b> PacketWriter<'b> {
                 end: buffer.len() - keys.packet.tag_len(),
             },
             keys: Keys::ShortHeaderPacket { keys, key_phase },
-            props: PacketProperties::new(header.get_type(), actual_pn),
+            pkt_info: PacketInfo::new(header.get_type(), actual_pn),
             buffer,
         })
     }
@@ -639,27 +639,27 @@ impl<'b> PacketWriter<'b> {
 
     #[inline]
     pub fn packet_type(&self) -> Type {
-        self.props.packet_type()
+        self.pkt_info.packet_type()
     }
 
     #[inline]
     pub fn packet_number(&self) -> u64 {
-        self.props.packet_number
+        self.pkt_info.packet_number
     }
 
     #[inline]
     pub fn is_ack_eliciting(&self) -> bool {
-        self.props.ack_eliciting
+        self.pkt_info.ack_eliciting
     }
 
     #[inline]
     pub fn in_flight(&self) -> bool {
-        self.props.in_flight
+        self.pkt_info.in_flight
     }
 
     #[inline]
     pub fn is_probe_new_path(&self) -> bool {
-        self.props.probe_new_path
+        self.pkt_info.probe_new_path
     }
 
     #[inline]
@@ -718,11 +718,11 @@ pub trait AssemblePacket: BufMut {
         package.dump(self)
     }
 
-    fn encrypt_and_protect_packet(self) -> (usize, PacketProperties);
+    fn encrypt_and_protect_packet(self) -> (usize, PacketInfo);
 }
 
 impl AssemblePacket for PacketWriter<'_> {
-    fn encrypt_and_protect_packet(self) -> (usize, PacketProperties) {
+    fn encrypt_and_protect_packet(self) -> (usize, PacketInfo) {
         use crate::{
             packet::encrypt::*,
             varint::{EncodeBytes, VarInt, WriteVarInt},
@@ -731,14 +731,14 @@ impl AssemblePacket for PacketWriter<'_> {
         let Self {
             keys,
             layout,
-            props,
+            pkt_info,
             buffer,
         } = self;
 
         let payload_len = layout.payload_len();
         let tag_len = keys.pk().tag_len();
 
-        let actual_pn = props.packet_number;
+        let actual_pn = pkt_info.packet_number;
         let pn_len = layout.pn_len;
         let pkt_size = layout.cursor + tag_len;
 
@@ -773,7 +773,7 @@ impl AssemblePacket for PacketWriter<'_> {
             let hpk = keys.hpk();
             protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         }
-        (pkt_size, props)
+        (pkt_size, pkt_info)
     }
 }
 

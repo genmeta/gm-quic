@@ -43,7 +43,7 @@ impl RetireConnectionIdFrame {
 
     /// Return the sequence number of the frame.
     pub fn sequence(&self) -> u64 {
-        self.sequence.into_inner()
+        self.sequence.into_u64()
     }
 }
 

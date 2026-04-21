@@ -70,8 +70,8 @@ where
     /// update the maximum stream ID that can be opened locally in the given direction.
     fn recv_max_streams_frame(&mut self, frame: MaxStreamsFrame) {
         let (dir, val) = match frame {
-            MaxStreamsFrame::Bi(max) => (Dir::Bi, max.into_inner()),
-            MaxStreamsFrame::Uni(max) => (Dir::Uni, max.into_inner()),
+            MaxStreamsFrame::Bi(max) => (Dir::Bi, max.into_u64()),
+            MaxStreamsFrame::Uni(max) => (Dir::Uni, max.into_u64()),
         };
         self.increase_limit(dir, val);
     }

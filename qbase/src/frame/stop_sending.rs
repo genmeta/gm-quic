@@ -38,7 +38,7 @@ impl StopSendingFrame {
 
     /// Return the application protocol error code of the frame.
     pub fn app_err_code(&self) -> u64 {
-        self.app_err_code.into_inner()
+        self.app_err_code.into_u64()
     }
 
     /// Compose a RESET_STREAM frame from the STOP_SENDING frame with the given final size.

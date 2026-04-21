@@ -53,7 +53,7 @@ impl TryFrom<VarInt> for NatType {
     type Error = io::Error;
 
     fn try_from(value: VarInt) -> Result<Self, Self::Error> {
-        Self::try_from(value.into_inner() as u8)
+        Self::try_from(value.into_u64() as u8)
     }
 }
 

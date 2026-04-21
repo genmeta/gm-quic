@@ -114,7 +114,7 @@ impl fmt::Display for StreamId {
 
 impl From<VarInt> for StreamId {
     fn from(v: VarInt) -> Self {
-        Self(v.into_inner())
+        Self(v.into_u64())
     }
 }
 

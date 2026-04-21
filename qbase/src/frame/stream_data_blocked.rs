@@ -54,7 +54,7 @@ impl StreamDataBlockedFrame {
 
     /// Return the maximum stream data of the frame.
     pub fn maximum_stream_data(&self) -> u64 {
-        self.maximum_stream_data.into_inner()
+        self.maximum_stream_data.into_u64()
     }
 }
 

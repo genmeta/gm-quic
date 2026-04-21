@@ -43,7 +43,7 @@ impl MaxDataFrame {
 
     /// Return the maximum data of the frame.
     pub fn max_data(&self) -> u64 {
-        self.max_data.into_inner()
+        self.max_data.into_u64()
     }
 }
 
@@ -87,7 +87,7 @@ mod tests {
         use super::be_max_data_frame;
         use crate::varint::be_varint;
         let max_data_frame_type = VarInt::from(FrameType::MaxData);
-        let buf = vec![max_data_frame_type.into_inner() as u8, 0x52, 0x34];
+        let buf = vec![max_data_frame_type.into_u64() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == max_data_frame_type {
                 be_max_data_frame

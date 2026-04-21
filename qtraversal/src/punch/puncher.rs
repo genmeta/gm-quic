@@ -333,7 +333,7 @@ where
 
     fn recv_remove_address_frame(&self, remove_address_frame: RemoveAddressFrame) {
         let mut address_book = self.0.address_book.lock().unwrap();
-        address_book.remove_remote_address(remove_address_frame.deref().into_inner() as u32);
+        address_book.remove_remote_address(remove_address_frame.deref().into_u64() as u32);
     }
 
     fn recv_add_address_frame(&self, add_address_frame: AddAddressFrame) -> io::Result<()> {

@@ -118,7 +118,7 @@ mod tests {
 
         let streams_blocked_bi_type = VarInt::from(FrameType::StreamsBlocked(Dir::Bi));
         let streams_blocked_uni_type = VarInt::from(FrameType::StreamsBlocked(Dir::Uni));
-        let buf = vec![streams_blocked_bi_type.into_inner() as u8, 0x52, 0x34];
+        let buf = vec![streams_blocked_bi_type.into_u64() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == streams_blocked_bi_type {
                 streams_blocked_frame_with_dir(Dir::Bi)
@@ -131,7 +131,7 @@ mod tests {
         assert!(input.is_empty());
         assert_eq!(frame, StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
 
-        let buf = vec![streams_blocked_uni_type.into_inner() as u8, 0x52, 0x34];
+        let buf = vec![streams_blocked_uni_type.into_u64() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == streams_blocked_uni_type {
                 streams_blocked_frame_with_dir(Dir::Uni)

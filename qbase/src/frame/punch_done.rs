@@ -30,15 +30,15 @@ impl PunchDoneFrame {
     }
 
     pub fn local_seq(&self) -> u32 {
-        self.local_seq.into_inner() as u32
+        self.local_seq.into_u64() as u32
     }
 
     pub fn remote_seq(&self) -> u32 {
-        self.remote_seq.into_inner() as u32
+        self.remote_seq.into_u64() as u32
     }
 
     pub fn probe_id(&self) -> u32 {
-        self.probe_id.into_inner() as u32
+        self.probe_id.into_u64() as u32
     }
 
     /// Construct a PunchDone responding to a received PunchHello,

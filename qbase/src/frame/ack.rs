@@ -120,17 +120,17 @@ impl AckFrame {
 
     /// Return the largest acknowledged packet number.
     pub fn largest(&self) -> u64 {
-        self.largest.into_inner()
+        self.largest.into_u64()
     }
 
     /// Return the delay in microseconds.
     pub fn delay(&self) -> u64 {
-        self.delay.into_inner()
+        self.delay.into_u64()
     }
 
     /// Return the first range.
     pub fn first_range(&self) -> u64 {
-        self.first_range.into_inner()
+        self.first_range.into_u64()
     }
 
     /// Return the ranges.
@@ -156,12 +156,12 @@ impl AckFrame {
     /// Iterate through the sequence numbers of the packets acknowledged by the iterative ACK frame,
     /// starting from the largest and going down.
     pub fn iter(&self) -> impl Iterator<Item = RangeInclusive<u64>> + '_ {
-        let right = self.largest.into_inner();
-        let left = right - self.first_range.into_inner();
+        let right = self.largest.into_u64();
+        let left = right - self.first_range.into_u64();
         Some(left..=right).into_iter().chain(
             self.ranges
                 .iter()
-                .map(|(gap, range)| (gap.into_inner(), range.into_inner()))
+                .map(|(gap, range)| (gap.into_u64(), range.into_u64()))
                 .scan(left, |largest, (gap, range)| {
                     let right = *largest - gap - 2;
                     let left = right - range;
@@ -190,17 +190,17 @@ impl EcnCounts {
 
     /// Get the value of the ECT0 counter.
     pub fn ect0(&self) -> u64 {
-        self.ect0.into_inner()
+        self.ect0.into_u64()
     }
 
     /// Get the value of the ECT1 counter.
     pub fn ect1(&self) -> u64 {
-        self.ect1.into_inner()
+        self.ect1.into_u64()
     }
 
     /// Get the value of the CE counter.
     pub fn ce(&self) -> u64 {
-        self.ce.into_inner()
+        self.ce.into_u64()
     }
 
     /// Calculates the encoding size of the [`EcnCounts`] struct.
@@ -216,7 +216,7 @@ pub fn ack_frame_with_ecn(ecn: Ecn) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Ack
         let (mut remain, (largest, delay, count, first_range)) =
             (be_varint, be_varint, be_varint, be_varint).parse(input)?;
         let mut ranges = Vec::new();
-        let mut count = count.into_inner() as usize;
+        let mut count = count.into_u64() as usize;
         while count > 0 {
             let (i, (gap, ack)) = (be_varint, be_varint).parse(remain)?;
             ranges.push((gap, ack));

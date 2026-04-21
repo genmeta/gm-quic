@@ -122,7 +122,7 @@ mod tests {
     fn test_read_max_streams_frame() {
         let max_streams_bi_type = VarInt::from(FrameType::MaxStreams(Dir::Bi));
         let max_streams_uni_type = VarInt::from(FrameType::MaxStreams(Dir::Uni));
-        let buf = vec![max_streams_bi_type.into_inner() as u8, 0x52, 0x34];
+        let buf = vec![max_streams_bi_type.into_u64() as u8, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == max_streams_bi_type {
                 max_streams_frame_with_dir(Dir::Bi)
@@ -135,7 +135,7 @@ mod tests {
         assert!(input.is_empty());
         assert_eq!(frame, MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
 
-        let buf = vec![max_streams_uni_type.into_inner() as u8, 0x52, 0x36];
+        let buf = vec![max_streams_uni_type.into_u64() as u8, 0x52, 0x36];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == max_streams_uni_type {
                 max_streams_frame_with_dir(Dir::Uni)

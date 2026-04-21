@@ -61,12 +61,12 @@ impl ResetStreamFrame {
 
     /// Return the application protocol error code of the frame.
     pub fn app_error_code(&self) -> u64 {
-        self.app_error_code.into_inner()
+        self.app_error_code.into_u64()
     }
 
     /// Return the final size of the frame.
     pub fn final_size(&self) -> u64 {
-        self.final_size.into_inner()
+        self.final_size.into_u64()
     }
 }
 
@@ -110,7 +110,7 @@ impl ResetStreamError {
     }
 
     pub fn error_code(&self) -> u64 {
-        self.app_error_code.into_inner()
+        self.app_error_code.into_u64()
     }
 
     pub fn combine(self, sid: StreamId) -> ResetStreamFrame {

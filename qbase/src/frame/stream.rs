@@ -137,7 +137,7 @@ impl super::EncodeSize for StreamFrame {
 
     fn encoding_size(&self) -> usize {
         1 + self.id.encoding_size()
-            + if self.offset.into_inner() != 0 {
+            + if self.offset.into_u64() != 0 {
                 self.offset.encoding_size()
             } else {
                 0
@@ -197,7 +197,7 @@ impl StreamFrame {
 
     /// Return the offset of this stream frame.
     pub fn offset(&self) -> u64 {
-        self.offset.into_inner()
+        self.offset.into_u64()
     }
 
     /// Return the length of this stream frame.
@@ -212,7 +212,7 @@ impl StreamFrame {
 
     /// Return the range of this stream frame covered.
     pub fn range(&self) -> Range<u64> {
-        self.offset.into_inner()..self.offset.into_inner() + self.length as u64
+        self.offset.into_u64()..self.offset.into_u64() + self.length as u64
     }
 
     /// Set the end of stream flag of this stream frame.
@@ -307,11 +307,11 @@ pub fn stream_frame_with_flag(
         };
         let (remain, length) = if len == Len::Explicit {
             let (remain, length) = be_varint(remain)?;
-            (remain, length.into_inner() as usize)
+            (remain, length.into_u64() as usize)
         } else {
             (remain, remain.len())
         };
-        if offset.into_inner() + length as u64 > VARINT_MAX {
+        if offset.into_u64() + length as u64 > VARINT_MAX {
             return Err(nom::Err::Error(nom::error::make_error(
                 input,
                 nom::error::ErrorKind::TooLarge,
@@ -339,7 +339,7 @@ where
         use crate::frame::io::WriteFrameType;
         self.put_frame_type(frame.frame_type());
         self.put_streamid(&frame.id);
-        if frame.offset.into_inner() != 0 {
+        if frame.offset.into_u64() != 0 {
             self.put_varint(&frame.offset);
         }
         if frame.len_bit == Len::Explicit {

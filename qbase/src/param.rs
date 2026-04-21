@@ -576,7 +576,7 @@ mod tests {
         // Test local params
         assert!(matches!(
             guard.get_local::<VarInt>(ParameterId::MaxUdpPayloadSize),
-            Some(value) if value.into_inner() >= 1200
+            Some(value) if value.into_u64() >= 1200
         ));
 
         // Test remembered params

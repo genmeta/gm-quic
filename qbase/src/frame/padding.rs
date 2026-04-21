@@ -57,7 +57,7 @@ mod tests {
 
         use crate::varint::be_varint;
         let padding_frame_type = VarInt::from(FrameType::Padding);
-        let buf = vec![padding_frame_type.into_inner() as u8];
+        let buf = vec![padding_frame_type.into_u64() as u8];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == padding_frame_type {
                 be_padding_frame

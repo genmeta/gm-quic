@@ -114,7 +114,7 @@ impl TryFrom<VarInt> for ErrorKind {
     type Error = InvalidErrorKind;
 
     fn try_from(value: VarInt) -> Result<Self, Self::Error> {
-        Ok(match value.into_inner() {
+        Ok(match value.into_u64() {
             0x00 => ErrorKind::None,
             0x01 => ErrorKind::Internal,
             0x02 => ErrorKind::ConnectionRefused,
@@ -132,7 +132,7 @@ impl TryFrom<VarInt> for ErrorKind {
             0x0e => ErrorKind::KeyUpdate,
             0x0f => ErrorKind::AeadLimitReached,
             0x10 => ErrorKind::NoViablePath,
-            0x0100..=0x01ff => ErrorKind::Crypto((value.into_inner() & 0xff) as u8),
+            0x0100..=0x01ff => ErrorKind::Crypto((value.into_u64() & 0xff) as u8),
             other => return Err(InvalidErrorKind(other)),
         })
     }
@@ -258,7 +258,7 @@ impl AppError {
     ///
     /// The error code is an application error code.
     pub fn error_code(&self) -> u64 {
-        self.error_code.into_inner()
+        self.error_code.into_u64()
     }
 
     /// Return the reason of this error.

@@ -58,7 +58,7 @@ mod tests {
         use super::be_handshake_done_frame;
         use crate::varint::be_varint;
         let handshake_done_frame_type = VarInt::from(FrameType::HandshakeDone);
-        let buf = vec![handshake_done_frame_type.into_inner() as u8];
+        let buf = vec![handshake_done_frame_type.into_u64() as u8];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == handshake_done_frame_type {
                 be_handshake_done_frame

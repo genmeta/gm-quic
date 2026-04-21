@@ -133,8 +133,8 @@ where
 
     fn recv_streams_blocked_frame(&mut self, frame: StreamsBlockedFrame) {
         let (dir, max_streams) = match frame {
-            StreamsBlockedFrame::Bi(max) => (Dir::Bi, max.into_inner()),
-            StreamsBlockedFrame::Uni(max) => (Dir::Uni, max.into_inner()),
+            StreamsBlockedFrame::Bi(max) => (Dir::Bi, max.into_u64()),
+            StreamsBlockedFrame::Uni(max) => (Dir::Uni, max.into_u64()),
         };
         if let Some(max_streams) = self.ctrl.on_streams_blocked(dir, max_streams) {
             self.max[dir as usize] = max_streams;
