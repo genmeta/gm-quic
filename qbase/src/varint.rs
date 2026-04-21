@@ -66,7 +66,7 @@ impl VarInt {
     }
 
     /// Extract the integer value
-    pub fn into_inner(self) -> u64 {
+    pub fn into_u64(self) -> u64 {
         self.0
     }
 

@@ -41,8 +41,7 @@ pub use header::{
 /// The writing of the QUIC packet is not provided here, they are written in place.
 pub mod io;
 pub use io::{
-    AssemblePacket, Package, PacketProperties, PacketSpace, PacketWriter, ProductHeader,
-    RecordFrame,
+    AssemblePacket, Package, PacketInfo, PacketSpace, PacketWriter, ProductHeader, RecordFrame,
 };
 
 /// Encoding and decoding of packet number

@@ -99,13 +99,13 @@ fn complete_frame(
             let (input, frame) = datagram_frame_with_flag(with_len)(input)?;
             let start = raw.len() - input.len();
             match frame.encode_len() {
-                true if frame.len().into_inner() > input.len() as u64 => Err(nom::Err::Incomplete(
-                    nom::Needed::new((frame.len().into_inner() - input.len() as u64) as usize),
+                true if frame.len().into_u64() > input.len() as u64 => Err(nom::Err::Incomplete(
+                    nom::Needed::new((frame.len().into_u64() - input.len() as u64) as usize),
                 )),
                 true => {
-                    let data = raw.slice(start..start + frame.len().into_inner() as usize);
+                    let data = raw.slice(start..start + frame.len().into_u64() as usize);
                     Ok((
-                        &input[frame.len().into_inner() as usize..],
+                        &input[frame.len().into_u64() as usize..],
                         Frame::Datagram(frame, data),
                     ))
                 }

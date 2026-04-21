@@ -100,7 +100,7 @@ impl TryFrom<ParameterValue> for u64 {
 
     #[inline]
     fn try_from(value: ParameterValue) -> Result<Self, Self::Error> {
-        VarInt::try_from(value).map(|value| value.into_inner())
+        VarInt::try_from(value).map(|value| value.into_u64())
     }
 }
 
@@ -233,7 +233,7 @@ impl ParameterId {
 
 impl std::fmt::LowerHex for ParameterId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", VarInt::from(*self).into_inner())
+        write!(f, "{:x}", VarInt::from(*self).into_u64())
     }
 }
 

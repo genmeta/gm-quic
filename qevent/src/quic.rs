@@ -695,7 +695,7 @@ impl From<&StreamFrame> for QuicFrame {
 
 impl<D: ContinuousData + ?Sized> From<(&DatagramFrame, &D)> for QuicFrame {
     fn from((frame, data): (&DatagramFrame, &D)) -> Self {
-        let payload_length = frame.len().into_inner();
+        let payload_length = frame.len().into_u64();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Datagram {
             length: Some(payload_length as _),
@@ -710,7 +710,7 @@ impl<D: ContinuousData + ?Sized> From<(&DatagramFrame, &D)> for QuicFrame {
 
 impl From<&DatagramFrame> for QuicFrame {
     fn from(frame: &DatagramFrame) -> Self {
-        let payload_length = frame.len().into_inner();
+        let payload_length = frame.len().into_u64();
         let length = frame.encoding_size() as u64 + payload_length;
         QuicFrame::Datagram {
             length: Some(payload_length as _),
@@ -752,8 +752,8 @@ impl From<&AckFrame> for QuicFrame {
                     ),
                     |(previous_smallest, mut acked_ranges), (gap, ack)| {
                         // see https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-ranges
-                        let largest = previous_smallest - gap.into_inner() - 2;
-                        let smallest = largest - ack.into_inner();
+                        let largest = previous_smallest - gap.into_u64() - 2;
+                        let smallest = largest - ack.into_u64();
                         acked_ranges.push([smallest, largest]);
                         (smallest, acked_ranges)
                     },
@@ -792,19 +792,19 @@ impl From<&ReliableFrame> for QuicFrame {
             }
             ReliableFrame::HandshakeDone(_handshake_done_frame) => QuicFrame::HandshakeDone {},
             ReliableFrame::AddAddress(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
             ReliableFrame::RemoveAddress(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
             ReliableFrame::PunchMeNow(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
             ReliableFrame::PunchDone(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
             ReliableFrame::StreamCtl(stream_ctl_frame) => QuicFrame::from(stream_ctl_frame),
@@ -850,11 +850,11 @@ impl From<&StreamCtlFrame> for QuicFrame {
             StreamCtlFrame::MaxStreams(max_streams_frame) => match max_streams_frame {
                 MaxStreamsFrame::Bi(maximum) => QuicFrame::MaxStreams {
                     stream_type: StreamType::Bidirectional,
-                    maximum: maximum.into_inner(),
+                    maximum: maximum.into_u64(),
                 },
                 MaxStreamsFrame::Uni(maximum) => QuicFrame::MaxStreams {
                     stream_type: StreamType::Unidirectional,
-                    maximum: maximum.into_inner(),
+                    maximum: maximum.into_u64(),
                 },
             },
             StreamCtlFrame::StreamDataBlocked(stream_data_blocked_frame) => {
@@ -866,11 +866,11 @@ impl From<&StreamCtlFrame> for QuicFrame {
             StreamCtlFrame::StreamsBlocked(streams_blocked_frame) => match streams_blocked_frame {
                 StreamsBlockedFrame::Bi(limit) => QuicFrame::StreamsBlocked {
                     stream_type: StreamType::Bidirectional,
-                    limit: limit.into_inner(),
+                    limit: limit.into_u64(),
                 },
                 StreamsBlockedFrame::Uni(limit) => QuicFrame::StreamsBlocked {
                     stream_type: StreamType::Unidirectional,
-                    limit: limit.into_inner(),
+                    limit: limit.into_u64(),
                 },
             },
         }
@@ -900,7 +900,7 @@ impl From<&ConnectionCloseFrame> for QuicFrame {
             reason_bytes: None,
             trigger_frame_type: match &frame {
                 ConnectionCloseFrame::Quic(frame) => {
-                    Some((VarInt::from(frame.frame_type()).into_inner()).into())
+                    Some((VarInt::from(frame.frame_type()).into_u64()).into())
                 }
                 ConnectionCloseFrame::App(..) => None,
             },
@@ -940,11 +940,11 @@ impl<D: ContinuousData> From<&Frame<D>> for QuicFrame {
             Frame::Crypto(frame, bytes) => (frame, bytes).into(),
             Frame::Datagram(frame, bytes) => (frame, bytes).into(),
             Frame::PunchHello(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
             Frame::PunchDone(frame) => QuicFrame::Unknow {
-                frame_type_bytes: VarInt::from(frame.frame_type()).into_inner() as _,
+                frame_type_bytes: VarInt::from(frame.frame_type()).into_u64() as _,
                 raw: None,
             },
         }

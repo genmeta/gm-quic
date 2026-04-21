@@ -60,7 +60,7 @@ pub fn quic_parameters(item: TokenStream) -> Result<TokenStream2, Error> {
             type Error = Error;
 
             fn try_from(value: VarInt) -> Result<Self, Self::Error> {
-                Ok(match value.into_inner() {
+                Ok(match value.into_u64() {
                     #try_from_varint_match_arms
                     unknown => return Err(Error::UnknownParameterId(value))
                 })
@@ -144,7 +144,7 @@ impl ParamArgs {
         };
 
         convert_value.extend(match self.value_type {
-            ParamType::VarInt => quote! { v.into_inner() },
+            ParamType::VarInt => quote! { v.into_u64() },
             ParamType::Duration => quote! { v.as_millis() as u64 },
             _ => return Err("Bound is only applicable to VarInt or Duration types"),
         });

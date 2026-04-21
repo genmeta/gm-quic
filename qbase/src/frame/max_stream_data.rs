@@ -38,7 +38,7 @@ impl MaxStreamDataFrame {
 
     /// Return the maximum stream data of the frame.
     pub fn max_stream_data(&self) -> u64 {
-        self.max_stream_data.into_inner()
+        self.max_stream_data.into_u64()
     }
 }
 

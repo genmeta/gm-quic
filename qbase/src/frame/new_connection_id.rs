@@ -42,12 +42,12 @@ impl NewConnectionIdFrame {
 
     /// Return the sequence number of the frame.
     pub fn sequence(&self) -> u64 {
-        self.sequence.into_inner()
+        self.sequence.into_u64()
     }
 
     /// Return the retire prior to of the frame.
     pub fn retire_prior_to(&self) -> u64 {
-        self.retire_prior_to.into_inner()
+        self.retire_prior_to.into_u64()
     }
 
     /// Return the connection ID of the frame.

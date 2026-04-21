@@ -301,7 +301,7 @@ impl TryFrom<VarInt> for FrameType {
     type Error = Error;
 
     fn try_from(frame_type: VarInt) -> Result<Self, Self::Error> {
-        Ok(match frame_type.into_inner() {
+        Ok(match frame_type.into_u64() {
             0x00 => FrameType::Padding,
             0x01 => FrameType::Ping,
             // The last bit is the ECN flag.

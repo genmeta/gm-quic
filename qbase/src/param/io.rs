@@ -45,7 +45,7 @@ pub fn be_parameter_value(input: &[u8], id: ParameterId) -> nom::IResult<&[u8], 
             Ok((&[], ParameterValue::Bytes(Bytes::copy_from_slice(input))))
         }
         ParameterValueType::Duration => {
-            map(be_varint, |v| Duration::from_millis(v.into_inner()).into()).parse(input)
+            map(be_varint, |v| Duration::from_millis(v.into_u64()).into()).parse(input)
         }
         ParameterValueType::ResetToken => {
             map(be_reset_token, ParameterValue::ResetToken).parse(input)

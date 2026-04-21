@@ -57,7 +57,7 @@ mod tests {
         use super::be_ping_frame;
         use crate::varint::be_varint;
         let ping_frame_type = VarInt::from(FrameType::Ping);
-        let buf = vec![ping_frame_type.into_inner() as u8];
+        let buf = vec![ping_frame_type.into_u64() as u8];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type == ping_frame_type {
                 be_ping_frame

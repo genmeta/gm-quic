@@ -4,7 +4,7 @@ use qbase::{
     frame::{ContainSpec, FrameFeature, Spec},
     net::tx::Signals,
     packet::{
-        AssemblePacket, PacketProperties, PacketWriter as BasePacketWriter, RecordFrame,
+        AssemblePacket, PacketInfo, PacketWriter as BasePacketWriter, RecordFrame,
         header::{EncodeHeader, GetType, io::WriteHeader, long::LongHeader, short::OneRttHeader},
         keys::DirectionalKeys,
         signal::KeyPhaseBit,
@@ -108,7 +108,7 @@ unsafe impl<'b, 's, F> BufMut for PacketWriter<'b, 's, F> {
 
 impl<F> AssemblePacket for PacketWriter<'_, '_, F> {
     #[inline]
-    fn encrypt_and_protect_packet(self) -> (usize, PacketProperties) {
+    fn encrypt_and_protect_packet(self) -> (usize, PacketInfo) {
         self.clerk
             .build_with_time(self.retran_timeout, self.expire_timeout);
         self.writer.encrypt_and_protect_packet()
@@ -217,7 +217,7 @@ unsafe impl<'b, 's, F> BufMut for TrivialPacketWriter<'b, 's, F> {
 
 impl<F> AssemblePacket for TrivialPacketWriter<'_, '_, F> {
     #[inline]
-    fn encrypt_and_protect_packet(self) -> (usize, PacketProperties) {
+    fn encrypt_and_protect_packet(self) -> (usize, PacketInfo) {
         self.clerk.build_trivial();
         self.writer.encrypt_and_protect_packet()
     }

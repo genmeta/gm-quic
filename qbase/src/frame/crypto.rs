@@ -51,12 +51,12 @@ impl CryptoFrame {
 
     /// Return the offset of the frame.
     pub fn offset(&self) -> u64 {
-        self.offset.into_inner()
+        self.offset.into_u64()
     }
 
     /// Return the length of the frame.
     pub fn len(&self) -> u64 {
-        self.length.into_inner()
+        self.length.into_u64()
     }
 
     /// Evaluate the maximum number of bytes of data that can be accommodated,
@@ -93,8 +93,8 @@ impl CryptoFrame {
 
     /// Return the range of bytes that this frame covers.
     pub fn range(&self) -> Range<u64> {
-        let start = self.offset.into_inner();
-        let end = start + self.length.into_inner();
+        let start = self.offset.into_u64();
+        let end = start + self.length.into_u64();
         start..end
     }
 }
@@ -103,7 +103,7 @@ impl CryptoFrame {
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
     let (remain, (offset, length)) = (be_varint, be_varint).parse(input)?;
-    if offset.into_inner() + offset.into_inner() > VARINT_MAX {
+    if offset.into_u64() + offset.into_u64() > VARINT_MAX {
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::TooLarge,
@@ -118,7 +118,7 @@ where
     D: ContinuousData,
 {
     fn put_data_frame(&mut self, frame: &CryptoFrame, data: &D) {
-        assert_eq!(frame.length.into_inner(), data.len() as u64);
+        assert_eq!(frame.length.into_u64(), data.len() as u64);
         self.put_frame_type(frame.frame_type());
         self.put_varint(&frame.offset);
         self.put_varint(&frame.length);

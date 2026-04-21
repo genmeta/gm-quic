@@ -45,7 +45,7 @@ pub struct AppCloseFrame {
 impl AppCloseFrame {
     /// Return the error code of the frame.
     pub fn error_code(&self) -> u64 {
-        self.error_code.into_inner()
+        self.error_code.into_u64()
     }
 
     /// Return the reason of the frame.
@@ -185,7 +185,7 @@ impl ConnectionCloseFrame {
 fn be_app_close_frame(input: &[u8]) -> nom::IResult<&[u8], AppCloseFrame> {
     let (remain, error_code) = be_varint(input)?;
     let (remain, reason_length) = be_varint(remain)?;
-    let (remain, reason) = take(reason_length.into_inner() as usize)(remain)?;
+    let (remain, reason) = take(reason_length)(remain)?;
     let cow = String::from_utf8_lossy(reason).into_owned();
     Ok((
         remain,
@@ -203,7 +203,7 @@ fn be_quic_close_frame(input: &[u8]) -> nom::IResult<&[u8], QuicCloseFrame> {
     let (remain, frame_type) = be_frame_type(remain)
         .map_err(|_e| nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt)))?;
     let (remain, reason_length) = be_varint(remain)?;
-    let (remain, reason) = take(reason_length.into_inner() as usize)(remain)?;
+    let (remain, reason) = take(reason_length)(remain)?;
     let cow = String::from_utf8_lossy(reason).into_owned();
     Ok((
         remain,
