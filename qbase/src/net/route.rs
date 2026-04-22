@@ -6,11 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     frame::EncodeSize,
-    net::{
-        Family,
-        addr::{EndpointAddr, SocketEndpointAddr},
-        be_socket_addr,
-    },
+    net::{Family, addr::EndpointAddr, be_socket_addr},
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -54,27 +50,6 @@ impl<E> Pathway<E> {
         Self {
             local: self.remote,
             remote: self.local,
-        }
-    }
-}
-
-impl From<Pathway<SocketEndpointAddr>> for Pathway<EndpointAddr> {
-    fn from(value: Pathway<SocketEndpointAddr>) -> Self {
-        Pathway::new(
-            EndpointAddr::Socket(value.local),
-            EndpointAddr::Socket(value.remote),
-        )
-    }
-}
-
-impl TryInto<Pathway<SocketEndpointAddr>> for Pathway<EndpointAddr> {
-    type Error = std::io::Error;
-
-    fn try_into(self) -> Result<Pathway<SocketEndpointAddr>, Self::Error> {
-        match (self.local, self.remote) {
-            (EndpointAddr::Socket(local), EndpointAddr::Socket(remote)) => {
-                Ok(Pathway::new(local, remote))
-            }
         }
     }
 }
@@ -224,22 +199,22 @@ mod tests {
     #[test]
     fn test_endpoint_addr_from_str() {
         // Test direct format
-        let addr = "127.0.0.1:8080".parse::<SocketEndpointAddr>().unwrap();
-        assert!(matches!(addr, SocketEndpointAddr::Direct { .. }));
+        let addr = "127.0.0.1:8080".parse::<EndpointAddr>().unwrap();
+        assert!(matches!(addr, EndpointAddr::Direct { .. }));
 
         // Test agent format
         let addr = "127.0.0.1:8080-192.168.1.1:9000"
-            .parse::<SocketEndpointAddr>()
+            .parse::<EndpointAddr>()
             .unwrap();
-        assert!(matches!(addr, SocketEndpointAddr::Agent { .. }));
+        assert!(matches!(addr, EndpointAddr::Agent { .. }));
 
         // Test with whitespace
         let addr = "  127.0.0.1:8080  -  192.168.1.1:9000  "
-            .parse::<SocketEndpointAddr>()
+            .parse::<EndpointAddr>()
             .unwrap();
-        assert!(matches!(addr, SocketEndpointAddr::Agent { .. }));
+        assert!(matches!(addr, EndpointAddr::Agent { .. }));
 
         // Test invalid format
-        assert!("invalid".parse::<SocketEndpointAddr>().is_err());
+        assert!("invalid".parse::<EndpointAddr>().is_err());
     }
 }

@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
-    prelude::{EndpointAddr, SocketEndpointAddr, handy},
+    prelude::{EndpointAddr, handy},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -58,7 +58,7 @@ impl Network {
         let stream = self.resolver.lookup(stun_server).await.ok()?;
         let mut stream = std::pin::pin!(stream);
         while let Some((_source, ep)) = stream.next().await {
-            let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = ep else {
+            let EndpointAddr::Direct { addr } = ep else {
                 continue;
             };
             if match family {

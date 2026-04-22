@@ -1,18 +1,17 @@
 use std::{
-    fmt::{self, Display},
+    fmt::Display,
     net::{AddrParseError, SocketAddr},
     ops::Deref,
     str::FromStr,
 };
 
 use bytes::BufMut;
-use derive_more::{From, TryInto};
 use serde::{Deserialize, Serialize};
 
 use crate::net::{Family, be_socket_addr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SocketEndpointAddr {
+pub enum EndpointAddr {
     Direct {
         addr: SocketAddr,
     },
@@ -22,40 +21,40 @@ pub enum SocketEndpointAddr {
     },
 }
 
-impl SocketEndpointAddr {
+impl EndpointAddr {
     pub fn direct(addr: SocketAddr) -> Self {
-        SocketEndpointAddr::Direct { addr }
+        EndpointAddr::Direct { addr }
     }
 
     pub fn with_agent(agent: SocketAddr, outer: SocketAddr) -> Self {
-        SocketEndpointAddr::Agent { agent, outer }
+        EndpointAddr::Agent { agent, outer }
     }
 
-    /// Returns the outer addr of this SocketEndpointAddr
+    /// Returns the outer addr of this EndpointAddr
     ///
     /// Note: Before successful hole punching with this Endpoint, packets should be sent to the addr
     /// returned by deref() to establish communication. Once hole punching is successful or about to
     /// begin, use the addr returned by this function.
     pub fn addr(&self) -> SocketAddr {
         match self {
-            SocketEndpointAddr::Direct { addr } => *addr,
-            SocketEndpointAddr::Agent { outer, .. } => *outer,
+            EndpointAddr::Direct { addr } => *addr,
+            EndpointAddr::Agent { outer, .. } => *outer,
         }
     }
 
     pub fn encoding_size(&self) -> usize {
         match self {
-            SocketEndpointAddr::Direct {
+            EndpointAddr::Direct {
                 addr: SocketAddr::V4(_),
             } => 2 + 4,
-            SocketEndpointAddr::Direct {
+            EndpointAddr::Direct {
                 addr: SocketAddr::V6(_),
             } => 2 + 16,
-            SocketEndpointAddr::Agent {
+            EndpointAddr::Agent {
                 agent: SocketAddr::V4(_),
                 outer: SocketAddr::V4(_),
             } => 2 + 4 + 2 + 4,
-            SocketEndpointAddr::Agent {
+            EndpointAddr::Agent {
                 agent: SocketAddr::V6(_),
                 outer: SocketAddr::V6(_),
             } => 2 + 16 + 2 + 16,
@@ -64,16 +63,16 @@ impl SocketEndpointAddr {
     }
 }
 
-pub trait WriteSocketEndpointAddr {
-    fn put_socket_endpoint_addr(&mut self, endpoint: SocketEndpointAddr);
+pub trait WriteEndpointAddr {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
 }
 
-impl<T: BufMut> WriteSocketEndpointAddr for T {
-    fn put_socket_endpoint_addr(&mut self, endpoint: SocketEndpointAddr) {
+impl<T: BufMut> WriteEndpointAddr for T {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
         use crate::net::WriteSocketAddr;
         match endpoint {
-            SocketEndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
-            SocketEndpointAddr::Agent {
+            EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
+            EndpointAddr::Agent {
                 agent,
                 outer: inner,
             } => {
@@ -84,50 +83,42 @@ impl<T: BufMut> WriteSocketEndpointAddr for T {
     }
 }
 
-pub fn be_socket_endpoint_addr(
+pub fn be_endpoint_addr(
     input: &[u8],
     relay: u8,
     family: Family,
-) -> nom::IResult<&[u8], SocketEndpointAddr> {
+) -> nom::IResult<&[u8], EndpointAddr> {
     if relay != 0 {
         let (remain, agent) = be_socket_addr(input, family)?;
         let (remain, outer) = be_socket_addr(remain, family)?;
-        Ok((remain, SocketEndpointAddr::with_agent(agent, outer)))
+        Ok((remain, EndpointAddr::with_agent(agent, outer)))
     } else {
         let (remain, addr) = be_socket_addr(input, family)?;
-        Ok((remain, SocketEndpointAddr::direct(addr)))
+        Ok((remain, EndpointAddr::direct(addr)))
     }
 }
 
-impl fmt::Display for EndpointAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EndpointAddr::Socket(ep) => write!(f, "{ep}"),
-        }
-    }
-}
-
-impl Display for SocketEndpointAddr {
+impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SocketEndpointAddr::Direct { addr } => write!(f, "{addr}"),
-            SocketEndpointAddr::Agent { agent, outer } => write!(f, "{agent}-{outer}"),
+            EndpointAddr::Direct { addr } => write!(f, "{addr}"),
+            EndpointAddr::Agent { agent, outer } => write!(f, "{agent}-{outer}"),
         }
     }
 }
 
-impl Deref for SocketEndpointAddr {
+impl Deref for EndpointAddr {
     type Target = SocketAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            SocketEndpointAddr::Direct { addr } => addr,
-            SocketEndpointAddr::Agent { agent, .. } => agent,
+            EndpointAddr::Direct { addr } => addr,
+            EndpointAddr::Agent { agent, .. } => agent,
         }
     }
 }
 
-impl FromStr for SocketEndpointAddr {
+impl FromStr for EndpointAddr {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -135,53 +126,23 @@ impl FromStr for SocketEndpointAddr {
             // Agent format: "inet:1.12.124.56:1234-inet:202.106.68.43:6080"
             let agent = first.trim().parse()?;
             let outer = second.trim().parse()?;
-            Ok(SocketEndpointAddr::with_agent(agent, outer))
+            Ok(EndpointAddr::with_agent(agent, outer))
         } else {
             // Direct format: "1.12.124.56:1234"
             let addr = s.trim().parse()?;
-            Ok(SocketEndpointAddr::direct(addr))
-        }
-    }
-}
-
-impl From<SocketAddr> for SocketEndpointAddr {
-    fn from(addr: SocketAddr) -> Self {
-        SocketEndpointAddr::direct(addr)
-    }
-}
-
-impl From<(SocketAddr, SocketAddr)> for SocketEndpointAddr {
-    fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
-        SocketEndpointAddr::with_agent(agent, outer)
-    }
-}
-
-#[derive(
-    Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
-pub enum EndpointAddr {
-    Socket(SocketEndpointAddr),
-}
-
-impl EndpointAddr {
-    pub fn family(&self) -> Family {
-        match self {
-            EndpointAddr::Socket(addr) => match addr.deref() {
-                SocketAddr::V4(..) => Family::V4,
-                SocketAddr::V6(..) => Family::V6,
-            },
+            Ok(EndpointAddr::direct(addr))
         }
     }
 }
 
 impl From<SocketAddr> for EndpointAddr {
     fn from(addr: SocketAddr) -> Self {
-        SocketEndpointAddr::direct(addr).into()
+        EndpointAddr::direct(addr)
     }
 }
 
 impl From<(SocketAddr, SocketAddr)> for EndpointAddr {
     fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
-        SocketEndpointAddr::from((agent, outer)).into()
+        EndpointAddr::with_agent(agent, outer)
     }
 }

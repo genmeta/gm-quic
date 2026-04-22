@@ -5,10 +5,7 @@ use std::{
 };
 
 use futures::{FutureExt, TryFutureExt, future::BoxFuture, stream::BoxStream};
-pub use qbase::net::{
-    Family,
-    addr::{EndpointAddr, SocketEndpointAddr},
-};
+pub use qbase::net::{Family, addr::EndpointAddr};
 
 pub type PublishFuture<'a> = BoxFuture<'a, io::Result<()>>;
 
@@ -66,7 +63,7 @@ impl Resolve for SystemResolver {
         tokio::net::lookup_host(name.to_owned())
             .map_ok(|addrs| {
                 stream::iter(addrs.map(move |addr| {
-                    let ep = EndpointAddr::Socket(SocketEndpointAddr::direct(addr));
+                    let ep = EndpointAddr::direct(addr);
                     (source.clone(), ep)
                 }))
                 .boxed()

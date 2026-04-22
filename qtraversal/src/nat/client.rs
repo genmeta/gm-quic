@@ -14,10 +14,7 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use qbase::net::{
-    Family,
-    addr::{EndpointAddr, SocketEndpointAddr},
-};
+use qbase::net::{Family, addr::EndpointAddr};
 pub use qbase::net::{NatType, NetFeature};
 use qinterface::{
     Interface, RebindedError, WeakInterface,
@@ -149,7 +146,7 @@ pub struct StunClient<I: RefIO + 'static> {
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
-pub type ClientLocationData = Result<SocketEndpointAddr, ArcIoError>;
+pub type ClientLocationData = Result<EndpointAddr, ArcIoError>;
 
 impl<I: RefIO + 'static> StunClient<I> {
     pub fn new(
@@ -243,7 +240,7 @@ impl<I: RefIO + 'static> StunClient<I> {
                     locations.r#for(&ref_iface, |locations, bind_uri| {
                         let data = detect_result
                             .clone()
-                            .map(|outer| SocketEndpointAddr::with_agent(stun_agent, outer));
+                            .map(|outer| EndpointAddr::with_agent(stun_agent, outer));
                         locations.upsert::<ClientLocationData>(bind_uri, Arc::new(data));
                     });
                 }
@@ -501,7 +498,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                         let is_ipv4 = ref_iface.iface().bind_uri().family() == Family::V4;
                         let mut stream = std::pin::pin!(stream);
                         while let Some((_, addr)) = stream.next().await {
-                            let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr else { continue };
+                            let EndpointAddr::Direct { addr } = addr else { continue };
                             if addr.is_ipv4() != is_ipv4 { continue }
                             let done = {
                                 let mut clients = lock_clients();
