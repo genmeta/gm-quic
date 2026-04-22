@@ -7,7 +7,7 @@ use std::{
 use futures::{FutureExt, TryFutureExt, future::BoxFuture, stream::BoxStream};
 pub use qbase::net::{
     Family,
-    addr::{BleEndpontAddr, EndpointAddr, SocketEndpointAddr},
+    addr::{EndpointAddr, SocketEndpointAddr},
 };
 
 pub type PublishFuture<'a> = BoxFuture<'a, io::Result<()>>;

@@ -4,7 +4,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::{PunchHelloFrame, ReliableFrame, io::ReceiveFrame},
     net::{
-        addr::{BleEndpontAddr, BoundAddr, EndpointAddr, SocketEndpointAddr},
+        addr::{BoundAddr, EndpointAddr, SocketEndpointAddr},
         route::{Link, Pathway},
         tx::Signals,
     },
@@ -75,9 +75,6 @@ impl Components {
                             BoundAddr::Internet(addr) => {
                                 EndpointAddr::Socket(SocketEndpointAddr::direct(addr))
                             }
-                            BoundAddr::Bluetooth(addr) => {
-                                EndpointAddr::Ble(BleEndpontAddr::new(addr))
-                            }
                             _ => return,
                         };
                         conn.add_local_endpoint(bind_uri, endpoint_addr);
@@ -123,10 +120,7 @@ impl Components {
 
     // 添加本地直通地址 可以直接新建 path
     pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) {
-        let addr: SocketEndpointAddr = match addr {
-            EndpointAddr::Socket(addr) => addr,
-            _ => return,
-        };
+        let EndpointAddr::Socket(addr) = addr;
         tracing::trace!(target: "quic", bind_uri = %bind, %addr,"add local endpoint");
         match self.puncher.add_local_endpoint(bind, addr) {
             Ok(ways) => {
@@ -143,10 +137,7 @@ impl Components {
 
     // 添加对端直通地址，可以直接新建 path
     pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qresolve::Source) {
-        let addr = match addr {
-            EndpointAddr::Socket(addr) => addr,
-            _ => return,
-        };
+        let EndpointAddr::Socket(addr) = addr;
         tracing::trace!(target: "quic", %addr, ?source, "add peer endpoint");
         match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
@@ -173,7 +164,6 @@ impl Components {
 
         let local_addr = match endpoint_addr {
             EndpointAddr::Socket(socket_endpoint_addr) => socket_endpoint_addr.addr(),
-            EndpointAddr::Ble(_) => return Err(std::io::ErrorKind::Unsupported.into()),
         };
         let conn = self.clone();
 

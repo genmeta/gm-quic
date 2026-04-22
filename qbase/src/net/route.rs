@@ -75,10 +75,6 @@ impl TryInto<Pathway<SocketEndpointAddr>> for Pathway<EndpointAddr> {
             (EndpointAddr::Socket(local), EndpointAddr::Socket(remote)) => {
                 Ok(Pathway::new(local, remote))
             }
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid socket endpoint address type",
-            )),
         }
     }
 }
@@ -146,10 +142,6 @@ impl TryInto<Link<SocketAddr>> for Link<BoundAddr> {
     fn try_into(self) -> Result<Link<SocketAddr>, Self::Error> {
         match (self.src, self.dst) {
             (BoundAddr::Internet(src), BoundAddr::Internet(dst)) => Ok(Link::new(src, dst)),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid socket address type",
-            )),
         }
     }
 }

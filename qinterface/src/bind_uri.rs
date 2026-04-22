@@ -102,9 +102,6 @@ impl TryFrom<Uri> for BindUri {
             BindUriScheme::Inet => {
                 parse_inet_bind_uri(&uri)?;
             }
-            BindUriScheme::Ble => {
-                parse_ble_bind_uri(&uri);
-            }
         }
 
         Ok(Self(uri))
@@ -191,7 +188,6 @@ impl BindUri {
                     SocketAddr::V6(_) => AddrKind::Internet(Family::V6),
                 }
             }
-            BindUriScheme::Ble => AddrKind::Bluetooth,
         }
     }
 
@@ -243,7 +239,6 @@ impl BindUri {
                     .expect("Already checked BindUriScheme is inet");
                 assert_eq!(addr.port(), 0, "Only port 0 is allocatable");
             }
-            BindUriScheme::Ble => panic!("BLE address cannot allocate port"),
         }
 
         let mut new_uri = self.clone();
@@ -343,7 +338,6 @@ impl BindUri {
             BindUriScheme::Inet => Ok(self
                 .as_inet_bind_uri()
                 .expect("Already checked BindUriScheme is inet")),
-            BindUriScheme::Ble => Err(TryIntoSocketAddrError::NotSocketBindUri),
         }
     }
 }
@@ -378,7 +372,6 @@ impl TryFrom<BindUri> for SocketAddr {
 pub enum BindUriScheme {
     Iface,
     Inet,
-    Ble,
 }
 
 impl BindUriScheme {
@@ -386,7 +379,6 @@ impl BindUriScheme {
         match self {
             BindUriScheme::Iface => "iface",
             BindUriScheme::Inet => "inet",
-            BindUriScheme::Ble => "ble",
         }
     }
 }
@@ -411,7 +403,6 @@ impl FromStr for BindUriScheme {
         match s {
             "iface" => Ok(BindUriScheme::Iface),
             "inet" => Ok(BindUriScheme::Inet),
-            "ble" => Ok(BindUriScheme::Ble),
             _ => Err(ParseBindUriSchemeError),
         }
     }

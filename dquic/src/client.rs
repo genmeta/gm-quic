@@ -280,9 +280,6 @@ impl QuicClient {
                         EndpointAddr::Socket(socket_endpoint_addr) => {
                             BoundAddr::Internet(*socket_endpoint_addr)
                         }
-                        EndpointAddr::Ble(ble_endpont_addr) => {
-                            BoundAddr::Bluetooth(*ble_endpont_addr)
-                        }
                     };
                     let link = Link::new(bound_addr, dst);
                     let pathway = Pathway::new(bound_addr.into(), server_ep);
