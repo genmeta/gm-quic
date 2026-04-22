@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use qbase::{frame::PunchHelloFrame, net::addr::BoundAddr};
+use qbase::{frame::PunchHelloFrame, net::route::Link};
 use qinterface::{
     Interface,
     bind_uri::{BindUri, BindUriScheme},
@@ -18,7 +18,6 @@ use qinterface::{
 };
 
 use crate::{
-    Link,
     punch::{
         scheduler::SCHEDULER,
         tx::{PunchId, Transaction},
@@ -395,7 +394,7 @@ impl PortPredictor {
                     continue;
                 }
             };
-            let Ok(BoundAddr::Internet(socket_addr)) = iface.bound_addr() else {
+            let Ok(socket_addr) = iface.bound_addr() else {
                 self.release_interface(bind_uri).await;
                 continue;
             };

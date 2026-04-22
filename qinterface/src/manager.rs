@@ -3,6 +3,7 @@ use std::{
     fmt::Debug,
     future::Future,
     io, mem,
+    net::SocketAddr,
     ops::{Deref, DerefMut},
     sync::{Arc, OnceLock},
     task::{Context, Poll, ready},
@@ -13,7 +14,7 @@ use dashmap::{DashMap, Entry};
 use futures::FutureExt;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use qbase::{
-    net::{addr::BoundAddr, route},
+    net::route,
     util::{UniqueId, UniqueIdGenerator},
 };
 use tokio::sync::SetOnce;
@@ -401,7 +402,7 @@ impl IO for InterfaceContext {
         self.binding().io.bind_uri()
     }
 
-    fn bound_addr(&self) -> io::Result<BoundAddr> {
+    fn bound_addr(&self) -> io::Result<SocketAddr> {
         self.with_io(|io| io.bound_addr())
     }
 
@@ -464,7 +465,7 @@ mod dropping_io {
             self.bind_uri.clone()
         }
 
-        fn bound_addr(&self) -> io::Result<BoundAddr> {
+        fn bound_addr(&self) -> io::Result<SocketAddr> {
             Err(self.to_io_error())
         }
 
@@ -595,7 +596,7 @@ mod tests {
             self.bind_uri.clone()
         }
 
-        fn bound_addr(&self) -> io::Result<BoundAddr> {
+        fn bound_addr(&self) -> io::Result<SocketAddr> {
             Err(io::Error::new(io::ErrorKind::Unsupported, "not needed"))
         }
 

@@ -1,19 +1,17 @@
 use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, BytesMut};
-use qbase::net::addr::BoundAddr;
+use qbase::net::route::Link;
 use qinterface::io::{IO, IoExt};
 
 use crate::{
-    Link,
     nat::msg::{Packet, TransactionId, WritePacket},
     packet::{StunHeader, WriteStunHeader},
 };
 
 pub trait StunIO: IO {
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        let bound_addr = self.bound_addr()?;
-        bound_addr.try_into().map_err(io::Error::other)
+        self.bound_addr()
     }
 
     fn send_stun_packet(
@@ -38,7 +36,7 @@ pub trait StunIO: IO {
             let bufs = &[io::IoSlice::new(&buf)];
 
             // assemble packet header
-            let link = Link::new(self.bound_addr()?, BoundAddr::Internet(dst));
+            let link = Link::new(self.bound_addr()?, dst);
             let pathway = link.into();
 
             let hdr = qbase::net::route::PacketHeader::new(pathway, link, 64, None, 0);

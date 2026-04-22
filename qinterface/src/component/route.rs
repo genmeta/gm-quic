@@ -12,10 +12,7 @@ use qbase::{
         NewConnectionIdFrame, RetireConnectionIdFrame,
         io::{ReceiveFrame, SendFrame},
     },
-    net::{
-        addr::BoundAddr,
-        route::{Link, Pathway},
-    },
+    net::route::{Link, Pathway},
     packet::GetDcid,
 };
 
@@ -83,13 +80,8 @@ impl QuicRouter {
             let signpost = Signpost::from(*dcid);
             self.table.get(&signpost).map(|queue| queue.clone())
         } else {
-            match link.dst() {
-                BoundAddr::Internet(socket_addr) => {
-                    let signpost = Signpost::from(socket_addr);
-                    self.table.get(&signpost).map(|queue| queue.clone())
-                }
-                _ => None,
-            }
+            let signpost = Signpost::from(link.dst());
+            self.table.get(&signpost).map(|queue| queue.clone())
         }
     }
 

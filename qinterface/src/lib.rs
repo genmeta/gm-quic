@@ -7,15 +7,13 @@ pub mod manager;
 use std::{
     error::Error,
     fmt::Debug,
+    net::SocketAddr,
     sync::{Arc, Weak},
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use qbase::{
-    net::{addr::BoundAddr, route::PacketHeader},
-    util::UniqueId,
-};
+use qbase::{net::route::PacketHeader, util::UniqueId};
 use thiserror::Error;
 
 use crate::{
@@ -148,7 +146,7 @@ impl IO for Interface {
     }
 
     #[inline]
-    fn bound_addr(&self) -> std::io::Result<BoundAddr> {
+    fn bound_addr(&self) -> std::io::Result<SocketAddr> {
         self.with_io(|io| io.bound_addr())?
     }
 
@@ -276,7 +274,7 @@ impl IO for WeakInterface {
         self.bind_uri.clone()
     }
 
-    fn bound_addr(&self) -> std::io::Result<BoundAddr> {
+    fn bound_addr(&self) -> std::io::Result<SocketAddr> {
         self.upgrade()?.bound_addr()
     }
 

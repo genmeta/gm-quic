@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use qbase::net::addr::SocketEndpointAddr;
 
 pub mod addr;
@@ -9,5 +7,4 @@ pub mod packet;
 pub mod punch;
 pub mod route;
 
-pub type Link<A = SocketAddr> = qbase::net::route::Link<A>;
 pub type PathWay<E = SocketEndpointAddr> = qbase::net::route::Pathway<E>;

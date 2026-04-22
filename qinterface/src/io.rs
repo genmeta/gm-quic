@@ -2,12 +2,13 @@ use std::{
     any::Any,
     future::Future,
     io,
+    net::SocketAddr,
     sync::Arc,
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use qbase::net::{addr::BoundAddr, route::PacketHeader};
+use qbase::net::route::PacketHeader;
 
 pub mod handy;
 
@@ -46,7 +47,7 @@ pub trait IO: Send + Sync + Any {
     /// then the implementation should return an error as well.
     ///
     /// [`UdpSocket::local_addr`]: std::net::UdpSocket::local_addr
-    fn bound_addr(&self) -> io::Result<BoundAddr>;
+    fn bound_addr(&self) -> io::Result<SocketAddr>;
 
     /// Maximum size of a single network segment in bytes
     fn max_segment_size(&self) -> io::Result<usize>;

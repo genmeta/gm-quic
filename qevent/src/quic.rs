@@ -11,7 +11,6 @@ use qbase::{
         GetFrameType, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
         PingFrame, ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
-    net::addr::BoundAddr,
     packet::header::{
         GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
@@ -159,15 +158,6 @@ impl From<SocketAddr> for PathEndpointInfo {
                 ip_v6: addr.ip().to_string(),
                 port_v6: addr.port(),
             }),
-        }
-    }
-}
-
-impl From<BoundAddr> for PathEndpointInfo {
-    fn from(value: BoundAddr) -> Self {
-        match value {
-            BoundAddr::Internet(socket_addr) => socket_addr.into(),
-            _ => crate::build!(Self {}),
         }
     }
 }

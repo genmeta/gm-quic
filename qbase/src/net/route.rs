@@ -8,7 +8,7 @@ use crate::{
     frame::EncodeSize,
     net::{
         Family,
-        addr::{BoundAddr, EndpointAddr, SocketEndpointAddr},
+        addr::{EndpointAddr, SocketEndpointAddr},
         be_socket_addr,
     },
 };
@@ -86,18 +86,18 @@ impl<E: Display> Display for Pathway<E> {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Link<A = BoundAddr> {
-    src: A,
-    dst: A,
+pub struct Link {
+    src: SocketAddr,
+    dst: SocketAddr,
 }
 
-impl<A: Display> Display for Link<A> {
+impl Display for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}<->{}", self.src, self.dst)
     }
 }
 
-pub fn be_link(input: &[u8]) -> nom::IResult<&[u8], Link<SocketAddr>> {
+pub fn be_link(input: &[u8]) -> nom::IResult<&[u8], Link> {
     let (remain, family) = be_u8(input)?;
     let family = match family {
         0 => Family::V4,
@@ -111,15 +111,15 @@ pub fn be_link(input: &[u8]) -> nom::IResult<&[u8], Link<SocketAddr>> {
     };
     let (remain, src) = be_socket_addr(remain, family)?;
     let (remain, dst) = be_socket_addr(remain, family)?;
-    Ok((remain, Link::<SocketAddr> { src, dst }))
+    Ok((remain, Link { src, dst }))
 }
 
 pub trait WriteLink {
-    fn put_link(&mut self, link: &Link<SocketAddr>);
+    fn put_link(&mut self, link: &Link);
 }
 
 impl<T: BufMut> WriteLink for T {
-    fn put_link(&mut self, link: &Link<SocketAddr>) {
+    fn put_link(&mut self, link: &Link) {
         use crate::net::WriteSocketAddr;
         self.put_u8(link.src().is_ipv6() as u8);
         self.put_socket_addr(&link.src);
@@ -127,26 +127,7 @@ impl<T: BufMut> WriteLink for T {
     }
 }
 
-impl From<Link<SocketAddr>> for Link<BoundAddr> {
-    fn from(value: Link<SocketAddr>) -> Self {
-        Self {
-            src: BoundAddr::from(value.src),
-            dst: BoundAddr::from(value.dst),
-        }
-    }
-}
-
-impl TryInto<Link<SocketAddr>> for Link<BoundAddr> {
-    type Error = std::io::Error;
-
-    fn try_into(self) -> Result<Link<SocketAddr>, Self::Error> {
-        match (self.src, self.dst) {
-            (BoundAddr::Internet(src), BoundAddr::Internet(dst)) => Ok(Link::new(src, dst)),
-        }
-    }
-}
-
-impl EncodeSize for Link<SocketAddr> {
+impl EncodeSize for Link {
     fn max_encoding_size(&self) -> usize {
         1 + self.src.max_encoding_size() + self.dst.max_encoding_size()
     }
@@ -156,34 +137,20 @@ impl EncodeSize for Link<SocketAddr> {
     }
 }
 
-impl<A> Link<A> {
+impl Link {
     #[inline]
-    pub fn new(src: A, dst: A) -> Self {
+    pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
         Self { src, dst }
     }
 
     #[inline]
-    pub fn src(&self) -> A
-    where
-        A: Clone,
-    {
+    pub fn src(&self) -> SocketAddr {
         self.src.clone()
     }
 
     #[inline]
-    pub fn dst(&self) -> A
-    where
-        A: Clone,
-    {
+    pub fn dst(&self) -> SocketAddr {
         self.dst.clone()
-    }
-
-    #[inline]
-    pub fn map<A1>(self, mut f: impl FnMut(A) -> A1) -> Link<A1> {
-        Link {
-            src: f(self.src),
-            dst: f(self.dst),
-        }
     }
 
     #[inline]
@@ -195,8 +162,8 @@ impl<A> Link<A> {
     }
 }
 
-impl<A, E: From<A>> From<Link<A>> for Pathway<E> {
-    fn from(link: Link<A>) -> Self {
+impl<E: From<SocketAddr>> From<Link> for Pathway<E> {
+    fn from(link: Link) -> Self {
         Pathway::new(E::from(link.src), E::from(link.dst))
     }
 }
@@ -225,7 +192,7 @@ impl PacketHeader {
     pub fn empty() -> Self {
         let src = SocketAddr::from(([0, 0, 0, 0], 0));
         let dst = SocketAddr::from(([0, 0, 0, 0], 0));
-        let link = Link::new(BoundAddr::from(src), BoundAddr::from(dst));
+        let link = Link::new(SocketAddr::from(src), SocketAddr::from(dst));
         Self::new(link.into(), link, 0, None, 0)
     }
 

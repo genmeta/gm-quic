@@ -1,11 +1,10 @@
 use std::fmt;
 
-use qbase::frame::{
-    AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, io::ReceiveFrame,
+use qbase::{
+    frame::{AddAddressFrame, PunchDoneFrame, PunchHelloFrame, PunchMeNowFrame, io::ReceiveFrame},
+    net::route::Link,
 };
 use tokio::sync::SetOnce;
-
-use crate::Link;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PunchId {
