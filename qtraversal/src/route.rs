@@ -13,7 +13,10 @@ use std::{
 
 use bytes::BytesMut;
 use qbase::{
-    net::{addr::SocketEndpointAddr, route::PacketHeader},
+    net::{
+        addr::SocketEndpointAddr,
+        route::{Link, PacketHeader},
+    },
     util::ArcAsyncDeque,
 };
 use qinterface::{
@@ -30,7 +33,7 @@ use tokio_util::task::AbortOnDropHandle;
 pub type ArcRecvQueue = ArcAsyncDeque<(BytesMut, PathWay, Link)>;
 
 use crate::{
-    Link, PathWay,
+    PathWay,
     nat::{
         client::{StunClients, StunClientsComponent},
         router::{StunRouter, StunRouterComponent},
@@ -204,17 +207,13 @@ impl ReceiveAndDeliverPacket {
                     return;
                 };
 
-                let (Ok(src), Ok(dst)) = (hdr.link().src().try_into(), hdr.link().dst().try_into())
-                else {
-                    return;
-                };
                 use crate::nat::msg::be_packet;
                 let pkt = pkt.split_off(StunHeader::encoding_size());
                 let Ok((.., (txid, packet))) = be_packet(&pkt) else {
                     return;
                 };
 
-                stun_router.deliver_stun_packet(txid, packet, Link::new(src, dst));
+                stun_router.deliver_stun_packet(txid, packet, hdr.link());
             };
 
             let deliver_forward_packet =
@@ -224,7 +223,7 @@ impl ReceiveAndDeliverPacket {
                             forwarder.should_forward(fhdr.pathway().remote())
                     {
                         let bufs = &[io::IoSlice::new(&pkt)];
-                        let link = Link::new(iface.bound_addr()?, forward_target.into());
+                        let link = Link::new(iface.bound_addr()?, forward_target);
                         let hdr = PacketHeader::new(link.into(), link, 64, None, pkt.len() as _);
                         return iface.sendmmsg(bufs, hdr).await;
                     };

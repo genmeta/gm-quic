@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    convert::TryInto,
     io,
     net::SocketAddr,
     ops::Deref,
@@ -16,7 +15,12 @@ use qbase::{
         RemoveAddressFrame,
         io::{ReceiveFrame, SendFrame},
     },
-    net::{AddrFamily, NatType, addr::SocketEndpointAddr, route::PacketHeader, tx::Signals},
+    net::{
+        AddrFamily, NatType,
+        addr::SocketEndpointAddr,
+        route::{Link, PacketHeader},
+        tx::Signals,
+    },
     packet::{
         Package, PacketSpace, ProductHeader,
         header::short::OneRttHeader,
@@ -35,7 +39,7 @@ use tokio::{task::AbortHandle, time::timeout};
 use tracing::Instrument as _;
 
 use crate::{
-    Link, PathWay,
+    PathWay,
     addr::AddressBook,
     nat::{client::StunClientComponent, router::StunRouterComponent},
     punch::{
@@ -167,7 +171,7 @@ where
         })()
         .map_err(|s| io::Error::other(format!("Failed to assemble packet: {s:?}")))?;
 
-        let hdr = PacketHeader::new(link.into(), link.into(), ttl, None, sent_bytes as u16);
+        let hdr = PacketHeader::new(link.into(), link, ttl, None, sent_bytes as u16);
         iface
             .sendmmsg(&[io::IoSlice::new(&buffer[..sent_bytes])], hdr)
             .await
@@ -572,10 +576,7 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending PunchMeNow expecting PunchMeNow then collision");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
 
-                let link = Link::new(
-                    iface.bound_addr()?.try_into().expect("Must be SocketAddr"),
-                    link.dst(),
-                );
+                let link = Link::new(iface.bound_addr()?, link.dst());
                 let mut collided = false;
                 let result: io::Result<()> = loop {
                     tokio::select! {
@@ -708,10 +709,7 @@ where
                 punch_me_now.set_addr(outer_addr);
                 tracing::trace!(target: "punch", %punch_id, "sending PunchMeNow + Hello expecting Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                let link = Link::new(
-                    iface.bound_addr()?.try_into().expect("Must be SocketAddr"),
-                    link.dst(),
-                );
+                let link = Link::new(iface.bound_addr()?, link.dst());
                 let time = Duration::from_millis(100);
                 for i in 0..MAX_RETRIES {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "sending Hello expecting Hello(Done)");
@@ -1129,10 +1127,7 @@ where
                         format!("Interface not found for bind URI: {:?}", bind),
                     )
                 })?;
-                let local_bound = iface.bound_addr()?.try_into().map_err(|_| {
-                    io::Error::other("Failed to convert bound address to SocketAddr")
-                })?;
-                Ok((local_bound, *remote_agent))
+                Ok((iface.bound_addr()?, *remote_agent))
             }
             _ => Err(io::Error::other(
                 "Unsupported endpoint type combination for punching",
@@ -1252,7 +1247,7 @@ async fn dynamic_iface(
             // Must use the connection-owned router.
             components.init_with(|| QuicRouterComponent::new(quic_router.clone()));
 
-            let local_addr = SocketAddr::try_from(iface.bound_addr()?).map_err(io::Error::other)?;
+            let local_addr = iface.bound_addr()?;
             let stun_server = *stun_servers
                 .iter()
                 .find(|addr| addr.is_ipv4() == local_addr.is_ipv4())

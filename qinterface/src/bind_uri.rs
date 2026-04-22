@@ -7,10 +7,7 @@ use std::{
 
 use derive_more::{Display, Into};
 use http::{Uri, uri::Scheme};
-use qbase::{
-    net::{Family, addr::AddrKind},
-    util::UniqueIdGenerator,
-};
+use qbase::{net::Family, util::UniqueIdGenerator};
 use thiserror::Error;
 
 #[derive(Debug, Display, Clone, Into, PartialEq, Eq, Hash)]
@@ -172,20 +169,20 @@ impl BindUri {
         &self.0
     }
 
-    pub fn addr_kind(&self) -> AddrKind {
+    pub fn family(&self) -> Family {
         match self.scheme() {
-            BindUriScheme::Iface => AddrKind::Internet(
+            BindUriScheme::Iface => {
                 self.as_iface_bind_uri()
                     .expect("Already checked BindUriScheme is iface")
-                    .0,
-            ),
+                    .0
+            }
             BindUriScheme::Inet => {
                 match self
                     .as_inet_bind_uri()
                     .expect("Already checked BindUriScheme is inet")
                 {
-                    SocketAddr::V4(_) => AddrKind::Internet(Family::V4),
-                    SocketAddr::V6(_) => AddrKind::Internet(Family::V6),
+                    SocketAddr::V4(_) => Family::V4,
+                    SocketAddr::V6(_) => Family::V6,
                 }
             }
         }

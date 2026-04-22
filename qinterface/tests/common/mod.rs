@@ -13,10 +13,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::net::{
-    addr::BoundAddr,
-    route::{Link, PacketHeader, Pathway},
-};
+use qbase::net::route::{Link, PacketHeader, Pathway};
 use qinterface::{Interface, bind_uri::BindUri, component::Component, device::Devices, io::IO};
 use tokio::{runtime::Runtime, sync::Notify, time};
 
@@ -72,14 +69,14 @@ pub struct FakeIoState {
 #[derive(Debug)]
 pub struct FakeIo {
     bind_uri: BindUri,
-    bound_addr: BoundAddr,
+    bound_addr: SocketAddr,
     state: Arc<FakeIoState>,
     closed: AtomicBool,
     close_notify: Arc<Notify>,
 }
 
 impl FakeIo {
-    pub fn new(bind_uri: BindUri, bound_addr: BoundAddr, state: Arc<FakeIoState>) -> Self {
+    pub fn new(bind_uri: BindUri, bound_addr: SocketAddr, state: Arc<FakeIoState>) -> Self {
         Self {
             bind_uri,
             bound_addr,
@@ -99,7 +96,7 @@ impl IO for FakeIo {
         self.bind_uri.clone()
     }
 
-    fn bound_addr(&self) -> io::Result<BoundAddr> {
+    fn bound_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.bound_addr)
     }
 
@@ -156,10 +153,10 @@ impl FakeFactory {
 impl qinterface::io::ProductIO for FakeFactory {
     fn bind(&self, bind_uri: BindUri) -> Box<dyn IO> {
         let generation = self.state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let bound_addr = BoundAddr::Internet(SocketAddr::new(
+        let bound_addr = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             self.base_port.saturating_add(generation as u16),
-        ));
+        );
         Box::new(FakeIo::new(bind_uri, bound_addr, self.state.clone()))
     }
 }
@@ -225,6 +222,6 @@ impl Component for ProbeComponent {
 pub fn dummy_packet_header() -> PacketHeader {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
     let way = Pathway::new(addr.into(), addr.into());
-    let link = Link::new(addr.into(), addr.into());
+    let link = Link::new(addr, addr);
     PacketHeader::new(way, link, 64, None, 0)
 }

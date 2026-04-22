@@ -7,10 +7,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use qbase::net::{
-    addr::BoundAddr,
-    route::{Link, PacketHeader},
-};
+use qbase::net::route::{Link, PacketHeader};
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
@@ -55,13 +52,9 @@ impl InterfaceFailure {
 }
 
 pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure> {
-    let bound_addr = match iface
+    let bound_addr = iface
         .bound_addr()
-        .map_err(InterfaceFailure::InterfaceBroken)?
-    {
-        BoundAddr::Internet(addr) => addr,
-        _ => return Err(InterfaceFailure::InvalidImplementation),
-    };
+        .map_err(InterfaceFailure::InterfaceBroken)?;
 
     let socket_addr = SocketAddr::try_from(&iface.bind_uri())?;
 
@@ -89,7 +82,7 @@ pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure
     // Send test packet
     let link = Link::new(bound_addr, dst_addr);
     let packets = [io::IoSlice::new(&[0; 1])];
-    let header = PacketHeader::new(link.into(), link.into(), 64, None, packets[0].len() as u16);
+    let header = PacketHeader::new(link.into(), link, 64, None, packets[0].len() as u16);
 
     iface
         .sendmmsg(&packets, header)

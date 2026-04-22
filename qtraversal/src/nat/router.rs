@@ -5,13 +5,12 @@ use std::{
 };
 
 use dashmap::DashMap;
-use qbase::util::ArcAsyncDeque;
+use qbase::{net::route::Link, util::ArcAsyncDeque};
 use qinterface::{Interface, WeakInterface, component::Component};
 use tokio::sync::SetOnce;
 use tracing::debug;
 
 use super::msg::{self, Packet, Request, Response, TransactionId};
-use crate::Link;
 
 type ResponseRouter = Arc<DashMap<TransactionId, Arc<SetOnce<(Response, SocketAddr)>>>>;
 

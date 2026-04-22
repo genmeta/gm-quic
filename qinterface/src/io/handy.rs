@@ -13,10 +13,7 @@ pub mod qudp {
 
     use bytes::BytesMut;
     use qbase::{
-        net::{
-            addr::BoundAddr,
-            route::{Link, Pathway},
-        },
+        net::route::{Link, Pathway},
         util::Wakers,
     };
     use qudp::BATCH_SIZE;
@@ -101,8 +98,8 @@ pub mod qudp {
             self.bind_uri.clone()
         }
 
-        fn bound_addr(&self) -> io::Result<BoundAddr> {
-            self.usc()?.local_addr().map(BoundAddr::Internet)
+        fn bound_addr(&self) -> io::Result<SocketAddr> {
+            self.usc()?.local_addr()
         }
 
         fn max_segments(&self) -> io::Result<usize> {
@@ -123,8 +120,8 @@ pub mod qudp {
             self.send_wakers.combine_with(cx, |cx| {
                 debug_assert_eq!(hdr.ecn(), None);
                 let hdr = qudp::DatagramHeader::new(
-                    hdr.link().src().try_into().expect("Must be SocketAddr"),
-                    hdr.link().dst().try_into().expect("Must be SocketAddr"),
+                    hdr.link().src(),
+                    hdr.link().dst(),
                     hdr.ttl(),
                     hdr.ecn(),
                     hdr.seg_size(),
@@ -141,7 +138,7 @@ pub mod qudp {
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
             self.recv_wakers.combine_with(cx, |cx| {
-                let dst = BoundAddr::Internet(io.local_addr()?);
+                let dst = io.local_addr()?;
                 let len = qbase_hdrs.len().min(pkts.len());
                 let mut hdrs = Vec::with_capacity(len);
                 hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
@@ -154,7 +151,7 @@ pub mod qudp {
 
                 for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
                     let way = Pathway::new(qudp_hdr.src.into(), dst.into());
-                    let link = Link::new(qudp_hdr.src.into(), io.local_addr()?.into());
+                    let link = Link::new(qudp_hdr.src, io.local_addr()?);
                     qbase_hdrs[idx] = PacketHeader::new(
                         way.flip(),
                         link.flip(),
@@ -181,11 +178,12 @@ pub mod qudp {
 pub mod unsupported {
     use std::{
         io,
+        net::SocketAddr,
         task::{Context, Poll},
     };
 
     use bytes::BytesMut;
-    use qbase::net::{addr::BoundAddr, route::PacketHeader};
+    use qbase::net::route::PacketHeader;
     use thiserror::Error;
 
     use crate::{BindUri, IO};
@@ -218,7 +216,7 @@ pub mod unsupported {
             self.bind_uri.clone()
         }
 
-        fn bound_addr(&self) -> io::Result<BoundAddr> {
+        fn bound_addr(&self) -> io::Result<SocketAddr> {
             Err(UnsupportedError(()).into())
         }
 

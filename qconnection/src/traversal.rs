@@ -4,7 +4,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::{PunchHelloFrame, ReliableFrame, io::ReceiveFrame},
     net::{
-        addr::{BoundAddr, EndpointAddr, SocketEndpointAddr},
+        addr::{EndpointAddr, SocketEndpointAddr},
         route::{Link, Pathway},
         tx::Signals,
     },
@@ -27,9 +27,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, ReliableFrame)> for Components {
         let Ok(pathway) = frame.1.try_into() else {
             return Ok(());
         };
-        let Ok(link) = frame.2.try_into() else {
-            return Ok(());
-        };
+        let link = frame.2;
         let bind_uri = frame.0.clone();
         let frame: ReliableFrame = frame.3.clone();
 
@@ -47,9 +45,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, PunchHelloFrame)> for Components {
         let Ok(pathway) = frame.1.try_into() else {
             return Ok(());
         };
-        let Ok(link) = frame.2.try_into() else {
-            return Ok(());
-        };
+        let link = frame.2;
         let bind_uri = frame.0.clone();
         let frame = frame.3;
 
@@ -64,19 +60,15 @@ impl Components {
 
         let future = async move {
             let handle_address_event = |(bind_uri, event): (BindUri, AddressEvent)| {
-                let event = match event.downcast::<io::Result<BoundAddr>>() {
+                let event = match event.downcast::<io::Result<SocketAddr>>() {
                     Ok(AddressEvent::Upsert(data)) => {
                         // on error: delect from address book
                         // THINK: Err和remove的异同？
                         let Ok(bound_addr) = data.as_ref() else {
                             return;
                         };
-                        let endpoint_addr = match *bound_addr {
-                            BoundAddr::Internet(addr) => {
-                                EndpointAddr::Socket(SocketEndpointAddr::direct(addr))
-                            }
-                            _ => return,
-                        };
+                        let endpoint_addr =
+                            EndpointAddr::Socket(SocketEndpointAddr::direct(*bound_addr));
                         conn.add_local_endpoint(bind_uri, endpoint_addr);
                         return;
                     }
@@ -124,9 +116,9 @@ impl Components {
         tracing::trace!(target: "quic", bind_uri = %bind, %addr,"add local endpoint");
         match self.puncher.add_local_endpoint(bind, addr) {
             Ok(ways) => {
-                let ways: Vec<(BindUri, qtraversal::Link, qtraversal::PathWay)> = ways;
+                let ways: Vec<(BindUri, Link, qtraversal::PathWay)> = ways;
                 ways.into_iter().for_each(|way| {
-                    let _ = self.add_path(way.0, way.1.into(), way.2.into());
+                    let _ = self.add_path(way.0, way.1, way.2.into());
                 });
             }
             Err(error) => {
@@ -142,7 +134,7 @@ impl Components {
         match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
                 ways.into_iter().for_each(|way| {
-                    let _ = self.add_path(way.0, way.1.into(), way.2.into());
+                    let _ = self.add_path(way.0, way.1, way.2.into());
                 });
             }
             Err(error) => {

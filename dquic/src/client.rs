@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io,
+    net::SocketAddr,
     str::FromStr,
     sync::{
         Arc,
@@ -11,13 +12,10 @@ use std::{
 
 use dashmap::DashMap;
 use futures::StreamExt;
-use qbase::{
-    net::{Family, addr::AddrKind},
-    param::ClientParameters,
-    token::TokenSink,
-};
+use qbase::{net::Family, param::ClientParameters, token::TokenSink};
 use qconnection::{
     self,
+    qbase::net::AddrFamily,
     qinterface::{component::location::Locations, io::IO},
 };
 use qevent::telemetry::QLog;
@@ -157,14 +155,13 @@ impl QuicClient {
                     .expect("iface URI should be valid")
                     .alloc_port()
             }
-            _ => match ep.addr_kind() {
-                AddrKind::Internet(Family::V4) => BindUri::from_str("inet://0.0.0.0:0")
+            _ => match ep.family() {
+                Family::V4 => BindUri::from_str("inet://0.0.0.0:0")
                     .expect("URL should be valid")
                     .alloc_port(),
-                AddrKind::Internet(Family::V6) => BindUri::from_str("inet://[::]:0")
+                Family::V6 => BindUri::from_str("inet://[::]:0")
                     .expect("URL should be valid")
                     .alloc_port(),
-                _ => unreachable!("BLE and other address kinds are not supported yet"),
             },
         }
     }
@@ -186,7 +183,7 @@ impl QuicClient {
         &self,
         source: &Source,
         ep: &EndpointAddr,
-    ) -> Result<Vec<(BoundAddr, Interface)>, BindInterfaceError> {
+    ) -> Result<Vec<(SocketAddr, Interface)>, BindInterfaceError> {
         let iface_matches_source =
             |iface: &Interface| match source {
                 Source::Mdns { nic, family } => iface.bind_uri().as_iface_bind_uri().is_some_and(
@@ -204,7 +201,7 @@ impl QuicClient {
                 .map(|entry| entry.value().borrow())
                 .filter(|iface| iface_matches_source(iface))
                 .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
-                .filter(|(addr, _)| addr.kind() == ep.addr_kind())
+                .filter(|(addr, _)| addr.family() == ep.family())
                 .collect::<Vec<_>>();
             Ok(ifaces)
         } else {
@@ -214,7 +211,7 @@ impl QuicClient {
                 .map(|entry| entry.value().borrow())
                 .filter(|iface| iface_matches_source(iface))
                 .filter_map(|iface| Some((iface.bound_addr().ok()?, iface)))
-                .filter(|(addr, _)| addr.kind() == ep.addr_kind())
+                .filter(|(addr, _)| addr.family() == ep.family())
                 .collect::<Vec<_>>();
             if !ifaces.is_empty() {
                 return Ok(ifaces);
@@ -277,9 +274,7 @@ impl QuicClient {
 
                 paths.extend(ifaces.into_iter().map(move |(bound_addr, iface)| {
                     let dst = match server_ep {
-                        EndpointAddr::Socket(socket_endpoint_addr) => {
-                            BoundAddr::Internet(*socket_endpoint_addr)
-                        }
+                        EndpointAddr::Socket(socket_endpoint_addr) => *socket_endpoint_addr,
                     };
                     let link = Link::new(bound_addr, dst);
                     let pathway = Pathway::new(bound_addr.into(), server_ep);

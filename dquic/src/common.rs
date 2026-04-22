@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::{Stream, StreamExt, stream};
 use qconnection::{
-    prelude::{AddrKind, EndpointAddr, SocketEndpointAddr, handy},
+    prelude::{EndpointAddr, SocketEndpointAddr, handy},
     qinterface::{
         BindInterface, Interface,
         bind_uri::BindUri,
@@ -53,7 +53,7 @@ impl Network {
     async fn lookup_first_agent(
         &self,
         stun_server: &str,
-        family: Option<Family>,
+        family: Family,
     ) -> Option<Vec<SocketAddr>> {
         let stream = self.resolver.lookup(stun_server).await.ok()?;
         let mut stream = std::pin::pin!(stream);
@@ -62,9 +62,8 @@ impl Network {
                 continue;
             };
             if match family {
-                None => true,
-                Some(Family::V4) => addr.is_ipv4(),
-                Some(Family::V6) => addr.is_ipv6(),
+                Family::V4 => addr.is_ipv4(),
+                Family::V6 => addr.is_ipv6(),
             } {
                 tracing::trace!("resolved first stun agent for {stun_server}: {addr}");
                 return Some(vec![addr]);
@@ -156,11 +155,7 @@ impl Network {
             self.stun_server.clone()
         };
 
-        let family = match bind_uri.addr_kind() {
-            AddrKind::Internet(family) => Some(family),
-            _ => None,
-        };
-
+        let family = bind_uri.family();
         let stun_agents = match &stun_server {
             Some(server) => self
                 .lookup_first_agent(server.as_ref(), family)

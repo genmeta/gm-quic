@@ -8,61 +8,8 @@ use std::{
 use bytes::BufMut;
 use derive_more::{From, TryInto};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-use crate::{
-    frame::EncodeSize,
-    net::{Family, be_socket_addr},
-};
-
-/// Network address type
-///
-/// Represents different IP protocol family types.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum AddrKind {
-    /// IP address
-    Internet(Family),
-}
-
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum BoundAddr {
-    /// Internet socket address (IPv4 or IPv6)
-    // Iface/Inet => Inet
-    Internet(SocketAddr),
-}
-
-impl BoundAddr {
-    /// Get the IP protocol family type of the concrete address
-    pub fn kind(&self) -> AddrKind {
-        match self {
-            BoundAddr::Internet(SocketAddr::V4(_)) => AddrKind::Internet(Family::V4),
-            BoundAddr::Internet(SocketAddr::V6(_)) => AddrKind::Internet(Family::V6),
-        }
-    }
-}
-
-impl EncodeSize for BoundAddr {
-    fn encoding_size(&self) -> usize {
-        match self {
-            BoundAddr::Internet(SocketAddr::V4(_)) => 2 + 4,
-            BoundAddr::Internet(SocketAddr::V6(_)) => 2 + 16,
-        }
-    }
-
-    fn max_encoding_size(&self) -> usize {
-        18
-    }
-}
-
-impl Display for BoundAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BoundAddr::Internet(addr) => write!(f, "{addr}"),
-        }
-    }
-}
+use crate::net::{Family, be_socket_addr};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SocketEndpointAddr {
@@ -217,45 +164,24 @@ pub enum EndpointAddr {
 }
 
 impl EndpointAddr {
-    pub fn addr_kind(&self) -> AddrKind {
+    pub fn family(&self) -> Family {
         match self {
-            EndpointAddr::Socket(addr) => AddrKind::Internet(match addr.deref() {
+            EndpointAddr::Socket(addr) => match addr.deref() {
                 SocketAddr::V4(..) => Family::V4,
                 SocketAddr::V6(..) => Family::V6,
-            }),
-        }
-    }
-}
-
-impl From<BoundAddr> for EndpointAddr {
-    fn from(addr: BoundAddr) -> Self {
-        match addr {
-            BoundAddr::Internet(socket_addr) => SocketEndpointAddr::direct(socket_addr).into(),
+            },
         }
     }
 }
 
 impl From<SocketAddr> for EndpointAddr {
     fn from(addr: SocketAddr) -> Self {
-        SocketEndpointAddr::from(addr).into()
+        SocketEndpointAddr::direct(addr).into()
     }
 }
 
 impl From<(SocketAddr, SocketAddr)> for EndpointAddr {
     fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
         SocketEndpointAddr::from((agent, outer)).into()
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("Invalid real address format")]
-pub struct ParseRealAddrError(AddrParseError);
-
-impl FromStr for BoundAddr {
-    type Err = ParseRealAddrError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let addr: SocketAddr = s.parse().map_err(ParseRealAddrError)?;
-        Ok(BoundAddr::Internet(addr))
     }
 }

@@ -3,6 +3,7 @@
 
 use std::{
     future::Future,
+    net::SocketAddr,
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
 };
@@ -82,7 +83,7 @@ pub fn launch_test_client(
     Arc::new(client)
 }
 
-pub fn get_server_addr(listeners: &QuicListeners) -> qbase::net::addr::BoundAddr {
+pub fn get_server_addr(listeners: &QuicListeners) -> SocketAddr {
     let localhost = listeners
         .get_server("localhost")
         .expect("Server localhost must be registered");

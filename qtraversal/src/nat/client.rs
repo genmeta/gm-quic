@@ -16,7 +16,7 @@ use std::{
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use qbase::net::{
     Family,
-    addr::{AddrKind, EndpointAddr, SocketEndpointAddr},
+    addr::{EndpointAddr, SocketEndpointAddr},
 };
 pub use qbase::net::{NatType, NetFeature};
 use qinterface::{
@@ -498,7 +498,7 @@ impl<I: RefIO + 'static> StunClientsInner<I> {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                     _ = tokio::time::timeout_at(deadline, async {
                         let Ok(stream) = resolver.lookup(server.as_ref()).await else { return };
-                        let is_ipv4 = matches!(ref_iface.iface().bind_uri().addr_kind(), AddrKind::Internet(Family::V4));
+                        let is_ipv4 = ref_iface.iface().bind_uri().family() == Family::V4;
                         let mut stream = std::pin::pin!(stream);
                         while let Some((_, addr)) = stream.next().await {
                             let EndpointAddr::Socket(SocketEndpointAddr::Direct { addr }) = addr else { continue };
