@@ -264,18 +264,13 @@ impl QuicClient {
 
         let mut paths = vec![];
         for (source, server_ep) in server_eps {
-            if matches!(
-                server_ep,
-                EndpointAddr::Socket(SocketEndpointAddr::Agent { .. })
-            ) {
+            if matches!(server_ep, EndpointAddr::Agent { .. }) {
                 self.ensure_iface_for(&source, &server_ep).await;
             } else {
                 let ifaces = self.select_or_bind_ifaces(&source, &server_ep).await?;
 
                 paths.extend(ifaces.into_iter().map(move |(bound_addr, iface)| {
-                    let dst = match server_ep {
-                        EndpointAddr::Socket(socket_endpoint_addr) => *socket_endpoint_addr,
-                    };
+                    let dst = *server_ep;
                     let link = Link::new(bound_addr, dst);
                     let pathway = Pathway::new(bound_addr.into(), server_ep);
                     (iface, link, pathway)

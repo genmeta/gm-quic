@@ -17,7 +17,7 @@ use qbase::{
     },
     net::{
         AddrFamily, NatType,
-        addr::SocketEndpointAddr,
+        addr::EndpointAddr,
         route::{Link, PacketHeader},
         tx::Signals,
     },
@@ -297,7 +297,7 @@ where
     pub fn add_local_endpoint(
         &self,
         bind: BindUri,
-        addr: SocketEndpointAddr,
+        addr: EndpointAddr,
     ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
         address_book.add_local_endpoint(bind.clone(), addr)?;
@@ -312,7 +312,7 @@ where
 
     pub fn add_peer_endpoint(
         &self,
-        endpoint: SocketEndpointAddr,
+        endpoint: EndpointAddr,
         source: qresolve::Source,
     ) -> io::Result<Vec<(BindUri, Link, PathWay)>> {
         let mut address_book = self.0.address_book.lock().unwrap();
@@ -1061,8 +1061,8 @@ where
     fn resolve_punch_connection(
         &self,
         bind: &BindUri,
-        local: &SocketEndpointAddr,
-        remote: &SocketEndpointAddr,
+        local: &EndpointAddr,
+        remote: &EndpointAddr,
         source: &qresolve::Source,
     ) -> io::Result<(BindUri, Link, PathWay)> {
         if let qresolve::Source::Mdns { nic, family } = source {
@@ -1088,17 +1088,7 @@ where
         }
 
         let link = Link::new(local_addr, remote_addr);
-        let pathway = if matches!(
-            (local, remote),
-            (
-                SocketEndpointAddr::Direct { .. },
-                SocketEndpointAddr::Direct { .. }
-            )
-        ) {
-            link.into()
-        } else {
-            PathWay::new(*local, *remote)
-        };
+        let pathway = PathWay::new(*local, *remote);
 
         Ok((bind.clone(), link, pathway))
     }
@@ -1106,10 +1096,10 @@ where
     fn extract_addresses(
         &self,
         bind: &BindUri,
-        local: &SocketEndpointAddr,
-        remote: &SocketEndpointAddr,
+        local: &EndpointAddr,
+        remote: &EndpointAddr,
     ) -> io::Result<(SocketAddr, SocketAddr)> {
-        use SocketEndpointAddr::*;
+        use EndpointAddr::*;
         match (local, remote) {
             (Direct { addr: local_addr }, Direct { addr: remote_addr }) => {
                 Ok((*local_addr, *remote_addr))

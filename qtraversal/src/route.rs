@@ -14,7 +14,7 @@ use std::{
 use bytes::BytesMut;
 use qbase::{
     net::{
-        addr::SocketEndpointAddr,
+        addr::EndpointAddr,
         route::{Link, PacketHeader},
     },
     util::ArcAsyncDeque,
@@ -60,14 +60,14 @@ impl<I: RefIO> Forwarder<I> {
         }
     }
 
-    pub fn should_forward(&self, dst: SocketEndpointAddr) -> Option<SocketAddr> {
+    pub fn should_forward(&self, dst: EndpointAddr) -> Option<SocketAddr> {
         let outers = self.outers();
 
         if outers.is_empty() {
             return None;
         }
 
-        let SocketEndpointAddr::Agent {
+        let EndpointAddr::Agent {
             agent,
             outer: dst_outer,
         } = dst

@@ -530,8 +530,7 @@ impl Burst {
 
         use core::ops::ControlFlow::*;
 
-        let reversed_size =
-            ForwardHeader::encoding_size(&self.path.pathway.try_into().expect("BLE"));
+        let reversed_size = ForwardHeader::encoding_size(&self.path.pathway);
 
         let (Break(result) | Continue(result)) = buffers
             .iter_mut()
@@ -573,7 +572,7 @@ impl Burst {
                             let forward_hdr = ForwardHeader::new(
                                 0,
                                 // FIXME: unwrap
-                                &self.path.pathway.try_into().unwrap(),
+                                &self.path.pathway,
                                 payload,
                             );
                             tracing::trace!(?forward_hdr, link=%self.path.link(),"put forward header");

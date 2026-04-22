@@ -4,7 +4,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use qbase::{
     frame::{PunchHelloFrame, ReliableFrame, io::ReceiveFrame},
     net::{
-        addr::{EndpointAddr, SocketEndpointAddr},
+        addr::EndpointAddr,
         route::{Link, Pathway},
         tx::Signals,
     },
@@ -24,14 +24,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, ReliableFrame)> for Components {
         &self,
         frame: (BindUri, Pathway, Link, ReliableFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        let Ok(pathway) = frame.1.try_into() else {
-            return Ok(());
-        };
-        let link = frame.2;
-        let bind_uri = frame.0.clone();
-        let frame: ReliableFrame = frame.3.clone();
-
-        self.puncher.recv_frame((bind_uri, pathway, link, frame))
+        self.puncher.recv_frame(frame)
     }
 }
 
@@ -42,14 +35,7 @@ impl ReceiveFrame<(BindUri, Pathway, Link, PunchHelloFrame)> for Components {
         &self,
         frame: (BindUri, Pathway, Link, PunchHelloFrame),
     ) -> Result<Self::Output, qbase::error::Error> {
-        let Ok(pathway) = frame.1.try_into() else {
-            return Ok(());
-        };
-        let link = frame.2;
-        let bind_uri = frame.0.clone();
-        let frame = frame.3;
-
-        self.puncher.recv_frame((bind_uri, pathway, link, frame))
+        self.puncher.recv_frame(frame)
     }
 }
 
@@ -67,8 +53,7 @@ impl Components {
                         let Ok(bound_addr) = data.as_ref() else {
                             return;
                         };
-                        let endpoint_addr =
-                            EndpointAddr::Socket(SocketEndpointAddr::direct(*bound_addr));
+                        let endpoint_addr = EndpointAddr::direct(*bound_addr);
                         conn.add_local_endpoint(bind_uri, endpoint_addr);
                         return;
                     }
@@ -81,10 +66,9 @@ impl Components {
                         let Ok(endpoint_addr) = data.as_ref() else {
                             return;
                         };
-                        conn.add_local_endpoint(bind_uri.clone(), (*endpoint_addr).into());
-                        if matches!(*endpoint_addr, SocketEndpointAddr::Agent { .. }) {
-                            _ = conn
-                                .add_local_punch_address(bind_uri.clone(), (*endpoint_addr).into());
+                        conn.add_local_endpoint(bind_uri.clone(), *endpoint_addr);
+                        if matches!(*endpoint_addr, EndpointAddr::Agent { .. }) {
+                            _ = conn.add_local_punch_address(bind_uri.clone(), *endpoint_addr);
                         }
                         return;
                     }
@@ -112,13 +96,12 @@ impl Components {
 
     // 添加本地直通地址 可以直接新建 path
     pub fn add_local_endpoint(&self, bind: BindUri, addr: EndpointAddr) {
-        let EndpointAddr::Socket(addr) = addr;
         tracing::trace!(target: "quic", bind_uri = %bind, %addr,"add local endpoint");
         match self.puncher.add_local_endpoint(bind, addr) {
             Ok(ways) => {
                 let ways: Vec<(BindUri, Link, qtraversal::PathWay)> = ways;
                 ways.into_iter().for_each(|way| {
-                    let _ = self.add_path(way.0, way.1, way.2.into());
+                    let _ = self.add_path(way.0, way.1, way.2);
                 });
             }
             Err(error) => {
@@ -129,12 +112,11 @@ impl Components {
 
     // 添加对端直通地址，可以直接新建 path
     pub fn add_peer_endpoint(&self, addr: EndpointAddr, source: qresolve::Source) {
-        let EndpointAddr::Socket(addr) = addr;
         tracing::trace!(target: "quic", %addr, ?source, "add peer endpoint");
         match self.puncher.add_peer_endpoint(addr, source) {
             Ok(ways) => {
                 ways.into_iter().for_each(|way| {
-                    let _ = self.add_path(way.0, way.1, way.2.into());
+                    let _ = self.add_path(way.0, way.1, way.2);
                 });
             }
             Err(error) => {
@@ -154,9 +136,7 @@ impl Components {
             .borrow(&bind_uri)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
 
-        let local_addr = match endpoint_addr {
-            EndpointAddr::Socket(socket_endpoint_addr) => socket_endpoint_addr.addr(),
-        };
+        let local_addr = endpoint_addr.addr();
         let conn = self.clone();
 
         let tasks = iface.with_component(|clinets: &StunClientsComponent| {

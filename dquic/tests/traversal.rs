@@ -256,12 +256,10 @@ async fn test_punch_case(client_nat: NatType, server_nat: NatType) {
         .unwrap();
 
     let server_ep = get_stun_data(server_iface).await[0].0;
-    launch_client(client_case, server_ep.into()).await;
+    launch_client(client_case, server_ep).await;
 }
 
-async fn get_stun_data(
-    server_iface: dquic::qinterface::Interface,
-) -> Vec<(SocketEndpointAddr, NatType)> {
+async fn get_stun_data(server_iface: dquic::qinterface::Interface) -> Vec<(EndpointAddr, NatType)> {
     let mut outer_addresses = server_iface
         .with_component(|clients: &StunClientsComponent| {
             clients.with_clients(|clients| {
@@ -273,7 +271,7 @@ async fn get_stun_data(
                     .map(|client| async move {
                         let agent = client.agent_addr();
                         let outer = client.outer_addr().await?;
-                        let ep = SocketEndpointAddr::with_agent(agent, outer);
+                        let ep = EndpointAddr::with_agent(agent, outer);
                         let nat_type = client.nat_type().await?;
                         io::Result::Ok((ep, nat_type))
                     })
@@ -324,12 +322,9 @@ async fn launch_client(client_case: TestCase, server_ep: EndpointAddr) {
             .map(|(p, _)| p)
             .collect::<Vec<_>>();
 
-        let has_direct = paths.iter().any(|pathway| {
-            matches!(
-                pathway.local(),
-                EndpointAddr::Socket(SocketEndpointAddr::Direct { .. })
-            )
-        });
+        let has_direct = paths
+            .iter()
+            .any(|pathway| matches!(pathway.local(), EndpointAddr::Direct { .. }));
 
         if has_direct {
             tracing::info!("Direct path established: {:?}", paths);

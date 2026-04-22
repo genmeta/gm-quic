@@ -7,7 +7,7 @@ use std::{
 use futures::io;
 use qbase::{
     frame::{AddAddressFrame, RemoveAddressFrame},
-    net::{NatType, addr::SocketEndpointAddr},
+    net::{NatType, addr::EndpointAddr},
 };
 use qinterface::bind_uri::BindUri;
 use qresolve::Source;
@@ -16,10 +16,10 @@ use qresolve::Source;
 pub struct AddressBook {
     local: HashMap<u32, (BindUri, AddAddressFrame)>,
     remote: HashMap<u32, AddAddressFrame>,
-    local_endpoint: HashSet<(BindUri, SocketEndpointAddr)>,
+    local_endpoint: HashSet<(BindUri, EndpointAddr)>,
     /// Remote endpoints with their DNS [`Source`] so the puncher can enforce
     /// source-specific constraints (e.g. mDNS endpoints are tied to a NIC).
-    remote_endpoint: HashMap<SocketEndpointAddr, Source>,
+    remote_endpoint: HashMap<EndpointAddr, Source>,
     largest_seq_num: u32,
 }
 
@@ -48,7 +48,7 @@ impl AddressBook {
     pub(crate) fn add_local_endpoint(
         &mut self,
         bind: BindUri,
-        addr: SocketEndpointAddr,
+        addr: EndpointAddr,
     ) -> io::Result<()> {
         if !self.local_endpoint.insert((bind, addr)) {
             return Err(io::Error::other("Duplicate local endpoint"));
@@ -58,7 +58,7 @@ impl AddressBook {
 
     pub(crate) fn add_peer_endpoint(
         &mut self,
-        endpoint: SocketEndpointAddr,
+        endpoint: EndpointAddr,
         source: Source,
     ) -> io::Result<()> {
         match self.remote_endpoint.entry(endpoint) {
@@ -70,11 +70,11 @@ impl AddressBook {
         Ok(())
     }
 
-    pub(crate) fn remote_endpoint(&self) -> &HashMap<SocketEndpointAddr, Source> {
+    pub(crate) fn remote_endpoint(&self) -> &HashMap<EndpointAddr, Source> {
         &self.remote_endpoint
     }
 
-    pub(crate) fn local_endpoint(&self) -> &HashSet<(BindUri, SocketEndpointAddr)> {
+    pub(crate) fn local_endpoint(&self) -> &HashSet<(BindUri, EndpointAddr)> {
         &self.local_endpoint
     }
 

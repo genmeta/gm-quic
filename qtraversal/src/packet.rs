@@ -1,7 +1,7 @@
 use bytes::BufMut;
 use qbase::net::{
     Family,
-    addr::{SocketEndpointAddr, WriteSocketEndpointAddr, be_socket_endpoint_addr},
+    addr::{EndpointAddr, WriteEndpointAddr, be_endpoint_addr},
 };
 
 use crate::PathWay;
@@ -90,7 +90,7 @@ pub struct ForwardHeader {
 
 impl ForwardHeader {
     pub fn encoding_size(pathway: &PathWay) -> usize {
-        if matches!(pathway.remote(), SocketEndpointAddr::Direct { .. }) {
+        if matches!(pathway.remote(), EndpointAddr::Direct { .. }) {
             return 0;
         }
         1 + 1 + pathway.local().encoding_size() + pathway.remote().encoding_size()
@@ -122,21 +122,15 @@ impl<T: BufMut> WriteForwardHeader for T {
         if forward_header.pathway.local().ip().is_ipv6() {
             flag |= FORWARD_FAMILY_BIT;
         }
-        if matches!(
-            forward_header.pathway.local(),
-            SocketEndpointAddr::Agent { .. }
-        ) {
+        if matches!(forward_header.pathway.local(), EndpointAddr::Agent { .. }) {
             flag |= FORWARD_SRC_TYPE_BIT;
         }
-        if matches!(
-            forward_header.pathway.remote(),
-            SocketEndpointAddr::Agent { .. }
-        ) {
+        if matches!(forward_header.pathway.remote(), EndpointAddr::Agent { .. }) {
             flag |= FORWARD_DST_TYPE_BIT;
         }
         self.put_u8(flag);
-        self.put_socket_endpoint_addr(forward_header.pathway.local());
-        self.put_socket_endpoint_addr(forward_header.pathway.remote());
+        self.put_endpoint_addr(forward_header.pathway.local());
+        self.put_endpoint_addr(forward_header.pathway.remote());
     }
 }
 
@@ -151,8 +145,8 @@ pub fn be_forward_header(input: &[u8]) -> nom::IResult<&[u8], ForwardHeader> {
 
     let src_ep_typ = flag & FORWARD_SRC_TYPE_BIT;
     let dst_ep_typ = flag & FORWARD_DST_TYPE_BIT;
-    let (remain, src) = be_socket_endpoint_addr(remain, src_ep_typ, family)?;
-    let (remain, dst) = be_socket_endpoint_addr(remain, dst_ep_typ, family)?;
+    let (remain, src) = be_endpoint_addr(remain, src_ep_typ, family)?;
+    let (remain, dst) = be_endpoint_addr(remain, dst_ep_typ, family)?;
     let pathway = PathWay::new(src, dst);
     Ok((
         remain,

@@ -3,7 +3,7 @@
 // use clap::Parser;
 // use dquic::{
 //     prelude::{
-//         Connection, EndpointAddr, ParameterId, QuicClient, SocketEndpointAddr, handy::ToCertificate,
+//         Connection, EndpointAddr, ParameterId, QuicClient, EndpointAddr, handy::ToCertificate,
 //     },
 //     qbase::param::ClientParameters,
 //     qtraversal::iface::TraversalFactory,
@@ -42,10 +42,10 @@
 //         std::process::exit(1);
 //     }));
 //     let ops = Options::parse();
-//     let server_ep = EndpointAddr::Socket(SocketEndpointAddr::Agent {
+//     let server_ep = EndpointAddr::Agent {
 //         agent: ops.server_agent,
 //         outer: ops.server_outer,
-//     });
+//     };
 
 //     let mut roots = RootCertStore::empty();
 //     roots.add_parsable_certificates(
