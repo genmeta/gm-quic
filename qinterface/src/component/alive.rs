@@ -17,7 +17,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     Interface, RebindedError,
-    bind_uri::{BindUriScheme, TryIntoSocketAddrError},
+    bind_uri::TryIntoSocketAddrError,
     component::Component,
     device::Devices,
     io::{IO, IoExt},
@@ -25,8 +25,6 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum InterfaceFailure {
-    #[error("BLE protocol is not supported for alive check")]
-    BleProtocol,
     #[error("Invalid QuicIO implementation")]
     InvalidImplementation,
     #[error("Interface is broken: {0}")]
@@ -57,10 +55,6 @@ impl InterfaceFailure {
 }
 
 pub async fn is_alive(iface: &(impl IO + ?Sized)) -> Result<(), InterfaceFailure> {
-    if iface.bind_uri().scheme() == BindUriScheme::Ble {
-        return Err(InterfaceFailure::BleProtocol);
-    }
-
     let bound_addr = match iface
         .bound_addr()
         .map_err(InterfaceFailure::InterfaceBroken)?

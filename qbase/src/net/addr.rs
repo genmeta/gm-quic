@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     fmt::{self, Display},
     net::{AddrParseError, SocketAddr},
     ops::Deref,
@@ -7,7 +6,7 @@ use std::{
 };
 
 use bytes::BufMut;
-use derive_more::{Deref, From, TryInto};
+use derive_more::{From, TryInto};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -24,8 +23,6 @@ use crate::{
 pub enum AddrKind {
     /// IP address
     Internet(Family),
-    /// Bluetooth address
-    Bluetooth,
 }
 
 #[non_exhaustive]
@@ -34,8 +31,6 @@ pub enum BoundAddr {
     /// Internet socket address (IPv4 or IPv6)
     // Iface/Inet => Inet
     Internet(SocketAddr),
-    // TODO
-    Bluetooth([u8; 6]),
 }
 
 impl BoundAddr {
@@ -44,7 +39,6 @@ impl BoundAddr {
         match self {
             BoundAddr::Internet(SocketAddr::V4(_)) => AddrKind::Internet(Family::V4),
             BoundAddr::Internet(SocketAddr::V6(_)) => AddrKind::Internet(Family::V6),
-            BoundAddr::Bluetooth(_) => AddrKind::Bluetooth,
         }
     }
 }
@@ -54,7 +48,6 @@ impl EncodeSize for BoundAddr {
         match self {
             BoundAddr::Internet(SocketAddr::V4(_)) => 2 + 4,
             BoundAddr::Internet(SocketAddr::V6(_)) => 2 + 16,
-            BoundAddr::Bluetooth(_) => unreachable!(),
         }
     }
 
@@ -67,7 +60,6 @@ impl Display for BoundAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BoundAddr::Internet(addr) => write!(f, "{addr}"),
-            BoundAddr::Bluetooth(addr) => write!(f, "{addr:02x?}"),
         }
     }
 }
@@ -164,7 +156,6 @@ impl fmt::Display for EndpointAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EndpointAddr::Socket(ep) => write!(f, "{ep}"),
-            EndpointAddr::Ble(ble) => write!(f, "{ble}"),
         }
     }
 }
@@ -219,36 +210,10 @@ impl From<(SocketAddr, SocketAddr)> for SocketEndpointAddr {
 }
 
 #[derive(
-    Debug, Clone, Copy, Deref, From, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
-pub struct BleEndpontAddr([u8; 6]);
-
-impl BleEndpontAddr {
-    pub fn new(addr: [u8; 6]) -> Self {
-        BleEndpontAddr(addr)
-    }
-}
-
-impl Display for BleEndpontAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:02x?}", self.0)
-    }
-}
-
-impl FromStr for BleEndpontAddr {
-    type Err = Infallible;
-
-    fn from_str(_: &str) -> Result<Self, Self::Err> {
-        unimplemented!()
-    }
-}
-
-#[derive(
     Debug, Clone, Copy, From, TryInto, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 pub enum EndpointAddr {
     Socket(SocketEndpointAddr),
-    Ble(BleEndpontAddr),
 }
 
 impl EndpointAddr {
@@ -258,7 +223,6 @@ impl EndpointAddr {
                 SocketAddr::V4(..) => Family::V4,
                 SocketAddr::V6(..) => Family::V6,
             }),
-            EndpointAddr::Ble(_) => AddrKind::Bluetooth,
         }
     }
 }
@@ -267,7 +231,6 @@ impl From<BoundAddr> for EndpointAddr {
     fn from(addr: BoundAddr) -> Self {
         match addr {
             BoundAddr::Internet(socket_addr) => SocketEndpointAddr::direct(socket_addr).into(),
-            BoundAddr::Bluetooth(ble_addr) => BleEndpontAddr::new(ble_addr).into(),
         }
     }
 }
@@ -281,12 +244,6 @@ impl From<SocketAddr> for EndpointAddr {
 impl From<(SocketAddr, SocketAddr)> for EndpointAddr {
     fn from((agent, outer): (SocketAddr, SocketAddr)) -> Self {
         SocketEndpointAddr::from((agent, outer)).into()
-    }
-}
-
-impl From<[u8; 6]> for EndpointAddr {
-    fn from(addr: [u8; 6]) -> Self {
-        BleEndpontAddr::from(addr).into()
     }
 }
 
