@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{HashMap, VecDeque},
     future::poll_fn,
     io,
     net::SocketAddr,
@@ -26,12 +26,11 @@ use crate::{
 };
 
 const MAX_CONCURRENT_SOCKETS: usize = 60;
-const INTERFACES_PER_ROUND: usize = 30;
 const MIN_PORT: u16 = 1024;
 const PACKET_TTL: u8 = 64;
 const FIRST_PROBE_ID: u32 = 1;
 const MAX_PROBES: u32 = 300;
-const GENERATION_WAIT: Duration = Duration::from_millis(500);
+const PACING_INTERVAL: Duration = Duration::from_millis(20);
 
 pub struct PortPredictor {
     ifaces: Arc<InterfaceManager>,
@@ -43,7 +42,6 @@ pub struct PortPredictor {
     probes: ProbeTable,
     quota_held: u32,
     probes_created: u32,
-    generation: u32,
 }
 
 #[derive(Debug)]
@@ -51,7 +49,6 @@ struct PendingProbe {
     bind_uri: BindUri,
     iface: Interface,
     port: u16,
-    generation: u32,
 }
 
 pub type PacketSendFn = Arc<
@@ -69,7 +66,7 @@ pub type PacketSendFn = Arc<
 struct ProbeTable {
     pending: HashMap<u32, PendingProbe>,
     active_ports: HashMap<u16, u32>,
-    generations: BTreeMap<u32, BTreeSet<u32>>,
+    order: VecDeque<u32>,
     next_probe_id: u32,
 }
 
@@ -78,7 +75,7 @@ impl ProbeTable {
         Self {
             pending: HashMap::new(),
             active_ports: HashMap::new(),
-            generations: BTreeMap::new(),
+            order: VecDeque::new(),
             next_probe_id: FIRST_PROBE_ID,
         }
     }
@@ -100,26 +97,15 @@ impl ProbeTable {
         probe_id
     }
 
-    fn insert(
-        &mut self,
-        probe_id: u32,
-        bind_uri: BindUri,
-        iface: Interface,
-        port: u16,
-        generation: u32,
-    ) {
+    fn insert(&mut self, probe_id: u32, bind_uri: BindUri, iface: Interface, port: u16) {
         self.active_ports.insert(port, probe_id);
-        self.generations
-            .entry(generation)
-            .or_default()
-            .insert(probe_id);
+        self.order.push_back(probe_id);
         self.pending.insert(
             probe_id,
             PendingProbe {
                 bind_uri,
                 iface,
                 port,
-                generation,
             },
         );
     }
@@ -127,26 +113,12 @@ impl ProbeTable {
     fn take(&mut self, probe_id: u32) -> Option<PendingProbe> {
         let probe = self.pending.remove(&probe_id)?;
         self.active_ports.remove(&probe.port);
-        if let Some(probe_ids) = self.generations.get_mut(&probe.generation) {
-            probe_ids.remove(&probe_id);
-            if probe_ids.is_empty() {
-                self.generations.remove(&probe.generation);
-            }
-        }
+        self.order.retain(|&id| id != probe_id);
         Some(probe)
     }
 
-    fn oldest_generation_id(&self) -> Option<u32> {
-        self.generations
-            .first_key_value()
-            .map(|(generation, _)| *generation)
-    }
-
-    fn generation_probe_ids(&self, generation: u32) -> Vec<u32> {
-        self.generations
-            .get(&generation)
-            .map(|probe_ids| probe_ids.iter().copied().collect())
-            .unwrap_or_default()
+    fn oldest_probe_id(&self) -> Option<u32> {
+        self.order.front().copied()
     }
 
     fn pending_probe_ids(&self) -> Vec<u32> {
@@ -155,7 +127,7 @@ impl ProbeTable {
 
     fn drain_bind_uris(&mut self) -> Vec<BindUri> {
         self.active_ports.clear();
-        self.generations.clear();
+        self.order.clear();
         self.pending
             .drain()
             .map(|(_, probe)| probe.bind_uri)
@@ -193,7 +165,6 @@ impl PortPredictor {
             probes: ProbeTable::new(),
             quota_held: 0,
             probes_created: 0,
-            generation: 0,
         })
     }
 
@@ -251,27 +222,19 @@ impl PortPredictor {
         self.claim_probe(probe_id)
     }
 
-    async fn evict_for_capacity(
+    async fn evict_if_needed(
         &mut self,
-        incoming: usize,
         tx: &Transaction,
     ) -> io::Result<Option<(BindUri, Interface)>> {
-        while self.probes.len().saturating_add(incoming) > MAX_CONCURRENT_SOCKETS {
-            // Before evicting, check if punchDone has arrived for any active probe
+        while self.probes.len() >= MAX_CONCURRENT_SOCKETS {
             if let Some(result) = self.check_and_claim(tx) {
                 return Ok(Some(result));
             }
-            let Some(generation) = self.probes.oldest_generation_id() else {
+            let Some(oldest_id) = self.probes.oldest_probe_id() else {
                 break;
             };
-            let probe_ids = self.probes.generation_probe_ids(generation);
-            let mut released = 0;
-            for probe_id in probe_ids {
-                if self.release_probe(probe_id).await {
-                    released += 1;
-                }
-            }
-            tracing::debug!(target: "punch", generation, released, active_probes = self.probes.len(), "evicted oldest generation");
+            self.release_probe(oldest_id).await;
+            tracing::trace!(target: "punch", oldest_id, active_probes = self.probes.len(), "evicted oldest probe");
         }
         Ok(None)
     }
@@ -298,10 +261,9 @@ impl PortPredictor {
         packet_send_fn: PacketSendFn,
     ) -> io::Result<Option<(BindUri, Interface)>> {
         tracing::debug!(target: "punch", %punch_id, "starting port prediction");
-        let mut consecutive_empty = 0u32;
 
         while self.probes_created < MAX_PROBES {
-            // CHECK: if punchDone has been received for an active probe, claim it
+            // Check if PunchDone has been received for an active probe
             if let Some(result) = self.check_and_claim(tx.as_ref()) {
                 if let Err(error) = self.release_quota(1) {
                     tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
@@ -309,43 +271,24 @@ impl PortPredictor {
                 return self.finalize(result).await;
             }
 
-            // ACT: scatter a generation of probes (pure producer, no early exit)
-            match self
-                .scatter_probes(punch_id, tx.as_ref(), &packet_send_fn)
-                .await
-            {
-                Ok((_, Some(result))) => {
-                    if let Err(error) = self.release_quota(1) {
-                        tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
-                    }
-                    return self.finalize(result).await;
+            // Evict oldest probe if at capacity
+            if let Some(result) = self.evict_if_needed(tx.as_ref()).await? {
+                if let Err(error) = self.release_quota(1) {
+                    tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
                 }
-                Ok((0, None)) => {
-                    consecutive_empty += 1;
-                    if consecutive_empty >= 3 {
-                        tracing::warn!(target: "punch", %punch_id, "3 consecutive empty scatter rounds, aborting");
-                        break;
-                    }
-                }
-                Ok((_, None)) => consecutive_empty = 0,
-                Err(error) => {
-                    tracing::warn!(target: "punch", %punch_id, %error, "failed to scatter probes, aborting");
-                    break;
-                }
+                return self.finalize(result).await;
             }
 
-            // WAIT: give the current generation time to receive PunchDone
-            // Only block if no PunchDone has arrived yet
+            // Create and send one probe
+            if let Err(error) = self.create_and_send_probe(punch_id, &packet_send_fn).await {
+                tracing::trace!(target: "punch", %punch_id, %error, "probe creation failed, continuing");
+            }
+
+            // Pacing: wait interval or return early if PunchDone arrives
             if tx.try_punch_done().is_none() {
-                tokio::time::timeout(GENERATION_WAIT, tx.wait_punch_done())
+                tokio::time::timeout(PACING_INTERVAL, tx.wait_punch_done())
                     .await
                     .ok();
-            }
-            if let Some(result) = self.check_and_claim(tx.as_ref()) {
-                if let Err(error) = self.release_quota(1) {
-                    tracing::warn!(target: "punch", %error, "failed to release quota for claimed probe");
-                }
-                return self.finalize(result).await;
             }
         }
 
@@ -364,68 +307,53 @@ impl PortPredictor {
         Ok(None)
     }
 
-    async fn scatter_probes(
+    async fn create_and_send_probe(
         &mut self,
         punch_id: PunchId,
-        tx: &Transaction,
         packet_send_fn: &PacketSendFn,
-    ) -> io::Result<(usize, Option<(BindUri, Interface)>)> {
-        let granted = self.acquire_quota(INTERFACES_PER_ROUND as u32).await? as usize;
-        tracing::debug!(target: "punch", %punch_id, granted, "batch quota acquired");
+    ) -> io::Result<()> {
+        self.acquire_quota(1).await?;
 
-        if let Some(result) = self.evict_for_capacity(granted, tx).await? {
-            return Ok((0, Some(result)));
-        }
-
-        let generation = self.generation;
-        self.generation += 1;
-        self.probes_created += granted as u32;
-        tracing::debug!(target: "punch", %punch_id, generation, granted, "scattering probe generation");
-
-        // Create interfaces
-        let mut pending_probes = Vec::with_capacity(granted);
-        for _ in 0..granted {
-            let (bind_uri, iface) = match self.create_interface().await {
-                Ok(result) => result,
-                Err(_) => {
-                    if let Err(error) = self.release_quota(1) {
-                        tracing::warn!(target: "punch", %error, "failed to release unused quota");
-                    }
-                    continue;
+        let (bind_uri, iface) = match self.create_interface().await {
+            Ok(result) => result,
+            Err(e) => {
+                if let Err(error) = self.release_quota(1) {
+                    tracing::warn!(target: "punch", %error, "failed to release quota on interface creation failure");
                 }
-            };
-            let Ok(socket_addr) = iface.bound_addr() else {
-                self.release_interface(bind_uri).await;
-                continue;
-            };
-            let port = socket_addr.port();
-            let probe_id = self.probes.allocate_probe_id();
-            let link = Link::new(socket_addr, self.dst);
-            let frame = PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq, probe_id);
-            pending_probes.push((probe_id, bind_uri, iface, port, link, frame));
-        }
-
-        if pending_probes.is_empty() {
-            return Ok((0, None));
-        }
-
-        // Send probes and register results
-        let mut successful_sends = 0;
-        for (probe_id, bind_uri, iface, port, link, frame) in pending_probes {
-            if packet_send_fn(&iface, link, PACKET_TTL, frame)
-                .await
-                .is_ok()
-            {
-                self.probes
-                    .insert(probe_id, bind_uri, iface, port, generation);
-                successful_sends += 1;
-            } else {
-                self.release_interface(bind_uri).await;
+                return Err(e);
             }
-        }
+        };
 
-        tracing::debug!(target: "punch", %punch_id, generation, successful_sends, "probes scattered");
-        Ok((successful_sends, None))
+        let socket_addr = match iface.bound_addr() {
+            Ok(addr) => addr,
+            Err(_) => {
+                self.release_interface(bind_uri).await;
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "failed to get bound addr",
+                ));
+            }
+        };
+
+        let port = socket_addr.port();
+        let probe_id = self.probes.allocate_probe_id();
+        let link = Link::new(socket_addr, self.dst);
+        let frame = PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq, probe_id);
+
+        if packet_send_fn(&iface, link, PACKET_TTL, frame)
+            .await
+            .is_ok()
+        {
+            self.probes.insert(probe_id, bind_uri, iface, port);
+            self.probes_created += 1;
+            Ok(())
+        } else {
+            self.release_interface(bind_uri).await;
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "failed to send probe",
+            ))
+        }
     }
 
     async fn create_interface(&mut self) -> io::Result<(BindUri, Interface)> {
