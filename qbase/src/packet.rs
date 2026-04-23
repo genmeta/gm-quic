@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, ops};
 
 use bytes::{BufMut, BytesMut, buf::UninitSlice};
 use derive_more::{Deref, DerefMut};
@@ -107,32 +107,6 @@ pub enum PacketContent {
 }
 
 impl PacketContent {
-    pub fn from_frame_type(frame_type: FrameType) -> Self {
-        match frame_type {
-            FrameType::Ping => Self::JustPing,
-            fty if !fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
-            _ => Self::NonAckEliciting,
-        }
-    }
-
-    pub fn add_frame_type(&mut self, frame_type: FrameType) {
-        match frame_type {
-            FrameType::Ping if *self == PacketContent::NonAckEliciting => *self = Self::JustPing,
-            fty if !fty.specs().contain(Spec::NonAckEliciting) => *self = Self::EffectivePayload,
-            _ => (),
-        }
-    }
-
-    pub fn add(&mut self, content: PacketContent) {
-        match content {
-            PacketContent::EffectivePayload => *self = PacketContent::EffectivePayload,
-            PacketContent::JustPing if *self == PacketContent::NonAckEliciting => {
-                *self = PacketContent::JustPing
-            }
-            _ => {}
-        }
-    }
-
     pub fn is_ack_eliciting(self) -> bool {
         self != Self::NonAckEliciting
     }
@@ -140,7 +114,33 @@ impl PacketContent {
 
 impl From<FrameType> for PacketContent {
     fn from(frame_type: FrameType) -> Self {
-        Self::from_frame_type(frame_type)
+        match frame_type {
+            FrameType::Ping => Self::JustPing,
+            fty if !fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
+            _ => Self::NonAckEliciting,
+        }
+    }
+}
+
+impl ops::AddAssign<FrameType> for PacketContent {
+    fn add_assign(&mut self, rhs: FrameType) {
+        match rhs {
+            FrameType::Ping if *self == PacketContent::NonAckEliciting => *self = Self::JustPing,
+            fty if !fty.specs().contain(Spec::NonAckEliciting) => *self = Self::EffectivePayload,
+            _ => (),
+        }
+    }
+}
+
+impl ops::AddAssign for PacketContent {
+    fn add_assign(&mut self, rhs: Self) {
+        match rhs {
+            PacketContent::EffectivePayload => *self = PacketContent::EffectivePayload,
+            PacketContent::JustPing if *self == PacketContent::NonAckEliciting => {
+                *self = PacketContent::JustPing
+            }
+            _ => {}
+        }
     }
 }
 

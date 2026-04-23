@@ -19,7 +19,7 @@ pub mod qudp {
     use qudp::BATCH_SIZE;
     use thiserror::Error;
 
-    use crate::{BindUri, IO, PacketHeader, bind_uri::TryIntoSocketAddrError};
+    use crate::{BindUri, IO, PacketHeader};
 
     pub struct UdpSocketController {
         bind_uri: BindUri,
@@ -61,22 +61,14 @@ pub mod qudp {
 
     impl UdpSocketController {
         pub fn bind(bind_uri: BindUri) -> Self {
-            let io = match SocketAddr::try_from(&bind_uri) {
-                Ok(socket_addr) => qudp::UdpSocketController::bind(socket_addr),
-                Err(error) => match error {
-                    TryIntoSocketAddrError::NotSocketBindUri => Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "Failed to bind {bind_uri}: BLE is not supported by UdpSocketController",
-                        ),
-                    )),
-                    e @ (TryIntoSocketAddrError::InterfaceNotFound
-                    | TryIntoSocketAddrError::LinkNotFound) => Err(io::Error::new(
+            let io = SocketAddr::try_from(&bind_uri)
+                .map_err(|e| {
+                    io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("Failed to bind {bind_uri}: {e}"),
-                    )),
-                },
-            };
+                    )
+                })
+                .and_then(qudp::UdpSocketController::bind);
             UdpSocketController {
                 bind_uri,
                 send_wakers: Arc::new(Wakers::new()),
