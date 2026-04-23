@@ -61,10 +61,12 @@ pub const KNOCK_TTL: u8 = 1;
 pub const KNOCK_TTL: u8 = 5;
 
 // Timeout
-const KNOCK_TIMEOUT_MS: u64 = 100;
-const PUNCH_TIMEOUT_MS: u64 = 3000;
-const PUNCH_ME_NOW_TIMEOUT_MS: u64 = 1000;
-const COLLISION_TIMEOUT_MS: u64 = 3000;
+const KNOCK_TIMEOUT: Duration = Duration::from_millis(100);
+const PUNCH_TIMEOUT: Duration = Duration::from_secs(3);
+const PUNCH_ME_NOW_TIMEOUT: Duration = Duration::from_secs(1);
+const COLLISION_TIMEOUT: Duration = Duration::from_secs(3);
+// Birthday attack timeout: must exceed PortPredictor's full run time (~6s for 300 probes × 20ms)
+const BIRTHDAY_TIMEOUT: Duration = Duration::from_secs(8);
 
 // Quantity
 const MAX_RETRIES: usize = 5;
@@ -580,7 +582,7 @@ where
                 let mut collided = false;
                 let result: io::Result<()> = loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(PUNCH_TIMEOUT_MS))=>
+                        _ = tokio::time::sleep(BIRTHDAY_TIMEOUT)=>
                             break Err(io::Error::new(io::ErrorKind::TimedOut, "Punch timeout")),
                         _ = tx.wait_punch_me_now(), if !collided => {
                             collided = true;
@@ -609,12 +611,9 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending PunchMeNow expecting PunchMeNow then rush");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
 
-                if timeout(
-                    Duration::from_millis(COLLISION_TIMEOUT_MS),
-                    tx.wait_punch_me_now(),
-                )
-                .await
-                .is_ok()
+                if timeout(COLLISION_TIMEOUT, tx.wait_punch_me_now())
+                    .await
+                    .is_ok()
                 {
                     // Use new consolidated PortPredictor birthday attack
                     let mut predictor = PortPredictor::new(
@@ -659,12 +658,9 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "strategy: Local Symmetric, Remote RestrictedCone, reverse punching");
                 tracing::trace!(target: "punch", %punch_id, "sending PunchMeNow expecting PunchMeNow then Hello");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                if timeout(
-                    Duration::from_millis(PUNCH_ME_NOW_TIMEOUT_MS),
-                    tx.wait_punch_me_now(),
-                )
-                .await
-                .is_err()
+                if timeout(PUNCH_ME_NOW_TIMEOUT, tx.wait_punch_me_now())
+                    .await
+                    .is_err()
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "wait for PunchMeNow timeout, try to connect blindly");
                 }
@@ -686,8 +682,7 @@ where
                             ),
                         )
                         .await?;
-                    let time = Duration::from_millis(KNOCK_TIMEOUT_MS);
-                    if (timeout(time * (1 << i), tx.wait_punch_done()).await).is_ok() {
+                    if (timeout(KNOCK_TIMEOUT * (1 << i), tx.wait_punch_done()).await).is_ok() {
                         tracing::debug!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "punch success");
                         return Ok(());
                     }
@@ -770,8 +765,7 @@ where
                         ),
                     )
                     .await?;
-                let time = Duration::from_millis(PUNCH_TIMEOUT_MS);
-                if let Ok((_, punch_hello)) = timeout(time, tx.wait_punch_hello()).await {
+                if let Ok((_, punch_hello)) = timeout(PUNCH_TIMEOUT, tx.wait_punch_hello()).await {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending broker PunchDone confirmation");
                     broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
                         &punch_hello,
@@ -792,9 +786,8 @@ where
                 self.0.collision(&iface, link, punch_id, KNOCK_TTL).await?;
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending PunchMeNow expecting Hello then Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                let time = PUNCH_TIMEOUT_MS;
                 if let Ok((link, punch_hello)) =
-                    timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
+                    timeout(BIRTHDAY_TIMEOUT, tx.wait_punch_hello()).await
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "sending broker PunchDone confirmation");
                     broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
@@ -899,11 +892,10 @@ where
                 let iface = ifaces
                     .borrow(&bind)
                     .ok_or_else(|| io::Error::other("No interface found"))?;
-                let time = PUNCH_TIMEOUT_MS;
                 let mut collided = false;
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(time))=>
+                        _ = tokio::time::sleep(BIRTHDAY_TIMEOUT)=>
                             return Err(io::Error::new(io::ErrorKind::TimedOut, "Punch timeout")),
                         _ = tx.wait_punch_me_now(), if !collided => {
                             collided = true;
@@ -936,9 +928,8 @@ where
                 );
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending PunchMeNow expecting Hello then Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                let time = PUNCH_TIMEOUT_MS;
                 if let Ok((link, punch_hello)) =
-                    tokio::time::timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
+                    tokio::time::timeout(BIRTHDAY_TIMEOUT, tx.wait_punch_hello()).await
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "sending broker PunchDone confirmation");
                     broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
@@ -1004,9 +995,8 @@ where
                     .send_packet(&iface, link, HELLO_TTL, punch_hello_frame)
                     .await?;
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                let time = PUNCH_TIMEOUT_MS;
                 if let Ok((link, punch_hello)) =
-                    tokio::time::timeout(Duration::from_millis(time), tx.wait_punch_hello()).await
+                    tokio::time::timeout(PUNCH_TIMEOUT, tx.wait_punch_hello()).await
                 {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "sending broker PunchDone confirmation");
                     broker.send_frame([ReliableFrame::PunchDone(PunchDoneFrame::respond_to(
