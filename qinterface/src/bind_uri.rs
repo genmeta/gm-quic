@@ -1,102 +1,96 @@
 use std::{
     borrow::Cow,
     fmt::Display,
+    io,
     net::{AddrParseError, IpAddr, SocketAddr},
     str::FromStr,
 };
 
 use derive_more::{Display, Into};
-use http::{Uri, uri::Scheme};
 use qbase::{net::Family, util::UniqueIdGenerator};
 use thiserror::Error;
 
 #[derive(Debug, Display, Clone, Into, PartialEq, Eq, Hash)]
-pub struct BindUri(Uri);
+pub struct BindUri(http::Uri);
 
 #[derive(Debug, Error)]
-pub enum ParseBindUriError {
+pub enum ParseError {
     #[error("Invalid uri {0}")]
-    InvalidUri(<Uri as FromStr>::Err),
+    InvalidUri(<http::Uri as FromStr>::Err),
     #[error("Missing scheme")]
-    MissingScheme,
-    #[error("Invalid bind uri scheme: {0}")]
-    InvalidScheme(ParseBindUriSchemeError),
+    NoScheme,
+    #[error("Unsupported bind uri scheme: {0}")]
+    Unsupported(String),
     #[error("Path must be empty")]
-    HasPath,
+    Malformed,
     #[error("Missing ip family for iface scheme BindUri")]
-    MissingIpFamily,
+    NoFamily,
     #[error("Missing port for iface scheme BindUri")]
-    MissingPort,
+    NoPort,
     #[error("Invalid IP address family for iface scheme")]
-    InvalidIpFamily,
+    UnknownFamily,
     #[error("Invalid IP address for inet scheme BindUri: {0}")]
     InvalidIpAddr(AddrParseError),
 }
 
-fn parse_iface_bind_uri(uri: &Uri) -> Result<(Family, &str, u16), ParseBindUriError> {
+fn parse_iface_bind_uri(uri: &http::Uri) -> Result<(Family, &str, u16), ParseError> {
     let authority = uri.authority().expect("BindUri is absolute URI");
     let (ip_family, interface) = authority
         .host()
         .split_once('.')
-        .ok_or(ParseBindUriError::MissingIpFamily)?;
-    let port = authority.port_u16().ok_or(ParseBindUriError::MissingPort)?;
-    let ip_family: Family = ip_family
-        .parse()
-        .or(Err(ParseBindUriError::InvalidIpFamily))?;
+        .ok_or(ParseError::NoFamily)?;
+    let port = authority.port_u16().ok_or(ParseError::NoPort)?;
+    let ip_family: Family = ip_family.parse().or(Err(ParseError::UnknownFamily))?;
     Ok((ip_family, interface, port))
 }
 
-fn parse_inet_bind_uri(uri: &Uri) -> Result<SocketAddr, ParseBindUriError> {
+fn parse_inet_bind_uri(uri: &http::Uri) -> Result<SocketAddr, ParseError> {
     let authority = uri.authority().expect("BindUri is absolute URI");
-    let port = authority.port_u16().ok_or(ParseBindUriError::MissingPort)?;
+    let port = authority.port_u16().ok_or(ParseError::NoPort)?;
     let host = match authority.host().as_bytes() {
         [b'[', .., b']'] => authority.host().trim_matches(|c| matches!(c, '[' | ']')),
         _ => authority.host(),
     };
     match IpAddr::from_str(host) {
         Ok(ip) => Ok(SocketAddr::new(ip, port)),
-        Err(e) => Err(ParseBindUriError::InvalidIpAddr(e)),
+        Err(e) => Err(ParseError::InvalidIpAddr(e)),
     }
 }
 
-fn parse_ble_bind_uri(_: &Uri) -> ! {
-    unimplemented!("BLE address is not implemented yet")
-}
-
 impl FromStr for BindUri {
-    type Err = ParseBindUriError;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(socket_addr) = s.parse::<SocketAddr>() {
             return Ok(socket_addr.into());
         }
-        s.parse::<Uri>()
-            .map_err(ParseBindUriError::InvalidUri)?
+        s.parse::<http::Uri>()
+            .map_err(ParseError::InvalidUri)?
             .try_into()
     }
 }
 
-impl TryFrom<Uri> for BindUri {
-    type Error = ParseBindUriError;
+impl TryFrom<http::Uri> for BindUri {
+    type Error = ParseError;
 
-    fn try_from(uri: Uri) -> Result<Self, Self::Error> {
+    fn try_from(uri: http::Uri) -> Result<Self, Self::Error> {
         let scheme = uri
             .scheme()
-            .ok_or(ParseBindUriError::MissingScheme)?
+            .ok_or(ParseError::NoScheme)?
             .as_str()
             .parse()
-            .map_err(ParseBindUriError::InvalidScheme)?;
+            .map_err(ParseError::Unsupported)?;
         debug_assert!(uri.authority().is_some(), "BindUri should be absolute URI");
 
         if uri.path() != "/" {
-            return Err(ParseBindUriError::HasPath);
+            return Err(ParseError::Malformed);
         }
 
         match scheme {
-            BindUriScheme::Iface => {
+            Scheme::Iface => {
                 parse_iface_bind_uri(&uri)?;
             }
-            BindUriScheme::Inet => {
+            Scheme::Inet => {
                 parse_inet_bind_uri(&uri)?;
             }
         }
@@ -155,7 +149,7 @@ impl BindUri {
     pub const STUN_SERVER_PROP: &str = "stun_server";
     pub const RELAY_PROP: &str = "relay";
 
-    pub fn scheme(&self) -> BindUriScheme {
+    pub fn scheme(&self) -> Scheme {
         self.0
             .scheme()
             .expect("Invalid BindUri: Missing scheme")
@@ -165,18 +159,18 @@ impl BindUri {
     }
 
     #[inline]
-    pub fn as_uri(&self) -> &Uri {
+    pub fn as_uri(&self) -> &http::Uri {
         &self.0
     }
 
     pub fn family(&self) -> Family {
         match self.scheme() {
-            BindUriScheme::Iface => {
+            Scheme::Iface => {
                 self.as_iface_bind_uri()
                     .expect("Already checked BindUriScheme is iface")
                     .0
             }
-            BindUriScheme::Inet => {
+            Scheme::Inet => {
                 match self
                     .as_inet_bind_uri()
                     .expect("Already checked BindUriScheme is inet")
@@ -189,21 +183,17 @@ impl BindUri {
     }
 
     pub fn as_iface_bind_uri(&self) -> Option<(Family, &str, u16)> {
-        if self.scheme() != BindUriScheme::Iface {
+        if self.scheme() != Scheme::Iface {
             return None;
         }
         Some(parse_iface_bind_uri(&self.0).expect("BindUri should be valid"))
     }
 
     pub fn as_inet_bind_uri(&self) -> Option<SocketAddr> {
-        if self.scheme() != BindUriScheme::Inet {
+        if self.scheme() != Scheme::Inet {
             return None;
         }
         Some(parse_inet_bind_uri(&self.0).expect("BindUri should be valid"))
-    }
-
-    pub fn as_ble_bind_uri(&self) -> ! {
-        parse_ble_bind_uri(&self.0)
     }
 
     pub fn add_prop(&mut self, key: &str, value: &str) {
@@ -217,20 +207,20 @@ impl BindUri {
                 .parse()
                 .expect("Path and query should be valid")
         });
-        self.0 = Uri::from_parts(uri_parts).expect("BindUri should be valid");
+        self.0 = http::Uri::from_parts(uri_parts).expect("BindUri should be valid");
     }
 
     pub const ALLOC_PORT_ID: &'static str = "alloc_port_id";
 
     pub fn alloc_port(&self) -> Self {
         match self.scheme() {
-            BindUriScheme::Iface => {
+            Scheme::Iface => {
                 let (.., port) = self
                     .as_iface_bind_uri()
                     .expect("Already checked BindUriScheme is iface");
                 assert_eq!(port, 0, "Only port 0 is allocatable");
             }
-            BindUriScheme::Inet => {
+            Scheme::Inet => {
                 let addr = self
                     .as_inet_bind_uri()
                     .expect("Already checked BindUriScheme is inet");
@@ -310,47 +300,39 @@ impl BindUri {
                 .parse()
                 .expect("path portion should always be valid")
         });
-        Uri::from_parts(parts)
+        http::Uri::from_parts(parts)
             .expect("BindUri without query should be valid")
             .to_string()
     }
 
-    pub fn resolve(&self) -> Result<SocketAddr, TryIntoSocketAddrError> {
+    pub fn resolve(&self) -> Result<SocketAddr, io::Error> {
         match self.scheme() {
-            BindUriScheme::Iface => {
+            Scheme::Iface => {
                 let (ip_family, interface, port) = self
                     .as_iface_bind_uri()
                     .expect("Already checked BindUriScheme is iface");
 
                 let devices = crate::device::Devices::global();
-                devices
-                    .get(interface)
-                    .ok_or(TryIntoSocketAddrError::InterfaceNotFound)?;
-                let ip_addr = devices
-                    .resolve(interface, ip_family)
-                    .ok_or(TryIntoSocketAddrError::LinkNotFound)?;
+                devices.get(interface).ok_or(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "device not found".to_string(),
+                ))?;
+                let ip_addr = devices.resolve(interface, ip_family).ok_or(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "ip not matched".to_string(),
+                ))?;
 
                 Ok(SocketAddr::new(ip_addr, port))
             }
-            BindUriScheme::Inet => Ok(self
+            Scheme::Inet => Ok(self
                 .as_inet_bind_uri()
                 .expect("Already checked BindUriScheme is inet")),
         }
     }
 }
 
-#[derive(Debug, Error)]
-pub enum TryIntoSocketAddrError {
-    #[error("Only inet or iface scheme BindUri can be converted to SocketAddr")]
-    NotSocketBindUri,
-    #[error("Device not found")]
-    InterfaceNotFound,
-    #[error("Link not found")]
-    LinkNotFound,
-}
-
 impl TryFrom<&BindUri> for SocketAddr {
-    type Error = TryIntoSocketAddrError;
+    type Error = io::Error;
 
     fn try_from(bind_uri: &BindUri) -> Result<Self, Self::Error> {
         bind_uri.resolve()
@@ -358,7 +340,7 @@ impl TryFrom<&BindUri> for SocketAddr {
 }
 
 impl TryFrom<BindUri> for SocketAddr {
-    type Error = TryIntoSocketAddrError;
+    type Error = io::Error;
 
     fn try_from(bind_uri: BindUri) -> Result<Self, Self::Error> {
         SocketAddr::try_from(&bind_uri)
@@ -366,22 +348,22 @@ impl TryFrom<BindUri> for SocketAddr {
 }
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BindUriScheme {
+pub enum Scheme {
     Iface,
     Inet,
 }
 
-impl BindUriScheme {
+impl Scheme {
     pub const fn to_str(&self) -> &'static str {
         match self {
-            BindUriScheme::Iface => "iface",
-            BindUriScheme::Inet => "inet",
+            Scheme::Iface => "iface",
+            Scheme::Inet => "inet",
         }
     }
 }
 
-impl From<BindUriScheme> for Scheme {
-    fn from(value: BindUriScheme) -> Self {
+impl From<Scheme> for http::uri::Scheme {
+    fn from(value: Scheme) -> Self {
         value
             .to_str()
             .parse()
@@ -389,23 +371,19 @@ impl From<BindUriScheme> for Scheme {
     }
 }
 
-#[derive(Debug, Error)]
-#[error("Expect one of: iface, inet, ble")]
-pub struct ParseBindUriSchemeError;
-
-impl FromStr for BindUriScheme {
-    type Err = ParseBindUriSchemeError;
+impl FromStr for Scheme {
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "iface" => Ok(BindUriScheme::Iface),
-            "inet" => Ok(BindUriScheme::Inet),
-            _ => Err(ParseBindUriSchemeError),
+            "iface" => Ok(Scheme::Iface),
+            "inet" => Ok(Scheme::Inet),
+            other => Err(other.to_string()),
         }
     }
 }
 
-impl Display for BindUriScheme {
+impl Display for Scheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_str().fmt(f)
     }
@@ -419,7 +397,7 @@ mod tests {
     fn invalid_uri() {
         assert!(matches!(
             BindUri::from_str("iface://"),
-            Err(ParseBindUriError::InvalidUri(_))
+            Err(ParseError::InvalidUri(_))
         ));
     }
 
@@ -427,7 +405,7 @@ mod tests {
     fn missing_scheme() {
         assert!(matches!(
             BindUri::from_str("invalid_uri"),
-            Err(ParseBindUriError::MissingScheme)
+            Err(ParseError::NoScheme)
         ));
     }
 
@@ -435,7 +413,7 @@ mod tests {
     fn invalid_scheme() {
         assert!(matches!(
             BindUri::from_str("invalid://example.com"),
-            Err(ParseBindUriError::InvalidScheme(_))
+            Err(ParseError::Unsupported(_))
         ));
     }
 
@@ -443,7 +421,7 @@ mod tests {
     fn has_path() {
         assert!(matches!(
             BindUri::from_str("iface://v4.wlan0/1234"),
-            Err(ParseBindUriError::HasPath)
+            Err(ParseError::Malformed)
         ));
     }
 
@@ -451,7 +429,7 @@ mod tests {
     fn missing_ip_family() {
         assert!(matches!(
             BindUri::from_str("iface://wlan0:8080"),
-            Err(ParseBindUriError::MissingIpFamily)
+            Err(ParseError::NoFamily)
         ));
     }
 
@@ -459,7 +437,7 @@ mod tests {
     fn missing_port() {
         assert!(matches!(
             BindUri::from_str("iface://v4.wlan0"),
-            Err(ParseBindUriError::MissingPort)
+            Err(ParseError::NoPort)
         ));
     }
 
@@ -467,7 +445,7 @@ mod tests {
     fn invalid_ip_family() {
         assert!(matches!(
             BindUri::from_str("iface://invalid.wlan0:8080"),
-            Err(ParseBindUriError::InvalidIpFamily)
+            Err(ParseError::UnknownFamily)
         ));
     }
 
@@ -475,14 +453,14 @@ mod tests {
     fn invalid_ip_addr() {
         assert!(matches!(
             BindUri::from_str("inet://example.com:8080"),
-            Err(ParseBindUriError::InvalidIpAddr(..))
+            Err(ParseError::InvalidIpAddr(..))
         ));
     }
 
     #[test]
     fn iface_bind_uri() {
         let bind_uri = BindUri::from_str("iface://v4.wlan0:8080?temporary=true").unwrap();
-        assert_eq!(bind_uri.scheme(), BindUriScheme::Iface);
+        assert_eq!(bind_uri.scheme(), Scheme::Iface);
         let (family, interface, port) = bind_uri.as_iface_bind_uri().unwrap();
         assert_eq!(family, Family::V4);
         assert_eq!(interface, "wlan0");
@@ -496,7 +474,7 @@ mod tests {
     #[test]
     fn inet_bind_uri() {
         let bind_uri = BindUri::from_str("inet://127.0.0.1:7777").unwrap();
-        assert_eq!(bind_uri.scheme(), BindUriScheme::Inet);
+        assert_eq!(bind_uri.scheme(), Scheme::Inet);
         let addr = bind_uri.as_inet_bind_uri().unwrap();
         assert_eq!(
             addr,
@@ -512,10 +490,7 @@ mod tests {
             "iface://v4.ygiubiougbuyasiudbahsdbadfbkjadbhvkjabvckagdoiuehfjoiajhrpfhrbovhaelvkamdjkfs:8080",
         )
         .unwrap();
-        assert!(matches!(
-            SocketAddr::try_from(bind_uri),
-            Err(TryIntoSocketAddrError::InterfaceNotFound)
-        ))
+        assert!(SocketAddr::try_from(bind_uri).is_err_and(|e| e.kind() == io::ErrorKind::NotFound))
     }
 
     #[test]

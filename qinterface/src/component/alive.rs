@@ -14,7 +14,6 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     Interface, RebindedError,
-    bind_uri::TryIntoSocketAddrError,
     component::Component,
     device::Devices,
     io::{IO, IoExt},
@@ -26,8 +25,6 @@ pub enum InterfaceFailure {
     InvalidImplementation,
     #[error("Interface is broken: {0}")]
     InterfaceBroken(io::Error),
-    #[error("Failed to parse bind URI address")]
-    AddressParsingFailed(#[from] TryIntoSocketAddrError),
     #[error("Real address does not match bind URI")]
     AddressMismatch,
     #[error("Failed to bind test socket: {0}")]

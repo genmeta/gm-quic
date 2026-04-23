@@ -222,7 +222,7 @@ impl<'a> PacketsAssembler<'a> {
     {
         let buffer = self.constraints.constrain(buffer);
         let mut packet = space.new_packet(self.new_header()?, self.cc, buffer)?;
-        packet_content.add(packet.assemble_packet(&mut Packages((data_sources, PadTo20)))?);
+        *packet_content += packet.assemble_packet(&mut Packages((data_sources, PadTo20)))?;
         let (sent_bytes, props) = packet.encrypt_and_protect_packet();
         self.commit(sent_bytes, props);
         Result::<_, Signals>::Ok(sent_bytes)

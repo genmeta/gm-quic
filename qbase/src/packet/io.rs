@@ -157,7 +157,7 @@ impl<Target: BufMut + ?Sized, P: Package<Target>> Package<Target> for [P] {
         let mut packet_content = PacketContent::default();
         for package in self {
             match package.dump(target) {
-                Ok(content) => packet_content.add(content),
+                Ok(content) => packet_content += content,
                 Err(s) => signals |= s,
             }
         }
@@ -176,7 +176,7 @@ impl<Target: BufMut + ?Sized, P: Package<Target>, const N: usize> Package<Target
         let mut packet_content = PacketContent::default();
         for package in self {
             match package.dump(target) {
-                Ok(content) => packet_content.add(content),
+                Ok(content) => packet_content += content,
                 Err(s) => signals |= s,
             }
         }
@@ -252,7 +252,7 @@ impl<Target: ?Sized + BufMut, P: Package<Target>> Package<Target> for Repeat<P> 
         let mut packet_content = PacketContent::default();
         let signals = loop {
             match self.0.dump(target) {
-                Ok(content) => packet_content.add(content),
+                Ok(content) => packet_content += content,
                 Err(signals) => break signals,
             }
         };
@@ -285,7 +285,7 @@ macro_rules! impl_package_for_tuple {
 
                 $( #[allow(non_snake_case)]
                 match $t.dump(target) {
-                    Ok(content) => packet_content.add(content),
+                    Ok(content) => packet_content += content,
                     Err(s) => signals |= s,
                 } )*
 

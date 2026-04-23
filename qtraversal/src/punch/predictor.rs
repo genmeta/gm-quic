@@ -11,7 +11,7 @@ use std::{
 use qbase::{frame::PunchHelloFrame, net::route::Link};
 use qinterface::{
     Interface,
-    bind_uri::{BindUri, BindUriScheme},
+    bind_uri::{BindUri, Scheme},
     component::route::{QuicRouter, QuicRouterComponent},
     io::{IO, ProductIO},
     manager::InterfaceManager,
@@ -172,8 +172,8 @@ impl PortPredictor {
         dst: SocketAddr,
     ) -> io::Result<Self> {
         let device = match bind_uri.scheme() {
-            BindUriScheme::Iface => bind_uri.as_iface_bind_uri().unwrap().1.to_string(),
-            BindUriScheme::Inet => bind_uri.as_inet_bind_uri().unwrap().ip().to_string(),
+            Scheme::Iface => bind_uri.as_iface_bind_uri().unwrap().1.to_string(),
+            Scheme::Inet => bind_uri.as_inet_bind_uri().unwrap().ip().to_string(),
             _ => return Err(io::ErrorKind::Unsupported.into()),
         };
         tracing::debug!(
@@ -208,7 +208,7 @@ impl PortPredictor {
 
     fn port_to_bind_uri(&self, port: u16) -> BindUri {
         match self.bind_uri.scheme() {
-            BindUriScheme::Iface => {
+            Scheme::Iface => {
                 let (ip_family, device, _) = self.bind_uri.as_iface_bind_uri().unwrap();
                 let bind_uri = format!(
                     "iface://{ip_family}.{device}:{port}?{}=true",
@@ -218,7 +218,7 @@ impl PortPredictor {
                     panic!("Constructed invalid iface bind URI {bind_uri}: {e}")
                 })
             }
-            BindUriScheme::Inet => {
+            Scheme::Inet => {
                 let socket_addr = self.bind_uri.as_inet_bind_uri().unwrap();
                 let ip = socket_addr.ip();
                 let bind_uri = format!("inet://{ip}:{port}?{}=true", BindUri::TEMPORARY_PROP);
