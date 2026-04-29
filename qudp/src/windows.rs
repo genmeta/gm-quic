@@ -10,14 +10,14 @@ use libc::c_uchar;
 use socket2::Socket;
 use windows_sys::Win32::Networking::WinSock::{self, SOCKET};
 
-use crate::{DEFAULT_TTL, Io, UdpSocketController};
+use crate::{DEFAULT_TTL, Io, UdpSocket};
 
 const CMSG_LEN: usize = 128;
 #[derive(Copy, Clone)]
 #[repr(align(8))] // Conservative bound for align_of<WinSock::CMSGHDR>
 pub(crate) struct Aligned<T>(pub(crate) T);
 
-impl Io for UdpSocketController {
+impl Io for UdpSocket {
     fn config(socket: &Socket, addr: SocketAddr) -> std::io::Result<()> {
         const OPTION_ON: c_int = 1;
         const OPTION_OFF: c_int = 0;

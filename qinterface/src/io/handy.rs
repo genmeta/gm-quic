@@ -25,7 +25,7 @@ pub mod qudp {
         bind_uri: BindUri,
         send_wakers: Arc<Wakers<64>>,
         recv_wakers: Arc<Wakers>,
-        io: Result<Result<qudp::UdpSocketController, Closed>, BindFailed>,
+        io: Result<Result<qudp::UdpSocket, Closed>, BindFailed>,
     }
 
     #[derive(Debug, Clone, Copy, Error)]
@@ -68,7 +68,7 @@ pub mod qudp {
                         format!("Failed to bind {bind_uri}: {e}"),
                     )
                 })
-                .and_then(qudp::UdpSocketController::bind);
+                .and_then(qudp::UdpSocket::bind);
             UdpSocketController {
                 bind_uri,
                 send_wakers: Arc::new(Wakers::new()),
@@ -77,7 +77,7 @@ pub mod qudp {
             }
         }
 
-        fn usc(&self) -> io::Result<&qudp::UdpSocketController> {
+        fn usc(&self) -> io::Result<&qudp::UdpSocket> {
             self.io
                 .as_ref()
                 .map_err(|e| io::Error::from(e.clone()))
@@ -126,25 +126,25 @@ pub mod qudp {
             &self,
             cx: &mut Context,
             pkts: &mut [BytesMut],
-            qbase_hdrs: &mut [PacketHeader],
+            hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
             self.recv_wakers.combine_with(cx, |cx| {
                 let dst = io.local_addr()?;
-                let len = qbase_hdrs.len().min(pkts.len());
-                let mut hdrs = Vec::with_capacity(len);
-                hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
+                let len = hdrs.len().min(pkts.len());
+                let mut rcvd = Vec::with_capacity(len);
+                rcvd.resize_with(hdrs.len(), qudp::DatagramHeader::default);
                 let mut bufs = pkts[..len]
                     .iter_mut()
                     .map(|p| IoSliceMut::new(p.as_mut()))
                     .collect::<Vec<_>>();
-                debug_assert_eq!(hdrs.len(), bufs.len());
-                let rcvd = ready!(io.poll_recv(cx, &mut bufs, &mut hdrs))?;
+                debug_assert_eq!(rcvd.len(), bufs.len());
+                let nrcvd = ready!(io.poll_recv(cx, &mut bufs, &mut rcvd))?;
 
-                for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
+                for (idx, qudp_hdr) in rcvd[..nrcvd].iter().enumerate() {
                     let way = Pathway::new(qudp_hdr.src.into(), dst.into());
                     let link = Link::new(qudp_hdr.src, io.local_addr()?);
-                    qbase_hdrs[idx] = PacketHeader::new(
+                    hdrs[idx] = PacketHeader::new(
                         way.flip(),
                         link.flip(),
                         qudp_hdr.ttl,
@@ -153,7 +153,7 @@ pub mod qudp {
                     );
                 }
 
-                Poll::Ready(Ok(rcvd))
+                Poll::Ready(Ok(nrcvd))
             })
         }
 

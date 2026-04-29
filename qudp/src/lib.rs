@@ -60,12 +60,12 @@ impl Default for DatagramHeader {
 }
 
 #[derive(Debug)]
-pub struct UdpSocketController {
+pub struct UdpSocket {
     io: tokio::net::UdpSocket,
     ttl: AtomicI32,
 }
 
-impl UdpSocketController {
+impl UdpSocket {
     pub fn bind(addr: SocketAddr) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
@@ -180,7 +180,7 @@ pub trait Io {
     fn set_ttl(&self, ttl: i32) -> io::Result<()>;
 }
 
-impl UdpSocketController {
+impl UdpSocket {
     pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: DatagramHeader) -> Send<'a> {
         Send {
             usc: self,
@@ -207,7 +207,7 @@ impl UdpSocketController {
 }
 
 pub struct Send<'a> {
-    pub usc: &'a UdpSocketController,
+    pub usc: &'a UdpSocket,
     pub iovecs: &'a [IoSlice<'a>],
     pub header: DatagramHeader,
 }
@@ -222,7 +222,7 @@ impl Future for Send<'_> {
 }
 
 pub struct Receiver<'u> {
-    pub usc: &'u UdpSocketController,
+    pub usc: &'u UdpSocket,
     pub iovecs: Vec<BytesMut>,
     pub headers: Vec<DatagramHeader>,
 }

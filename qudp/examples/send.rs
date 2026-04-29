@@ -1,7 +1,7 @@
 use std::io::IoSlice;
 
 use clap::Parser;
-use qudp::{DatagramHeader, UdpSocketController};
+use qudp::{DatagramHeader, UdpSocket};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -27,7 +27,7 @@ async fn main() {
 
     let args = Args::parse();
     let addr = args.src.parse().unwrap();
-    let socket = UdpSocketController::bind(addr).expect("failed to create socket");
+    let socket = UdpSocket::bind(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = DatagramHeader::new(

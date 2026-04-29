@@ -13,12 +13,12 @@ use nix::{
 };
 use socket2::Socket;
 
-use crate::{DEFAULT_TTL, DatagramHeader, Io, UdpSocketController};
+use crate::{DEFAULT_TTL, DatagramHeader, Io, UdpSocket};
 
 const OPTION_ON: bool = true;
 const OPTION_OFF: bool = false;
 
-impl Io for UdpSocketController {
+impl Io for UdpSocket {
     fn config(socket: &Socket, addr: SocketAddr) -> io::Result<()> {
         let io = socket.as_fd();
         nix::sys::socket::setsockopt(&io, sockopt::RcvBuf, &(2 * 1024 * 1024))?;
