@@ -12,7 +12,15 @@
 //! for handling common data structures in the QUIC protocol.
 //!
 #![allow(clippy::all)]
-use std::ops::{Index, IndexMut};
+use std::{
+    ops::{Index, IndexMut},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
+
+use futures::FutureExt;
+use thiserror::Error;
 
 /// Operations about QUIC connection IDs.
 pub mod cid;
@@ -89,6 +97,58 @@ where
 {
     fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
         self.index_mut(index as usize)
+    }
+}
+
+#[derive(Debug, Default)]
+pub enum Receiving<F> {
+    #[default]
+    Pending,
+    Waiting(Waker),
+    Rcvd(F),
+    Read,
+    Reset,
+}
+
+impl<F> Receiving<F> {
+    fn recv_frame(&mut self, frame: F) {
+        match std::mem::take(self) {
+            Self::Pending => {
+                *self = Self::Rcvd(frame);
+            }
+            Self::Waiting(waker) => {
+                waker.wake();
+                *self = Self::Rcvd(frame);
+            }
+            _ => (),
+        }
+    }
+
+    fn reset(&mut self) {
+        if let Self::Waiting(waker) = std::mem::replace(self, Self::Reset) {
+            waker.wake();
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Reset")]
+pub struct ResetError;
+
+#[derive(Debug, Default, Clone)]
+pub struct ArcReceiving<F>(Arc<Mutex<Receiving<F>>>);
+
+impl<F> ArcReceiving<F> {
+    pub fn reset(&self) {
+        self.0.lock().unwrap().reset();
+    }
+}
+
+impl<F: Unpin> Future for ArcReceiving<F> {
+    type Output = Result<Option<F>, ResetError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.lock().unwrap().poll_unpin(cx)
     }
 }
 
