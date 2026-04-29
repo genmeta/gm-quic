@@ -1,12 +1,9 @@
 use std::{
     pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
 use bytes::Bytes;
-use futures::FutureExt;
-use thiserror::Error;
 
 use super::{
     ack::ack_frame_with_ecn, add_address::be_add_address_frame,
@@ -22,7 +19,7 @@ use super::{
     stream::stream_frame_with_flag, stream_data_blocked::be_stream_data_blocked_frame,
     streams_blocked::streams_blocked_frame_with_dir, *,
 };
-use crate::util::ContinuousData;
+use crate::{ArcReceiving, Receiving, ResetError, util::ContinuousData};
 
 /// Return a parser for a complete frame from the raw bytes with the given type,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -241,41 +238,6 @@ pub trait ReceiveFrame<T> {
     fn recv_frame(&self, frame: T) -> Result<Self::Output, crate::error::Error>;
 }
 
-#[derive(Debug, Default)]
-pub enum Receiving<F> {
-    #[default]
-    Pending,
-    Waiting(Waker),
-    Rcvd(F),
-    Read,
-    Reset,
-}
-
-impl<F> Receiving<F> {
-    fn recv_frame(&mut self, frame: F) {
-        match std::mem::take(self) {
-            Self::Pending => {
-                *self = Self::Rcvd(frame);
-            }
-            Self::Waiting(waker) => {
-                waker.wake();
-                *self = Self::Rcvd(frame);
-            }
-            _ => (),
-        }
-    }
-
-    fn reset(&mut self) {
-        if let Self::Waiting(waker) = std::mem::replace(self, Self::Reset) {
-            waker.wake();
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("Reset")]
-pub struct ResetError;
-
 impl<F: Unpin> Future for Receiving<F> {
     type Output = Result<Option<F>, ResetError>;
 
@@ -303,28 +265,11 @@ impl<F: Unpin> Future for Receiving<F> {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct ArcReceiving<F>(Arc<Mutex<Receiving<F>>>);
-
-impl<F> ArcReceiving<F> {
-    pub fn reset(&self) {
-        self.0.lock().unwrap().reset();
-    }
-}
-
 impl<F> ReceiveFrame<F> for ArcReceiving<F> {
     type Output = ();
 
     fn recv_frame(&self, frame: F) -> Result<Self::Output, crate::error::Error> {
         self.0.lock().unwrap().recv_frame(frame);
         Ok(())
-    }
-}
-
-impl<F: Unpin> Future for ArcReceiving<F> {
-    type Output = Result<Option<F>, ResetError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll_unpin(cx)
     }
 }
