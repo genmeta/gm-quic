@@ -11,9 +11,16 @@ use nix::{
         sockopt::{self},
     },
 };
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "watchos",
+    target_os = "tvos"
+))]
+use qbase::net::route::Line;
 use socket2::Socket;
 
-use crate::{DEFAULT_TTL, DatagramHeader, Io, UdpSocket};
+use crate::{Io, UdpSocket};
 
 const OPTION_ON: bool = true;
 const OPTION_OFF: bool = false;
@@ -35,14 +42,14 @@ impl Io for UdpSocket {
                     target_os = "freebsd",
                     target_os = "netbsd"
                 ))]
-                nix::sys::socket::setsockopt(&io, sockopt::Ipv4Ttl, &DEFAULT_TTL)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv4Ttl, &(Line::DEFAULT_TTL as i32))?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv4PacketInfo, &OPTION_ON)?;
             }
             SocketAddr::V6(_) => {
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6V6Only, &OPTION_OFF)?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6RecvPacketInfo, &OPTION_ON)?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6DontFrag, &OPTION_ON)?;
-                nix::sys::socket::setsockopt(&io, sockopt::Ipv6Ttl, &DEFAULT_TTL)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv6Ttl, &(Line::DEFAULT_TTL as i32))?;
             }
         }
 
@@ -55,7 +62,7 @@ impl Io for UdpSocket {
         target_os = "freebsd",
         target_os = "netbsd"
     ))]
-    fn sendmsg(&self, buffers: &[IoSlice<'_>], hdr: &DatagramHeader) -> io::Result<usize> {
+    fn sendmsg(&self, buffers: &[IoSlice<'_>], line: &Line) -> io::Result<usize> {
         use nix::{
             errno::Errno,
             sys::socket::{MsgFlags, MultiHeaders, SockaddrIn, SockaddrIn6, sendmmsg},
@@ -75,7 +82,7 @@ impl Io for UdpSocket {
         #[cfg(feature = "gso")]
         let (cmsgs, space) = (
             vec![nix::sys::socket::ControlMessage::UdpGsoSegments(
-                &hdr.seg_size,
+                &line.seg_size,
             )],
             Some(cmsg_space!(libc::c_int)),
         );
@@ -104,7 +111,7 @@ impl Io for UdpSocket {
             }};
         }
 
-        match hdr.dst {
+        match line.link.dst {
             SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
             SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
         }
@@ -116,7 +123,7 @@ impl Io for UdpSocket {
         target_os = "watchos",
         target_os = "tvos"
     ))]
-    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &DatagramHeader) -> io::Result<usize> {
+    fn sendmsg(&self, slices: &[IoSlice<'_>], send_line: &Line) -> io::Result<usize> {
         use nix::{
             errno::Errno,
             sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6, sendmsg},
@@ -146,7 +153,7 @@ impl Io for UdpSocket {
                 }};
             }
 
-            match send_hdr.dst {
+            match send_line.link.dst {
                 SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
                 SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
             }
@@ -163,7 +170,7 @@ impl Io for UdpSocket {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [DatagramHeader],
+        recv_lines: &mut [Line],
     ) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, recvmmsg};
 
@@ -200,18 +207,17 @@ impl Io for UdpSocket {
 
         for recv_msg in res {
             let src_addr = recv_msg.address.unwrap().to_socketaddr();
-            let mut recv_hdr = DatagramHeader {
-                src: src_addr,
-                dst: recv_hdrs[count].dst,
+            let mut recv_line = Line {
+                link: Link::new(src_addr, recv_lines[count].link.dst),
                 ttl: 0,
                 ecn: None,
                 seg_size: recv_msg.bytes as u16,
             };
             for cmsg in recv_msg.cmsgs().unwrap() {
-                parse_cmsg(cmsg, &mut recv_hdr);
+                parse_cmsg(cmsg, &mut recv_line);
             }
-            recv_hdr.dst.set_port(local_port);
-            recv_hdrs[count] = recv_hdr;
+            recv_line.link.dst.set_port(local_port);
+            recv_lines[count] = recv_line;
             count += 1;
         }
 
@@ -227,7 +233,7 @@ impl Io for UdpSocket {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [DatagramHeader],
+        recv_lines: &mut [Line],
     ) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, recvmsg};
         let mut cmsg_space = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
@@ -242,12 +248,12 @@ impl Io for UdpSocket {
             Ok(recv_msg) => {
                 if let Ok(cmsgs) = recv_msg.cmsgs() {
                     for cmsg in cmsgs {
-                        parse_cmsg(cmsg, &mut recv_hdrs[0]);
+                        parse_cmsg(cmsg, &mut recv_lines[0]);
                     }
                 }
-                recv_hdrs[0].dst.set_port(self.local_addr()?.port());
-                recv_hdrs[0].src = recv_msg.address.unwrap().to_socketaddr();
-                recv_hdrs[0].seg_size = recv_msg.bytes as u16;
+                recv_lines[0].link.dst.set_port(self.local_addr()?.port());
+                recv_lines[0].link.src = recv_msg.address.unwrap().to_socketaddr();
+                recv_lines[0].seg_size = recv_msg.bytes as u16;
                 Ok(1)
             }
             Err(e) => {
@@ -297,15 +303,15 @@ impl Io for UdpSocket {
     }
 }
 
-fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut DatagramHeader) {
+fn parse_cmsg(cmsg: ControlMessageOwned, line: &mut Line) {
     match cmsg {
         ControlMessageOwned::Ipv4PacketInfo(pktinfo) => {
             let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
-            hdr.dst.set_ip(ip);
+            line.link.dst.set_ip(ip);
         }
         ControlMessageOwned::Ipv6PacketInfo(pktinfo6) => {
             let ip = IpAddr::V6(Ipv6Addr::from(pktinfo6.ipi6_addr.s6_addr));
-            hdr.dst.set_ip(ip);
+            line.link.dst.set_ip(ip);
         }
         _ => {}
     }

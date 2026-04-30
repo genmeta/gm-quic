@@ -62,8 +62,8 @@ impl<E: Display> Display for Pathway<E> {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Link {
-    src: SocketAddr,
-    dst: SocketAddr,
+    pub src: SocketAddr,
+    pub dst: SocketAddr,
 }
 
 impl Display for Link {
@@ -96,7 +96,7 @@ pub trait WriteLink {
 impl<T: BufMut> WriteLink for T {
     fn put_link(&mut self, link: &Link) {
         use crate::net::WriteSocketAddr;
-        self.put_u8(link.src().is_ipv6() as u8);
+        self.put_u8(link.src.is_ipv6() as u8);
         self.put_socket_addr(&link.src);
         self.put_socket_addr(&link.dst);
     }
@@ -119,16 +119,6 @@ impl Link {
     }
 
     #[inline]
-    pub fn src(&self) -> SocketAddr {
-        self.src.clone()
-    }
-
-    #[inline]
-    pub fn dst(&self) -> SocketAddr {
-        self.dst.clone()
-    }
-
-    #[inline]
     pub fn flip(self) -> Self {
         Self {
             src: self.dst,
@@ -140,6 +130,43 @@ impl Link {
 impl<E: From<SocketAddr>> From<Link> for Pathway<E> {
     fn from(link: Link) -> Self {
         Pathway::new(E::from(link.src), E::from(link.dst))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Line {
+    pub link: Link,
+    pub ttl: u8,
+    // Explicit congestion notification (ECN)
+    pub ecn: Option<u8>,
+    // packet segment size
+    pub seg_size: u16,
+}
+
+impl Line {
+    pub const DEFAULT_TTL: u8 = 64;
+
+    pub fn new(link: Link, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
+        Self {
+            link,
+            ttl,
+            ecn,
+            seg_size,
+        }
+    }
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Self {
+            link: Link::new(
+                SocketAddr::from(([0, 0, 0, 0], 0)),
+                SocketAddr::from(([0, 0, 0, 0], 0)),
+            ),
+            ttl: Self::DEFAULT_TTL,
+            ecn: None,
+            seg_size: 0,
+        }
     }
 }
 

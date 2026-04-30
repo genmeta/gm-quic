@@ -80,7 +80,7 @@ impl QuicRouter {
             let signpost = Signpost::from(*dcid);
             self.table.get(&signpost).map(|queue| queue.clone())
         } else {
-            let signpost = Signpost::from(link.dst());
+            let signpost = Signpost::from(link.dst);
             self.table.get(&signpost).map(|queue| queue.clone())
         }
     }

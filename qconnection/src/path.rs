@@ -87,8 +87,8 @@ impl Components {
             let is_initial_path = self.conn_state.try_entry_attempted(self, link)?;
             qevent::event!(PathAssigned {
                 path_id: pathway.to_string(),
-                path_local: link.src(),
-                path_remote: link.dst(),
+                path_local: link.src,
+                path_remote: link.dst,
             });
 
             let path = Arc::new(Path::new(

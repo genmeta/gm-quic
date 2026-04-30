@@ -28,15 +28,15 @@ impl StunRouter {
     pub fn deliver_stun_packet(&self, txid: TransactionId, packet: Packet, link: Link) {
         match packet {
             msg::Packet::Request(request) => {
-                self.request_router.push_back((request, txid, link.dst()));
+                self.request_router.push_back((request, txid, link.dst));
             }
             msg::Packet::Response(response) => {
                 if let Some((_id, recv_resp)) = self.response_router.remove(&txid) {
-                    let _ = recv_resp.set((response, link.dst()));
+                    let _ = recv_resp.set((response, link.dst));
                 } else {
                     debug!(
                         target: "stun",
-                        ?txid, %link, from =% link.dst(),
+                        ?txid, %link, from =% link.dst,
                         "Unknown request transaction id",
                     );
                 }

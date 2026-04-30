@@ -63,7 +63,7 @@ impl ArcConnState {
                 new: BaseConnectionStates::Attempted,
             });
             qevent::event!(ConnectionStarted {
-                socket: { (link.src(), link.dst()) } // cid不在这一层，未知
+                socket: { (link.src, link.dst) } // cid不在这一层，未知
             });
 
             match components.role() {
