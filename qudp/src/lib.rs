@@ -8,9 +8,9 @@ use std::{
 };
 
 use bytes::BytesMut;
+use qbase::net::route::Line;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
-pub const DEFAULT_TTL: libc::c_int = 64;
 pub const BATCH_SIZE: usize = 64;
 cfg_if::cfg_if! {
     if #[cfg(unix)]{
@@ -21,41 +21,6 @@ cfg_if::cfg_if! {
         mod windows;
     } else {
         compile_error!("Unsupported platform");
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DatagramHeader {
-    pub src: SocketAddr,
-    pub dst: SocketAddr,
-    pub ttl: u8,
-    // Explicit congestion notification (ECN)
-    pub ecn: Option<u8>,
-    // packet segment size
-    pub seg_size: u16,
-}
-
-impl DatagramHeader {
-    pub fn new(src: SocketAddr, dst: SocketAddr, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
-        Self {
-            src,
-            dst,
-            ttl,
-            ecn,
-            seg_size,
-        }
-    }
-}
-
-impl Default for DatagramHeader {
-    fn default() -> Self {
-        Self {
-            src: SocketAddr::from(([0, 0, 0, 0], 0)),
-            dst: SocketAddr::from(([0, 0, 0, 0], 0)),
-            ttl: DEFAULT_TTL as u8,
-            ecn: None,
-            seg_size: 0,
-        }
     }
 }
 
@@ -79,7 +44,7 @@ impl UdpSocket {
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
         let usc = Self {
             io,
-            ttl: AtomicI32::new(DEFAULT_TTL),
+            ttl: AtomicI32::new(Line::DEFAULT_TTL as i32),
         };
         Ok(usc)
     }
@@ -100,14 +65,14 @@ impl UdpSocket {
         &self,
         cx: &mut Context<'_>,
         bufs: &[IoSlice<'_>],
-        hdr: &DatagramHeader,
+        line: &Line,
     ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.poll_send_ready(cx))?;
-            self.set_ttl(hdr.ttl as i32)?;
+            self.set_ttl(line.ttl as i32)?;
             match self
                 .io
-                .try_io(Interest::WRITABLE, || self.sendmsg(bufs, hdr))
+                .try_io(Interest::WRITABLE, || self.sendmsg(bufs, line))
             {
                 Ok(n) => return Poll::Ready(Ok(n)),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
@@ -120,11 +85,11 @@ impl UdpSocket {
         &self,
         cx: &mut Context,
         bufs: &mut [IoSliceMut<'_>],
-        hdrs: &mut [DatagramHeader],
+        lines: &mut [Line],
     ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.poll_recv_ready(cx)?);
-            let f = || self.recvmsg(bufs, hdrs);
+            let f = || self.recvmsg(bufs, lines);
             let ret = self.io.try_io(Interest::READABLE, f);
             if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
                 continue;
@@ -172,26 +137,25 @@ impl UdpSocket {
 pub trait Io {
     fn config(io: &socket2::Socket, addr: SocketAddr) -> io::Result<()>;
 
-    fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &DatagramHeader) -> io::Result<usize>;
+    fn sendmsg(&self, bufs: &[IoSlice<'_>], line: &Line) -> io::Result<usize>;
 
-    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [DatagramHeader])
-    -> io::Result<usize>;
+    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], line: &mut [Line]) -> io::Result<usize>;
 
     fn set_ttl(&self, ttl: i32) -> io::Result<()>;
 }
 
 impl UdpSocket {
-    pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: DatagramHeader) -> Send<'a> {
+    pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], line: Line) -> Send<'a> {
         Send {
-            usc: self,
+            socket: self,
             iovecs,
-            header,
+            line,
         }
     }
 
     pub fn receiver(&self) -> Receiver<'_> {
         Receiver {
-            usc: self,
+            socket: self,
             iovecs: (0..BATCH_SIZE)
                 .map(|_| {
                     let mut buf = BytesMut::with_capacity(1500);
@@ -199,17 +163,15 @@ impl UdpSocket {
                     buf
                 })
                 .collect::<Vec<_>>(),
-            headers: (0..BATCH_SIZE)
-                .map(|_| DatagramHeader::default())
-                .collect::<Vec<_>>(),
+            lines: (0..BATCH_SIZE).map(|_| Line::default()).collect::<Vec<_>>(),
         }
     }
 }
 
 pub struct Send<'a> {
-    pub usc: &'a UdpSocket,
+    pub socket: &'a UdpSocket,
     pub iovecs: &'a [IoSlice<'a>],
-    pub header: DatagramHeader,
+    pub line: Line,
 }
 
 impl Future for Send<'_> {
@@ -217,14 +179,14 @@ impl Future for Send<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.usc.poll_send(cx, this.iovecs, &this.header)
+        this.socket.poll_send(cx, this.iovecs, &this.line)
     }
 }
 
 pub struct Receiver<'u> {
-    pub usc: &'u UdpSocket,
+    pub socket: &'u UdpSocket,
     pub iovecs: Vec<BytesMut>,
-    pub headers: Vec<DatagramHeader>,
+    pub lines: Vec<Line>,
 }
 
 impl Receiver<'_> {
@@ -236,7 +198,7 @@ impl Receiver<'_> {
             .map(|b| IoSliceMut::new(b))
             .collect::<Vec<_>>();
 
-        self.usc.poll_recv(cx, &mut bufs, &mut self.headers)
+        self.socket.poll_recv(cx, &mut bufs, &mut self.lines)
     }
 
     #[inline]

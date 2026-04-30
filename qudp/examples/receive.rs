@@ -25,9 +25,9 @@ async fn main() {
                 tracing::info!(
                     "Received {} packets, dst {}, src {} len {}",
                     n,
-                    receiver.headers[0].dst,
-                    receiver.headers[0].src,
-                    receiver.headers[0].seg_size
+                    receiver.lines[0].dst,
+                    receiver.lines[0].src,
+                    receiver.lines[0].seg_size
                 );
             }
             Err(e) => {

@@ -192,7 +192,7 @@ where
     {
         tracing::debug!(target: "punch", %punch_id, %link, ttl, "starting collision attack");
         let mut random_ports = HashSet::new();
-        let dst = link.dst();
+        let dst = link.dst;
         let ip = dst.ip();
         while random_ports.len() < COLLISION_PORTS as usize {
             let port = rand::random::<u16>() % (u16::MAX - 1024) + 1024;
@@ -200,7 +200,7 @@ where
             if !random_ports.insert(port) {
                 continue;
             }
-            let link = Link::new(link.src(), dst);
+            let link = Link::new(link.src, dst);
             let frame =
                 PunchHelloFrame::new(punch_id.local_seq, punch_id.remote_seq, DEFAULT_PROBE_ID);
             self.send_packet(iface, link, ttl, frame).await?;
@@ -578,7 +578,7 @@ where
                 tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), "sending PunchMeNow expecting PunchMeNow then collision");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
 
-                let link = Link::new(iface.bound_addr()?, link.dst());
+                let link = Link::new(iface.bound_addr()?, link.dst);
                 let mut collided = false;
                 let result: io::Result<()> = loop {
                     tokio::select! {
@@ -621,7 +621,7 @@ where
                         self.0.iface_factory.clone(),
                         self.0.quic_router.clone(),
                         bind_uri.clone(),
-                        link.dst(),
+                        link.dst,
                     )?;
 
                     // Create packet send function
@@ -704,7 +704,7 @@ where
                 punch_me_now.set_addr(outer_addr);
                 tracing::trace!(target: "punch", %punch_id, "sending PunchMeNow + Hello expecting Hello(Done)");
                 broker.send_frame([ReliableFrame::PunchMeNow(punch_me_now)]);
-                let link = Link::new(iface.bound_addr()?, link.dst());
+                let link = Link::new(iface.bound_addr()?, link.dst);
                 let time = Duration::from_millis(100);
                 for i in 0..MAX_RETRIES {
                     tracing::trace!(target: "punch", %punch_id, nat_pair = %format!("{:?}->{:?}", local_nat, remote_nat), %link, "sending Hello expecting Hello(Done)");
@@ -810,7 +810,7 @@ where
                     self.0.iface_factory.clone(),
                     self.0.quic_router.clone(),
                     bind_uri.clone(),
-                    link.dst(),
+                    link.dst,
                 )?;
                 // Create packet send function
                 let puncher_ref = self.0.clone();
@@ -946,7 +946,7 @@ where
                     self.0.iface_factory.clone(),
                     self.0.quic_router.clone(),
                     bind.clone(),
-                    link.dst(),
+                    link.dst,
                 )?;
 
                 // Create packet send function
