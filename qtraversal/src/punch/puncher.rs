@@ -18,7 +18,7 @@ use qbase::{
     net::{
         AddrFamily, NatType,
         addr::EndpointAddr,
-        route::{Link, PacketHeader},
+        route::{Line, Link, Route},
         tx::Signals,
     },
     packet::{
@@ -173,9 +173,10 @@ where
         })()
         .map_err(|s| io::Error::other(format!("Failed to assemble packet: {s:?}")))?;
 
-        let hdr = PacketHeader::new(link.into(), link, ttl, None, sent_bytes as u16);
+        let line = Line::new(link, ttl, None, sent_bytes as u16);
+        let route = Route::new(link.into(), line);
         iface
-            .sendmmsg(&[io::IoSlice::new(&buffer[..sent_bytes])], hdr)
+            .sendmmsg(&[io::IoSlice::new(&buffer[..sent_bytes])], route)
             .await
     }
 

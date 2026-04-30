@@ -15,7 +15,7 @@ use bytes::BytesMut;
 use qbase::{
     net::{
         addr::EndpointAddr,
-        route::{Link, PacketHeader},
+        route::{Line, Link, Route},
     },
     util::ArcAsyncDeque,
 };
@@ -181,7 +181,7 @@ impl ReceiveAndDeliverPacket {
             let iface = iface_ref.iface();
             let bind_uri = iface.bind_uri();
 
-            let deliver_quic_packet = async |pkt: BytesMut, hdr: PacketHeader| {
+            let deliver_quic_packet = async |pkt: BytesMut, route: Route| {
                 let Some(quic_router) = quic_router.as_ref() else {
                     return;
                 };
@@ -196,13 +196,13 @@ impl ReceiveAndDeliverPacket {
                 for (packet, way) in PacketReader::new(pkt, 8)
                     .flatten()
                     .filter(move |pkt| !(is_initial_packet(pkt) && size < 1100))
-                    .map(move |pkt| (pkt, (bind_uri.clone(), hdr.pathway(), hdr.link())))
+                    .map(move |pkt| (pkt, (bind_uri.clone(), route.pathway(), route.link())))
                 {
                     quic_router.deliver(packet, way).await;
                 }
             };
 
-            let deliver_stun_packet = async |mut pkt: BytesMut, hdr: PacketHeader| {
+            let deliver_stun_packet = async |mut pkt: BytesMut, route: Route| {
                 let Some(stun_router) = stun_router.as_ref() else {
                     return;
                 };
@@ -213,31 +213,26 @@ impl ReceiveAndDeliverPacket {
                     return;
                 };
 
-                stun_router.deliver_stun_packet(txid, packet, hdr.link());
+                stun_router.deliver_stun_packet(txid, packet, route.link());
             };
 
             let deliver_forward_packet =
-                async |mut pkt: BytesMut, hdr: PacketHeader, fhdr: ForwardHeader| {
+                async |mut pkt: BytesMut, mut route: Route, fhdr: ForwardHeader| {
                     if let Some(forwarder) = forwarder.as_ref()
-                        && let Some(forward_target) =
-                            forwarder.should_forward(fhdr.pathway().remote())
+                        && let Some(target) = forwarder.should_forward(fhdr.pathway().remote())
                     {
                         let bufs = &[io::IoSlice::new(&pkt)];
-                        let link = Link::new(iface.bound_addr()?, forward_target);
-                        let hdr = PacketHeader::new(link.into(), link, 64, None, pkt.len() as _);
-                        return iface.sendmmsg(bufs, hdr).await;
+                        let new_link = Link::new(iface.bound_addr()?, target);
+                        let new_line = Line::new(new_link, 64, None, pkt.len() as u16);
+                        let new_route = Route::new(route.link.into(), new_line);
+                        return iface.sendmmsg(bufs, new_route).await;
                     };
 
                     // split_off forward header, deliver the rest as quic packet
                     let pkt = pkt.split_off(ForwardHeader::encoding_size(&fhdr.pathway()));
-                    let hdr = PacketHeader::new(
-                        fhdr.pathway().flip().map(Into::into),
-                        hdr.link(),
-                        hdr.ttl(),
-                        hdr.ecn(),
-                        pkt.len() as _,
-                    );
-                    deliver_quic_packet(pkt, hdr).await;
+                    route.seg_size = pkt.len() as _;
+                    let new_route = Route::new(fhdr.pathway().flip().map(Into::into), route.line);
+                    deliver_quic_packet(pkt, new_route).await;
                     Ok(())
                 };
 

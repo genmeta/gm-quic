@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::net::route::PacketHeader;
+use qbase::net::route::Route;
 
 pub mod handy;
 
@@ -63,7 +63,7 @@ pub trait IO: Send + Sync + Any {
         &self,
         cx: &mut Context,
         pkts: &[io::IoSlice],
-        hdr: PacketHeader,
+        route: Route,
     ) -> Poll<io::Result<usize>>;
 
     /// Poll for receiving packets
@@ -75,7 +75,7 @@ pub trait IO: Send + Sync + Any {
         &self,
         cx: &mut Context,
         pkts: &mut [BytesMut],
-        hdrs: &mut [PacketHeader],
+        route: &mut [Route],
     ) -> Poll<io::Result<usize>>;
 
     /// Asynchronously destroy the IO.
@@ -95,11 +95,11 @@ pub trait IoExt: IO {
     fn sendmmsg(
         &self,
         mut bufs: &[io::IoSlice<'_>],
-        hdr: PacketHeader,
+        route: Route,
     ) -> impl Future<Output = io::Result<()>> + Send {
         async move {
             while !bufs.is_empty() {
-                let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, hdr)).await?;
+                let sent = core::future::poll_fn(|cx| self.poll_send(cx, bufs, route)).await?;
                 bufs = &bufs[sent..];
             }
             Ok(())
@@ -109,23 +109,25 @@ pub trait IoExt: IO {
     fn recvmmsg<'b>(
         &self,
         bufs: &'b mut Vec<BytesMut>,
-        hdrs: &'b mut Vec<PacketHeader>,
-    ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, PacketHeader)> + Send + 'b>>
-    + Send {
+        route: &'b mut Vec<Route>,
+    ) -> impl Future<Output = io::Result<impl Iterator<Item = (BytesMut, Route)> + Send + 'b>> + Send
+    {
         async move {
             let rcvd = std::future::poll_fn(|cx| {
                 let max_segments = self.max_segments()?;
                 let max_segment_size = self.max_segment_size()?;
                 bufs.resize_with(max_segments, || BytesMut::zeroed(max_segment_size));
-                hdrs.resize_with(max_segments, PacketHeader::empty);
-                self.poll_recv(cx, bufs, hdrs)
+                route.resize_with(max_segments, Route::empty);
+                self.poll_recv(cx, bufs, route)
             })
             .await?;
 
             Ok(bufs
                 .drain(..rcvd)
-                .zip(hdrs.drain(..rcvd))
-                .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr)))
+                .zip(route.drain(..rcvd))
+                .map(|(mut seg, route)| {
+                    (seg.split_to(seg.len().min(route.seg_size() as _)), route)
+                }))
         }
     }
 

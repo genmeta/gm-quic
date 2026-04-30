@@ -7,10 +7,11 @@ use std::{
 };
 
 use libc::c_uchar;
+use qbase::net::route::{Line, Link};
 use socket2::Socket;
 use windows_sys::Win32::Networking::WinSock::{self, SOCKET};
 
-use crate::{DEFAULT_TTL, Io, UdpSocket};
+use crate::{Io, UdpSocket};
 
 const CMSG_LEN: usize = 128;
 #[derive(Copy, Clone)]
@@ -30,7 +31,12 @@ impl Io for UdpSocket {
                 setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, OPTION_ON);
                 setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_RECVTTL, OPTION_ON);
                 setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_RECVDSTADDR, OPTION_ON);
-                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_TTL, DEFAULT_TTL);
+                setsockopt(
+                    io,
+                    WinSock::IPPROTO_IP,
+                    WinSock::IP_TTL,
+                    Line::DEFAULT_TTL as c_int,
+                );
             }
             SocketAddr::V6(_) => {
                 setsockopt(io, WinSock::IPPROTO_IPV6, WinSock::IPV6_V6ONLY, OPTION_OFF);
@@ -51,12 +57,8 @@ impl Io for UdpSocket {
         Ok(())
     }
 
-    fn sendmsg(
-        &self,
-        bufs: &[std::io::IoSlice<'_>],
-        hdr: &crate::DatagramHeader,
-    ) -> std::io::Result<usize> {
-        let dst = socket2::SockAddr::from(hdr.dst);
+    fn sendmsg(&self, bufs: &[std::io::IoSlice<'_>], line: &Line) -> std::io::Result<usize> {
+        let dst = socket2::SockAddr::from(line.dst);
         let mut count = 0;
 
         for buf in bufs {
@@ -82,8 +84,8 @@ impl Io for UdpSocket {
 
             let mut cmsg = unsafe { first_cmsg(&mut wsa_msg).as_mut() };
             let mut cmsg_len = 0;
-            if !hdr.src.ip().is_unspecified() {
-                let src = socket2::SockAddr::from(hdr.src);
+            if !line.src.ip().is_unspecified() {
+                let src = socket2::SockAddr::from(line.src);
                 match src.family() {
                     WinSock::AF_INET => {
                         let src_ip =
@@ -125,9 +127,9 @@ impl Io for UdpSocket {
                 }
             }
 
-            if let Some(ecn) = hdr.ecn {
-                let is_ipv4 = hdr.dst.is_ipv4()
-                    || matches!(hdr.dst.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+            if let Some(ecn) = line.ecn {
+                let is_ipv4 = line.dst.is_ipv4()
+                    || matches!(line.dst.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
                 if is_ipv4 {
                     _ = append_cmsg(
                         &wsa_msg,
@@ -183,7 +185,7 @@ impl Io for UdpSocket {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        hdr: &mut [crate::DatagramHeader],
+        lines: &mut [Line],
     ) -> std::io::Result<usize> {
         let wsa_recvmsg_ptr = wsarecvmsg_ptr().expect("valid function pointer for WSARecvMsg");
 
@@ -261,10 +263,9 @@ impl Io for UdpSocket {
         } else {
             self.local_addr()?
         };
-        hdr[0] = crate::DatagramHeader {
-            src: addr.unwrap(),
-            dst,
-            ttl: DEFAULT_TTL as u8,
+        lines[0] = Line {
+            link: Link::new(addr.unwrap(), dst),
+            ttl: Line::DEFAULT_TTL,
             ecn: Some(ecn_bits as u8),
             seg_size: len as u16,
         };

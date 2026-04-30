@@ -11,12 +11,6 @@ use nix::{
         sockopt::{self},
     },
 };
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "watchos",
-    target_os = "tvos"
-))]
 use qbase::net::route::Line;
 use socket2::Socket;
 
@@ -111,7 +105,7 @@ impl Io for UdpSocket {
             }};
         }
 
-        match line.link.dst {
+        match line.dst {
             SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
             SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
         }
@@ -153,7 +147,7 @@ impl Io for UdpSocket {
                 }};
             }
 
-            match send_line.link.dst {
+            match send_line.dst {
                 SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
                 SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
             }
@@ -207,8 +201,9 @@ impl Io for UdpSocket {
 
         for recv_msg in res {
             let src_addr = recv_msg.address.unwrap().to_socketaddr();
+            let link = qbase::net::route::Link::new(src_addr, recv_lines[count].dst);
             let mut recv_line = Line {
-                link: Link::new(src_addr, recv_lines[count].link.dst),
+                link,
                 ttl: 0,
                 ecn: None,
                 seg_size: recv_msg.bytes as u16,
@@ -216,7 +211,7 @@ impl Io for UdpSocket {
             for cmsg in recv_msg.cmsgs().unwrap() {
                 parse_cmsg(cmsg, &mut recv_line);
             }
-            recv_line.link.dst.set_port(local_port);
+            recv_line.dst.set_port(local_port);
             recv_lines[count] = recv_line;
             count += 1;
         }
@@ -251,8 +246,8 @@ impl Io for UdpSocket {
                         parse_cmsg(cmsg, &mut recv_lines[0]);
                     }
                 }
-                recv_lines[0].link.dst.set_port(self.local_addr()?.port());
-                recv_lines[0].link.src = recv_msg.address.unwrap().to_socketaddr();
+                recv_lines[0].dst.set_port(self.local_addr()?.port());
+                recv_lines[0].src = recv_msg.address.unwrap().to_socketaddr();
                 recv_lines[0].seg_size = recv_msg.bytes as u16;
                 Ok(1)
             }
