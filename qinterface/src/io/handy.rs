@@ -19,7 +19,7 @@ pub mod qudp {
     use qudp::BATCH_SIZE;
     use thiserror::Error;
 
-    use crate::{BindUri, IO, PacketHeader};
+    use crate::{BindUri, IO, Route};
 
     pub struct UdpSocketController {
         bind_uri: BindUri,
@@ -106,13 +106,12 @@ pub mod qudp {
             &self,
             cx: &mut Context,
             pkts: &[io::IoSlice],
-            hdr: PacketHeader,
+            route: Route,
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
             self.send_wakers.combine_with(cx, |cx| {
-                debug_assert_eq!(hdr.ecn(), None);
-                let line = Line::new(hdr.link(), hdr.ttl(), hdr.ecn(), hdr.seg_size());
-                io.poll_send(cx, pkts, &line)
+                debug_assert_eq!(route.ecn(), None);
+                io.poll_send(cx, pkts, &route.line)
             })
         }
 
@@ -120,14 +119,14 @@ pub mod qudp {
             &self,
             cx: &mut Context,
             pkts: &mut [BytesMut],
-            hdrs: &mut [PacketHeader],
+            route: &mut [Route],
         ) -> Poll<io::Result<usize>> {
             let io = self.usc()?;
             self.recv_wakers.combine_with(cx, |cx| {
                 let dst = io.local_addr()?;
-                let len = hdrs.len().min(pkts.len());
+                let len = route.len().min(pkts.len());
                 let mut rcvd_lines = Vec::with_capacity(len);
-                rcvd_lines.resize_with(hdrs.len(), Line::default);
+                rcvd_lines.resize_with(route.len(), Line::default);
                 let mut bufs = pkts[..len]
                     .iter_mut()
                     .map(|p| IoSliceMut::new(p.as_mut()))
@@ -135,16 +134,10 @@ pub mod qudp {
                 debug_assert_eq!(rcvd_lines.len(), bufs.len());
                 let nrcvd = ready!(io.poll_recv(cx, &mut bufs, &mut rcvd_lines))?;
 
-                for (idx, line) in rcvd_lines[..nrcvd].iter().enumerate() {
-                    let way = Pathway::new(line.link.src.into(), dst.into());
-                    let link = Link::new(line.link.src, io.local_addr()?);
-                    hdrs[idx] = PacketHeader::new(
-                        way.flip(),
-                        link.flip(),
-                        line.ttl,
-                        line.ecn,
-                        line.seg_size,
-                    );
+                for (idx, mut line) in rcvd_lines.into_iter().take(nrcvd).enumerate() {
+                    let pathway = Pathway::new(line.link.src.into(), dst.into());
+                    line.link = Link::new(line.src, io.local_addr()?).flip();
+                    route[idx] = Route::new(pathway.flip(), line);
                 }
 
                 Poll::Ready(Ok(nrcvd))
@@ -169,7 +162,7 @@ pub mod unsupported {
     };
 
     use bytes::BytesMut;
-    use qbase::net::route::PacketHeader;
+    use qbase::net::route::Route;
     use thiserror::Error;
 
     use crate::{BindUri, IO};
@@ -218,7 +211,7 @@ pub mod unsupported {
             &self,
             _: &mut Context,
             _: &[io::IoSlice],
-            _: PacketHeader,
+            _: Route,
         ) -> Poll<io::Result<usize>> {
             Poll::Ready(Err(UnsupportedError(()).into()))
         }
@@ -227,7 +220,7 @@ pub mod unsupported {
             &self,
             _: &mut Context,
             _: &mut [BytesMut],
-            _: &mut [PacketHeader],
+            _: &mut [Route],
         ) -> Poll<io::Result<usize>> {
             Poll::Ready(Err(UnsupportedError(()).into()))
         }

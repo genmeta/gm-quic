@@ -1,7 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, BytesMut};
-use qbase::net::route::Link;
+use qbase::net::route::{Line, Link, Route};
 use qinterface::io::{IO, IoExt};
 
 use crate::{
@@ -38,8 +38,8 @@ pub trait StunIO: IO {
             // assemble packet header
             let link = Link::new(self.bound_addr()?, dst);
             let pathway = link.into();
-
-            let hdr = qbase::net::route::PacketHeader::new(pathway, link, 64, None, 0);
+            let line = Line::new(link, 64, None, 0);
+            let hdr = Route::new(pathway, line);
 
             self.sendmmsg(bufs, hdr).await
         }

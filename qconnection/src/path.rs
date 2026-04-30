@@ -11,7 +11,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, PingFrame, io::ReceiveFrame},
     net::{
-        route::{Link, PacketHeader, Pathway},
+        route::{Line, Link, Pathway, Route},
         tx::ArcSendWaker,
     },
     packet::PacketContent,
@@ -266,8 +266,9 @@ impl Path {
         if self.anti_amplifier.balance().is_err() {
             self.status.enter_anti_amplification_limit();
         }
-        let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
-        self.interface.sendmmsg(bufs, hdr).await
+        let line = Line::new(self.link, 64, None, self.mtu());
+        let route = Route::new(self.pathway, line);
+        self.interface.sendmmsg(bufs, route).await
     }
 
     pub fn deactivate(&self) {

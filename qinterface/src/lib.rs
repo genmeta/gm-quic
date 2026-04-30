@@ -13,7 +13,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::{net::route::PacketHeader, util::UniqueId};
+use qbase::{net::route::Route, util::UniqueId};
 use thiserror::Error;
 
 use crate::{
@@ -165,9 +165,9 @@ impl IO for Interface {
         &self,
         cx: &mut Context,
         pkts: &[std::io::IoSlice],
-        hdr: PacketHeader,
+        route: Route,
     ) -> Poll<std::io::Result<usize>> {
-        self.with_io(|io| io.poll_send(cx, pkts, hdr))?
+        self.with_io(|io| io.poll_send(cx, pkts, route))?
     }
 
     #[inline]
@@ -175,9 +175,9 @@ impl IO for Interface {
         &self,
         cx: &mut Context,
         pkts: &mut [BytesMut],
-        hdrs: &mut [PacketHeader],
+        route: &mut [Route],
     ) -> Poll<std::io::Result<usize>> {
-        self.with_io(|io| io.poll_recv(cx, pkts, hdrs))?
+        self.with_io(|io| io.poll_recv(cx, pkts, route))?
     }
 
     #[inline]
@@ -290,18 +290,18 @@ impl IO for WeakInterface {
         &self,
         cx: &mut Context,
         pkts: &[std::io::IoSlice],
-        hdr: PacketHeader,
+        route: Route,
     ) -> Poll<std::io::Result<usize>> {
-        self.upgrade()?.poll_send(cx, pkts, hdr)
+        self.upgrade()?.poll_send(cx, pkts, route)
     }
 
     fn poll_recv(
         &self,
         cx: &mut Context,
         pkts: &mut [BytesMut],
-        hdrs: &mut [PacketHeader],
+        route: &mut [Route],
     ) -> Poll<std::io::Result<usize>> {
-        self.upgrade()?.poll_recv(cx, pkts, hdrs)
+        self.upgrade()?.poll_recv(cx, pkts, route)
     }
 
     fn poll_close(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>> {

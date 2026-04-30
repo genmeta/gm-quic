@@ -13,7 +13,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::net::route::{Link, PacketHeader, Pathway};
+use qbase::net::route::{Line, Link, Pathway, Route};
 use qinterface::{Interface, bind_uri::BindUri, component::Component, device::Devices, io::IO};
 use tokio::{runtime::Runtime, sync::Notify, time};
 
@@ -112,7 +112,7 @@ impl IO for FakeIo {
         &self,
         _cx: &mut Context,
         pkts: &[io::IoSlice],
-        _hdr: PacketHeader,
+        _route: Route,
     ) -> Poll<io::Result<usize>> {
         Poll::Ready(Ok(pkts.len()))
     }
@@ -121,7 +121,7 @@ impl IO for FakeIo {
         &self,
         _cx: &mut Context,
         _pkts: &mut [BytesMut],
-        _hdrs: &mut [PacketHeader],
+        _route: &mut [Route],
     ) -> Poll<io::Result<usize>> {
         Poll::Pending
     }
@@ -219,9 +219,10 @@ impl Component for ProbeComponent {
     }
 }
 
-pub fn dummy_packet_header() -> PacketHeader {
+pub fn dummy_packet_header() -> Route {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
     let way = Pathway::new(addr.into(), addr.into());
     let link = Link::new(addr, addr);
-    PacketHeader::new(way, link, 64, None, 0)
+    let line = Line::new(link, 64, None, 0);
+    Route::new(way, line)
 }

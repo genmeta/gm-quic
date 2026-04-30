@@ -1,7 +1,8 @@
 use std::io::IoSlice;
 
 use clap::Parser;
-use qudp::{Line, UdpSocket};
+use qbase::net::route::{Line, Link};
+use qudp::UdpSocket;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -31,8 +32,7 @@ async fn main() {
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = Line::new(
-        socket.local_addr().expect("failed to get local addr"),
-        dst,
+        Link::new(socket.local_addr().expect("failed to get local addr"), dst),
         64,
         None,
         args.msg_size as u16,

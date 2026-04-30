@@ -1,6 +1,7 @@
 use std::{fmt::Display, net::SocketAddr};
 
 use bytes::BufMut;
+use derive_more::{Deref, DerefMut};
 use nom::number::streaming::be_u8;
 use serde::{Deserialize, Serialize};
 
@@ -133,8 +134,10 @@ impl<E: From<SocketAddr>> From<Link> for Pathway<E> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deref, DerefMut)]
 pub struct Line {
+    #[deref]
+    #[deref_mut]
     pub link: Link,
     pub ttl: u8,
     // Explicit congestion notification (ECN)
@@ -170,24 +173,17 @@ impl Default for Line {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct PacketHeader {
-    pathway: Pathway,
-    link: Link,
-    ttl: u8,
-    ecn: Option<u8>,
-    seg_size: u16,
+#[derive(Debug, Clone, Copy, Deref, DerefMut)]
+pub struct Route {
+    pub pathway: Pathway,
+    #[deref]
+    #[deref_mut]
+    pub line: Line,
 }
 
-impl PacketHeader {
-    pub fn new(pathway: Pathway, link: Link, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
-        Self {
-            pathway,
-            link,
-            ttl,
-            ecn,
-            seg_size,
-        }
+impl Route {
+    pub fn new(pathway: Pathway, line: Line) -> Self {
+        Self { pathway, line }
     }
 
     /// Create a new empty packet header for receive packets.
@@ -195,7 +191,7 @@ impl PacketHeader {
         let src = SocketAddr::from(([0, 0, 0, 0], 0));
         let dst = SocketAddr::from(([0, 0, 0, 0], 0));
         let link = Link::new(SocketAddr::from(src), SocketAddr::from(dst));
-        Self::new(link.into(), link, 0, None, 0)
+        Self::new(link.into(), Line::default())
     }
 
     pub fn pathway(&self) -> Pathway {
@@ -203,19 +199,19 @@ impl PacketHeader {
     }
 
     pub fn link(&self) -> Link {
-        self.link
+        self.line.link
     }
 
     pub fn ttl(&self) -> u8 {
-        self.ttl
+        self.line.ttl
     }
 
     pub fn ecn(&self) -> Option<u8> {
-        self.ecn
+        self.line.ecn
     }
 
     pub fn seg_size(&self) -> u16 {
-        self.seg_size
+        self.line.seg_size
     }
 }
 

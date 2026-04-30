@@ -418,18 +418,18 @@ impl IO for InterfaceContext {
         &self,
         cx: &mut Context,
         pkts: &[io::IoSlice],
-        hdr: route::PacketHeader,
+        route: route::Route,
     ) -> Poll<io::Result<usize>> {
-        self.with_io(|io| io.poll_send(cx, pkts, hdr))
+        self.with_io(|io| io.poll_send(cx, pkts, route))
     }
 
     fn poll_recv(
         &self,
         cx: &mut Context,
         pkts: &mut [BytesMut],
-        hdrs: &mut [route::PacketHeader],
+        route: &mut [route::Route],
     ) -> Poll<io::Result<usize>> {
-        self.with_io(|io| io.poll_recv(cx, pkts, hdrs))
+        self.with_io(|io| io.poll_recv(cx, pkts, route))
     }
 
     fn poll_close(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -481,7 +481,7 @@ mod dropping_io {
             &self,
             _: &mut Context,
             _: &[io::IoSlice],
-            _: route::PacketHeader,
+            _: route::Route,
         ) -> Poll<io::Result<usize>> {
             Poll::Ready(Err(self.to_io_error()))
         }
@@ -490,7 +490,7 @@ mod dropping_io {
             &self,
             _: &mut Context,
             _: &mut [BytesMut],
-            _: &mut [route::PacketHeader],
+            _: &mut [route::Route],
         ) -> Poll<io::Result<usize>> {
             Poll::Ready(Err(self.to_io_error()))
         }
@@ -612,7 +612,7 @@ mod tests {
             &self,
             _cx: &mut Context,
             _pkts: &[io::IoSlice],
-            _hdr: route::PacketHeader,
+            _route: route::Route,
         ) -> Poll<io::Result<usize>> {
             Poll::Ready(Ok(0))
         }
@@ -621,7 +621,7 @@ mod tests {
             &self,
             _cx: &mut Context,
             _pkts: &mut [BytesMut],
-            _hdrs: &mut [route::PacketHeader],
+            _route: &mut [route::Route],
         ) -> Poll<io::Result<usize>> {
             Poll::Pending
         }
