@@ -33,16 +33,16 @@ impl ForwardProtocol {
 
     pub async fn on_datagram(
         &self,
+        link: Link,
         pathway: Pathway,
         payload: ForwardPayload,
-        link: Link,
     ) -> io::Result<usize> {
-        let Some(socket) = self.agent_socket(link.src) else {
+        let Some(socket) = self.find_agent(link.src) else {
             return Ok(0);
         };
         let destination = match pathway.remote() {
             EndpointAddr::Direct { addr } => addr,
-            EndpointAddr::Mediate { agent, outer } => match self.agent_socket(agent) {
+            EndpointAddr::Mediate { agent, outer } => match self.find_agent(agent) {
                 None => agent,
                 Some(agent_socket) => {
                     debug_assert_or_warn!(
@@ -66,7 +66,7 @@ impl ForwardProtocol {
         socket.send(&slices, line).await
     }
 
-    pub(crate) fn agent_socket(&self, agent: SocketAddr) -> Option<Arc<UdpSocket>> {
+    pub(crate) fn find_agent(&self, agent: SocketAddr) -> Option<Arc<UdpSocket>> {
         let socket = self.agents.get(&agent)?.upgrade();
         if socket.is_none() {
             self.agents.remove(&agent);
@@ -150,7 +150,7 @@ mod tests {
         );
         assert_eq!(
             protocol
-                .on_datagram(pathway, payload, unknown)
+                .on_datagram(unknown, pathway, payload)
                 .await
                 .unwrap(),
             0
@@ -175,7 +175,7 @@ mod tests {
 
         let link = Link::new(inner, "127.0.0.1:4433".parse().unwrap());
         assert_eq!(
-            protocol.on_datagram(pathway, payload, link).await.unwrap(),
+            protocol.on_datagram(link, pathway, payload).await.unwrap(),
             1
         );
 
@@ -203,7 +203,7 @@ mod tests {
 
         let link = Link::new(local, "127.0.0.1:4433".parse().unwrap());
         assert_eq!(
-            protocol.on_datagram(pathway, payload, link).await.unwrap(),
+            protocol.on_datagram(link, pathway, payload).await.unwrap(),
             1
         );
 
@@ -228,7 +228,7 @@ mod tests {
 
         let link = Link::new(local, "127.0.0.1:4433".parse().unwrap());
         assert_eq!(
-            protocol.on_datagram(pathway, payload, link).await.unwrap(),
+            protocol.on_datagram(link, pathway, payload).await.unwrap(),
             1
         );
 
@@ -257,6 +257,6 @@ mod tests {
         protocol.serve(agent.local_addr().unwrap(), &agent);
 
         let link = Link::new(local, "127.0.0.1:4433".parse().unwrap());
-        let _ = protocol.on_datagram(pathway, payload, link).await;
+        let _ = protocol.on_datagram(link, pathway, payload).await;
     }
 }

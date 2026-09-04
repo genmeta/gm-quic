@@ -26,7 +26,7 @@ impl Dock {
 
     pub fn add(self: &Arc<Self>, socket: Arc<UdpSocket>) -> io::Result<bool> {
         let bound = socket.local_addr()?;
-        if self.socket(bound).is_some() {
+        if self.find_socket(bound).is_some() {
             return Ok(false);
         }
 
@@ -68,7 +68,7 @@ impl Dock {
         })
     }
 
-    pub fn socket(&self, bound: SocketAddr) -> Option<Arc<UdpSocket>> {
+    pub fn find_socket(&self, bound: SocketAddr) -> Option<Arc<UdpSocket>> {
         let socket = self.sockets.get(&bound)?.upgrade();
         if socket.is_none() {
             self.sockets.remove(&bound);

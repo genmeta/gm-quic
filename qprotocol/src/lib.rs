@@ -19,4 +19,4 @@ pub mod topology;
 pub use addr_book::AddressBook;
 pub use dock::Dock;
 pub use protocol::{ForwardProtocol, QuicProtocol, StunProtocol};
-pub use socket::{EphemeralSocket, QuicSocket, UdpSocket};
+pub use socket::{EphemeralSocket, UdpSocket};
