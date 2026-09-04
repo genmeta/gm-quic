@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io,
     net::SocketAddr,
     sync::{Arc, RwLock},
 };
@@ -9,27 +8,23 @@ use qbase::net::addr::{EndpointAddr, Kind};
 use thiserror::Error;
 use tokio::sync::watch;
 
-use crate::socket::{UdpSocket, quic::QuicSocket};
-
 #[derive(Debug, Error)]
 pub enum AddressBookError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
     #[error("{0} is already present in the address book")]
     Duplicate(EndpointAddr),
     #[error("expected a Direct endpoint")]
     ExpectedDirect,
     #[error("expected an Agent endpoint")]
     ExpectedMediate,
-    #[error("a raw UDP socket can publish at most three Agent endpoints")]
+    #[error("a bound address can publish at most three Agent endpoints")]
     TooManyAgents,
 }
 
 #[derive(Default)]
 struct Addresses {
-    inner: HashMap<EndpointAddr, Arc<QuicSocket>>,
-    outer: HashMap<EndpointAddr, Arc<QuicSocket>>,
-    agents: HashMap<EndpointAddr, Arc<QuicSocket>>,
+    inner: HashMap<EndpointAddr, SocketAddr>,
+    outer: HashMap<EndpointAddr, SocketAddr>,
+    agents: HashMap<EndpointAddr, SocketAddr>,
 }
 
 pub struct AddressBook {
@@ -54,53 +49,58 @@ impl AddressBook {
         }
     }
 
-    pub fn insert_inner(&self, socket: Arc<QuicSocket>) -> Result<(), AddressBookError> {
-        ensure_direct(socket.endpoint_addr())?;
-        let bound = socket.udp_socket().local_addr()?;
-        self.insert(socket, |addresses| &mut addresses.inner)?;
+    pub fn insert_inner(
+        &self,
+        bound: SocketAddr,
+        endpoint: EndpointAddr,
+    ) -> Result<(), AddressBookError> {
+        ensure_direct(endpoint)?;
+        self.insert(bound, endpoint, |addresses| &mut addresses.inner)?;
         self.publish_mdns(bound);
         Ok(())
     }
 
-    pub fn insert_outer(&self, socket: Arc<QuicSocket>) -> Result<(), AddressBookError> {
-        ensure_direct(socket.endpoint_addr())?;
-        self.insert(socket, |addresses| &mut addresses.outer)?;
+    pub fn insert_outer(
+        &self,
+        bound: SocketAddr,
+        endpoint: EndpointAddr,
+    ) -> Result<(), AddressBookError> {
+        ensure_direct(endpoint)?;
+        self.insert(bound, endpoint, |addresses| &mut addresses.outer)?;
         self.publish_ddns();
         Ok(())
     }
 
-    pub fn insert_agent(&self, socket: Arc<QuicSocket>) -> Result<(), AddressBookError> {
-        if socket.endpoint_addr().kind() != Kind::Mediate {
+    pub fn insert_agent(
+        &self,
+        bound: SocketAddr,
+        endpoint: EndpointAddr,
+    ) -> Result<(), AddressBookError> {
+        if endpoint.kind() != Kind::Mediate {
             return Err(AddressBookError::ExpectedMediate);
         }
 
         let mut addresses = self.addresses.write().unwrap();
-        self.ensure_absent(&addresses, socket.endpoint_addr())?;
+        self.ensure_absent(&addresses, endpoint)?;
         let agent_count = addresses
             .agents
             .values()
-            .filter(|candidate| Arc::ptr_eq(candidate.udp_socket(), socket.udp_socket()))
+            .filter(|candidate| **candidate == bound)
             .count();
         if agent_count >= 3 {
             return Err(AddressBookError::TooManyAgents);
         }
-        addresses.agents.insert(socket.endpoint_addr(), socket);
+        addresses.agents.insert(endpoint, bound);
         drop(addresses);
         self.publish_ddns();
         Ok(())
     }
 
-    pub fn remove_socket(&self, socket: &UdpSocket) {
+    pub fn remove_bound(&self, bound: SocketAddr) {
         let mut addresses = self.addresses.write().unwrap();
-        addresses
-            .inner
-            .retain(|_, candidate| !std::ptr::eq(candidate.udp_socket().as_ref(), socket));
-        addresses
-            .outer
-            .retain(|_, candidate| !std::ptr::eq(candidate.udp_socket().as_ref(), socket));
-        addresses
-            .agents
-            .retain(|_, candidate| !std::ptr::eq(candidate.udp_socket().as_ref(), socket));
+        addresses.inner.retain(|_, candidate| *candidate != bound);
+        addresses.outer.retain(|_, candidate| *candidate != bound);
+        addresses.agents.retain(|_, candidate| *candidate != bound);
         drop(addresses);
         self.publish_ddns();
         self.publish_all_mdns();
@@ -133,12 +133,13 @@ impl AddressBook {
 
     fn insert(
         &self,
-        socket: Arc<QuicSocket>,
-        select: impl FnOnce(&mut Addresses) -> &mut HashMap<EndpointAddr, Arc<QuicSocket>>,
+        bound: SocketAddr,
+        endpoint: EndpointAddr,
+        select: impl FnOnce(&mut Addresses) -> &mut HashMap<EndpointAddr, SocketAddr>,
     ) -> Result<(), AddressBookError> {
         let mut addresses = self.addresses.write().unwrap();
-        self.ensure_absent(&addresses, socket.endpoint_addr())?;
-        select(&mut addresses).insert(socket.endpoint_addr(), socket);
+        self.ensure_absent(&addresses, endpoint)?;
+        select(&mut addresses).insert(endpoint, bound);
         Ok(())
     }
 
@@ -197,9 +198,7 @@ impl AddressBook {
         let mut endpoints = addresses
             .inner
             .iter()
-            .filter_map(|(endpoint, socket)| {
-                (socket.udp_socket().local_addr().ok() == Some(bound)).then_some(*endpoint)
-            })
+            .filter_map(|(endpoint, candidate)| (*candidate == bound).then_some(*endpoint))
             .collect::<Vec<_>>();
         endpoints.sort_unstable();
         endpoints.into()
@@ -218,39 +217,49 @@ fn ensure_direct(endpoint: EndpointAddr) -> Result<(), AddressBookError> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn publishes_inner_to_mdns_and_outer_agent_to_ddns() {
-        let raw = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap());
-        let bound = raw.local_addr().unwrap();
-        let inner = Arc::new(QuicSocket::new(raw.clone(), EndpointAddr::direct(bound)));
-        let outer = Arc::new(QuicSocket::new(
-            raw.clone(),
-            EndpointAddr::direct("203.0.113.10:50000".parse().unwrap()),
-        ));
-        let agent = Arc::new(QuicSocket::new(
-            raw.clone(),
-            EndpointAddr::mediate(
-                "198.51.100.1:3478".parse().unwrap(),
-                "203.0.113.10:50000".parse().unwrap(),
-            ),
-        ));
+    #[test]
+    fn publishes_inner_to_mdns_and_outer_agent_to_ddns() {
+        let bound = "192.168.1.10:4433".parse().unwrap();
+        let inner = EndpointAddr::direct(bound);
+        let outer = EndpointAddr::direct("203.0.113.10:50000".parse().unwrap());
+        let agent = EndpointAddr::mediate(
+            "198.51.100.1:3478".parse().unwrap(),
+            "203.0.113.10:50000".parse().unwrap(),
+        );
         let book = AddressBook::new();
 
-        book.insert_inner(inner.clone()).unwrap();
-        book.insert_outer(outer.clone()).unwrap();
-        book.insert_agent(agent.clone()).unwrap();
+        book.insert_inner(bound, inner).unwrap();
+        book.insert_outer(bound, outer).unwrap();
+        book.insert_agent(bound, agent).unwrap();
 
-        assert_eq!(
-            book.mdns_endpoints(bound).as_ref(),
-            &[inner.endpoint_addr()]
-        );
-        assert_eq!(
-            book.ddns_endpoints().as_ref(),
-            &[outer.endpoint_addr(), agent.endpoint_addr()]
-        );
+        assert_eq!(book.mdns_endpoints(bound).as_ref(), &[inner]);
+        assert_eq!(book.ddns_endpoints().as_ref(), &[outer, agent]);
 
-        book.remove_socket(&raw);
+        book.remove_bound(bound);
         assert!(book.mdns_endpoints(bound).is_empty());
         assert!(book.ddns_endpoints().is_empty());
+    }
+
+    #[test]
+    fn limits_agents_per_bound_address() {
+        let bound = "192.168.1.10:4433".parse().unwrap();
+        let book = AddressBook::new();
+
+        for port in 3478..3481 {
+            let endpoint = EndpointAddr::mediate(
+                format!("198.51.100.1:{port}").parse().unwrap(),
+                "203.0.113.10:50000".parse().unwrap(),
+            );
+            book.insert_agent(bound, endpoint).unwrap();
+        }
+
+        let fourth = EndpointAddr::mediate(
+            "198.51.100.1:3481".parse().unwrap(),
+            "203.0.113.10:50000".parse().unwrap(),
+        );
+        assert!(matches!(
+            book.insert_agent(bound, fourth),
+            Err(AddressBookError::TooManyAgents)
+        ));
     }
 }

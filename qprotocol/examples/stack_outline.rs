@@ -3,10 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use qbase::net::{
-    addr::EndpointAddr,
-    route::{Link, Pathway},
-};
+use qbase::net::{addr::EndpointAddr, route::Pathway};
 use qprotocol::{
     AddressBook, Dock, UdpSocket,
     addr_book::AddressBookError,
@@ -15,7 +12,7 @@ use qprotocol::{
         quic::{EndpointInUse, QuicProtocol},
         stun::{Response, StunProtocol},
     },
-    socket::{ephemeral::EphemeralSocket, quic::QuicSocket},
+    socket::ephemeral::EphemeralSocket,
     topology::Topology,
 };
 
@@ -27,8 +24,6 @@ enum Error {
     AddressBook(#[from] AddressBookError),
     #[error(transparent)]
     EndpointInUse(#[from] EndpointInUse),
-    #[error(transparent)]
-    Promote(#[from] qprotocol::socket::ephemeral::PromoteError),
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -39,11 +34,11 @@ async fn main() -> Result<(), Error> {
     let quic = Arc::new(QuicProtocol::new());
     let (delivered, received) = tokio::sync::oneshot::channel();
     let delivered = Arc::new(Mutex::new(Some(delivered)));
-    quic.set_handler(move |packet, socket, pathway, link| {
+    quic.on_receive(move |packet, pathway, link| {
         println!(
             "QUIC datagram: {} bytes, local={}, pathway={}, link={}",
             packet.len(),
-            socket.endpoint_addr(),
+            pathway.local(),
             pathway,
             link,
         );
@@ -61,58 +56,45 @@ async fn main() -> Result<(), Error> {
     // This example uses a private bind, so its bound address is Direct(inner).
     let raw = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap())?);
     dock.add(raw.clone())?;
-    let inner = Arc::new(QuicSocket::new(
-        raw.clone(),
-        EndpointAddr::direct(raw.local_addr()?),
-    ));
-    quic.register(&inner)?;
-    addresses.insert_inner(inner.clone())?;
-    forward.serve(inner.endpoint_addr().addr(), inner.udp_socket());
+    let bound = raw.local_addr()?;
+    let inner = EndpointAddr::direct(bound);
+    quic.register(inner, &raw)?;
+    addresses.insert_inner(bound, inner)?;
+    forward.serve(inner.addr(), &raw);
 
     // A FullCone result would add Direct(outer), while retaining the same raw socket.
-    let outer = Arc::new(QuicSocket::new(
-        raw.clone(),
-        EndpointAddr::direct("203.0.113.10:50000".parse().unwrap()),
-    ));
-    quic.register(&outer)?;
-    addresses.insert_outer(outer.clone())?;
-    forward.serve(outer.endpoint_addr().addr(), outer.udp_socket());
+    let outer = EndpointAddr::direct("203.0.113.10:50000".parse().unwrap());
+    quic.register(outer, &raw)?;
+    addresses.insert_outer(bound, outer)?;
+    forward.serve(outer.addr(), &raw);
 
     // A successful STUN agent is published independently of the Direct endpoints.
-    let agent = Arc::new(QuicSocket::new(
-        raw.clone(),
-        EndpointAddr::mediate(
-            "198.51.100.1:3478".parse().unwrap(),
-            "203.0.113.10:50000".parse().unwrap(),
-        ),
-    ));
-    quic.register(&agent)?;
-    addresses.insert_agent(agent.clone())?;
+    let agent = EndpointAddr::mediate(
+        "198.51.100.1:3478".parse().unwrap(),
+        "203.0.113.10:50000".parse().unwrap(),
+    );
+    quic.register(agent, &raw)?;
+    addresses.insert_agent(bound, agent)?;
 
     // A second raw socket demonstrates the complete independent receive path.
     let peer_raw = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap())?);
     dock.add(peer_raw.clone())?;
-    let peer = Arc::new(QuicSocket::new(
-        peer_raw.clone(),
-        EndpointAddr::direct(peer_raw.local_addr()?),
-    ));
-    quic.register(&peer)?;
+    let peer = EndpointAddr::direct(peer_raw.local_addr()?);
+    quic.register(peer, &peer_raw)?;
 
-    let direct_link = Link::new(raw.local_addr()?, peer_raw.local_addr()?);
     let packet = [0x40, 1, 2, 3];
-    inner
-        .send(&[IoSlice::new(&packet)], peer.endpoint_addr(), direct_link)
+    quic.send(Pathway::new(inner, peer), &[IoSlice::new(&packet)])
         .await?;
     received
         .await
         .map_err(|_| io::Error::other("QUIC example receive task stopped"))?;
 
-    let direct_path = Pathway::new(inner.endpoint_addr(), peer.endpoint_addr());
+    let direct_path = Pathway::new(inner, peer);
     let remote_agent = EndpointAddr::mediate(
         "198.51.100.2:3478".parse().unwrap(),
         "192.0.2.20:50000".parse().unwrap(),
     );
-    let mixed_path = Pathway::new(outer.endpoint_addr(), remote_agent);
+    let mixed_path = Pathway::new(outer, remote_agent);
     println!("Direct Path: {direct_path}");
     println!("Direct -> Agent Path: {mixed_path}");
     println!("mDNS: {:?}", addresses.mdns_endpoints(raw.local_addr()?));
@@ -121,13 +103,14 @@ async fn main() -> Result<(), Error> {
     // Ephemeral sockets join the same Dock/Topology, but never enter AddressBook.
     let ephemeral = EphemeralSocket::bind(dock.clone(), "127.0.0.1:0".parse().unwrap())?;
     let ephemeral_bound = ephemeral.udp_socket().local_addr()?;
-    let punched = ephemeral.into_quic_socket(EndpointAddr::direct(ephemeral_bound))?;
-    quic.register(&punched)?;
-    println!("punched Direct endpoint: {}", punched.endpoint_addr());
+    let punched_endpoint = EndpointAddr::direct(ephemeral_bound);
+    let punched = ephemeral.into_udp_socket();
+    quic.register(punched_endpoint, &punched)?;
+    println!("punched Direct endpoint: {punched_endpoint}");
 
-    quic.unregister(&punched);
-    dock.remove(punched.udp_socket());
-    quic.unregister(&peer);
+    quic.unregister(punched_endpoint, &punched);
+    dock.remove(&punched);
+    quic.unregister(peer, &peer_raw);
     dock.remove(&peer_raw);
     dock.shutdown();
     Ok(())

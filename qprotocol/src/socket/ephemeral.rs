@@ -4,20 +4,13 @@ use std::{
     sync::Arc,
 };
 
-use qbase::net::{addr::EndpointAddr, route::Link};
-use thiserror::Error;
+use qbase::net::route::Link;
 
-use super::{UdpSocket, quic::QuicSocket};
+use super::UdpSocket;
 use crate::{
     dock::Dock,
     protocol::stun::{Request, StunError, StunProtocol},
 };
-
-#[derive(Debug, Error)]
-pub enum PromoteError {
-    #[error("an EphemeralSocket can only become a Direct QuicSocket")]
-    ExpectedDirect,
-}
 
 pub struct EphemeralSocket {
     udp: Arc<UdpSocket>,
@@ -62,15 +55,9 @@ impl EphemeralSocket {
         self.udp.send(packets, line).await
     }
 
-    pub fn into_quic_socket(
-        mut self,
-        endpoint: EndpointAddr,
-    ) -> Result<Arc<QuicSocket>, PromoteError> {
-        if !matches!(endpoint, EndpointAddr::Direct { .. }) {
-            return Err(PromoteError::ExpectedDirect);
-        }
+    pub fn into_udp_socket(mut self) -> Arc<UdpSocket> {
         self.remove_on_drop = false;
-        Ok(Arc::new(QuicSocket::new(self.udp.clone(), endpoint)))
+        self.udp.clone()
     }
 }
 
