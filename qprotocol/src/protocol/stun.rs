@@ -5,6 +5,7 @@ use std::{
         Arc, RwLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use bytes::BytesMut;
@@ -17,11 +18,19 @@ pub use qbase::datagram::stun::{
 use qbase::{
     ArcReceiving, Cancelled,
     datagram::{Datagram, WriteDatagram},
-    net::route::{Line, Link},
+    net::{
+        NatType, NetFeature,
+        route::{Line, Link},
+    },
 };
 use thiserror::Error;
+use tokio::time::timeout;
 
 use crate::socket::UdpSocket;
+
+const PROBE_ATTEMPTS: u8 = 30;
+const FILTER_ATTEMPTS: u8 = 3;
+const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 type RequestHandler = dyn Fn(&Request, Link) -> Option<Response> + Send + Sync + 'static;
 
@@ -117,6 +126,127 @@ impl StunProtocol {
         }
     }
 
+    /// Detects the first server's mapped address and this socket's NAT type.
+    ///
+    /// The concrete bound address must belong to a socket registered in this
+    /// protocol's Dock. Keep it registered and avoid concurrent probes or other
+    /// traffic to the discovery servers until detection finishes.
+    ///
+    /// Servers must support the project's STUN encoding and changed-source
+    /// responses. Private-address detection requires three distinct server IPs.
+    /// An unanswered initial probe returns `(None, NatType::Blocked)`. As in
+    /// qtraversal, an unanswered final probe is classified as `Dynamic`; these
+    /// timeout classifications can also reflect packet loss or server failure.
+    /// The returned mapping is specific to the first server, particularly for
+    /// `Symmetric` and `Dynamic` NATs. Later probe errors discard that mapping.
+    pub async fn detect_nat(
+        self: &Arc<Self>,
+        local_addr: SocketAddr,
+        stun_server: SocketAddr,
+    ) -> Result<(Option<SocketAddr>, NatType), StunError> {
+        if local_addr.ip().is_unspecified() || local_addr.port() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NAT detection requires a concrete bound socket address",
+            )
+            .into());
+        }
+
+        let Some(first) = probe(
+            self,
+            local_addr,
+            stun_server,
+            Request::default(),
+            PROBE_ATTEMPTS,
+        )
+        .await?
+        else {
+            return Ok((None, NatType::Blocked));
+        };
+        let outer_addr = first.map_addr()?;
+        let server2 = first.changed_addr()?;
+        if server2.ip() == stun_server.ip() || server2.port() == stun_server.port() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CHANGED-ADDRESS must change both IP and port",
+            )
+            .into());
+        }
+        let mut features = NetFeature::empty();
+
+        let (filter_server, dynamic_server) = if outer_addr == local_addr {
+            features |= NetFeature::Public;
+            (stun_server, None)
+        } else {
+            let second = probe(
+                self,
+                local_addr,
+                server2,
+                Request::default(),
+                PROBE_ATTEMPTS,
+            )
+            .await?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("NAT mapping probe to {server2} timed out"),
+                )
+            })?;
+
+            if second.map_addr()? != outer_addr {
+                return Ok((Some(outer_addr), NatType::Symmetric));
+            }
+            let server3 = second.changed_addr()?;
+            if server3.ip() == stun_server.ip()
+                || server3.ip() == server2.ip()
+                || server3.port() == server2.port()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "NAT detection requires a third IP and a changed port",
+                )
+                .into());
+            }
+            (server2, Some(server3))
+        };
+
+        // Preserve qtraversal's retry limits for public and private filtering.
+        let attempts = if dynamic_server.is_some() {
+            FILTER_ATTEMPTS
+        } else {
+            PROBE_ATTEMPTS
+        };
+        for (request, feature) in [
+            (Request::change_ip_and_port(), NetFeature::Restricted),
+            (Request::change_port(), NetFeature::PortRestricted),
+        ] {
+            if probe(self, local_addr, filter_server, request, attempts)
+                .await?
+                .is_none()
+            {
+                features |= feature;
+            }
+        }
+
+        // Contacting server3 earlier would change the filtering test conditions.
+        if let Some(server3) = dynamic_server {
+            let response = probe(
+                self,
+                local_addr,
+                server3,
+                Request::default(),
+                PROBE_ATTEMPTS,
+            )
+            .await?;
+            match response {
+                Some(response) if response.map_addr()? == outer_addr => {}
+                _ => features |= NetFeature::Dynamic,
+            }
+        }
+
+        Ok((Some(outer_addr), NatType::from(features)))
+    }
+
     pub(crate) fn register_socket(&self, bound: SocketAddr, socket: &Arc<UdpSocket>) {
         self.sockets.insert(bound, Arc::downgrade(socket));
     }
@@ -182,6 +312,57 @@ impl StunProtocol {
     }
 }
 
+async fn probe(
+    protocol: &Arc<StunProtocol>,
+    local_addr: SocketAddr,
+    server: SocketAddr,
+    request: Request,
+    attempts: u8,
+) -> Result<Option<Response>, StunError> {
+    use qbase::datagram::stun::{CHANGE_IP, CHANGE_PORT};
+
+    let mut transaction = protocol.new_transaction();
+    let link = Link::new(local_addr, server);
+    for _ in 0..attempts {
+        match timeout(PROBE_TIMEOUT, transaction.request(link, request.clone())).await {
+            Ok(result) => {
+                let (received, response) = result?;
+                // Topology delivers links in local -> remote orientation.
+                let source = received.dst;
+                let flags = request.change_request().unwrap_or(0);
+                let valid_ip = if flags & CHANGE_IP != 0 {
+                    source.ip() != server.ip()
+                } else {
+                    source.ip() == server.ip()
+                };
+                let valid_port = if flags & CHANGE_PORT != 0 {
+                    source.port() != server.port()
+                } else {
+                    source.port() == server.port()
+                };
+                if received.src != local_addr || !valid_ip || !valid_port {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unexpected STUN response link: {received}"),
+                    )
+                    .into());
+                }
+                response.map_addr()?;
+                if flags != 0 && response.source_addr()? != source {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "STUN SOURCE-ADDRESS does not match the packet source",
+                    )
+                    .into());
+                }
+                return Ok(Some(response));
+            }
+            Err(_) => continue,
+        }
+    }
+    Ok(None)
+}
+
 fn encode_datagram(transaction_id: TransactionId, message: &Message) -> io::Result<BytesMut> {
     let mut buffer = BytesMut::with_capacity(128);
     buffer
@@ -216,6 +397,8 @@ async fn send_datagram(
 
 #[cfg(test)]
 mod tests {
+    mod client;
+
     use std::time::Duration;
 
     use tokio::time::timeout;
