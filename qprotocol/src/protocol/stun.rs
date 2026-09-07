@@ -2,7 +2,7 @@ use std::{
     io::{self, IoSlice},
     net::SocketAddr,
     sync::{
-        Arc, RwLock, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -32,7 +32,16 @@ const PROBE_ATTEMPTS: u8 = 30;
 const FILTER_ATTEMPTS: u8 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
-type RequestHandler = dyn Fn(&Request, Link) -> Option<Response> + Send + Sync + 'static;
+/// Changed-source listeners for one registered local socket.
+#[derive(Debug, Clone, Copy)]
+pub struct ChangeServer {
+    /// Alternate listener port on the same local IP.
+    pub change_port: u16,
+    /// Public listener on another IP and port.
+    pub change_address: SocketAddr,
+    /// This listener's public address, with the same port as its local bind.
+    pub outer_address: SocketAddr,
+}
 
 #[derive(Debug, Error)]
 pub enum StunError {
@@ -77,7 +86,7 @@ pub struct StunProtocol {
     transactions: DashMap<TransactionId, ArcReceiving<(Link, Response)>>,
     sockets: DashMap<SocketAddr, Weak<UdpSocket>>,
     server_enabled: Arc<AtomicBool>,
-    request_handler: RwLock<Option<Arc<RequestHandler>>>,
+    change_servers: DashMap<SocketAddr, ChangeServer>,
 }
 
 impl Default for StunProtocol {
@@ -91,24 +100,122 @@ impl StunProtocol {
         Self {
             transactions: DashMap::new(),
             sockets: DashMap::new(),
-            server_enabled: Arc::new(AtomicBool::new(false)),
-            request_handler: RwLock::new(None),
+            server_enabled: Arc::new(AtomicBool::new(true)),
+            change_servers: DashMap::new(),
         }
     }
 
-    pub fn enable_server(&self, enabled: bool) {
-        self.server_enabled.store(enabled, Ordering::Release);
+    pub fn enable_server(&self) {
+        self.server_enabled.store(true, Ordering::Release);
     }
 
-    pub fn server_enabled(&self) -> bool {
-        self.server_enabled.load(Ordering::Acquire)
+    pub fn disable_server(&self) {
+        self.server_enabled.store(false, Ordering::Release);
     }
 
-    pub fn on_request(
+    /// Configures changed-source responses for a socket already registered in Dock.
+    ///
+    /// Public mappings must preserve the bound port. The alternate local port
+    /// and the remote server must have active STUN listeners; IP-only changes
+    /// also require the remote server to listen on this socket's public port.
+    /// Without a configuration, an enabled server only answers ordinary binding
+    /// and response-address requests using the receiving address as its source.
+    pub fn set_change_server(&self, bound: SocketAddr, server: ChangeServer) -> io::Result<()> {
+        if [bound, server.outer_address, server.change_address]
+            .iter()
+            .any(|addr| {
+                addr.ip().is_unspecified() || addr.port() == 0 || addr.is_ipv4() != bound.is_ipv4()
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "STUN server addresses must be concrete and use the same address family",
+            ));
+        }
+        if server.outer_address.port() != bound.port()
+            || server.change_port == 0
+            || server.change_port == bound.port()
+            || server.change_address.ip() == server.outer_address.ip()
+            || server.change_address.port() == server.outer_address.port()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "STUN public mapping must preserve the port and change listeners must change the requested IP/port",
+            ));
+        }
+
+        // Keep the registration locked until insertion so unregister cannot
+        // remove it between checking the socket and installing its configuration.
+        let registered = self.sockets.get(&bound).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no STUN socket bound to {bound}"),
+            )
+        })?;
+        let _socket = registered.upgrade().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("STUN socket at {bound} is closed"),
+            )
+        })?;
+        self.change_servers.insert(bound, server);
+        Ok(())
+    }
+
+    async fn on_request(
         &self,
-        handler: impl Fn(&Request, Link) -> Option<Response> + Send + Sync + 'static,
-    ) {
-        *self.request_handler.write().unwrap() = Some(Arc::new(handler));
+        socket: &UdpSocket,
+        transaction_id: TransactionId,
+        request: Request,
+        link: Link,
+    ) -> io::Result<()> {
+        use qbase::datagram::stun::{CHANGE_IP, CHANGE_PORT};
+
+        if !self.server_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let bound = socket.local_addr()?;
+        let config = self.change_servers.get(&bound).map(|entry| *entry.value());
+        let source_addr = config.map_or(link.src, |config| config.outer_address);
+        let changes = request.change_request().unwrap_or(0);
+        if changes != 0 {
+            let Some(config) = config else {
+                tracing::trace!(target: "stun", %bound, changes, "dropping unsupported STUN change request");
+                return Ok(());
+            };
+            let target = match (changes & CHANGE_IP != 0, changes & CHANGE_PORT != 0) {
+                (false, true) => SocketAddr::new(link.src.ip(), config.change_port),
+                (true, false) => SocketAddr::new(config.change_address.ip(), source_addr.port()),
+                (true, true) => config.change_address,
+                (false, false) => return Ok(()),
+            };
+            // Preserve the client's transaction ID; the next listener replies
+            // directly to the client instead of responding to this server.
+            return send_datagram(
+                socket,
+                transaction_id,
+                Message::Request(Request::with_response_addr(link.dst)),
+                Link::new(link.src, target),
+            )
+            .await;
+        }
+
+        let client_addr = request.response_address().copied().unwrap_or(link.dst);
+        let mut attributes = vec![
+            Attr::SourceAddress(source_addr),
+            Attr::MappedAddress(client_addr),
+        ];
+        if let Some(config) = config {
+            attributes.push(Attr::ChangedAddress(config.change_address));
+        }
+        send_datagram(
+            socket,
+            transaction_id,
+            Message::Response(Response::with(attributes)),
+            Link::new(link.src, client_addr),
+        )
+        .await
     }
 
     pub fn new_transaction(self: &Arc<Self>) -> Transaction {
@@ -248,15 +355,31 @@ impl StunProtocol {
     }
 
     pub(crate) fn register_socket(&self, bound: SocketAddr, socket: &Arc<UdpSocket>) {
-        self.sockets.insert(bound, Arc::downgrade(socket));
+        let socket = Arc::downgrade(socket);
+        match self.sockets.entry(bound) {
+            Entry::Occupied(mut entry) => {
+                if !Weak::ptr_eq(entry.get(), &socket) {
+                    self.change_servers.remove(&bound);
+                    entry.insert(socket);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(socket);
+            }
+        }
     }
 
     pub(crate) fn unregister_socket(&self, bound: SocketAddr, socket: &Weak<UdpSocket>) {
-        self.sockets
-            .remove_if(&bound, |_, registered| Weak::ptr_eq(registered, socket));
+        self.sockets.remove_if(&bound, |_, registered| {
+            if !Weak::ptr_eq(registered, socket) {
+                return false;
+            }
+            self.change_servers.remove(&bound);
+            true
+        });
     }
 
-    fn socket(&self, bound: SocketAddr) -> Option<Arc<UdpSocket>> {
+    fn find_socket(&self, bound: SocketAddr) -> Option<Arc<UdpSocket>> {
         let registered = self.sockets.get(&bound)?.clone();
         let socket = registered.upgrade();
         if socket.is_none() {
@@ -271,7 +394,7 @@ impl StunProtocol {
         link: Link,
         request: Request,
     ) -> io::Result<()> {
-        let socket = self.socket(link.src).ok_or_else(|| {
+        let socket = self.find_socket(link.src).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("no STUN socket bound to {}", link.src),
@@ -288,24 +411,19 @@ impl StunProtocol {
         link: Link,
     ) -> io::Result<()> {
         match message {
-            Message::Response(body) => {
-                let response = self
+            Message::Response(response) => {
+                let transaction = self
                     .transactions
                     .get(&transaction_id)
-                    .map(|response| response.clone());
-                if let Some(receiving) = response {
-                    receiving.obtain((link, body));
+                    .map(|entry| entry.clone());
+                if let Some(receiving) = transaction {
+                    receiving.obtain((link, response));
                 }
             }
-            Message::Request(body) => {
-                if !self.server_enabled() {
-                    return Ok(());
+            Message::Request(request) => {
+                if let Err(error) = self.on_request(socket, transaction_id, request, link).await {
+                    tracing::warn!(target: "stun", %link, %error, "failed to handle STUN request");
                 }
-                let handler = self.request_handler.read().unwrap().clone();
-                let Some(response) = handler.and_then(|handler| handler(&body, link)) else {
-                    return Ok(());
-                };
-                send_datagram(socket, transaction_id, Message::Response(response), link).await?;
             }
         }
         Ok(())
@@ -398,6 +516,7 @@ async fn send_datagram(
 #[cfg(test)]
 mod tests {
     mod client;
+    mod server;
 
     use std::time::Duration;
 
@@ -468,9 +587,7 @@ mod tests {
         );
         assert_eq!(transaction.id(), transaction_id);
 
-        protocol
-            .on_request(move |_, link| Some(Response::with(vec![Attr::MappedAddress(link.dst)])));
-        protocol.enable_server(true);
+        protocol.enable_server();
         let (response_link, response) = timeout(
             Duration::from_secs(1),
             transaction.request(link, Request::default()),

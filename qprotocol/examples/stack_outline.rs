@@ -10,7 +10,7 @@ use qprotocol::{
     protocol::{
         forward::ForwardProtocol,
         quic::{EndpointInUse, QuicProtocol},
-        stun::{Response, StunProtocol},
+        stun::StunProtocol,
     },
     socket::ephemeral::EphemeralSocket,
     topology::Topology,
@@ -29,7 +29,6 @@ enum Error {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let stun = Arc::new(StunProtocol::new());
-    stun.on_request(|_, _| Some(Response::with(Vec::new())));
 
     let quic = Arc::new(QuicProtocol::new());
     let (delivered, received) = tokio::sync::oneshot::channel();
