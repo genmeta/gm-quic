@@ -60,13 +60,11 @@ async fn no_response(socket: &UdpSocket) {
 }
 
 #[tokio::test]
-async fn ordinary_and_zero_change_requests_reply_without_configuration() {
+async fn service_is_enabled_by_default_and_replies_without_configuration() {
     let protocol = StunProtocol::new();
     let server = socket();
     let client = socket();
     let link = Link::new(server.local_addr().unwrap(), client.local_addr().unwrap());
-    protocol.enable_server(true);
-
     for request in [Request::default(), change_request(0)] {
         let id = TransactionId::random();
         protocol
@@ -89,6 +87,7 @@ async fn ordinary_and_zero_change_requests_reply_without_configuration() {
 #[tokio::test]
 async fn disabled_server_and_unconfigured_change_requests_are_silent() {
     let protocol = StunProtocol::new();
+    protocol.disable_service();
     let server = socket();
     let client = socket();
     let link = Link::new(server.local_addr().unwrap(), client.local_addr().unwrap());
@@ -103,7 +102,7 @@ async fn disabled_server_and_unconfigured_change_requests_are_silent() {
         .unwrap();
     no_response(&client).await;
 
-    protocol.enable_server(true);
+    protocol.enable_service();
     for flags in [CHANGE_PORT, CHANGE_IP, CHANGE_IP | CHANGE_PORT] {
         protocol
             .on_datagram(
@@ -123,7 +122,7 @@ async fn response_address_uses_the_original_client_and_receiving_socket_configur
     let protocol = StunProtocol::new();
     let intermediary = socket();
     let client = socket();
-    protocol.enable_server(true);
+    protocol.enable_service();
 
     for _ in 0..2 {
         let server = socket();
@@ -168,7 +167,7 @@ async fn change_requests_forward_only_response_address_with_the_original_id() {
     };
     protocol.register_socket(bound, &server);
     protocol.set_change_server(bound, config).unwrap();
-    protocol.enable_server(true);
+    protocol.enable_service();
 
     for flags in [CHANGE_PORT, CHANGE_IP, CHANGE_IP | CHANGE_PORT] {
         let mut request = change_request(flags);
@@ -230,7 +229,7 @@ async fn change_port_replies_from_the_alternate_socket_through_dock() {
             )
             .unwrap();
     }
-    protocol.enable_server(true);
+    protocol.enable_service();
     let mut transaction = protocol.new_transaction();
     let (link, response) = timeout(
         Duration::from_secs(1),
@@ -274,7 +273,7 @@ async fn send_error_does_not_stop_the_dock_receive_loop() {
     let server = socket();
     let client = socket();
     dock.add(server.clone()).unwrap();
-    protocol.enable_server(true);
+    protocol.enable_service();
     let request = Request::with_response_addr("[::1]:10000".parse().unwrap());
     let link = Link::new(client.local_addr().unwrap(), server.local_addr().unwrap());
     assert!(
@@ -306,7 +305,7 @@ async fn send_error_does_not_stop_the_dock_receive_loop() {
 }
 
 #[tokio::test]
-async fn configuration_rejects_invalid_addresses_and_requires_a_live_socket() {
+async fn configuration_rejects_invalid_addresses_and_requires_registration() {
     let protocol = StunProtocol::new();
     let server = socket();
     let bound = server.local_addr().unwrap();
@@ -363,7 +362,13 @@ async fn configuration_rejects_invalid_addresses_and_requires_a_live_socket() {
         protocol.change_servers.get(&bound).unwrap().change_address,
         valid.change_address
     );
+    let registered = Arc::downgrade(&server);
     drop(server);
+    assert!(registered.upgrade().is_none());
+    // Configuration depends on registration, not on the weak socket's liveness.
+    protocol.set_change_server(bound, valid).unwrap();
+    protocol.unregister_socket(bound, &registered);
+    assert!(!protocol.change_servers.contains_key(&bound));
     assert_eq!(
         protocol.set_change_server(bound, valid).unwrap_err().kind(),
         io::ErrorKind::NotFound

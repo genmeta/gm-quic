@@ -66,7 +66,7 @@ impl Topology {
                     Ok(Datagram::Forward(pathway, datagram)) => {
                         let remote = pathway.remote();
                         if self.forward.find_agent(remote.addr()).is_some()
-                            || self.quic.socket(remote).is_some()
+                            || self.quic.find_socket(remote).is_some()
                         {
                             self.quic
                                 .on_packet(datagram.into_raw(), pathway.flip(), link);
