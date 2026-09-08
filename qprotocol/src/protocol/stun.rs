@@ -85,7 +85,7 @@ impl Drop for Transaction {
 pub struct StunProtocol {
     transactions: DashMap<TransactionId, ArcReceiving<(Link, Response)>>,
     sockets: DashMap<SocketAddr, Weak<UdpSocket>>,
-    server_enabled: Arc<AtomicBool>,
+    service: Arc<AtomicBool>,
     change_servers: DashMap<SocketAddr, ChangeServer>,
 }
 
@@ -100,17 +100,17 @@ impl StunProtocol {
         Self {
             transactions: DashMap::new(),
             sockets: DashMap::new(),
-            server_enabled: Arc::new(AtomicBool::new(true)),
+            service: Arc::new(AtomicBool::new(true)),
             change_servers: DashMap::new(),
         }
     }
 
-    pub fn enable_server(&self) {
-        self.server_enabled.store(true, Ordering::Release);
+    pub fn enable_service(&self) {
+        self.service.store(true, Ordering::Release);
     }
 
-    pub fn disable_server(&self) {
-        self.server_enabled.store(false, Ordering::Release);
+    pub fn disable_service(&self) {
+        self.service.store(false, Ordering::Release);
     }
 
     /// Configures changed-source responses for a socket already registered in Dock.
@@ -146,16 +146,10 @@ impl StunProtocol {
 
         // Keep the registration locked until insertion so unregister cannot
         // remove it between checking the socket and installing its configuration.
-        let registered = self.sockets.get(&bound).ok_or_else(|| {
+        let _sockets_guard = self.sockets.get(&bound).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("no STUN socket bound to {bound}"),
-            )
-        })?;
-        let _socket = registered.upgrade().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("STUN socket at {bound} is closed"),
             )
         })?;
         self.change_servers.insert(bound, server);
@@ -171,7 +165,7 @@ impl StunProtocol {
     ) -> io::Result<()> {
         use qbase::datagram::stun::{CHANGE_IP, CHANGE_PORT};
 
-        if !self.server_enabled.load(Ordering::Acquire) {
+        if !self.service.load(Ordering::Acquire) {
             return Ok(());
         }
 
@@ -246,7 +240,7 @@ impl StunProtocol {
     /// timeout classifications can also reflect packet loss or server failure.
     /// The returned mapping is specific to the first server, particularly for
     /// `Symmetric` and `Dynamic` NATs. Later probe errors discard that mapping.
-    pub async fn detect_nat(
+    pub async fn detect(
         self: &Arc<Self>,
         local_addr: SocketAddr,
         stun_server: SocketAddr,
@@ -562,6 +556,7 @@ mod tests {
     #[tokio::test]
     async fn transaction_retries_with_the_same_id_after_timeout() {
         let protocol = Arc::new(StunProtocol::new());
+        protocol.disable_service();
         let topology = Arc::new(Topology::new(
             protocol.clone(),
             Arc::new(ForwardProtocol::new()),
@@ -587,7 +582,7 @@ mod tests {
         );
         assert_eq!(transaction.id(), transaction_id);
 
-        protocol.enable_server();
+        protocol.enable_service();
         let (response_link, response) = timeout(
             Duration::from_secs(1),
             transaction.request(link, Request::default()),

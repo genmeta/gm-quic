@@ -60,18 +60,19 @@ impl QuicProtocol {
         Ok(())
     }
 
-    pub fn unregister(&self, endpoint: EndpointAddr, socket: &Arc<UdpSocket>) {
+    pub fn unregister(&self, ep_addr: EndpointAddr, socket: &Arc<UdpSocket>) {
         let weak = Arc::downgrade(socket);
         self.sockets
-            .remove_if(&endpoint, |_, registered| Weak::ptr_eq(registered, &weak));
+            .remove_if(&ep_addr, |_, registered| Weak::ptr_eq(registered, &weak));
     }
 
-    pub fn socket(&self, endpoint: EndpointAddr) -> Option<Arc<UdpSocket>> {
-        let registered = self.sockets.get(&endpoint)?.clone();
+    pub fn find_socket(&self, endpoint_addr: EndpointAddr) -> Option<Arc<UdpSocket>> {
+        let registered = self.sockets.get(&endpoint_addr)?.clone();
         let socket = registered.upgrade();
         if socket.is_none() {
-            self.sockets
-                .remove_if(&endpoint, |_, socket| Weak::ptr_eq(socket, &registered));
+            self.sockets.remove_if(&endpoint_addr, |_, socket| {
+                Weak::ptr_eq(socket, &registered)
+            });
         }
         socket
     }
@@ -85,11 +86,11 @@ impl QuicProtocol {
             return Ok(());
         }
 
-        let endpoint = pathway.local();
-        let socket = self.socket(endpoint).ok_or_else(|| {
+        let ep_addr = pathway.local();
+        let socket = self.find_socket(ep_addr).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotConnected,
-                format!("local endpoint {endpoint} is unavailable"),
+                format!("local endpoint {ep_addr} is unavailable"),
             )
         })?;
         let destination = match pathway.remote() {
@@ -121,7 +122,7 @@ impl QuicProtocol {
     }
 
     pub fn on_packet(&self, datagram: BytesMut, pathway: Pathway, link: Link) -> bool {
-        if self.socket(pathway.local()).is_none() {
+        if self.find_socket(pathway.local()).is_none() {
             return false;
         }
         let handler = self.receiver.read().unwrap().clone();
@@ -194,7 +195,7 @@ mod tests {
         assert_eq!(delivered.load(Ordering::Relaxed), 1);
 
         protocol.unregister(endpoint, &raw);
-        assert!(protocol.socket(endpoint).is_none());
+        assert!(protocol.find_socket(endpoint).is_none());
     }
 
     #[tokio::test]

@@ -82,7 +82,7 @@ impl Network {
 
     async fn run(&self, steps: Vec<Step>) -> Result<(Option<SocketAddr>, NatType), StunError> {
         poll_fn(|cx| self.client.poll_send_ready(cx)).await.unwrap();
-        let mut detection = Box::pin(self.protocol.detect_nat(self.local, self.servers[0]));
+        let mut detection = Box::pin(self.protocol.detect(self.local, self.servers[0]));
         let mut ids = HashSet::new();
         for step in steps {
             let mut step_id = None;
@@ -259,13 +259,13 @@ async fn invalid_input_and_unregistered_socket_are_errors() {
     let protocol = Arc::new(StunProtocol::new());
     let server = "127.0.0.1:3478".parse().unwrap();
     for local in ["0.0.0.0:10000", "[::]:10000", "127.0.0.1:0"] {
-        let result = protocol.detect_nat(local.parse().unwrap(), server).await;
+        let result = protocol.detect(local.parse().unwrap(), server).await;
         assert!(
             matches!(result, Err(StunError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput)
         );
     }
     let result = protocol
-        .detect_nat("127.0.0.1:10000".parse().unwrap(), server)
+        .detect("127.0.0.1:10000".parse().unwrap(), server)
         .await;
     assert!(matches!(result, Err(StunError::Io(error)) if error.kind() == io::ErrorKind::NotFound));
     assert!(protocol.transactions.is_empty());
@@ -332,9 +332,7 @@ async fn cancelling_detection_removes_the_pending_transaction() {
     assert!(
         timeout(
             Duration::from_millis(20),
-            network
-                .protocol
-                .detect_nat(network.local, network.servers[0])
+            network.protocol.detect(network.local, network.servers[0])
         )
         .await
         .is_err()
