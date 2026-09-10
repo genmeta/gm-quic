@@ -27,6 +27,11 @@ pub enum SignError {
 }
 
 impl LocalAuthority {
+    /// The certificate/key snapshot actually selected by this TLS handshake.
+    pub fn certificate(&self) -> Arc<CertifiedKey> {
+        self.certified_key.clone()
+    }
+
     pub fn new(name: Arc<str>, certified_key: Arc<CertifiedKey>) -> Self {
         Self {
             name,

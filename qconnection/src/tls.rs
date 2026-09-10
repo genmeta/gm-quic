@@ -102,11 +102,13 @@ impl TlsSession {
         const INCOMPLETE: &str = "";
         match self {
             TlsSession::Client(tls_session) => TlsHandshakeInfo::Client {
+                alpn: tls_session.tls_conn.alpn_protocol().map(bytes::Bytes::copy_from_slice),
                 zero_rtt_accepted: tls_session.zero_rtt_accepted.expect(INCOMPLETE),
                 local_authority: tls_session.local_authority().clone(),
                 remote_authority: tls_session.remote_authority.clone().expect(INCOMPLETE),
             },
             TlsSession::Server(tls_session) => TlsHandshakeInfo::Server {
+                alpn: tls_session.tls_conn.alpn_protocol().map(bytes::Bytes::copy_from_slice),
                 local_authority: tls_session.local_authority().clone().expect(INCOMPLETE),
                 remote_authority: tls_session.remote_authority.clone(),
             },
@@ -226,10 +228,10 @@ impl ClientTlsSession {
         let Some(handshake_kind) = self.tls_conn.handshake_kind() else {
             return Ok(());
         };
-        let raw_params = self
-            .tls_conn
-            .quic_transport_parameters()
-            .expect("Parameters must be known at this point");
+        // HelloRetryRequest sets handshake_kind before EncryptedExtensions arrives.
+        let Some(raw_params) = self.tls_conn.quic_transport_parameters() else {
+            return Ok(());
+        };
         let mut parameters = parameters.lock_guard()?;
         let remebered = parameters.remembered().cloned();
         let params = ServerParameters::parse_from_bytes(raw_params)?;
@@ -452,11 +454,13 @@ impl Drop for ServerTlsSession {
 #[derive(Debug, Clone)]
 pub enum TlsHandshakeInfo {
     Client {
+        alpn: Option<bytes::Bytes>,
         local_authority: Option<LocalAuthority>,
         remote_authority: RemoteAuthority,
         zero_rtt_accepted: bool,
     },
     Server {
+        alpn: Option<bytes::Bytes>,
         local_authority: LocalAuthority,
         remote_authority: Option<RemoteAuthority>,
     },
@@ -708,5 +712,73 @@ impl ArcTlsHandshake {
             crypto_write_task,
         )
         .map_ok(|(_, _, _, never)| never)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qbase::param::{Parameters, handy::client_parameters};
+    use rustls::{
+        crypto::ring,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    };
+
+    #[test]
+    fn hello_retry_request_waits_for_transport_parameters() {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(
+            CertificateDer::pem_slice_iter(include_bytes!(
+                "../../tests/keychain/localhost/ca.cert"
+            ))
+            .map(Result::unwrap),
+        );
+        let client_config = ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        // The client initially sends X25519; accepting only P-256 forces a real HRR.
+        let mut provider = ring::default_provider();
+        provider.kx_groups = vec![ring::kx_group::SECP256R1];
+        let server_config = ServerConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                CertificateDer::pem_slice_iter(include_bytes!(
+                    "../../tests/keychain/localhost/server.cert"
+                ))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+                PrivateKeyDer::from_pem_slice(include_bytes!(
+                    "../../tests/keychain/localhost/server.key"
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        let client_params = client_parameters();
+        let parameters: ArcParameters =
+            Parameters::new_client(client_params.clone(), None, Default::default()).into();
+        let mut client =
+            ClientTlsSession::init("localhost".into(), Arc::new(client_config), &client_params)
+                .unwrap();
+        let mut server =
+            ServerConnection::new(Arc::new(server_config), QUIC_VERSION, vec![]).unwrap();
+        let mut flight = Vec::new();
+        client.tls_conn.write_hs(&mut flight);
+        server.read_hs(&flight).unwrap();
+        flight.clear();
+        server.write_hs(&mut flight);
+        client.tls_conn.read_hs(&flight).unwrap();
+
+        assert_eq!(
+            client.tls_conn.handshake_kind(),
+            Some(HandshakeKind::FullWithHelloRetryRequest)
+        );
+        assert!(client.tls_conn.quic_transport_parameters().is_none());
+        client.try_process_ee(&parameters).unwrap();
+        assert!(!parameters.lock_guard().unwrap().is_remote_params_received());
+        assert!(client.zero_rtt_accepted.is_none());
     }
 }

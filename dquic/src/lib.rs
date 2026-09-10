@@ -36,6 +36,7 @@ mod doc {
 
 pub use ::qconnection::{self, qbase, qdatagram, qevent, qinterface, qrecovery, qtraversal};
 pub use ::qresolve;
+pub use common::Network;
 
 mod cert;
 mod client;

@@ -49,6 +49,19 @@ impl Default for Network {
 }
 
 impl Network {
+    /// Creates one isolated packet router, interface manager and address event hub.
+    pub fn new(resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
+        Self {
+            resolver,
+            devices: Devices::global(),
+            iface_factory: Arc::new(handy::DEFAULT_IO_FACTORY),
+            iface_manager: Arc::new(InterfaceManager::new()),
+            quic_router: Arc::new(QuicRouter::new()),
+            stun_server: None,
+            local_endpoints: Arc::new(LocalEndpoints::new()),
+        }
+    }
+
     fn init_iface_components(&self, bind_iface: &BindInterface, stun_server: Option<Arc<str>>) {
         bind_iface.with_components_mut(move |components: &mut Components, iface: &Interface| {
             // rebind interface on network changed

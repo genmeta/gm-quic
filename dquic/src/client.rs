@@ -98,6 +98,12 @@ pub struct BindInterfaceError {
 }
 
 impl QuicClient {
+    /// Returns the configured local name, or `None` if no name was configured.
+    /// This is configuration, not proof of the identity authenticated during a handshake.
+    pub fn name(&self) -> Option<String> {
+        self.parameters.get(ParameterId::ClientName)
+    }
+
     #[inline]
     pub fn bind_ifaces(&self) -> HashMap<BindUri, BindInterface> {
         self.bind_ifaces
@@ -546,6 +552,12 @@ impl QuicClient {
 }
 
 impl<T> QuicClientBuilder<T> {
+    /// Uses the same transport environment as the other clients and listener.
+    pub fn with_network(mut self, network: common::Network) -> Self {
+        self.network = network;
+        self
+    }
+
     /// Configure the resolver used for connection target names.
     pub fn with_resolver(mut self, resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
         self.network.resolver = resolver;

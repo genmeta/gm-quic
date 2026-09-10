@@ -291,6 +291,15 @@ impl Components {
         self.paths.remove(pathway, &PathDeactivated::App);
     }
 
+    pub fn negotiated_alpn(&self) -> Impl_Future![Result<Option<bytes::Bytes>, Error>] {
+        let tls_handshake = self.tls_handshake.clone();
+        async move {
+            Ok(match tls_handshake.info().await?.as_ref() {
+                tls::TlsHandshakeInfo::Client { alpn, .. } | tls::TlsHandshakeInfo::Server { alpn, .. } => alpn.clone(),
+            })
+        }
+    }
+
     pub fn local_authority(&self) -> Impl_Future![Result<Option<LocalAuthority>, Error>] {
         let tls_handshake = self.tls_handshake.clone();
         async move {
@@ -680,6 +689,10 @@ impl Connection {
     pub fn handshaked(&self) -> Impl_Future![Result<(), Error>] {
         self.try_map_components_future(|core_conn| core_conn.conn_state.handshaked())
             .map(|result| result?)
+    }
+
+    pub fn negotiated_alpn(&self) -> Impl_Future![Result<Option<bytes::Bytes>, Error>] {
+        self.try_map_components_future(|core_conn| core_conn.negotiated_alpn()).map(|result| result?)
     }
 
     pub fn terminated(&self) -> Impl_Future![Error] {

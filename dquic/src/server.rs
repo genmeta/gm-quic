@@ -151,6 +151,13 @@ impl Server {
         self.certified_key.load_full()
     }
 
+    /// Installs an already prepared matching chain/key/staple atomically.
+    pub fn update_certificate(&self, certificate: Arc<CertifiedKey>) -> Result<(), rustls::Error> {
+        certificate.keys_match()?;
+        self.certified_key.store(certificate);
+        Ok(())
+    }
+
     pub fn update_ocsp(&self, ocsp: Option<Vec<u8>>) {
         self.certified_key.rcu(|current| CertifiedKey {
             cert: current.cert.clone(),
@@ -232,13 +239,6 @@ impl QuicListeners {
     ) -> Result<(), ServerError> {
         let server = server_name.into();
 
-        let server_entry = match self.servers.entry(server.clone()) {
-            dashmap::Entry::Vacant(entry) => entry,
-            dashmap::Entry::Occupied(..) => {
-                return Err(ServerError::ServerAlreadyExists { server });
-            }
-        };
-
         let cert = cert_chain.to_certificate();
         let key = self
             .tls_config
@@ -258,7 +258,25 @@ impl QuicListeners {
                 server: server.clone(),
                 source,
             })?;
-        let certified_key = Arc::new(certified_key);
+        self.add_server_certified(server, Arc::new(certified_key), bind_uris).await
+    }
+
+    /// Registers a name using an existing signing-key snapshot, without exporting
+    /// or retaining its private-key encoding.
+    pub async fn add_server_certified(
+        &self,
+        server_name: impl Into<String>,
+        certified_key: Arc<CertifiedKey>,
+        bind_uris: impl IntoIterator<Item = impl Into<BindUri>>,
+    ) -> Result<(), ServerError> {
+        let server_name = server_name.into();
+        certified_key.keys_match().map_err(|source| ServerError::InvalidCertOrKey {
+            server: server_name.clone(), source,
+        })?;
+        let server_entry = match self.servers.entry(server_name.clone()) {
+            dashmap::Entry::Vacant(entry) => entry,
+            dashmap::Entry::Occupied(..) => return Err(ServerError::ServerAlreadyExists { server: server_name }),
+        };
 
         let bind_uris = bind_uris.into_iter();
 
@@ -607,6 +625,12 @@ impl QuicListeners {
 }
 
 impl<T> QuicListenersBuilder<T> {
+    /// Uses one shared packet router, interface manager and address event hub.
+    pub fn with_network(mut self, network: common::Network) -> Self {
+        self.network = network;
+        self
+    }
+
     pub fn with_resolver(mut self, resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
         self.network.resolver = resolver;
         self
